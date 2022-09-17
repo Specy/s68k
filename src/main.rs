@@ -9,5 +9,4 @@ fn main() {
     for line in lexer.lines {
         println!("{:?}", line);
     }
-    println!("Hello m68k!");
 }

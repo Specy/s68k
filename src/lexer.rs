@@ -133,23 +133,22 @@ impl AsmRegex {
             _ if self.immediate.is_match(operand) => OperandKind::Immediate,
             _ if self.indirect.is_match(operand) => OperandKind::Indirect,
             _ if self.indirect_displacement.is_match(operand) => OperandKind::IndirectDisplacement,
-
             _ => OperandKind::Label,
         }
     }
     pub fn split_instruction_and_size(&self, instruction: &String) -> (String, Size) {
         let instruction = instruction.to_string();
         let split = instruction.split('.').collect::<Vec<&str>>();
-        match split.len() {
-            1 => (split[0].to_string(), Size::Unspecified),
-            2 => {
-                let size = match split[1] {
+        match split[..] {
+            [instruction] => (instruction.to_string(), Size::Unspecified),
+            [instruction, size] => {
+                let size = match size {
                     "b" => Size::Byte,
                     "w" => Size::Word,
                     "l" => Size::Long,
                     _ => Size::Unknown,
                 };
-                (split[0].to_string(), size)
+                (instruction.to_string(), size)
             }
             _ => (instruction, Size::Unspecified),
         }
@@ -197,6 +196,7 @@ impl AsmRegex {
         let mut in_parenthesis = false;
         let mut last_char = ' ';
         let mut last_separator = ' ';
+        //TODO fix this, it doesn't work correctly but works in the context of the language
         for c in line.chars() {
             match c {
                 '(' => {
@@ -217,13 +217,13 @@ impl AsmRegex {
                     }
                 }
                 ' ' => {
-                    if last_char == ','{
+                    if last_char == ',' {
                         continue;
                     }
                     if in_parenthesis {
                         current_arg.push(c);
                     } else {
-                        if current_arg == ""{
+                        if current_arg == "" {
                             continue;
                         }
                         args.push(ArgSeparated::Space(current_arg.trim().to_string()));
@@ -233,7 +233,7 @@ impl AsmRegex {
                 }
                 _ => {
                     current_arg.push(c);
-                },
+                }
             }
             last_char = c;
         }
@@ -243,11 +243,11 @@ impl AsmRegex {
                 ',' => {
                     args.push(ArgSeparated::Comma(current_arg.trim().to_string()));
                     args
-                },
+                }
                 _ => {
                     args.push(ArgSeparated::Space(current_arg.trim().to_string()));
                     args
-                },
+                }
             },
         }
     }
@@ -257,10 +257,9 @@ impl AsmRegex {
             .split_whitespace()
             .map(|x| x.trim().to_string())
             .collect::<Vec<String>>();
-        if args.len() == 0 {
-            return LineKind::Empty;
-        }
-        let kind = match &args[..] {
+
+        match &args[..] {
+            [] => LineKind::Empty,
             _ if self.comment_line.is_match(line) => LineKind::Comment,
             _ if self.label_line.is_match(line) => LineKind::Label,
             _ if args.iter().any(|a| self.directives_map.contains_key(a)) => LineKind::Directive,
@@ -272,11 +271,14 @@ impl AsmRegex {
                 }
             }
             _ => LineKind::Unknown,
-        };
-        kind
+        }
     }
 }
 
+struct EquValue {
+    name: String,
+    replacement: String,
+}
 pub struct Lexer {
     pub lines: Vec<Line>,
     regex: AsmRegex,
@@ -289,17 +291,23 @@ impl Lexer {
         }
     }
     pub fn apply_equ(&self, lines: Vec<String>) -> Vec<String> {
-        let mut equs: Vec<(String, String)> = Vec::new();
+        let mut equs: Vec<EquValue> = Vec::new();
         let mut equ_map_indexes: HashMap<usize, bool> = HashMap::new();
-        for (i, line) in lines.iter().enumerate() {
-            let args = self.regex.split_at_spaces(line.as_str());
-            if args.len() == 3 {
-                if args[1] == "equ" {
-                    equs.push((args[0].to_string(), args[2].to_string()));
-                    equ_map_indexes.insert(i, true);
+        const EQU: &'static str = "equ";
+        lines
+            .iter()
+            .map(|line| self.regex.split_at_spaces(line))
+            .enumerate()
+            .for_each(|(index, args)| {
+                if args.len() >= 3 && args[1].eq(EQU) {
+                    equs.push(EquValue {
+                        name: args[0].to_string(),
+                        replacement: args[2].to_string(),
+                    });
+                    equ_map_indexes.insert(index, true);
                 }
-            }
-        }
+            });
+
         lines
             .iter()
             .enumerate()
@@ -309,14 +317,15 @@ impl Lexer {
                 }
                 let split_at_comments = line.split(COMMENT).collect::<Vec<&str>>();
                 match split_at_comments[..] {
-                    [first] => {
-                        let mut new_line = first.to_string();
+                    [code, comment, ..] => {
+                        let mut new_line = code.to_string();
                         for equ in equs.iter() {
-                            if new_line.contains(&equ.0) {
-                                new_line = new_line.replace(equ.0.as_str(), equ.1.as_str());
+                            if new_line.contains(&equ.name) {
+                                new_line =
+                                    new_line.replace(equ.name.as_str(), equ.replacement.as_str());
                             }
                         }
-                        new_line + split_at_comments.get(1).unwrap_or(&"")
+                        new_line + ";" + comment
                     }
                     _ => line.to_string(),
                 }
@@ -324,14 +333,11 @@ impl Lexer {
             .collect::<Vec<String>>()
     }
     pub fn parse_operands(&self, operands: Vec<String>) -> Vec<Operand> {
-        let mut parsed: Vec<Operand> = Vec::new();
-        for operand in operands {
-            if operand.contains(';') {
-                break;
-            }
-            parsed.push(self.parse_operand(&operand));
-        }
-        parsed
+        operands
+            .iter()
+            .take_while(|o| !o.contains(COMMENT))
+            .map(|o| self.parse_operand(o))
+            .collect()
     }
     pub fn parse_operand(&self, operand: &String) -> Operand {
         let operand = operand.to_string();
@@ -354,13 +360,13 @@ impl Lexer {
                         let args = self.regex.split_into_operand_args(args.as_str());
                         let offset = displacement.trim().to_string();
                         let operands = self.parse_operands(args);
-                        if operands.len() == 1 {
-                            Operand::Indirect {
+                        match &operands[..] {
+                            [operand] => Operand::Indirect {
                                 offset,
-                                operand: Box::new(operands[0].clone()),
-                            }
-                        } else {
-                            Operand::IndirectWithDisplacement { offset, operands }
+                                operand: Box::new(operand.clone()),
+                            },
+                            [_, ..] => Operand::IndirectWithDisplacement { offset, operands },
+                            _ => panic!("Invalid indirect operand '{}'", operand),
                         }
                     }
                     _ => Operand::Other(operand),
