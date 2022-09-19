@@ -1,6 +1,6 @@
 use crate::constants::{COMMENT, DIRECTIVES, OPERAND_SEPARATOR};
 use regex::Regex;
-use std::{collections::HashMap, thread::current};
+use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub enum RegisterType {
     Address,
@@ -8,11 +8,6 @@ pub enum RegisterType {
     SP,
 }
 
-#[derive(Debug, Clone)]
-pub enum IndirectType {
-    Address,
-    Displacement,
-}
 #[derive(Debug, Clone)]
 pub enum Operand {
     Register(RegisterType, String),
@@ -25,8 +20,9 @@ pub enum Operand {
         offset: String,
         operands: Vec<Operand>,
     },
-    PostIndirect(String),
-    PreIndirect(String),
+    PostIndirect(Box<Operand>),
+    PreIndirect(Box<Operand>),
+    Address(String),
     Label(String),
     Other(String),
 }
@@ -34,30 +30,22 @@ pub enum Operand {
 #[derive(Debug, Clone)]
 pub enum Line {
     Label {
-        line: usize,
         name: String,
         args: Vec<ArgSeparated>,
     },
     Directive {
-        line: usize,
         args: Vec<String>,
     },
     Instruction {
-        line: usize,
         name: String,
         operands: Vec<Operand>,
         size: Size,
     },
     Comment {
-        line: usize,
         content: String,
     },
-    Empty {
-        line: usize,
-    },
-    Unknown {
-        line: usize,
-    },
+    Empty,
+    Unknown,
 }
 #[derive(Debug)]
 pub enum OperandKind {
@@ -68,6 +56,7 @@ pub enum OperandKind {
     PostIndirect,
     PreIndirect,
     Label,
+    Address,
 }
 #[derive(Debug, Clone)]
 pub enum Size {
@@ -99,6 +88,7 @@ struct AsmRegex {
     indirect: Regex,
     indirect_displacement: Regex,
     post_indirect: Regex,
+    address: Regex,
     pre_indirect: Regex,
     label_line: Regex,
     comment_line: Regex,
@@ -121,6 +111,7 @@ impl AsmRegex {
             indirect_displacement: Regex::new(r"^((.+,)+.+)$").unwrap(),
             post_indirect: Regex::new(r"^\(\S+\)\+$").unwrap(),
             pre_indirect: Regex::new(r"^-\(\S+\)$").unwrap(),
+            address: Regex::new(r"^\$\S*$").unwrap(),
             label_line: Regex::new(r"^\S+:.*").unwrap(),
             comment_line: Regex::new(r"^;.*").unwrap(),
         }
@@ -133,6 +124,7 @@ impl AsmRegex {
             _ if self.immediate.is_match(operand) => OperandKind::Immediate,
             _ if self.indirect.is_match(operand) => OperandKind::Indirect,
             _ if self.indirect_displacement.is_match(operand) => OperandKind::IndirectDisplacement,
+            _ if self.address.is_match(operand) => OperandKind::Address,
             _ => OperandKind::Label,
         }
     }
@@ -183,11 +175,6 @@ impl AsmRegex {
         }
         args.push(current_arg.trim().to_string());
         args
-    }
-    pub fn split_at_spaces(&self, line: &str) -> Vec<String> {
-        line.split(' ')
-            .map(|x| x.to_string())
-            .collect::<Vec<String>>()
     }
     pub fn split_into_separated_args(&self, line: &str) -> Vec<ArgSeparated> {
         let mut args = vec![];
@@ -251,14 +238,18 @@ impl AsmRegex {
             },
         }
     }
+    pub fn split_at_spaces(&self, line: &str) -> Vec<String> {
+        line.split(' ')
+            .map(|x| x.to_string())
+            .collect::<Vec<String>>()
+    }
     pub fn get_line_kind(&self, line: &String) -> LineKind {
         let line = line.trim();
         let args = line
             .split_whitespace()
             .map(|x| x.trim().to_string())
             .collect::<Vec<String>>();
-
-        match &args[..] {
+        match args[..] {
             [] => LineKind::Empty,
             _ if self.comment_line.is_match(line) => LineKind::Comment,
             _ if self.label_line.is_match(line) => LineKind::Label,
@@ -276,11 +267,16 @@ impl AsmRegex {
 }
 
 struct EquValue {
-    name: String,
-    replacement: String,
+    pub name: String,
+    pub replacement: String,
+}
+#[derive(Debug, Clone)]
+pub struct ParsedLine {
+    pub parsed: Line,
+    pub line: String,
 }
 pub struct Lexer {
-    pub lines: Vec<Line>,
+    pub lines: Vec<ParsedLine>,
     regex: AsmRegex,
 }
 impl Lexer {
@@ -372,9 +368,19 @@ impl Lexer {
                     _ => Operand::Other(operand),
                 }
             }
-            OperandKind::PostIndirect => Operand::PostIndirect(operand),
-            OperandKind::PreIndirect => Operand::PreIndirect(operand),
+            OperandKind::Address => Operand::Address(operand),
+            OperandKind::PostIndirect => {
+                let parsed_operand = operand.replace("(", "").replace(")+", "");
+                let arg = self.parse_operand(&parsed_operand);
+                Operand::PostIndirect(Box::new(arg))
+            },
+            OperandKind::PreIndirect => {
+                let parsed_operand = operand.replace("-(", "").replace(")", "");
+                let arg = self.parse_operand(&parsed_operand);
+                Operand::PreIndirect(Box::new(arg))
+            },
             OperandKind::Label => Operand::Label(operand),
+
         }
     }
     pub fn lex(&mut self, code: String) {
@@ -387,7 +393,7 @@ impl Lexer {
                 let line = line.trim();
                 let kind = self.regex.get_line_kind(&line.to_string().to_lowercase());
                 let args = self.regex.split_at_spaces(line);
-                match kind {
+                let parsed_line = match kind {
                     LineKind::Instruction { size, name } => {
                         let operands = self
                             .regex
@@ -397,27 +403,25 @@ impl Lexer {
                             name,
                             size,
                             operands,
-                            line: i,
                         }
                     }
                     LineKind::Comment => Line::Comment {
                         content: line.to_string(),
-                        line: i,
                     },
                     LineKind::Label => {
                         let name = args.get(0).unwrap().replace(":", "").to_string();
                         let args = self
                             .regex
                             .split_into_separated_args(args[1..].join(" ").as_str());
-                        Line::Label {
-                            name,
-                            args,
-                            line: i,
-                        }
+                        Line::Label { name, args }
                     }
-                    LineKind::Directive => Line::Directive { args, line: i },
-                    LineKind::Empty => Line::Empty { line: i },
-                    LineKind::Unknown => Line::Unknown { line: i },
+                    LineKind::Directive => Line::Directive { args },
+                    LineKind::Empty => Line::Empty,
+                    LineKind::Unknown => Line::Unknown,
+                };
+                ParsedLine {
+                    parsed: parsed_line,
+                    line: line.to_string(),
                 }
             })
             .collect();
