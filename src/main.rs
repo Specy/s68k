@@ -1,13 +1,22 @@
 mod lexer;
 mod constants;
 mod syntax_checker;
+
+use syntax_checker::SyntaxChecker;
+use lexer::Lexer;
 use std::fs;
 fn main() {
-    let mut lexer = lexer::Lexer::new();
+    let mut lexer = Lexer::new();
     let example_code = fs::read_to_string("example-code2.asm").expect("Unable to read file");
     lexer.lex(example_code);
-
-    for line in lexer.lines {
+    for line in lexer.get_lines() {
         println!("{:?}", line.parsed);
     }
+    let lines = lexer.get_lines();
+    let syntax_checker = SyntaxChecker::new(&lines);
+    let errors = syntax_checker.get_errors();
+    for error in errors {
+        println!("{}", error.get_message());
+    }
 }
+

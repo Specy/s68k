@@ -276,7 +276,7 @@ pub struct ParsedLine {
     pub line: String,
 }
 pub struct Lexer {
-    pub lines: Vec<ParsedLine>,
+    lines: Vec<ParsedLine>,
     regex: AsmRegex,
 }
 impl Lexer {
@@ -425,5 +425,8 @@ impl Lexer {
                 }
             })
             .collect();
+    }
+    pub fn get_lines(&self) -> Vec<ParsedLine> {
+        self.lines.clone()
     }
 }

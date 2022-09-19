@@ -1,1 +1,1 @@
-test $a0d3, d0
+move.w d0, #10
