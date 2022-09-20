@@ -74,7 +74,7 @@ impl SyntaxChecker {
         self.lines = lines.iter().map(|x| x.clone()).collect();
         for line in lines.iter() {
             match &line.parsed {
-                Line::Label { name, args } => {
+                Line::Label { name, .. } => {
                     if self.labels.contains_key(name) {
                         self.errors.push(SyntaxError {
                             line: line.clone(),
@@ -89,14 +89,15 @@ impl SyntaxChecker {
         }
         for line in lines.iter() {
             match &line.parsed {
-                Line::Empty
-                | Line::Comment { .. } => {}
-                
+                Line::Empty | Line::Comment { .. } => {}
+
                 //TODO check labels
-                Line::Label { .. } => {}
+                Line::Label { .. } => {
+                    self.verify_label(line);
+                }
 
                 //TODO check directives
-                Line::Directive { .. } => {},
+                Line::Directive { .. } => {}
 
                 Line::Instruction { .. } => {
                     self.check_instruction(line);
@@ -115,11 +116,7 @@ impl SyntaxChecker {
 
     fn check_instruction(&mut self, line: &ParsedLine) {
         match &line.parsed {
-            Line::Instruction {
-                name,
-                operands,
-                ..
-            } => {
+            Line::Instruction { name, operands, .. } => {
                 let name = name.as_str();
 
                 match name {
@@ -186,16 +183,31 @@ impl SyntaxChecker {
                     }
                     "or" | "and" | "eor" => {
                         //TODO verify both rules
-                        self.verify_two_args(operands, Rules::NO_A_REG, Rules::NO_IMMEDIATE | Rules::NO_A_REG, line);
+                        self.verify_two_args(
+                            operands,
+                            Rules::NO_A_REG,
+                            Rules::NO_IMMEDIATE | Rules::NO_A_REG,
+                            line,
+                        );
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
                     "lsl" | "lsr" | "asr" | "asl" | "rol" | "ror" => {
                         //TODO i think i need to check fo the size of the immediate value
-                        self.verify_two_args(operands, Rules::NO_A_REG, Rules::NO_IMMEDIATE | Rules::NO_A_REG, line);
+                        self.verify_two_args(
+                            operands,
+                            Rules::NO_A_REG,
+                            Rules::NO_IMMEDIATE | Rules::NO_A_REG,
+                            line,
+                        );
                         self.verify_instruction_size(SizeRules::AnySize, line);
                     }
                     "btst" | "bclr" | "bchg" | "bset" => {
-                        self.verify_two_args(operands, Rules::NO_A_REG, Rules::NO_IMMEDIATE | Rules::NO_A_REG, line);
+                        self.verify_two_args(
+                            operands,
+                            Rules::NO_A_REG,
+                            Rules::NO_IMMEDIATE | Rules::NO_A_REG,
+                            line,
+                        );
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
                     "bsr" => {
@@ -215,6 +227,76 @@ impl SyntaxChecker {
         }
     }
 
+    fn verify_label(&mut self, line: &ParsedLine) {
+        match &line.parsed {
+            Line::Label {
+                directive: Some(data),
+                name,
+            } => {
+                if data.size == Size::Unknown || data.size == Size::Unspecified {
+                    self.errors.push(SyntaxError {
+                        line: line.clone(),
+                        error: format!(
+                            "Unknown or unspecified size for label directive: \"{}\"",
+                            name
+                        ),
+                    });
+                }
+                if data.args.len() == 0 {
+                    self.errors.push(SyntaxError {
+                        line: line.clone(),
+                        error: format!("No arguments for label directive: \"{}\"", name),
+                    });
+                }
+                match data.name.as_str() {
+                    "dc" => {}
+                    "ds" => {
+                        if data.args.len() > 1 {
+                            self.errors.push(SyntaxError {
+                                line: line.clone(),
+                                error: format!(
+                                    "Too many arguments for label directive: \"{}\"",
+                                    name
+                                ),
+                            });
+                        }
+                    }
+                    "dcb" => match data.args.len() {
+                        1 => {
+                            self.errors.push(SyntaxError {
+                                line: line.clone(),
+                                error: format!(
+                                    "Too few arguments for label directive: \"{}\"",
+                                    name
+                                ),
+                            });
+                        }
+                        2 => {}
+                        _ => {
+                            self.errors.push(SyntaxError {
+                                line: line.clone(),
+                                error: format!(
+                                    "Too many arguments for label directive: \"{}\"",
+                                    name
+                                ),
+                            });
+                        }
+                    },
+                    _ => self.errors.push(SyntaxError {
+                        line: line.clone(),
+                        error: format!(
+                            "Unknown label directive: \"{}\" at label: \"{}\" ",
+                            data.name, name
+                        ),
+                    }),
+                }
+            }
+            Line::Label {
+                directive: None, ..
+            } => {}
+            _ => panic!("Line is not a label"),
+        }
+    }
     fn verify_two_args(
         &mut self,
         args: &Vec<Operand>,

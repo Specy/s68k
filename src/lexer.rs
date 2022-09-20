@@ -31,7 +31,7 @@ pub enum Operand {
 pub enum Line {
     Label {
         name: String,
-        args: Vec<ArgSeparated>,
+        directive: Option<LabelDirective>,
     },
     Directive {
         args: Vec<String>,
@@ -77,9 +77,15 @@ pub enum LineKind {
 }
 
 #[derive(Debug, Clone)]
-pub enum ArgSeparated {
-    Comma(String),
-    Space(String),
+pub enum SeparatorKind {
+    Comma,
+    Space,
+}
+#[derive(Debug, Clone)]
+pub struct LabelDirective {
+    pub name: String,
+    pub size: Size,
+    pub args: Vec<ArgSeparated>,
 }
 struct AsmRegex {
     directives_map: HashMap<String, bool>,
@@ -92,6 +98,11 @@ struct AsmRegex {
     pre_indirect: Regex,
     label_line: Regex,
     comment_line: Regex,
+}
+#[derive(Debug, Clone)]
+pub struct ArgSeparated {
+    kind: SeparatorKind,
+    value: String,
 }
 impl AsmRegex {
     pub fn new() -> Self {
@@ -128,21 +139,21 @@ impl AsmRegex {
             _ => OperandKind::Label,
         }
     }
-    pub fn split_instruction_and_size(&self, instruction: &String) -> (String, Size) {
-        let instruction = instruction.to_string();
-        let split = instruction.split('.').collect::<Vec<&str>>();
+    pub fn split_at_size(&self, data: &String) -> (String, Size) {
+        let data = data.to_string();
+        let split = data.split('.').collect::<Vec<&str>>();
         match split[..] {
-            [instruction] => (instruction.to_string(), Size::Unspecified),
-            [instruction, size] => {
+            [first] => (first.to_string(), Size::Unspecified),
+            [first, size] => {
                 let size = match size {
                     "b" => Size::Byte,
                     "w" => Size::Word,
                     "l" => Size::Long,
                     _ => Size::Unknown,
                 };
-                (instruction.to_string(), size)
+                (first.to_string(), size)
             }
-            _ => (instruction, Size::Unspecified),
+            _ => (data, Size::Unspecified),
         }
     }
     pub fn split_into_operand_args(&self, line: &str) -> Vec<String> {
@@ -198,7 +209,10 @@ impl AsmRegex {
                     if in_parenthesis {
                         current_arg.push(c);
                     } else {
-                        args.push(ArgSeparated::Comma(current_arg.trim().to_string()));
+                        args.push(ArgSeparated {
+                            kind: SeparatorKind::Comma,
+                            value: current_arg.trim().to_string(),
+                        });
                         current_arg = String::new();
                         last_separator = c;
                     }
@@ -213,7 +227,10 @@ impl AsmRegex {
                         if current_arg == "" {
                             continue;
                         }
-                        args.push(ArgSeparated::Space(current_arg.trim().to_string()));
+                        args.push(ArgSeparated {
+                            kind: SeparatorKind::Space,
+                            value: current_arg.trim().to_string(),
+                        });
                         current_arg = String::new();
                         last_separator = c;
                     }
@@ -228,11 +245,17 @@ impl AsmRegex {
             "" => args,
             _ => match last_separator {
                 ',' => {
-                    args.push(ArgSeparated::Comma(current_arg.trim().to_string()));
+                    args.push(ArgSeparated {
+                        kind: SeparatorKind::Comma,
+                        value: current_arg.trim().to_string(),
+                    });
                     args
                 }
                 _ => {
-                    args.push(ArgSeparated::Space(current_arg.trim().to_string()));
+                    args.push(ArgSeparated {
+                        kind: SeparatorKind::Space,
+                        value: current_arg.trim().to_string(),
+                    });
                     args
                 }
             },
@@ -255,7 +278,7 @@ impl AsmRegex {
             _ if self.label_line.is_match(line) => LineKind::Label,
             _ if args.iter().any(|a| self.directives_map.contains_key(a)) => LineKind::Directive,
             [_, _, ..] => {
-                let (instruction, size) = self.split_instruction_and_size(&args[0]);
+                let (instruction, size) = self.split_at_size(&args[0]);
                 LineKind::Instruction {
                     size,
                     name: instruction,
@@ -266,7 +289,7 @@ impl AsmRegex {
     }
 }
 
-struct EquValue {
+pub struct EquValue {
     pub name: String,
     pub replacement: String,
 }
@@ -374,14 +397,13 @@ impl Lexer {
                 let parsed_operand = operand.replace("(", "").replace(")+", "");
                 let arg = self.parse_operand(&parsed_operand);
                 Operand::PostIndirect(Box::new(arg))
-            },
+            }
             OperandKind::PreIndirect => {
                 let parsed_operand = operand.replace("-(", "").replace(")", "");
                 let arg = self.parse_operand(&parsed_operand);
                 Operand::PreIndirect(Box::new(arg))
-            },
+            }
             OperandKind::Label => Operand::Label(operand),
-
         }
     }
     pub fn lex(&mut self, code: String) {
@@ -414,7 +436,25 @@ impl Lexer {
                         let args = self
                             .regex
                             .split_into_separated_args(args[1..].join(" ").as_str());
-                        Line::Label { name, args }
+                        match &args[..] {
+                            [first, ..] => {
+                                let (directive_name, size) =
+                                    self.regex.split_at_size(&first.value.to_string());
+                                let label_directive = LabelDirective {
+                                    name: directive_name,
+                                    size,
+                                    args: args[1..].to_vec(),
+                                };
+                                Line::Label {
+                                    name,
+                                    directive: Some(label_directive),
+                                }
+                            }
+                            _ => Line::Label {
+                                name,
+                                directive: None,
+                            },
+                        }
                     }
                     LineKind::Directive => Line::Directive { args },
                     LineKind::Empty => Line::Empty,
@@ -423,7 +463,7 @@ impl Lexer {
                 ParsedLine {
                     parsed: parsed_line,
                     line: line.to_string(),
-                    line_index: i
+                    line_index: i,
                 }
             })
             .collect();
