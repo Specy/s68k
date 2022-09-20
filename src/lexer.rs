@@ -58,7 +58,7 @@ pub enum OperandKind {
     Label,
     Address,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Size {
     Byte,
     Word,
@@ -274,6 +274,7 @@ struct EquValue {
 pub struct ParsedLine {
     pub parsed: Line,
     pub line: String,
+    pub line_index: usize,
 }
 pub struct Lexer {
     lines: Vec<ParsedLine>,
@@ -422,6 +423,7 @@ impl Lexer {
                 ParsedLine {
                     parsed: parsed_line,
                     line: line.to_string(),
+                    line_index: i
                 }
             })
             .collect();
