@@ -13,3 +13,5 @@ pub const INSTRUCTIONS: &[&str] = &["add", "addi", "adda", "sub", "subi", "suba"
 "bne", "bge", "bgt", "ble", "blt"];
 pub const COMMENT: &str = ";";
 pub const OPERAND_SEPARATOR: char = ',';
+pub const EQU: &'static str = "equ";
+

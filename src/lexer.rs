@@ -1,4 +1,5 @@
-use crate::constants::{COMMENT, DIRECTIVES, OPERAND_SEPARATOR};
+//CHECK COMMENT REMOVAL
+use crate::constants::{COMMENT, DIRECTIVES, OPERAND_SEPARATOR, EQU};
 use regex::Regex;
 use std::collections::HashMap;
 #[derive(Debug, Clone)]
@@ -181,6 +182,7 @@ impl AsmRegex {
                         current_arg = String::new();
                     }
                 }
+                ';' => { break }
                 _ => current_arg.push(c),
             }
         }
@@ -217,6 +219,7 @@ impl AsmRegex {
                         last_separator = c;
                     }
                 }
+                ';' => { break }
                 ' ' => {
                     if last_char == ',' {
                         continue;
@@ -313,7 +316,6 @@ impl Lexer {
     pub fn apply_equ(&self, lines: Vec<String>) -> Vec<String> {
         let mut equs: Vec<EquValue> = Vec::new();
         let mut equ_map_indexes: HashMap<usize, bool> = HashMap::new();
-        const EQU: &'static str = "equ";
         lines
             .iter()
             .map(|line| self.regex.split_at_spaces(line))
@@ -327,7 +329,6 @@ impl Lexer {
                     equ_map_indexes.insert(index, true);
                 }
             });
-
         lines
             .iter()
             .enumerate()
@@ -337,7 +338,9 @@ impl Lexer {
                 }
                 let split_at_comments = line.split(COMMENT).collect::<Vec<&str>>();
                 match split_at_comments[..] {
-                    [code, comment, ..] => {
+                    [code, ..] => {
+                        //TODO maybe replace only if not around special characters
+                        let comment = split_at_comments[1..].join(COMMENT);
                         let mut new_line = code.to_string();
                         for equ in equs.iter() {
                             if new_line.contains(&equ.name) {
@@ -345,7 +348,10 @@ impl Lexer {
                                     new_line.replace(equ.name.as_str(), equ.replacement.as_str());
                             }
                         }
-                        new_line + ";" + comment
+                        match comment.as_str(){
+                            "" => new_line,
+                            _ => format!("{} ;{}", new_line, comment)
+                        }
                     }
                     _ => line.to_string(),
                 }

@@ -1,4 +1,7 @@
-use crate::lexer::{Line, Operand, ParsedLine, RegisterType, Size};
+use crate::{
+    constants::EQU,
+    lexer::{Line, Operand, ParsedLine, RegisterType, Size},
+};
 use bitflags::bitflags;
 use std::collections::HashMap;
 #[derive(Debug, Clone)]
@@ -76,10 +79,10 @@ impl SyntaxChecker {
             match &line.parsed {
                 Line::Label { name, .. } => {
                     if self.labels.contains_key(name) {
-                        self.errors.push(SyntaxError {
-                            line: line.clone(),
-                            error: format!("Label {} already exists", name),
-                        })
+                        self.errors.push(SyntaxError::new(
+                            line.clone(),
+                            format!("Label {} already exists", name),
+                        ));
                     } else {
                         self.labels.insert(name.to_string(), name.to_string());
                     }
@@ -91,21 +94,22 @@ impl SyntaxChecker {
             match &line.parsed {
                 Line::Empty | Line::Comment { .. } => {}
 
-                //TODO check labels
                 Line::Label { .. } => {
                     self.verify_label(line);
                 }
 
-                //TODO check directives
-                Line::Directive { .. } => {}
+                //TODO make sure directives work as expected
+                Line::Directive { .. } => {
+                    self.verify_directive(line);
+                }
 
                 Line::Instruction { .. } => {
                     self.check_instruction(line);
                 }
-                _ => self.errors.push(SyntaxError {
-                    line: line.clone(),
-                    error: format!("Unknown line: \"{}\"", line.line),
-                }),
+                _ => self.errors.push(SyntaxError::new(
+                    line.clone(),
+                    format!("Unknown line: \"{}\"", line.line),
+                )),
             }
         }
     }
@@ -118,7 +122,6 @@ impl SyntaxChecker {
         match &line.parsed {
             Line::Instruction { name, operands, .. } => {
                 let name = name.as_str();
-
                 match name {
                     "move" | "add" | "sub" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE, line);
@@ -227,6 +230,25 @@ impl SyntaxChecker {
         }
     }
 
+    fn verify_directive(&mut self, line: &ParsedLine) {
+        match &line.parsed {
+            Line::Directive { args } => match &args[..] {
+                [_, _, ..] if args[1].eq(EQU) => {
+                    if args.len() != 3 {
+                        self.errors.push(SyntaxError::new(
+                            line.clone(),
+                            format!("Invalid number of arguments for directive equ"),
+                        ));
+                    }
+                }
+                _ => {
+                    self.errors
+                        .push(SyntaxError::new(line.clone(), format!("Unknown directive")));
+                }
+            },
+            _ => panic!("Line is not a directive"),
+        }
+    }
     fn verify_label(&mut self, line: &ParsedLine) {
         match &line.parsed {
             Line::Label {
@@ -234,61 +256,52 @@ impl SyntaxChecker {
                 name,
             } => {
                 if data.size == Size::Unknown || data.size == Size::Unspecified {
-                    self.errors.push(SyntaxError {
-                        line: line.clone(),
-                        error: format!(
+                    self.errors.push(SyntaxError::new(
+                        line.clone(),
+                        format!(
                             "Unknown or unspecified size for label directive: \"{}\"",
                             name
                         ),
-                    });
+                    ));
                 }
                 if data.args.len() == 0 {
-                    self.errors.push(SyntaxError {
-                        line: line.clone(),
-                        error: format!("No arguments for label directive: \"{}\"", name),
-                    });
+                    self.errors.push(SyntaxError::new(
+                        line.clone(),
+                        format!("No arguments for label directive: \"{}\"", name),
+                    ));
                 }
                 match data.name.as_str() {
                     "dc" => {}
                     "ds" => {
                         if data.args.len() > 1 {
-                            self.errors.push(SyntaxError {
-                                line: line.clone(),
-                                error: format!(
-                                    "Too many arguments for label directive: \"{}\"",
-                                    name
-                                ),
-                            });
+                            self.errors.push(SyntaxError::new(
+                                line.clone(),
+                                format!("Too many arguments for label directive: \"{}\"", name),
+                            ));
                         }
                     }
                     "dcb" => match data.args.len() {
                         1 => {
-                            self.errors.push(SyntaxError {
-                                line: line.clone(),
-                                error: format!(
-                                    "Too few arguments for label directive: \"{}\"",
-                                    name
-                                ),
-                            });
+                            self.errors.push(SyntaxError::new(
+                                line.clone(),
+                                format!("Too few arguments for label directive: \"{}\"", name),
+                            ));
                         }
                         2 => {}
                         _ => {
-                            self.errors.push(SyntaxError {
-                                line: line.clone(),
-                                error: format!(
-                                    "Too many arguments for label directive: \"{}\"",
-                                    name
-                                ),
-                            });
+                            self.errors.push(SyntaxError::new(
+                                line.clone(),
+                                format!("Too many arguments for label directive: \"{}\"", name),
+                            ));
                         }
                     },
-                    _ => self.errors.push(SyntaxError {
-                        line: line.clone(),
-                        error: format!(
+                    _ => self.errors.push(SyntaxError::new(
+                        line.clone(),
+                        format!(
                             "Unknown label directive: \"{}\" at label: \"{}\" ",
                             data.name, name
                         ),
-                    }),
+                    )),
                 }
             }
             Line::Label {
@@ -309,10 +322,10 @@ impl SyntaxChecker {
                 self.verify_arg_rule(first, rule1, line);
                 self.verify_arg_rule(second, rule2, line);
             }
-            _ => self.errors.push(SyntaxError {
-                line: line.clone(),
-                error: format!("Expected two operands, received \"{}\"", args.len()),
-            }),
+            _ => self.errors.push(SyntaxError::new(
+                line.clone(),
+                format!("Expected two operands, received \"{}\"", args.len()),
+            )),
         }
     }
 
@@ -321,10 +334,10 @@ impl SyntaxChecker {
             [first] => {
                 self.verify_arg_rule(first, rule, line);
             }
-            _ => self.errors.push(SyntaxError {
-                line: line.clone(),
-                error: format!("Expected one operand, received \"{}\"", args.len()),
-            }),
+            _ => self.errors.push(SyntaxError::new(
+                line.clone(),
+                format!("Expected one operand, received \"{}\"", args.len()),
+            )),
         }
     }
     fn verify_arg_rule(&mut self, arg: &Operand, rule: Rules, line: &ParsedLine) {
@@ -332,18 +345,18 @@ impl SyntaxChecker {
         match addressing_mode {
             Ok(mode) => {
                 if (mode.bits & rule.bits) != 0 {
-                    self.errors.push(SyntaxError {
-                        line: line.clone(),
-                        error: format!("Invalid addressing mode at: \"{}\"", line.line),
-                    })
+                    self.errors.push(SyntaxError::new(
+                        line.clone(),
+                        format!("Invalid addressing mode at: \"{}\"", line.line),
+                    ));
                 }
             }
             Err(e) => {
                 let error = e.to_string();
-                self.errors.push(SyntaxError {
-                    line: line.clone(),
-                    error: format!("{} at line: \"{}\"", error, line.line),
-                })
+                self.errors.push(SyntaxError::new(
+                    line.clone(),
+                    format!("{} at line: \"{}\"", error, line.line),
+                ));
             }
         }
     }
@@ -352,32 +365,32 @@ impl SyntaxChecker {
             Line::Instruction { size, .. } => match rule {
                 SizeRules::NoSize => {
                     if *size != Size::Unspecified || *size == Size::Unknown {
-                        self.errors.push(SyntaxError {
-                            line: line.clone(),
-                            error: format!(
+                        self.errors.push(SyntaxError::new(
+                            line.clone(),
+                            format!(
                                 "Invalid size at: \"{}\", instruction is not sized",
                                 line.line
                             ),
-                        })
+                        ))
                     }
                 }
                 SizeRules::OnlyLongOrWord => {
                     if *size != Size::Long && *size != Size::Word {
-                        self.errors.push(SyntaxError {
-                            line: line.clone(),
-                            error: format!(
+                        self.errors.push(SyntaxError::new(
+                            line.clone(),
+                            format!(
                                 "Invalid size at: \"{}\", instruction must be long or word",
                                 line.line
                             ),
-                        })
+                        ));
                     }
                 }
                 SizeRules::AnySize => {
                     if *size == Size::Unknown {
-                        self.errors.push(SyntaxError {
-                            line: line.clone(),
-                            error: format!("Unknown size at: \"{}\"", line.line),
-                        })
+                        self.errors.push(SyntaxError::new(
+                            line.clone(),
+                            format!("Unknown size at: \"{}\"", line.line),
+                        ))
                     }
                 }
             },
@@ -385,6 +398,8 @@ impl SyntaxChecker {
         }
     }
     fn get_addressing_mode(&mut self, operand: &Operand) -> Result<AddressingMode, &str> {
+
+        //TODO check if registers are between 0 and 7
         match operand {
             Operand::Register(RegisterType::Data, _) => Ok(AddressingMode::D_REG),
             Operand::Register(RegisterType::Address, _) => Ok(AddressingMode::A_REG),
