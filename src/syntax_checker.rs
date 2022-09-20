@@ -35,9 +35,6 @@ bitflags! {
         const NONE = 0;
         const NO_D_REG = AddressingMode::D_REG.bits;
         const NO_A_REG = AddressingMode::A_REG.bits;
-        const NO_A_REG_INDIRECT_POST_INCREMENT = AddressingMode::INDIRECT_POST_INCREMENT.bits;
-        const NO_A_REG_INDIRECT_PRE_DECREMENT = AddressingMode::INDIRECT_PRE_DECREMENT.bits;
-        const NO_A_REG_INDIRECT_DISPLACEMENT = AddressingMode::INDIRECT_DISPLACEMENT.bits;
         const NO_IMMEDIATE = AddressingMode::IMMEDIATE.bits;
         const NO_LABEL = AddressingMode::LABEL.bits;
         const NO_ADDRESS = AddressingMode::ADDRESS.bits;
@@ -50,6 +47,46 @@ bitflags! {
         const ONLY_D_REG_OR_INDIRECT = !(AddressingMode::D_REG.bits | AddressingMode::INDIRECT.bits);
         const ONLY_D_REG_OR_INDIRECT_OR_ADDRESS = !(AddressingMode::D_REG.bits | AddressingMode::INDIRECT.bits | AddressingMode::ADDRESS.bits);
         const ONLY_ADDRESS_OR_LABEL = !(AddressingMode::ADDRESS.bits | AddressingMode::LABEL.bits);
+    }
+}
+//TODO refactor this
+impl AddressingMode {
+    pub fn get_name(&self) -> String {
+        match *self {
+            AddressingMode::D_REG => "Dn",
+            AddressingMode::A_REG => "An",
+            AddressingMode::INDIRECT => "(An)",
+            AddressingMode::INDIRECT_POST_INCREMENT => "(An)+",
+            AddressingMode::INDIRECT_PRE_DECREMENT => "-(An)",
+            AddressingMode::INDIRECT_DISPLACEMENT => "(Dn, An)",
+            AddressingMode::IMMEDIATE => "Im",
+            AddressingMode::LABEL => "<LABEL>",
+            AddressingMode::ADDRESS => "Ea",
+            _ => "UNKNOWN",
+        }
+        .to_string()
+    }
+}
+impl Rules {
+    pub fn get_valid_addressing_modes(&self) -> String {
+        match *self {
+            Rules::NONE => "Im/Dn/An/(An)/Ea/<LABEL>",
+            Rules::NO_D_REG => "Im/An/(An)/Ea/<LABEL>",
+            Rules::NO_A_REG => "Im/Dn/(An)/Ea/<LABEL>",
+            Rules::NO_IMMEDIATE => "Dn/An/(An)/Ea/<LABEL>",
+            Rules::NO_LABEL => "Im/Dn/An/(An)",
+            Rules::NO_ADDRESS => "Im/Dn/An/(An)",
+            Rules::NO_INDIRECT => "Im/Dn/An/Ea/<LABEL>",
+            Rules::ONLY_REG => "Dn/An",
+            Rules::ONLY_A_REG => "An",
+            Rules::ONLY_D_REG => "Dn",
+            Rules::ONLY_INDIRECT => "(An)",
+            Rules::ONLY_D_REG_OR_INDIRECT => "Dn/(An)",
+            Rules::ONLY_D_REG_OR_INDIRECT_OR_ADDRESS => "Dn/(An)/Ea",
+            Rules::ONLY_ADDRESS_OR_LABEL => "Ea/<LABEL>",
+            _ => "UNKNOWN",
+        }
+        .to_string()
     }
 }
 pub enum SizeRules {
@@ -319,8 +356,8 @@ impl SyntaxChecker {
     ) {
         match &args[..] {
             [first, second] => {
-                self.verify_arg_rule(first, rule1, line);
-                self.verify_arg_rule(second, rule2, line);
+                self.verify_arg_rule(first, rule1, line, 1);
+                self.verify_arg_rule(second, rule2, line, 2);
             }
             _ => self.errors.push(SyntaxError::new(
                 line.clone(),
@@ -332,7 +369,7 @@ impl SyntaxChecker {
     fn verify_one_arg(&mut self, args: &Vec<Operand>, rule: Rules, line: &ParsedLine) {
         match &args[..] {
             [first] => {
-                self.verify_arg_rule(first, rule, line);
+                self.verify_arg_rule(first, rule, line, 1);
             }
             _ => self.errors.push(SyntaxError::new(
                 line.clone(),
@@ -340,14 +377,28 @@ impl SyntaxChecker {
             )),
         }
     }
-    fn verify_arg_rule(&mut self, arg: &Operand, rule: Rules, line: &ParsedLine) {
+    fn verify_arg_rule(
+        &mut self,
+        arg: &Operand,
+        rule: Rules,
+        line: &ParsedLine,
+        arg_position: usize,
+    ) {
+        let arg_position_name = match arg_position {
+            1 => "first",
+            2 => "second",
+            _ => "unknown",
+        };
         let addressing_mode = self.get_addressing_mode(arg);
         match addressing_mode {
             Ok(mode) => {
                 if (mode.bits & rule.bits) != 0 {
                     self.errors.push(SyntaxError::new(
                         line.clone(),
-                        format!("Invalid addressing mode at: \"{}\"", line.line),
+                        format!(
+                            "Incorrect {} operand addressing mode at: \"{}\", received \"{}\", expected \"{}\"",
+                            arg_position_name, line.line, mode.get_name(), rule.get_valid_addressing_modes()
+                        ),
                     ));
                 }
             }
@@ -398,7 +449,6 @@ impl SyntaxChecker {
         }
     }
     fn get_addressing_mode(&mut self, operand: &Operand) -> Result<AddressingMode, &str> {
-
         //TODO check if registers are between 0 and 7
         match operand {
             Operand::Register(RegisterType::Data, _) => Ok(AddressingMode::D_REG),

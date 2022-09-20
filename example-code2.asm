@@ -1,3 +1,2 @@
-ten equ 10
-test2: dc.b 10, 20
-move.w #ten, d0 ;test
+neg #10
+adda d1, d0
