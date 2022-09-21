@@ -94,14 +94,14 @@ pub enum SizeRules {
     AnySize,
     OnlyLongOrWord,
 }
-pub struct SyntaxChecker {
+pub struct SemanticChecker {
     labels: HashMap<String, String>,
     errors: Vec<SyntaxError>,
     lines: Vec<ParsedLine>,
 }
-impl SyntaxChecker {
-    pub fn new(lines: &Vec<ParsedLine>) -> SyntaxChecker {
-        let mut syntax_checker = SyntaxChecker {
+impl SemanticChecker {
+    pub fn new(lines: &Vec<ParsedLine>) -> SemanticChecker {
+        let mut syntax_checker = SemanticChecker {
             errors: Vec::new(),
             lines: Vec::new(),
             labels: HashMap::new(),
@@ -114,7 +114,7 @@ impl SyntaxChecker {
         self.lines = lines.iter().map(|x| x.clone()).collect();
         for line in lines.iter() {
             match &line.parsed {
-                Line::Label { name, .. } => {
+                Line::Label { name, .. } | Line::LabelDirective { name,.. } => {
                     if self.labels.contains_key(name) {
                         self.errors.push(SyntaxError::new(
                             line.clone(),
@@ -136,7 +136,7 @@ impl SyntaxChecker {
                 }
 
                 //TODO make sure directives work as expected
-                Line::Directive { .. } => {
+                Line::LabelDirective {..}=> {
                     self.verify_directive(line);
                 }
 
@@ -288,11 +288,11 @@ impl SyntaxChecker {
     }
     fn verify_label(&mut self, line: &ParsedLine) {
         match &line.parsed {
-            Line::Label {
-                directive: Some(data),
+            Line::LabelDirective {
+                directive,
                 name,
             } => {
-                if data.size == Size::Unknown || data.size == Size::Unspecified {
+                if directive.size == Size::Unknown || directive.size == Size::Unspecified {
                     self.errors.push(SyntaxError::new(
                         line.clone(),
                         format!(
@@ -301,23 +301,23 @@ impl SyntaxChecker {
                         ),
                     ));
                 }
-                if data.args.len() == 0 {
+                if directive.args.len() == 0 {
                     self.errors.push(SyntaxError::new(
                         line.clone(),
                         format!("No arguments for label directive: \"{}\"", name),
                     ));
                 }
-                match data.name.as_str() {
+                match directive.name.as_str() {
                     "dc" => {}
                     "ds" => {
-                        if data.args.len() > 1 {
+                        if directive.args.len() > 1 {
                             self.errors.push(SyntaxError::new(
                                 line.clone(),
                                 format!("Too many arguments for label directive: \"{}\"", name),
                             ));
                         }
                     }
-                    "dcb" => match data.args.len() {
+                    "dcb" => match directive.args.len() {
                         1 => {
                             self.errors.push(SyntaxError::new(
                                 line.clone(),
@@ -336,14 +336,12 @@ impl SyntaxChecker {
                         line.clone(),
                         format!(
                             "Unknown label directive: \"{}\" at label: \"{}\" ",
-                            data.name, name
+                            directive.name, name
                         ),
                     )),
                 }
             }
-            Line::Label {
-                directive: None, ..
-            } => {}
+            Line::Label { .. } => {}
             _ => panic!("Line is not a label"),
         }
     }
@@ -478,8 +476,16 @@ impl SyntaxChecker {
                     _ => Err("Invalid pre indirect value, only address or SP registers allowed")
                 }
             }
-            Operand::Indirect { operand , ..} => {
+            Operand::Indirect { operand , offset, ..} => {
                 let operand = operand.as_ref();
+                match offset.parse::<i32>() {
+                    Ok(num) => {
+                        if num > 1<<15 || num < -(1<<15) {
+                            return Err("Invalid offset, must be between -32768 and 32767");
+                        }
+                    },
+                    Err(_) => return Err("Offset is not a number")
+                }
                 match &operand {
                     Operand::Register(RegisterType::Address, _) => Ok(AddressingMode::INDIRECT),
                     Operand::Register(RegisterType::SP, _) => Ok(AddressingMode::INDIRECT),
@@ -487,7 +493,15 @@ impl SyntaxChecker {
 
                 }
             }
-            Operand::IndirectWithDisplacement { operands, .. } => {
+            Operand::IndirectWithDisplacement { operands, offset,.. } => {
+                match offset.parse::<i32>() {
+                    Ok(num) => {
+                        if num > 1<<7 || num < -(1<<7) {
+                            return Err("Invalid offset, must be between -128 and 128");
+                        }
+                    },
+                    Err(_) => return Err("Offset is not a number")
+                }
                 match operands[..]{
                     [Operand::Register(RegisterType::Data, _), Operand::Register(RegisterType::Address, _)] => Ok(AddressingMode::INDIRECT_DISPLACEMENT),
                     [Operand::Register(RegisterType::Data, _), Operand::Register(RegisterType::SP, _)] => Ok(AddressingMode::INDIRECT_DISPLACEMENT),

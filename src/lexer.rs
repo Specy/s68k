@@ -1,5 +1,5 @@
 //CHECK COMMENT REMOVAL
-use crate::constants::{COMMENT, DIRECTIVES, OPERAND_SEPARATOR, EQU};
+use crate::constants::{COMMENT, DIRECTIVES, EQU, OPERAND_SEPARATOR};
 use regex::Regex;
 use std::collections::HashMap;
 #[derive(Debug, Clone)]
@@ -32,7 +32,10 @@ pub enum Operand {
 pub enum Line {
     Label {
         name: String,
-        directive: Option<LabelDirective>,
+    },
+    LabelDirective {
+        name: String,
+        directive: LabelDirective,
     },
     Directive {
         args: Vec<String>,
@@ -182,7 +185,7 @@ impl AsmRegex {
                         current_arg = String::new();
                     }
                 }
-                ';' => { break }
+                ';' => break,
                 _ => current_arg.push(c),
             }
         }
@@ -219,7 +222,7 @@ impl AsmRegex {
                         last_separator = c;
                     }
                 }
-                ';' => { break }
+                ';' => break,
                 ' ' => {
                     if last_char == ',' {
                         continue;
@@ -348,9 +351,9 @@ impl Lexer {
                                     new_line.replace(equ.name.as_str(), equ.replacement.as_str());
                             }
                         }
-                        match comment.as_str(){
+                        match comment.as_str() {
                             "" => new_line,
-                            _ => format!("{} ;{}", new_line, comment)
+                            _ => format!("{} ;{}", new_line, comment),
                         }
                     }
                     _ => line.to_string(),
@@ -451,15 +454,12 @@ impl Lexer {
                                     size,
                                     args: args[1..].to_vec(),
                                 };
-                                Line::Label {
+                                Line::LabelDirective {
                                     name,
-                                    directive: Some(label_directive),
+                                    directive: label_directive,
                                 }
                             }
-                            _ => Line::Label {
-                                name,
-                                directive: None,
-                            },
+                            _ => Line::Label { name },
                         }
                     }
                     LineKind::Directive => Line::Directive { args },

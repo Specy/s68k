@@ -1,8 +1,8 @@
 mod lexer;
 mod constants;
-mod syntax_checker;
+mod semantic_checker;
 
-use syntax_checker::SyntaxChecker;
+use semantic_checker::SemanticChecker;
 use lexer::Lexer;
 use std::fs;
 fn main() {
@@ -13,8 +13,8 @@ fn main() {
         println!("{:?}", line.parsed);
     }
     let lines = lexer.get_lines();
-    let syntax_checker = SyntaxChecker::new(&lines);
-    let errors = syntax_checker.get_errors();
+    let semantic_checker = SemanticChecker::new(&lines);
+    let errors = semantic_checker.get_errors();
     for error in errors {
         println!("{}", error.get_message());
     }
