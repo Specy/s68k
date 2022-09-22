@@ -114,7 +114,7 @@ impl SemanticChecker {
         self.lines = lines.iter().map(|x| x.clone()).collect();
         for line in lines.iter() {
             match &line.parsed {
-                Line::Label { name, .. } | Line::LabelDirective { name,.. } => {
+                Line::Label { name, .. } | Line::LabelDirective { name, .. } => {
                     if self.labels.contains_key(name) {
                         self.errors.push(SyntaxError::new(
                             line.clone(),
@@ -136,7 +136,7 @@ impl SemanticChecker {
                 }
 
                 //TODO make sure directives work as expected
-                Line::LabelDirective {..}=> {
+                Line::LabelDirective { .. } => {
                     self.verify_directive(line);
                 }
 
@@ -288,10 +288,7 @@ impl SemanticChecker {
     }
     fn verify_label(&mut self, line: &ParsedLine) {
         match &line.parsed {
-            Line::LabelDirective {
-                directive,
-                name,
-            } => {
+            Line::LabelDirective { directive, name } => {
                 if directive.size == Size::Unknown || directive.size == Size::Unspecified {
                     self.errors.push(SyntaxError::new(
                         line.clone(),
@@ -447,11 +444,24 @@ impl SemanticChecker {
         }
     }
     fn get_addressing_mode(&mut self, operand: &Operand) -> Result<AddressingMode, &str> {
-        //TODO check if registers are between 0 and 7
         match operand {
-            Operand::Register(RegisterType::Data, _) => Ok(AddressingMode::D_REG),
-            Operand::Register(RegisterType::Address, _) => Ok(AddressingMode::A_REG),
-            Operand::Register(RegisterType::SP, _) => Ok(AddressingMode::A_REG),
+            Operand::Register(reg_type, reg_name) => {
+                match reg_type{
+                    RegisterType::Data => {
+                        match reg_name[1..].parse::<i8>() {
+                            Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::D_REG),
+                            _ => Err("Invalid data register"),
+                        }
+                    },
+                    RegisterType::Address => {
+                        match reg_name[1..].parse::<i8>() {
+                            Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::A_REG),
+                            _ => Err("Invalid address register"),
+                        }
+                    },
+                    RegisterType::SP => Ok(AddressingMode::A_REG),
+                }
+            },
 
             Operand::Immediate(num) => {
                 if self.is_valid_number(num) {
@@ -459,87 +469,94 @@ impl SemanticChecker {
                 } else {
                     Err("Invalid immediate value")
                 }
-            },
+            }
             Operand::PostIndirect(boxed_arg) => {
-                let operand = boxed_arg.as_ref();
-                match &operand {
-                    Operand::Register(RegisterType::Address, _) => Ok(AddressingMode::INDIRECT_POST_INCREMENT),
-                    Operand::Register(RegisterType::SP, _) => Ok(AddressingMode::INDIRECT_POST_INCREMENT),
-                    _ => Err("Invalid post indirect value, only address or SP registers allowed")
+                match boxed_arg.as_ref() {
+                    Operand::Register(RegisterType::Address | RegisterType::SP, _) => {
+                        Ok(AddressingMode::INDIRECT_POST_INCREMENT)
+                    }
+                    _ => Err("Invalid post indirect value, only address or SP registers allowed"),
                 }
             }
             Operand::PreIndirect(boxed_arg) => {
-                let operand = boxed_arg.as_ref();
-                match &operand {
-                    Operand::Register(RegisterType::Address, _) => Ok(AddressingMode::INDIRECT_PRE_DECREMENT),
-                    Operand::Register(RegisterType::SP, _) => Ok(AddressingMode::INDIRECT_PRE_DECREMENT),
-                    _ => Err("Invalid pre indirect value, only address or SP registers allowed")
+                match boxed_arg.as_ref() {
+                    Operand::Register(RegisterType::Address | RegisterType::SP, _) => {
+                        Ok(AddressingMode::INDIRECT_PRE_DECREMENT)
+                    }
+                    _ => Err("Invalid pre indirect value, only An or SP registers allowed"),
                 }
             }
-            Operand::Indirect { operand , offset, ..} => {
-                let operand = operand.as_ref();
+            Operand::Indirect {
+                operand, offset, ..
+            } => {
                 match offset.parse::<i32>() {
                     Ok(num) => {
-                        if num > 1<<15 || num < -(1<<15) {
-                            return Err("Invalid offset, must be between -32768 and 32767");
+                        if num > 1 << 15 || num < -(1 << 15) {
+                            return Err("Invalid offset, must be between -32768 and 32768");
                         }
-                    },
-                    Err(_) => return Err("Offset is not a number")
+                    }
+                    Err(_) => return Err("Offset is not a valid decimal number"),
                 }
-                match &operand {
+                match operand.as_ref() {
                     Operand::Register(RegisterType::Address, _) => Ok(AddressingMode::INDIRECT),
                     Operand::Register(RegisterType::SP, _) => Ok(AddressingMode::INDIRECT),
-                    _ => Err("Invalid indirect value, only address registers allowed")
-
+                    _ => Err("Invalid indirect value, only address registers allowed"),
                 }
             }
-            Operand::IndirectWithDisplacement { operands, offset,.. } => {
+            Operand::IndirectWithDisplacement {
+                operands, offset, ..
+            } => {
                 match offset.parse::<i32>() {
                     Ok(num) => {
-                        if num > 1<<7 || num < -(1<<7) {
+                        if num > 1 << 7 || num < -(1 << 7) {
                             return Err("Invalid offset, must be between -128 and 128");
                         }
-                    },
-                    Err(_) => return Err("Offset is not a number")
+                    }
+                    Err(_) => return Err("Offset is not a valid decimal number"),
                 }
-                match operands[..]{
-                    [Operand::Register(RegisterType::Data, _), Operand::Register(RegisterType::Address, _)] => Ok(AddressingMode::INDIRECT_DISPLACEMENT),
-                    [Operand::Register(RegisterType::Data, _), Operand::Register(RegisterType::SP, _)] => Ok(AddressingMode::INDIRECT_DISPLACEMENT),
-                    _ => Err("Invalid indirect with displacement value, only data and address registers allowed")
+                match operands[..] {
+                    [Operand::Register(RegisterType::Address, _), Operand::Register(_, _)] => {
+                        Ok(AddressingMode::INDIRECT_DISPLACEMENT)
+                    }
+                    _ => Err(
+                        "Invalid indirect with displacement value, only \"(An, Dn/An)\" allowed",
+                    ),
                 }
             }
-            Operand::Other(_) => Err("Unknown operand"),
             Operand::Label(name) => {
                 if self.labels.contains_key(name) {
                     Ok(AddressingMode::LABEL)
                 } else {
                     Err("Label does not exist")
                 }
+            }
+            Operand::Address(data) => match i32::from_str_radix(&data[1..], 16) {
+                Ok(_) => Ok(AddressingMode::ADDRESS),
+                Err(_) => Err("Invalid hex address"),
             },
-            Operand::Address {..} => Ok(AddressingMode::ADDRESS),
+            Operand::Other(_) => Err("Unknown operand"),
         }
     }
     fn is_valid_number(&self, num: &str) -> bool {
         let chars = num.chars().collect::<Vec<char>>();
+        //TODO could probabl get the radix from the number, then do a single check
         match chars[..] {
-            ['#', '0', 'b'] => {
-                let num = &num[3..];
-                num.chars().all(|c| c == '0' || c == '1')
-            }
-            ['#', '0', 'o'] => {
-                let num = &num[3..];
-                num.chars().all(|c| c >= '0' && c <= '7')
-            }
-            ['#', '$', ..] => {
-                let num = &num[2..];
-                let num = num.chars().collect::<Vec<char>>();
-                num.iter().all(|c| c.is_ascii_hexdigit())
-            }
-            ['#', ..] => {
-                let num = &num[1..].to_string();
-                let num = num.chars().collect::<Vec<char>>();
-                num.iter().all(|c| c.is_ascii_digit())
-            }
+            ['#', '0', 'b'] => match i32::from_str_radix(&num[3..], 2) {
+                Ok(_) => true,
+                Err(_) => false,
+            },
+            ['#', '0', 'o'] => match i32::from_str_radix(&num[3..], 8) {
+                Ok(_) => true,
+                Err(_) => false,
+            },
+            ['#', '$', ..] => match i32::from_str_radix(&num[2..], 16) {
+                Ok(_) => true,
+                Err(_) => false,
+            },
+            ['#', ..] => match i32::from_str_radix(&num[1..], 10) {
+                Ok(_) => true,
+                Err(_) => false,
+            },
             _ => false,
         }
     }

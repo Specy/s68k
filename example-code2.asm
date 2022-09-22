@@ -1,2 +1,1 @@
-neg #10
-adda d1, d0
+adda a5, #10
