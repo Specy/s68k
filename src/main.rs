@@ -1,7 +1,7 @@
 mod lexer;
 mod constants;
 mod semantic_checker;
-
+mod utils;
 use semantic_checker::SemanticChecker;
 use lexer::Lexer;
 use std::fs;

@@ -1,6 +1,7 @@
 use crate::{
     constants::EQU,
     lexer::{Line, Operand, ParsedLine, RegisterType, Size},
+    utils::num_to_signed_base,
 };
 use bitflags::bitflags;
 use std::collections::HashMap;
@@ -394,21 +395,19 @@ impl SemanticChecker {
         };
         match &args[..] {
             [Operand::Immediate(value), ..] => match self.get_immediate_value(value) {
-                Ok(parsed) => {
-                    let bound = (1 as i64) << size_value;
-                    if parsed > bound || parsed < -bound {
-                        self.errors.push(SyntaxError::new(
-                            line.clone(),
-                            format!(
-                                "Immediate value \"{}\" is not a valid {} bits number, received \"{}\"",
-                                value, size_value, parsed
-                            ),
-                        ));
-                    }
-                }
+                Ok(parsed) => match num_to_signed_base(parsed, size_value) {
+                    Ok(_) => {}
+                    Err(_) => self.errors.push(SyntaxError::new(
+                        line.clone(),
+                        format!(
+                            "Immediate value \"{}\" is not a valid {} bits number, received \"{}\"",
+                            value, size_value, parsed
+                        ),
+                    )),
+                },
                 Err(_) => {}
             },
-            _ => println!("Not an immediate"),
+            _ => {}
         }
     }
 
