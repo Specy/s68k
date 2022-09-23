@@ -4,9 +4,11 @@ use crate::{
     utils::num_to_signed_base,
 };
 use bitflags::bitflags;
+use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 #[derive(Debug, Clone)]
 
+#[derive(Serialize, Deserialize)]
 pub struct SyntaxError {
     line: ParsedLine,
     error: String,

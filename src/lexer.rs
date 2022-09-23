@@ -1,8 +1,10 @@
 //CHECK COMMENT REMOVAL
 use crate::constants::{COMMENT, DIRECTIVES, EQU, OPERAND_SEPARATOR};
 use regex::Regex;
+use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 #[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize)]
 pub enum RegisterType {
     Address,
     Data,
@@ -10,6 +12,7 @@ pub enum RegisterType {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize)]
 pub enum Operand {
     Register(RegisterType, String),
     Immediate(String),
@@ -29,6 +32,7 @@ pub enum Operand {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize)]
 pub enum Line {
     Label {
         name: String,
@@ -63,6 +67,7 @@ pub enum OperandKind {
     Address,
 }
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize)]
 pub enum Size {
     Byte = 8,
     Word = 16,
@@ -81,11 +86,13 @@ pub enum LineKind {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize)]
 pub enum SeparatorKind {
     Comma,
     Space,
 }
 #[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize)]
 pub struct LabelDirective {
     pub name: String,
     pub size: Size,
@@ -104,6 +111,7 @@ struct AsmRegex {
     comment_line: Regex,
 }
 #[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize)]
 pub struct ArgSeparated {
     kind: SeparatorKind,
     value: String,
@@ -300,6 +308,7 @@ pub struct EquValue {
     pub replacement: String,
 }
 #[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize)]
 pub struct ParsedLine {
     pub parsed: Line,
     pub line: String,
@@ -415,7 +424,7 @@ impl Lexer {
             OperandKind::Label => Operand::Label(operand),
         }
     }
-    pub fn lex(&mut self, code: String) {
+    pub fn lex(&mut self, code: &String) {
         let lines = code.lines().map(String::from).collect::<Vec<String>>();
         let lines = self.apply_equ(lines);
         self.lines = lines
