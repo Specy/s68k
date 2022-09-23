@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Text website</title>
+    <style>
+      *{
+        box-sizing: border-box;
+      }
+      body, html{
+        margin: 0;
+        padding: 0;
+        font-family: Arial;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        background-color: #131B23;
+      }
+      body{
+        padding: 1rem;
+      }
+      .code{
+        display: flex;
+        flex-direction: column;
+        width: 30rem;
+        height: 20rem;
+      }
+      .code textarea {
+        flex: 1;
+        resize: none;
+
+      }
+      .code textarea, .code button{
+        width: 100%;
+        padding: 0.4rem;
+        border: none;
+        border-radius: 0.4rem;
+        background-color: #F5F5F5;
+      }
+      .code button {
+        margin-top: 0.5rem;
+        padding: 0.6rem;
+        background-color: #2274A5;
+        font-weight: bold;
+        color: #F5F5F5;
+      }
+    </style>
+  </head>
+  <body>
+    <div  class="code">
+      <textarea id="code-text">
+
+      </textarea>
+      <button id="run-button">
+        Run
+      </button>
+    </div>
+
+    <script src="./bootstrap.js"></script>
+  </body>
+</html>

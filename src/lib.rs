@@ -38,6 +38,10 @@ pub struct WASM_S68k{
 impl WASM_S68k{
     #[wasm_bindgen(constructor)]
     pub fn new(code: String) -> WASM_S68k{
+        
+        #[cfg(feature = "console_error_panic_hook")]
+        console_error_panic_hook::set_once();
+
         WASM_S68k{
             s86k: S68k::new(code)
         }

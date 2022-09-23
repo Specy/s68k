@@ -1,18 +1,16 @@
 //CHECK COMMENT REMOVAL
 use crate::constants::{COMMENT, DIRECTIVES, EQU, OPERAND_SEPARATOR};
 use regex::Regex;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RegisterType {
     Address,
     Data,
     SP,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Operand {
     Register(RegisterType, String),
     Immediate(String),
@@ -31,8 +29,7 @@ pub enum Operand {
     Other(String),
 }
 
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Line {
     Label {
         name: String,
@@ -66,8 +63,7 @@ pub enum OperandKind {
     Label,
     Address,
 }
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Size {
     Byte = 8,
     Word = 16,
@@ -85,14 +81,12 @@ pub enum LineKind {
     Unknown,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SeparatorKind {
     Comma,
     Space,
 }
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabelDirective {
     pub name: String,
     pub size: Size,
@@ -110,8 +104,7 @@ struct AsmRegex {
     label_line: Regex,
     comment_line: Regex,
 }
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArgSeparated {
     kind: SeparatorKind,
     value: String,
@@ -307,8 +300,7 @@ pub struct EquValue {
     pub name: String,
     pub replacement: String,
 }
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedLine {
     pub parsed: Line,
     pub line: String,
@@ -368,6 +360,7 @@ impl Lexer {
                     _ => line.to_string(),
                 }
             })
+            .map(|s| s.to_lowercase())
             .collect::<Vec<String>>()
     }
     pub fn parse_operands(&self, operands: Vec<String>) -> Vec<Operand> {
@@ -471,7 +464,9 @@ impl Lexer {
                             _ => Line::Label { name },
                         }
                     }
-                    LineKind::Directive => Line::Directive { args },
+                    LineKind::Directive => Line::Directive {
+                        args: args.iter().filter(|s| !s.is_empty()).map(|s| s.to_string()).collect(),
+                    },
                     LineKind::Empty => Line::Empty,
                     LineKind::Unknown => Line::Unknown,
                 };

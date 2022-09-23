@@ -4,11 +4,9 @@ use crate::{
     utils::num_to_signed_base,
 };
 use bitflags::bitflags;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-#[derive(Debug, Clone)]
-
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyntaxError {
     line: ParsedLine,
     error: String,
@@ -134,15 +132,12 @@ impl SemanticChecker {
             match &line.parsed {
                 Line::Empty | Line::Comment { .. } => {}
 
-                Line::Label { .. } => {
+                Line::LabelDirective { .. } => {
                     self.verify_label(line);
                 }
-
-                //TODO make sure directives work as expected
-                Line::LabelDirective { .. } => {
+                Line::Directive { .. } => {
                     self.verify_directive(line);
                 }
-
                 Line::Instruction { .. } => {
                     self.check_instruction(line);
                 }
@@ -278,11 +273,19 @@ impl SemanticChecker {
     fn verify_directive(&mut self, line: &ParsedLine) {
         match &line.parsed {
             Line::Directive { args } => match &args[..] {
-                [_, _, ..] if args[1].eq(EQU) => {
+                [_, _, ..] if args[1] == EQU => {
                     if args.len() != 3 {
                         self.errors.push(SyntaxError::new(
                             line.clone(),
                             format!("Invalid number of arguments for directive equ"),
+                        ));
+                    }
+                }
+                [_, ..] if args[0] == "org" => {
+                    if args.len() != 2 {
+                        self.errors.push(SyntaxError::new(
+                            line.clone(),
+                            format!("Invalid number of arguments for directive org"),
                         ));
                     }
                 }
@@ -540,13 +543,15 @@ impl SemanticChecker {
             Operand::Indirect {
                 operand, offset, ..
             } => {
-                match offset.parse::<i64>() {
-                    Ok(num) => {
-                        if num > 1 << 15 || num < -(1 << 15) {
-                            return Err("Invalid offset, must be between -32768 and 32768");
+                if offset != "" {
+                    match offset.parse::<i64>() {
+                        Ok(num) => {
+                            if num > 1 << 15 || num < -(1 << 15) {
+                                return Err("Invalid offset, must be between -32768 and 32768");
+                            }
                         }
+                        Err(_) => return Err("Offset is not a valid decimal number"),
                     }
-                    Err(_) => return Err("Offset is not a valid decimal number"),
                 }
                 match operand.as_ref() {
                     Operand::Register(RegisterType::Address, _) => Ok(AddressingMode::INDIRECT),
@@ -604,10 +609,18 @@ impl SemanticChecker {
                 Ok(n) => Ok(n),
                 Err(_) => Err("Invalid hex number"),
             },
-            ['#', ..] => match i64::from_str_radix(&num[1..], 10) {
-                Ok(n) => Ok(n),
-                Err(_) => Err("Invalid decimal number"),
-            },
+            ['#', ..] => {
+                //TODO not sure if this should be checked here
+                let label = &num[1..];
+                if self.labels.contains_key(label) {
+                    Ok(1i64 << 31)
+                } else {
+                    match i64::from_str_radix(&num[1..], 10) {
+                        Ok(n) => Ok(n),
+                        Err(_) => Err("Invalid decimal number"),
+                    }
+                }
+            }
             _ => Err("Invalid immediate value"),
         }
     }

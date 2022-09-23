@@ -1,6 +1,4 @@
-
 use std::fs;
-
 use s68k::S68k;
 fn main() {
     let example_code = fs::read_to_string("example-code2.asm").expect("Unable to read file");
