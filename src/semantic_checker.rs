@@ -157,20 +157,25 @@ impl SemanticChecker {
 
     fn check_instruction(&mut self, line: &ParsedLine) {
         match &line.parsed {
-            Line::Instruction { name, operands, .. } => {
+            Line::Instruction {
+                name,
+                operands,
+                size,
+            } => {
                 let name = name.as_str();
                 match name {
                     "move" | "add" | "sub" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE, line);
                         self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size_if_immediate(operands, line, size, Size::Word);
                     }
                     "adda" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::ONLY_A_REG, line);
                         self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size_if_immediate(operands, line, size, Size::Word);
                     }
 
                     "divs" | "divu" | "muls" | "mulu" => {
-                        //TODO not sure about the rule1
                         self.verify_two_args(operands, Rules::NO_A_REG, Rules::ONLY_D_REG, line);
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
@@ -201,11 +206,12 @@ impl SemanticChecker {
                     "tst" => {
                         self.verify_one_arg(operands, Rules::NO_IMMEDIATE, line);
                         self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size_if_immediate(operands, line, size, Size::Word);
                     }
                     "cmp" => {
-                        //TODO check rule1
-                        self.verify_two_args(operands, Rules::NO_A_REG, Rules::NO_IMMEDIATE, line);
+                        self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE, line);
                         self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size_if_immediate(operands, line, size, Size::Word);
                     }
                     "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi"
                     | "bhs" => {
@@ -218,11 +224,9 @@ impl SemanticChecker {
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
                     "not" => {
-                        //TODO make sure it's only dreg
-                        self.verify_one_arg(operands, Rules::ONLY_REG, line);
+                        self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
                     }
                     "or" | "and" | "eor" => {
-                        //TODO verify both rules
                         self.verify_two_args(
                             operands,
                             Rules::NO_A_REG,
@@ -239,6 +243,7 @@ impl SemanticChecker {
                             Rules::NO_IMMEDIATE | Rules::NO_A_REG,
                             line,
                         );
+                        self.verify_value_bounds_if_immediate(operands, 0, line, 0, 8);
                         self.verify_instruction_size(SizeRules::AnySize, line);
                     }
                     "btst" | "bclr" | "bchg" | "bset" => {
@@ -372,6 +377,64 @@ impl SemanticChecker {
             )),
         }
     }
+    fn verify_size_if_immediate(
+        &mut self,
+        args: &Vec<Operand>,
+        line: &ParsedLine,
+        size: &Size,
+        default: Size,
+    ) {
+        let size_value = match size {
+            Size::Byte | Size::Word | Size::Long => size.clone() as i64,
+            Size::Unspecified => match default {
+                Size::Byte | Size::Word | Size::Long => default as i64,
+                _ => panic!("Invalid default size"),
+            },
+            _ => 0,
+        };
+        match &args[..] {
+            [Operand::Immediate(value), ..] => match self.get_immediate_value(value) {
+                Ok(parsed) => {
+                    let bound = (1 as i64) << size_value;
+                    if parsed > bound || parsed < -bound {
+                        self.errors.push(SyntaxError::new(
+                            line.clone(),
+                            format!(
+                                "Immediate value \"{}\" is not a valid {} bits number, received \"{}\"",
+                                value, size_value, parsed
+                            ),
+                        ));
+                    }
+                }
+                Err(_) => {}
+            },
+            _ => println!("Not an immediate"),
+        }
+    }
+
+    fn verify_value_bounds_if_immediate(
+        &mut self,
+        args: &Vec<Operand>,
+        arg_position: usize,
+        line: &ParsedLine,
+        min: i64,
+        max: i64,
+    ) {
+        match args.get(arg_position) {
+            Some(Operand::Immediate(value)) => match self.get_immediate_value(value.as_str()) {
+                Ok(n) => {
+                    if n < min || n > max {
+                        self.errors.push(SyntaxError::new(
+                                line.clone(),
+                                format!("Immediate value \"{}\" out of range, must be between \"{}\" and \"{}\" ", value, min, max),
+                            ));
+                    }
+                }
+                Err(_) => {}
+            },
+            _ => {}
+        }
+    }
     fn verify_arg_rule(
         &mut self,
         arg: &Operand,
@@ -445,51 +508,38 @@ impl SemanticChecker {
     }
     fn get_addressing_mode(&mut self, operand: &Operand) -> Result<AddressingMode, &str> {
         match operand {
-            Operand::Register(reg_type, reg_name) => {
-                match reg_type{
-                    RegisterType::Data => {
-                        match reg_name[1..].parse::<i8>() {
-                            Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::D_REG),
-                            _ => Err("Invalid data register"),
-                        }
-                    },
-                    RegisterType::Address => {
-                        match reg_name[1..].parse::<i8>() {
-                            Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::A_REG),
-                            _ => Err("Invalid address register"),
-                        }
-                    },
-                    RegisterType::SP => Ok(AddressingMode::A_REG),
-                }
+            Operand::Register(reg_type, reg_name) => match reg_type {
+                RegisterType::Data => match reg_name[1..].parse::<i8>() {
+                    Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::D_REG),
+                    _ => Err("Invalid data register"),
+                },
+                RegisterType::Address => match reg_name[1..].parse::<i8>() {
+                    Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::A_REG),
+                    _ => Err("Invalid address register"),
+                },
+                RegisterType::SP => Ok(AddressingMode::A_REG),
             },
 
-            Operand::Immediate(num) => {
-                if self.is_valid_number(num) {
-                    Ok(AddressingMode::IMMEDIATE)
-                } else {
-                    Err("Invalid immediate value")
+            Operand::Immediate(num) => match self.get_immediate_value(num) {
+                Ok(_) => Ok(AddressingMode::IMMEDIATE),
+                Err(e) => Err(e),
+            },
+            Operand::PostIndirect(boxed_arg) => match boxed_arg.as_ref() {
+                Operand::Register(RegisterType::Address | RegisterType::SP, _) => {
+                    Ok(AddressingMode::INDIRECT_POST_INCREMENT)
                 }
-            }
-            Operand::PostIndirect(boxed_arg) => {
-                match boxed_arg.as_ref() {
-                    Operand::Register(RegisterType::Address | RegisterType::SP, _) => {
-                        Ok(AddressingMode::INDIRECT_POST_INCREMENT)
-                    }
-                    _ => Err("Invalid post indirect value, only address or SP registers allowed"),
+                _ => Err("Invalid post indirect value, only address or SP registers allowed"),
+            },
+            Operand::PreIndirect(boxed_arg) => match boxed_arg.as_ref() {
+                Operand::Register(RegisterType::Address | RegisterType::SP, _) => {
+                    Ok(AddressingMode::INDIRECT_PRE_DECREMENT)
                 }
-            }
-            Operand::PreIndirect(boxed_arg) => {
-                match boxed_arg.as_ref() {
-                    Operand::Register(RegisterType::Address | RegisterType::SP, _) => {
-                        Ok(AddressingMode::INDIRECT_PRE_DECREMENT)
-                    }
-                    _ => Err("Invalid pre indirect value, only An or SP registers allowed"),
-                }
-            }
+                _ => Err("Invalid pre indirect value, only An or SP registers allowed"),
+            },
             Operand::Indirect {
                 operand, offset, ..
             } => {
-                match offset.parse::<i32>() {
+                match offset.parse::<i64>() {
                     Ok(num) => {
                         if num > 1 << 15 || num < -(1 << 15) {
                             return Err("Invalid offset, must be between -32768 and 32768");
@@ -506,7 +556,7 @@ impl SemanticChecker {
             Operand::IndirectWithDisplacement {
                 operands, offset, ..
             } => {
-                match offset.parse::<i32>() {
+                match offset.parse::<i64>() {
                     Ok(num) => {
                         if num > 1 << 7 || num < -(1 << 7) {
                             return Err("Invalid offset, must be between -128 and 128");
@@ -530,34 +580,34 @@ impl SemanticChecker {
                     Err("Label does not exist")
                 }
             }
-            Operand::Address(data) => match i32::from_str_radix(&data[1..], 16) {
+            Operand::Address(data) => match i64::from_str_radix(&data[1..], 16) {
                 Ok(_) => Ok(AddressingMode::ADDRESS),
                 Err(_) => Err("Invalid hex address"),
             },
             Operand::Other(_) => Err("Unknown operand"),
         }
     }
-    fn is_valid_number(&self, num: &str) -> bool {
+    fn get_immediate_value(&self, num: &str) -> Result<i64, &str> {
         let chars = num.chars().collect::<Vec<char>>();
         //TODO could probabl get the radix from the number, then do a single check
         match chars[..] {
-            ['#', '0', 'b'] => match i32::from_str_radix(&num[3..], 2) {
-                Ok(_) => true,
-                Err(_) => false,
+            ['#', '0', 'b'] => match i64::from_str_radix(&num[3..], 2) {
+                Ok(n) => Ok(n),
+                Err(_) => Err("Invalid binary number"),
             },
-            ['#', '0', 'o'] => match i32::from_str_radix(&num[3..], 8) {
-                Ok(_) => true,
-                Err(_) => false,
+            ['#', '0', 'o'] => match i64::from_str_radix(&num[3..], 8) {
+                Ok(n) => Ok(n),
+                Err(_) => Err("Invalid octal number"),
             },
-            ['#', '$', ..] => match i32::from_str_radix(&num[2..], 16) {
-                Ok(_) => true,
-                Err(_) => false,
+            ['#', '$', ..] => match i64::from_str_radix(&num[2..], 16) {
+                Ok(n) => Ok(n),
+                Err(_) => Err("Invalid hex number"),
             },
-            ['#', ..] => match i32::from_str_radix(&num[1..], 10) {
-                Ok(_) => true,
-                Err(_) => false,
+            ['#', ..] => match i64::from_str_radix(&num[1..], 10) {
+                Ok(n) => Ok(n),
+                Err(_) => Err("Invalid decimal number"),
             },
-            _ => false,
+            _ => Err("Invalid immediate value"),
         }
     }
 }

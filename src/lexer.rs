@@ -64,9 +64,9 @@ pub enum OperandKind {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Size {
-    Byte,
-    Word,
-    Long,
+    Byte = 8,
+    Word = 16,
+    Long = 32,
     Unspecified,
     Unknown,
 }
