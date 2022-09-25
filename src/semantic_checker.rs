@@ -5,7 +5,7 @@ use crate::{
 };
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::prelude::*;
 use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[wasm_bindgen]
@@ -25,6 +25,9 @@ impl SemanticError {
 impl SemanticError {
     pub fn wasm_get_message(&self) -> String {
         format!("Error on line {}: {}", self.line.line_index + 1, self.error)
+    }
+    pub fn wasm_get_line(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.line).unwrap()
     }
 }
 

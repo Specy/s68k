@@ -8,17 +8,18 @@ code.value = localStorage.getItem("s68k_code") || ""
 run.addEventListener("click", () => {
     const text = code.value
     const s68k = new S68k(text) 
-    console.log(s68k)
     const errors = s68k.wasm_semantic_check()
     const lines = s68k.wasm_get_lexed_lines()
     console.log(lines)
     console.log(errors) 
     localStorage.setItem("s68k_code", text)
     errorWrapper.innerHTML = ""
-    errors.forEach(e => {
-        const error = document.createElement("div")
-        error.className = "error"
-        error.innerText = e.wasm_get_message()
-        errorWrapper.appendChild(error)
-    })
+    for (let i = 0; i < errors.get_length(); i++) {
+        const errorEl = document.createElement("div")
+        const error = errors.get_error_at_index(i)
+        errorEl.className = "error"
+        errorEl.innerText = error.wasm_get_message()
+        console.log(error.wasm_get_line())
+        errorWrapper.appendChild(errorEl)
+    }
 })
