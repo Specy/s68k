@@ -1,12 +1,12 @@
 use crate::{
     constants::EQU,
-    lexer::{Line, Operand, ParsedLine, RegisterType, Size},
-    utils::num_to_signed_base,
+    lexer::{LexedLine, LexedOperand, ParsedLine, RegisterType, Size},
+    utils::{num_to_signed_base, parse_char_or_num},
 };
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::prelude::*;
 use std::collections::HashMap;
+use wasm_bindgen::prelude::*;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[wasm_bindgen]
 pub struct SemanticError {
@@ -126,7 +126,7 @@ impl SemanticChecker {
         self.lines = lines.iter().map(|x| x.clone()).collect();
         for line in lines.iter() {
             match &line.parsed {
-                Line::Label { name, .. } | Line::LabelDirective { name, .. } => {
+                LexedLine::Label { name, .. } | LexedLine::LabelDirective { name, .. } => {
                     if self.labels.contains_key(name) {
                         self.errors.push(SemanticError::new(
                             line.clone(),
@@ -141,15 +141,15 @@ impl SemanticChecker {
         }
         for line in lines.iter() {
             match &line.parsed {
-                Line::Empty | Line::Comment { .. } => {}
+                LexedLine::Empty | LexedLine::Comment { .. } => {}
 
-                Line::LabelDirective { .. } => {
+                LexedLine::LabelDirective { .. } => {
                     self.verify_label(line);
                 }
-                Line::Directive { .. } => {
+                LexedLine::Directive { .. } => {
                     self.verify_directive(line);
                 }
-                Line::Instruction { .. } => {
+                LexedLine::Instruction { .. } => {
                     self.check_instruction(line);
                 }
                 _ => self.errors.push(SemanticError::new(
@@ -166,7 +166,7 @@ impl SemanticChecker {
 
     fn check_instruction(&mut self, line: &ParsedLine) {
         match &line.parsed {
-            Line::Instruction {
+            LexedLine::Instruction {
                 name,
                 operands,
                 size,
@@ -283,7 +283,7 @@ impl SemanticChecker {
 
     fn verify_directive(&mut self, line: &ParsedLine) {
         match &line.parsed {
-            Line::Directive { args } => match &args[..] {
+            LexedLine::Directive { args } => match &args[..] {
                 [_, _, ..] if args[1] == EQU => {
                     if args.len() != 3 {
                         self.errors.push(SemanticError::new(
@@ -301,8 +301,10 @@ impl SemanticChecker {
                     }
                 }
                 _ => {
-                    self.errors
-                        .push(SemanticError::new(line.clone(), format!("Unknown directive")));
+                    self.errors.push(SemanticError::new(
+                        line.clone(),
+                        format!("Unknown directive"),
+                    ));
                 }
             },
             _ => panic!("Line is not a directive"),
@@ -310,7 +312,7 @@ impl SemanticChecker {
     }
     fn verify_label(&mut self, line: &ParsedLine) {
         match &line.parsed {
-            Line::LabelDirective { directive, name } => {
+            LexedLine::LabelDirective { directive, name } => {
                 if directive.size == Size::Unknown || directive.size == Size::Unspecified {
                     self.errors.push(SemanticError::new(
                         line.clone(),
@@ -320,34 +322,72 @@ impl SemanticChecker {
                         ),
                     ));
                 }
-                if directive.args.len() == 0 {
-                    self.errors.push(SemanticError::new(
-                        line.clone(),
-                        format!("No arguments for label directive: \"{}\"", name),
-                    ));
-                }
                 match directive.name.as_str() {
-                    "dc" => {}
-                    "ds" => {
-                        if directive.args.len() > 1 {
+                    "dc" => match &directive.args[..] {
+                        [] => self.errors.push(SemanticError::new(
+                            line.clone(),
+                            format!("No arguments for directive dc"),
+                        )),
+                        [..] => {
+                            for (i, arg) in directive.args.iter().enumerate() {
+                                match parse_char_or_num(&arg.value) {
+                                    Ok(_) => {}
+                                    Err(_) => self.errors.push(SemanticError::new(
+                                        line.clone(),
+                                        format!("Invalid argument \"{}\"for directive dc at position: {}",arg.value, i + 1),
+                                    )),
+                                }
+                            }
+                        }
+                    },
+                    "ds" => match &directive.args[..] {
+                        [] => self.errors.push(SemanticError::new(
+                            line.clone(),
+                            format!("Missing arguments for label directive: \"{}\", expected 1, got {}", name, directive.args.len()),
+                        )),
+                        [arg] => match arg.value.parse::<u32>() {
+                            Ok(_) => {}
+                            Err(_) => self.errors.push(SemanticError::new(
+                                line.clone(),
+                                format!("Invalid argument for label directive: \"{}\"", name),
+                            )),
+                        },
+                        _ => self.errors.push(SemanticError::new(
+                            line.clone(),
+                            format!("Too many arguments for label directive: \"{}\", expected 1, got {}", name, directive.args.len()),
+                        )),
+                    },
+                    "dcb" => match &directive.args[..] {
+                        [] | [_] => {
                             self.errors.push(SemanticError::new(
                                 line.clone(),
-                                format!("Too many arguments for label directive: \"{}\"", name),
+                                format!("Too few arguments for label directive: \"{}\", expected 2, got {}", name, directive.args.len()),
                             ));
                         }
-                    }
-                    "dcb" => match directive.args.len() {
-                        1 => {
-                            self.errors.push(SemanticError::new(
-                                line.clone(),
-                                format!("Too few arguments for label directive: \"{}\"", name),
-                            ));
+                        [first, second] => {
+                            match first.value.parse::<u32>() {
+                                Ok(_) => {}
+                                Err(_) => {
+                                    self.errors.push(SemanticError::new(
+                                        line.clone(),
+                                        format!("Invalid length argument for dcb label directive: \"{}\"", name),
+                                    ));
+                                }
+                            }
+                            match parse_char_or_num(&second.value) {
+                                Ok(_) => {}
+                                Err(_) => {
+                                    self.errors.push(SemanticError::new(
+                                        line.clone(),
+                                        format!("Invalid default value argument for dcb label directive: \"{}\"", name),
+                                    ));
+                                }
+                            }
                         }
-                        2 => {}
                         _ => {
                             self.errors.push(SemanticError::new(
                                 line.clone(),
-                                format!("Too many arguments for label directive: \"{}\"", name),
+                                format!("Too many arguments for label directive: \"{}\", expected 2, got {}", name, directive.args.len()),
                             ));
                         }
                     },
@@ -360,13 +400,13 @@ impl SemanticChecker {
                     )),
                 }
             }
-            Line::Label { .. } => {}
+            LexedLine::Label { .. } => {}
             _ => panic!("Line is not a label"),
         }
     }
     fn verify_two_args(
         &mut self,
-        args: &Vec<Operand>,
+        args: &Vec<LexedOperand>,
         rule1: Rules,
         rule2: Rules,
         line: &ParsedLine,
@@ -383,7 +423,7 @@ impl SemanticChecker {
         }
     }
 
-    fn verify_one_arg(&mut self, args: &Vec<Operand>, rule: Rules, line: &ParsedLine) {
+    fn verify_one_arg(&mut self, args: &Vec<LexedOperand>, rule: Rules, line: &ParsedLine) {
         match &args[..] {
             [first] => {
                 self.verify_arg_rule(first, rule, line, 1);
@@ -396,7 +436,7 @@ impl SemanticChecker {
     }
     fn verify_size_if_immediate(
         &mut self,
-        args: &Vec<Operand>,
+        args: &Vec<LexedOperand>,
         line: &ParsedLine,
         size: &Size,
         default: Size,
@@ -410,7 +450,7 @@ impl SemanticChecker {
             _ => 0,
         };
         match &args[..] {
-            [Operand::Immediate(value), ..] => match self.get_immediate_value(value) {
+            [LexedOperand::Immediate(value), ..] => match self.get_immediate_value(value) {
                 Ok(parsed) => match num_to_signed_base(parsed, size_value) {
                     Ok(_) => {}
                     Err(_) => self.errors.push(SemanticError::new(
@@ -429,30 +469,32 @@ impl SemanticChecker {
 
     fn verify_value_bounds_if_immediate(
         &mut self,
-        args: &Vec<Operand>,
+        args: &Vec<LexedOperand>,
         arg_position: usize,
         line: &ParsedLine,
         min: i64,
         max: i64,
     ) {
         match args.get(arg_position) {
-            Some(Operand::Immediate(value)) => match self.get_immediate_value(value.as_str()) {
-                Ok(n) => {
-                    if n < min || n > max {
-                        self.errors.push(SemanticError::new(
+            Some(LexedOperand::Immediate(value)) => {
+                match self.get_immediate_value(value.as_str()) {
+                    Ok(n) => {
+                        if n < min || n > max {
+                            self.errors.push(SemanticError::new(
                                 line.clone(),
                                 format!("Immediate value \"{}\" out of range, must be between \"{}\" and \"{}\" ", value, min, max),
                             ));
+                        }
                     }
+                    Err(_) => {}
                 }
-                Err(_) => {}
-            },
+            }
             _ => {}
         }
     }
     fn verify_arg_rule(
         &mut self,
-        arg: &Operand,
+        arg: &LexedOperand,
         rule: Rules,
         line: &ParsedLine,
         arg_position: usize,
@@ -486,7 +528,7 @@ impl SemanticChecker {
     }
     fn verify_instruction_size(&mut self, rule: SizeRules, line: &ParsedLine) {
         match &line.parsed {
-            Line::Instruction { size, .. } => match rule {
+            LexedLine::Instruction { size, .. } => match rule {
                 SizeRules::NoSize => {
                     if *size != Size::Unspecified || *size == Size::Unknown {
                         self.errors.push(SemanticError::new(
@@ -521,9 +563,9 @@ impl SemanticChecker {
             _ => panic!("Line is not an instruction"),
         }
     }
-    fn get_addressing_mode(&mut self, operand: &Operand) -> Result<AddressingMode, &str> {
+    fn get_addressing_mode(&mut self, operand: &LexedOperand) -> Result<AddressingMode, &str> {
         match operand {
-            Operand::Register(reg_type, reg_name) => match reg_type {
+            LexedOperand::Register(reg_type, reg_name) => match reg_type {
                 RegisterType::Data => match reg_name[1..].parse::<i8>() {
                     Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::D_REG),
                     _ => Err("Invalid data register"),
@@ -535,23 +577,23 @@ impl SemanticChecker {
                 RegisterType::SP => Ok(AddressingMode::A_REG),
             },
 
-            Operand::Immediate(num) => match self.get_immediate_value(num) {
+            LexedOperand::Immediate(num) => match self.get_immediate_value(num) {
                 Ok(_) => Ok(AddressingMode::IMMEDIATE),
                 Err(e) => Err(e),
             },
-            Operand::PostIndirect(boxed_arg) => match boxed_arg.as_ref() {
-                Operand::Register(RegisterType::Address | RegisterType::SP, _) => {
+            LexedOperand::PostIndirect(boxed_arg) => match boxed_arg.as_ref() {
+                LexedOperand::Register(RegisterType::Address | RegisterType::SP, _) => {
                     Ok(AddressingMode::INDIRECT_POST_INCREMENT)
                 }
                 _ => Err("Invalid post indirect value, only address or SP registers allowed"),
             },
-            Operand::PreIndirect(boxed_arg) => match boxed_arg.as_ref() {
-                Operand::Register(RegisterType::Address | RegisterType::SP, _) => {
+            LexedOperand::PreIndirect(boxed_arg) => match boxed_arg.as_ref() {
+                LexedOperand::Register(RegisterType::Address | RegisterType::SP, _) => {
                     Ok(AddressingMode::INDIRECT_PRE_DECREMENT)
                 }
                 _ => Err("Invalid pre indirect value, only An or SP registers allowed"),
             },
-            Operand::Indirect {
+            LexedOperand::Indirect {
                 operand, offset, ..
             } => {
                 if offset != "" {
@@ -565,12 +607,14 @@ impl SemanticChecker {
                     }
                 }
                 match operand.as_ref() {
-                    Operand::Register(RegisterType::Address, _) => Ok(AddressingMode::INDIRECT),
-                    Operand::Register(RegisterType::SP, _) => Ok(AddressingMode::INDIRECT),
+                    LexedOperand::Register(RegisterType::Address, _) => {
+                        Ok(AddressingMode::INDIRECT)
+                    }
+                    LexedOperand::Register(RegisterType::SP, _) => Ok(AddressingMode::INDIRECT),
                     _ => Err("Invalid indirect value, only address registers allowed"),
                 }
             }
-            Operand::IndirectWithDisplacement {
+            LexedOperand::IndirectWithDisplacement {
                 operands, offset, ..
             } => {
                 match offset.parse::<i64>() {
@@ -582,7 +626,7 @@ impl SemanticChecker {
                     Err(_) => return Err("Offset is not a valid decimal number"),
                 }
                 match operands[..] {
-                    [Operand::Register(RegisterType::Address, _), Operand::Register(_, _)] => {
+                    [LexedOperand::Register(RegisterType::Address, _), LexedOperand::Register(_, _)] => {
                         Ok(AddressingMode::INDIRECT_DISPLACEMENT)
                     }
                     _ => Err(
@@ -590,18 +634,18 @@ impl SemanticChecker {
                     ),
                 }
             }
-            Operand::Label(name) => {
+            LexedOperand::Label(name) => {
                 if self.labels.contains_key(name) {
                     Ok(AddressingMode::LABEL)
                 } else {
                     Err("Label does not exist")
                 }
             }
-            Operand::Address(data) => match i64::from_str_radix(&data[1..], 16) {
+            LexedOperand::Address(data) => match i64::from_str_radix(&data[1..], 16) {
                 Ok(_) => Ok(AddressingMode::ADDRESS),
                 Err(_) => Err("Invalid hex address"),
             },
-            Operand::Other(_) => Err("Unknown operand"),
+            LexedOperand::Other(_) => Err("Unknown operand"),
         }
     }
     fn get_immediate_value(&self, num: &str) -> Result<i64, &str> {

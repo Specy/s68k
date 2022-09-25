@@ -11,26 +11,26 @@ pub enum RegisterType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Operand {
+pub enum LexedOperand {
     Register(RegisterType, String),
     Immediate(String),
     Indirect {
         offset: String,
-        operand: Box<Operand>,
+        operand: Box<LexedOperand>,
     },
     IndirectWithDisplacement {
         offset: String,
-        operands: Vec<Operand>,
+        operands: Vec<LexedOperand>,
     },
-    PostIndirect(Box<Operand>),
-    PreIndirect(Box<Operand>),
+    PostIndirect(Box<LexedOperand>),
+    PreIndirect(Box<LexedOperand>),
     Address(String),
     Label(String),
     Other(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Line {
+pub enum LexedLine {
     Label {
         name: String,
     },
@@ -43,7 +43,7 @@ pub enum Line {
     },
     Instruction {
         name: String,
-        operands: Vec<Operand>,
+        operands: Vec<LexedOperand>,
         size: Size,
     },
     Comment {
@@ -106,8 +106,8 @@ struct AsmRegex {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArgSeparated {
-    kind: SeparatorKind,
-    value: String,
+    pub kind: SeparatorKind,
+    pub value: String,
 }
 impl AsmRegex {
     pub fn new() -> Self {
@@ -302,7 +302,7 @@ pub struct EquValue {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedLine {
-    pub parsed: Line,
+    pub parsed: LexedLine,
     pub line: String,
     pub line_index: usize,
 }
@@ -363,17 +363,17 @@ impl Lexer {
             .map(|s| s.to_lowercase())
             .collect::<Vec<String>>()
     }
-    pub fn parse_operands(&self, operands: Vec<String>) -> Vec<Operand> {
+    pub fn parse_operands(&self, operands: Vec<String>) -> Vec<LexedOperand> {
         operands
             .iter()
             .take_while(|o| !o.contains(COMMENT))
             .map(|o| self.parse_operand(o))
             .collect()
     }
-    pub fn parse_operand(&self, operand: &String) -> Operand {
+    pub fn parse_operand(&self, operand: &String) -> LexedOperand {
         let operand = operand.to_string();
         match self.regex.get_operand_kind(&operand) {
-            OperandKind::Immediate => Operand::Immediate(operand),
+            OperandKind::Immediate => LexedOperand::Immediate(operand),
             OperandKind::Register => {
                 let register_type = match operand.chars().nth(0).unwrap() {
                     'd' => RegisterType::Data,
@@ -381,7 +381,7 @@ impl Lexer {
                     's' => RegisterType::SP,
                     _ => panic!("Invalid register type '{}'", operand),
                 };
-                Operand::Register(register_type, operand)
+                LexedOperand::Register(register_type, operand)
             }
             OperandKind::IndirectDisplacement | OperandKind::Indirect => {
                 let split = operand.split('(').collect::<Vec<&str>>();
@@ -392,29 +392,29 @@ impl Lexer {
                         let offset = displacement.trim().to_string();
                         let operands = self.parse_operands(args);
                         match &operands[..] {
-                            [operand] => Operand::Indirect {
+                            [operand] => LexedOperand::Indirect {
                                 offset,
                                 operand: Box::new(operand.clone()),
                             },
-                            [_, ..] => Operand::IndirectWithDisplacement { offset, operands },
+                            [_, ..] => LexedOperand::IndirectWithDisplacement { offset, operands },
                             _ => panic!("Invalid indirect operand '{}'", operand),
                         }
                     }
-                    _ => Operand::Other(operand),
+                    _ => LexedOperand::Other(operand),
                 }
             }
-            OperandKind::Address => Operand::Address(operand),
+            OperandKind::Address => LexedOperand::Address(operand),
             OperandKind::PostIndirect => {
                 let parsed_operand = operand.replace("(", "").replace(")+", "");
                 let arg = self.parse_operand(&parsed_operand);
-                Operand::PostIndirect(Box::new(arg))
+                LexedOperand::PostIndirect(Box::new(arg))
             }
             OperandKind::PreIndirect => {
                 let parsed_operand = operand.replace("-(", "").replace(")", "");
                 let arg = self.parse_operand(&parsed_operand);
-                Operand::PreIndirect(Box::new(arg))
+                LexedOperand::PreIndirect(Box::new(arg))
             }
-            OperandKind::Label => Operand::Label(operand),
+            OperandKind::Label => LexedOperand::Label(operand),
         }
     }
     pub fn lex(&mut self, code: &String) {
@@ -433,13 +433,13 @@ impl Lexer {
                             .regex
                             .split_into_operand_args(args[1..].join(" ").as_str());
                         let operands = self.parse_operands(operands);
-                        Line::Instruction {
+                        LexedLine::Instruction {
                             name,
                             size,
                             operands,
                         }
                     }
-                    LineKind::Comment => Line::Comment {
+                    LineKind::Comment => LexedLine::Comment {
                         content: line.to_string(),
                     },
                     LineKind::Label => {
@@ -456,19 +456,19 @@ impl Lexer {
                                     size,
                                     args: args[1..].to_vec(),
                                 };
-                                Line::LabelDirective {
+                                LexedLine::LabelDirective {
                                     name,
                                     directive: label_directive,
                                 }
                             }
-                            _ => Line::Label { name },
+                            _ => LexedLine::Label { name },
                         }
                     }
-                    LineKind::Directive => Line::Directive {
+                    LineKind::Directive => LexedLine::Directive {
                         args: args.iter().filter(|s| !s.is_empty()).map(|s| s.to_string()).collect(),
                     },
-                    LineKind::Empty => Line::Empty,
-                    LineKind::Unknown => Line::Unknown,
+                    LineKind::Empty => LexedLine::Empty,
+                    LineKind::Unknown => LexedLine::Unknown,
                 };
                 ParsedLine {
                     parsed: parsed_line,

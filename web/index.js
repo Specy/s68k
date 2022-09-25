@@ -1,6 +1,5 @@
 import { S68k } from "../pkg/s68k" 
 
-
 const run = document.getElementById("run-button")
 const code = document.getElementById("code-text")
 const errorWrapper = document.getElementById("error-wrapper")
