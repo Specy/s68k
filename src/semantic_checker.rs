@@ -5,17 +5,25 @@ use crate::{
 };
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::wasm_bindgen;
 use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyntaxError {
+#[wasm_bindgen]
+pub struct SemanticError {
     line: ParsedLine,
     error: String,
 }
-impl SyntaxError {
+impl SemanticError {
     pub fn new(line: ParsedLine, error: String) -> Self {
         Self { line, error }
     }
     pub fn get_message(&self) -> String {
+        format!("Error on line {}: {}", self.line.line_index + 1, self.error)
+    }
+}
+#[wasm_bindgen]
+impl SemanticError {
+    pub fn wasm_get_message(&self) -> String {
         format!("Error on line {}: {}", self.line.line_index + 1, self.error)
     }
 }
@@ -97,7 +105,7 @@ pub enum SizeRules {
 }
 pub struct SemanticChecker {
     labels: HashMap<String, String>,
-    errors: Vec<SyntaxError>,
+    errors: Vec<SemanticError>,
     lines: Vec<ParsedLine>,
 }
 impl SemanticChecker {
@@ -117,7 +125,7 @@ impl SemanticChecker {
             match &line.parsed {
                 Line::Label { name, .. } | Line::LabelDirective { name, .. } => {
                     if self.labels.contains_key(name) {
-                        self.errors.push(SyntaxError::new(
+                        self.errors.push(SemanticError::new(
                             line.clone(),
                             format!("Label {} already exists", name),
                         ));
@@ -141,7 +149,7 @@ impl SemanticChecker {
                 Line::Instruction { .. } => {
                     self.check_instruction(line);
                 }
-                _ => self.errors.push(SyntaxError::new(
+                _ => self.errors.push(SemanticError::new(
                     line.clone(),
                     format!("Unknown line: \"{}\"", line.line),
                 )),
@@ -149,7 +157,7 @@ impl SemanticChecker {
         }
     }
 
-    pub fn get_errors(&self) -> Vec<SyntaxError> {
+    pub fn get_errors(&self) -> Vec<SemanticError> {
         self.errors.clone()
     }
 
@@ -257,13 +265,13 @@ impl SemanticChecker {
                         self.verify_one_arg(operands, Rules::ONLY_ADDRESS_OR_LABEL, line);
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
-                    _ => self.errors.push(SyntaxError {
+                    _ => self.errors.push(SemanticError {
                         line: line.clone(),
                         error: format!("Unknown instruction: \"{}\"", name),
                     }),
                 }
             }
-            _ => self.errors.push(SyntaxError {
+            _ => self.errors.push(SemanticError {
                 line: line.clone(),
                 error: format!("Invalid line: \"{}\"", line.line),
             }),
@@ -275,7 +283,7 @@ impl SemanticChecker {
             Line::Directive { args } => match &args[..] {
                 [_, _, ..] if args[1] == EQU => {
                     if args.len() != 3 {
-                        self.errors.push(SyntaxError::new(
+                        self.errors.push(SemanticError::new(
                             line.clone(),
                             format!("Invalid number of arguments for directive equ"),
                         ));
@@ -283,7 +291,7 @@ impl SemanticChecker {
                 }
                 [_, ..] if args[0] == "org" => {
                     if args.len() != 2 {
-                        self.errors.push(SyntaxError::new(
+                        self.errors.push(SemanticError::new(
                             line.clone(),
                             format!("Invalid number of arguments for directive org"),
                         ));
@@ -291,7 +299,7 @@ impl SemanticChecker {
                 }
                 _ => {
                     self.errors
-                        .push(SyntaxError::new(line.clone(), format!("Unknown directive")));
+                        .push(SemanticError::new(line.clone(), format!("Unknown directive")));
                 }
             },
             _ => panic!("Line is not a directive"),
@@ -301,7 +309,7 @@ impl SemanticChecker {
         match &line.parsed {
             Line::LabelDirective { directive, name } => {
                 if directive.size == Size::Unknown || directive.size == Size::Unspecified {
-                    self.errors.push(SyntaxError::new(
+                    self.errors.push(SemanticError::new(
                         line.clone(),
                         format!(
                             "Unknown or unspecified size for label directive: \"{}\"",
@@ -310,7 +318,7 @@ impl SemanticChecker {
                     ));
                 }
                 if directive.args.len() == 0 {
-                    self.errors.push(SyntaxError::new(
+                    self.errors.push(SemanticError::new(
                         line.clone(),
                         format!("No arguments for label directive: \"{}\"", name),
                     ));
@@ -319,7 +327,7 @@ impl SemanticChecker {
                     "dc" => {}
                     "ds" => {
                         if directive.args.len() > 1 {
-                            self.errors.push(SyntaxError::new(
+                            self.errors.push(SemanticError::new(
                                 line.clone(),
                                 format!("Too many arguments for label directive: \"{}\"", name),
                             ));
@@ -327,20 +335,20 @@ impl SemanticChecker {
                     }
                     "dcb" => match directive.args.len() {
                         1 => {
-                            self.errors.push(SyntaxError::new(
+                            self.errors.push(SemanticError::new(
                                 line.clone(),
                                 format!("Too few arguments for label directive: \"{}\"", name),
                             ));
                         }
                         2 => {}
                         _ => {
-                            self.errors.push(SyntaxError::new(
+                            self.errors.push(SemanticError::new(
                                 line.clone(),
                                 format!("Too many arguments for label directive: \"{}\"", name),
                             ));
                         }
                     },
-                    _ => self.errors.push(SyntaxError::new(
+                    _ => self.errors.push(SemanticError::new(
                         line.clone(),
                         format!(
                             "Unknown label directive: \"{}\" at label: \"{}\" ",
@@ -365,7 +373,7 @@ impl SemanticChecker {
                 self.verify_arg_rule(first, rule1, line, 1);
                 self.verify_arg_rule(second, rule2, line, 2);
             }
-            _ => self.errors.push(SyntaxError::new(
+            _ => self.errors.push(SemanticError::new(
                 line.clone(),
                 format!("Expected two operands, received \"{}\"", args.len()),
             )),
@@ -377,7 +385,7 @@ impl SemanticChecker {
             [first] => {
                 self.verify_arg_rule(first, rule, line, 1);
             }
-            _ => self.errors.push(SyntaxError::new(
+            _ => self.errors.push(SemanticError::new(
                 line.clone(),
                 format!("Expected one operand, received \"{}\"", args.len()),
             )),
@@ -402,7 +410,7 @@ impl SemanticChecker {
             [Operand::Immediate(value), ..] => match self.get_immediate_value(value) {
                 Ok(parsed) => match num_to_signed_base(parsed, size_value) {
                     Ok(_) => {}
-                    Err(_) => self.errors.push(SyntaxError::new(
+                    Err(_) => self.errors.push(SemanticError::new(
                         line.clone(),
                         format!(
                             "Immediate value \"{}\" is not a valid {} bits number, received \"{}\"",
@@ -428,7 +436,7 @@ impl SemanticChecker {
             Some(Operand::Immediate(value)) => match self.get_immediate_value(value.as_str()) {
                 Ok(n) => {
                     if n < min || n > max {
-                        self.errors.push(SyntaxError::new(
+                        self.errors.push(SemanticError::new(
                                 line.clone(),
                                 format!("Immediate value \"{}\" out of range, must be between \"{}\" and \"{}\" ", value, min, max),
                             ));
@@ -455,7 +463,7 @@ impl SemanticChecker {
         match addressing_mode {
             Ok(mode) => {
                 if (mode.bits & rule.bits) != 0 {
-                    self.errors.push(SyntaxError::new(
+                    self.errors.push(SemanticError::new(
                         line.clone(),
                         format!(
                             "Incorrect {} operand addressing mode at: \"{}\", received \"{}\", expected \"{}\"",
@@ -466,7 +474,7 @@ impl SemanticChecker {
             }
             Err(e) => {
                 let error = e.to_string();
-                self.errors.push(SyntaxError::new(
+                self.errors.push(SemanticError::new(
                     line.clone(),
                     format!("{} at line: \"{}\"", error, line.line),
                 ));
@@ -478,7 +486,7 @@ impl SemanticChecker {
             Line::Instruction { size, .. } => match rule {
                 SizeRules::NoSize => {
                     if *size != Size::Unspecified || *size == Size::Unknown {
-                        self.errors.push(SyntaxError::new(
+                        self.errors.push(SemanticError::new(
                             line.clone(),
                             format!(
                                 "Invalid size at: \"{}\", instruction is not sized",
@@ -489,7 +497,7 @@ impl SemanticChecker {
                 }
                 SizeRules::OnlyLongOrWord => {
                     if *size != Size::Long && *size != Size::Word {
-                        self.errors.push(SyntaxError::new(
+                        self.errors.push(SemanticError::new(
                             line.clone(),
                             format!(
                                 "Invalid size at: \"{}\", instruction must be long or word",
@@ -500,7 +508,7 @@ impl SemanticChecker {
                 }
                 SizeRules::AnySize => {
                     if *size == Size::Unknown {
-                        self.errors.push(SyntaxError::new(
+                        self.errors.push(SemanticError::new(
                             line.clone(),
                             format!("Unknown size at: \"{}\"", line.line),
                         ))
