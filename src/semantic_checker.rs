@@ -223,7 +223,7 @@ impl SemanticChecker {
                         self.verify_size_if_immediate(operands, line, size, Size::Word);
                     }
                     "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi"
-                    | "bhs" => {
+                    | "bhs" | "bsr" | "bra" => {
                         self.verify_one_arg(operands, Rules::ONLY_ADDRESS_OR_LABEL, line);
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
@@ -264,10 +264,7 @@ impl SemanticChecker {
                         );
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
-                    "bsr" => {
-                        self.verify_one_arg(operands, Rules::ONLY_ADDRESS_OR_LABEL, line);
-                        self.verify_instruction_size(SizeRules::NoSize, line);
-                    }
+
                     _ => self.errors.push(SemanticError {
                         line: line.clone(),
                         error: format!("Unknown instruction: \"{}\"", name),
@@ -323,6 +320,7 @@ impl SemanticChecker {
                     ));
                 }
                 match directive.name.as_str() {
+                    //TODO check if numbers of declaration fit the size
                     "dc" => match &directive.args[..] {
                         [] => self.errors.push(SemanticError::new(
                             line.clone(),

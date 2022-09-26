@@ -24,7 +24,7 @@ The interpreter is split into individual modules that can be used standalone for
 - Disassembler (unlikely)
 
 ## Supported instructions:
-move | add | sub | adda | divs | divu | muls | mulu | swap | clr | exg | neg | ext | tst | cmp | beq | bne | blt | ble | bgt | bge | blo | bls | bhi | bhs | scc | scs | seq | sne | sge | sgt | sle | sls | slt | shi | smi | spl | svc | svs | sf | st | not | or | and | eor | lsl | lsr | asr | asl | rol | ror | btst | bclr | bchg | bset | bsr
+move | add | sub | adda | divs | divu | muls | mulu | swap | clr | exg | neg | ext | tst | cmp | beq | bne | blt | ble | bgt | bge | blo | bls | bhi | bhs | scc | scs | seq | sne | sge | sgt | sle | sls | slt | shi | smi | spl | svc | svs | sf | st | not | or | and | eor | lsl | lsr | asr | asl | rol | ror | btst | bclr | bchg | bset | bsr | bra
 
 directives:
 equ | org
