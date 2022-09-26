@@ -127,7 +127,7 @@ impl AsmRegex {
             indirect_displacement: Regex::new(r"^((.+,)+.+)$").unwrap(),
             post_indirect: Regex::new(r"^\(\S+\)\+$").unwrap(),
             pre_indirect: Regex::new(r"^-\(\S+\)$").unwrap(),
-            address: Regex::new(r"^\$\S*$").unwrap(),
+            address: Regex::new(r"^\$\S+$").unwrap(),
             label_line: Regex::new(r"^\S+:.*").unwrap(),
             comment_line: Regex::new(r"^;.*").unwrap(),
         }

@@ -1,1 +1,1 @@
-test1: dcb.w 'c', 10 
+move.w $1000, d0
