@@ -1,8 +1,10 @@
+use pre_interpreter::PreInterpreter;
 use wasm_bindgen::prelude::*;
 mod constants;
 mod lexer;
 mod pre_interpreter;
 mod semantic_checker;
+mod interpreter;
 mod utils;
 use crate::{
     lexer::{Lexer, ParsedLine},
@@ -26,6 +28,9 @@ impl S68k {
         let semantic_checker = SemanticChecker::new(&self.lines);
         semantic_checker.get_errors()
     }
+    pub fn pre_process(&self) -> PreInterpreter {
+        PreInterpreter::new(&self.lines)
+    }
     pub fn get_lexed_lines(&self) -> Vec<ParsedLine> {
         self.lines.clone()
     }
@@ -48,6 +53,9 @@ impl S68k {
             Ok(v) => Ok(v),
             Err(e) => Err(JsValue::from_str(&e.to_string())),
         }
+    }
+    pub fn wasm_pre_process(&self){
+        self.pre_process();
     }
     pub fn wasm_semantic_check(&self) -> WasmSemanticErrors {
         WasmSemanticErrors::new(self.semantic_check())

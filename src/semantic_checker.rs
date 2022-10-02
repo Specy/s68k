@@ -1,3 +1,5 @@
+//TODO some instructions might accept indirect and also displacement, check that
+
 use crate::{
     constants::EQU,
     lexer::{LexedLine, LexedOperand, ParsedLine, RegisterType, Size},
@@ -244,6 +246,15 @@ impl SemanticChecker {
                         );
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
+                    "jsr" => {
+                        //also accepts displacement
+                        self.verify_one_arg(operands, Rules::ONLY_ADDRESS_OR_LABEL, line);
+                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.errors.push(SemanticError::new(
+                            line.clone(),
+                            format!("JSR instruction not yet implemented"),
+                        ));
+                    }
                     "lsl" | "lsr" | "asr" | "asl" | "rol" | "ror" => {
                         //TODO i think i need to check fo the size of the immediate value
                         self.verify_two_args(
@@ -265,16 +276,16 @@ impl SemanticChecker {
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
 
-                    _ => self.errors.push(SemanticError {
-                        line: line.clone(),
-                        error: format!("Unknown instruction: \"{}\"", name),
-                    }),
+                    _ => self.errors.push(SemanticError::new(
+                        line.clone(),
+                        format!("Unknown instruction: \"{}\"", name),
+                    )),
                 }
             }
-            _ => self.errors.push(SemanticError {
-                line: line.clone(),
-                error: format!("Invalid line: \"{}\"", line.line),
-            }),
+            _ => self.errors.push(SemanticError::new(
+                line.clone(),
+                format!("Invalid line: \"{}\"", line.line),
+            )),
         }
     }
 

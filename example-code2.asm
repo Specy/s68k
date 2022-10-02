@@ -1,1 +1,3 @@
-move.w $1000, d0
+arr: dc.w 10,20,30
+
+move.w arr, d0

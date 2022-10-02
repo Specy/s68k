@@ -1,21 +1,23 @@
 use core::panic;
 use std::collections::HashMap;
-
+use std::fmt;
 use crate::{
     lexer::{LexedLine, LexedOperand, ParsedLine, RegisterType, Size},
-    utils::{parse_char_or_num, num_to_signed_base},
+    utils::parse_char_or_num,
 };
-
+#[derive(Debug)]
 struct Directive {
     pub args: Vec<i32>,
     pub name: String,
     pub size: Size,
 }
+#[derive(Debug)]
 struct Label {
     directive: Option<Directive>,
     name: String,
     address: usize,
 }
+#[derive(Debug)]
 pub enum Operand {
     Register(RegisterType, u8),
     Immediate(i32),
@@ -32,20 +34,31 @@ pub enum Operand {
     Address(u32),
 }
 
-struct PreInterpreter {
+pub struct PreInterpreter {
     labels: HashMap<String, Label>,
     line_addresses: Vec<usize>,
     instructions: Vec<InstructionLine>,
 }
-struct InstructionLine {
+
+pub struct InstructionLine {
     instruction: Instruction,
     address: usize,
+    parsed_line: ParsedLine,
 }
-
-struct Instruction {
+#[derive(Debug)]
+pub struct Instruction {
     opcode: String,
     operands: Vec<Operand>,
     size: Size,
+}
+impl fmt::Debug for InstructionLine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InstructionLine")
+         .field("instruction", &self.instruction)
+         .field("address", &self.address)
+         //.field("parsed_line", &self.parsed_line)
+         .finish()
+    }
 }
 impl PreInterpreter {
     pub fn new(lines: &Vec<ParsedLine>) -> PreInterpreter {
@@ -57,18 +70,35 @@ impl PreInterpreter {
         pre_interpreter.load(lines);
         pre_interpreter
     }
-    pub fn load(&mut self, lines: &Vec<ParsedLine>) {
+
+    pub fn debug_print(&self) {
+        if self.labels.len() == 0 {
+            println!("\n[NO LABELS]\n");
+        } else {
+            println!("\n[LABELS]\n");
+            for (key, value) in &self.labels {
+                println!("{}: {:?}", key, value);
+            }
+        }
+        println!("\n[INSTRUCTIONS]\n");
+        for (i, value) in self.instructions.iter().enumerate() {
+            println!("{}) {:#?}", i, value);
+        }
+    }
+
+    fn load(&mut self, lines: &Vec<ParsedLine>) {
         self.populate_label_map(lines);
         self.parse_instruction_lines(lines);
     }
     fn populate_label_map(&mut self, lines: &Vec<ParsedLine>) {
-        let mut last_address = 1000;
-        for (i, line) in lines.iter().enumerate() {
+        let mut last_address = 4096; //same as ORG $1000
+        for line in lines.iter(){
             self.line_addresses.push(last_address);
             match &line.parsed {
                 LexedLine::Directive { args, .. } => {
                     if args[0] == "org" {
-                        last_address = args[1].parse::<usize>().unwrap();
+                        let hex = args[1].trim_start_matches("$");
+                        last_address = usize::from_str_radix(hex, 16).expect("Invalid hex value");
                     }
                 }
                 LexedLine::Label { name, .. } => {
@@ -117,7 +147,7 @@ impl PreInterpreter {
             last_address += 4;
         }
     }
-    
+
     fn parse_instruction_lines(&mut self, lines: &Vec<ParsedLine>) {
         for (i, line) in lines.iter().enumerate() {
             match &line.parsed {
@@ -136,38 +166,36 @@ impl PreInterpreter {
                     let instuction_line = InstructionLine {
                         instruction,
                         address: self.line_addresses[i],
+                        parsed_line: line.clone(),
                     };
                     self.instructions.push(instuction_line);
                 }
                 _ => {}
             }
         }
-        todo!("think through what to provide in the InstructionLine and Instruction");
     }
 
     fn parse_operand(&mut self, operand: &LexedOperand) -> Operand {
         match operand {
-            LexedOperand::Register(register_type, register_name) => {
-                match register_type {
-                    RegisterType::Address => {
-                        let num:u8 = register_name[1..].parse().expect("failed to parse register");
-                        Operand::Register(RegisterType::Address, num)
-                    }
-                    RegisterType::Data => {
-                        let num:u8 = register_name[1..].parse().expect("failed to parse register");
-                        Operand::Register(RegisterType::Data, num)
-                    }
-                    RegisterType::SP => {
-                        Operand::Register(RegisterType::SP, 0)
-                    }
+            LexedOperand::Register(register_type, register_name) => match register_type {
+                RegisterType::Address => {
+                    let num: u8 = register_name[1..]
+                        .parse()
+                        .expect("failed to parse register");
+                    Operand::Register(RegisterType::Address, num)
                 }
-            }
-            LexedOperand::Address(address) => {
-                match u32::from_str_radix(&address[1..], 16) {
-                    Ok(address) => Operand::Address(address),
-                    Err(_) => panic!("Invalid address"),
+                RegisterType::Data => {
+                    let num: u8 = register_name[1..]
+                        .parse()
+                        .expect("failed to parse register");
+                    Operand::Register(RegisterType::Data, num)
                 }
-            }
+                RegisterType::SP => Operand::Register(RegisterType::SP, 0),
+            },
+            LexedOperand::Address(address) => match u32::from_str_radix(&address[1..], 16) {
+                Ok(address) => Operand::Address(address),
+                Err(_) => panic!("Invalid address"),
+            },
             LexedOperand::Label(label) => {
                 let label = self.labels.get(label).expect("label not found");
                 Operand::Address(label.address as u32)
@@ -198,18 +226,20 @@ impl PreInterpreter {
             LexedOperand::Immediate(num) => {
                 match num.chars().collect::<Vec<char>>()[..] {
                     ['#', '0', 'b'] => {
-                        let value = i32::from_str_radix(&num[3..], 2).expect("Invalid binary number");
+                        let value =
+                            i32::from_str_radix(&num[3..], 2).expect("Invalid binary number");
                         Operand::Immediate(value)
-                    },
+                    }
                     ['#', '0', 'o'] => {
-                        let value = i32::from_str_radix(&num[3..], 8).expect("Invalid octal number");
+                        let value =
+                            i32::from_str_radix(&num[3..], 8).expect("Invalid octal number");
                         Operand::Immediate(value)
-                    },
+                    }
                     ['#', '$', ..] => {
                         let value = i32::from_str_radix(&num[2..], 16).expect("Invalid hex number");
                         Operand::Immediate(value)
-                    },
-                    ['#',..] => {
+                    }
+                    ['#', ..] => {
                         //TODO not sure if this is correct, the label is 64bits while the immediate is 32bits
                         //it's unlikely for the program to exceed 16bits so it SHOULD be fine
                         let value = self.labels.get(&num[1..]).expect("Invalid label");
@@ -221,5 +251,4 @@ impl PreInterpreter {
             _ => panic!("Invalid operand"),
         }
     }
-    
 }

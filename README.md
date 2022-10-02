@@ -17,8 +17,9 @@ The interpreter is split into individual modules that can be used standalone for
 
 - interpreter: *UNDER DEVELOPMENT*, the final piece of the project and probably the most complex, whose job will be to actually execute the code
 
-**WARNING** as this is only an interpreter, it does not load the actual program in memory, i'll try to make jump tables possible in other ways 
+**WARNING** as this is only an interpreter, it does not load the actual program in memory, hence there might be some limitations when doing jumps and branches that use (like jsr instruction)
 ## Might do
+- Add jsr instruction
 - Interrupts for input and output
 - Assembler
 - Disassembler (unlikely)
