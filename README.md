@@ -13,14 +13,14 @@ The interpreter is split into individual modules that can be used standalone for
 
 - Semantic checker: Has the job to verify that the lexed code is valid and reports useful errors so that the programmer can quickly identify and solve the problem. An example of this is the addressing modes, it will see if the addressing mode is not available, and hint which are. The semantic checker does not do further parsing
 
-- pre interpreter: *UNDER DEVELOPMENT*, it will do a final processing of the code, like converting the immediates to actual numbers, registers to indexes, prepares the table of labels, etc... 
+- pre interpreter: it will do a final processing of the code, like converting the immediates to actual numbers, registers to indexes, prepares the table of labels, etc... 
 
 - interpreter: *UNDER DEVELOPMENT*, the final piece of the project and probably the most complex, whose job will be to actually execute the code
 
 **WARNING** as this is only an interpreter, it does not load the actual program in memory, hence there might be some limitations when doing jumps and branches that use (like jsr instruction)
 ## Might do
 - Add jsr instruction
-- Interrupts for input and output
+- Interrupts for input and output (trap instruction)
 - Assembler
 - Disassembler (unlikely)
 

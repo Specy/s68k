@@ -4,15 +4,17 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RegisterType {
+
+
+pub enum LexedRegisterType {
     Address,
     Data,
-    SP,
+    SP
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LexedOperand {
-    Register(RegisterType, String),
+    Register(LexedRegisterType, String),
     Immediate(String),
     Indirect {
         offset: String,
@@ -86,6 +88,20 @@ pub enum SeparatorKind {
     Comma,
     Space,
 }
+/*
+TODO maybe instead of making this LabelDirective, make it as a simple directive, so that the label actually refers to
+the next instruction, and not the directive itself
+for example
+
+data: dc.b 1, 2, 3
+--------------------
+data:
+dc.b 1,2,3
+--------------------
+should be the same thing.
+
+At the same time, the directive should have dc/ds/dcb/etc and not just org 
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabelDirective {
     pub name: String,
@@ -376,9 +392,9 @@ impl Lexer {
             OperandKind::Immediate => LexedOperand::Immediate(operand),
             OperandKind::Register => {
                 let register_type = match operand.chars().nth(0).unwrap() {
-                    'd' => RegisterType::Data,
-                    'a' => RegisterType::Address,
-                    's' => RegisterType::SP,
+                    'd' => LexedRegisterType::Data,
+                    'a' => LexedRegisterType::Address,
+                    's' => LexedRegisterType::SP,
                     _ => panic!("Invalid register type '{}'", operand),
                 };
                 LexedOperand::Register(register_type, operand)

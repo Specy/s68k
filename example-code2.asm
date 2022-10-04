@@ -1,3 +1,4 @@
-arr: dc.w 10,20,30
+arr: ds.b 4
 
-move.w arr, d0
+START:
+    move.w #$1000, d0

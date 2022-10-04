@@ -1,3 +1,4 @@
+use interpreter::Interpreter;
 use pre_interpreter::PreInterpreter;
 use wasm_bindgen::prelude::*;
 mod constants;
@@ -33,6 +34,9 @@ impl S68k {
     }
     pub fn get_lexed_lines(&self) -> Vec<ParsedLine> {
         self.lines.clone()
+    }
+    pub fn create_interpreter(&self, pre_processed_program: PreInterpreter, memory_size: usize) -> Interpreter {
+        Interpreter::new(pre_processed_program, memory_size)
     }
 }
 

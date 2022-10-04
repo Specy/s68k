@@ -17,4 +17,8 @@ fn main() {
     println!("\n----PRE-INTERPRETER----\n");
     let pre_interpreter = s68k.pre_process();
     pre_interpreter.debug_print();
+
+    //16 mb of memory
+    let interpreter = s68k.create_interpreter(pre_interpreter, 0xFFFFFF);
+
 }

@@ -2,7 +2,7 @@
 
 use crate::{
     constants::EQU,
-    lexer::{LexedLine, LexedOperand, ParsedLine, RegisterType, Size},
+    lexer::{LexedLine, LexedOperand, ParsedLine, LexedRegisterType, Size},
     utils::{num_to_signed_base, parse_char_or_num},
 };
 use bitflags::bitflags;
@@ -575,15 +575,15 @@ impl SemanticChecker {
     fn get_addressing_mode(&mut self, operand: &LexedOperand) -> Result<AddressingMode, &str> {
         match operand {
             LexedOperand::Register(reg_type, reg_name) => match reg_type {
-                RegisterType::Data => match reg_name[1..].parse::<i8>() {
+                LexedRegisterType::Data => match reg_name[1..].parse::<i8>() {
                     Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::D_REG),
                     _ => Err("Invalid data register"),
                 },
-                RegisterType::Address => match reg_name[1..].parse::<i8>() {
+                LexedRegisterType::Address => match reg_name[1..].parse::<i8>() {
                     Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::A_REG),
                     _ => Err("Invalid address register"),
                 },
-                RegisterType::SP => Ok(AddressingMode::A_REG),
+                LexedRegisterType::SP => Ok(AddressingMode::A_REG),
             },
 
             LexedOperand::Immediate(num) => match self.get_immediate_value(num) {
@@ -591,13 +591,13 @@ impl SemanticChecker {
                 Err(e) => Err(e),
             },
             LexedOperand::PostIndirect(boxed_arg) => match boxed_arg.as_ref() {
-                LexedOperand::Register(RegisterType::Address | RegisterType::SP, _) => {
+                LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => {
                     Ok(AddressingMode::INDIRECT_POST_INCREMENT)
                 }
                 _ => Err("Invalid post indirect value, only address or SP registers allowed"),
             },
             LexedOperand::PreIndirect(boxed_arg) => match boxed_arg.as_ref() {
-                LexedOperand::Register(RegisterType::Address | RegisterType::SP, _) => {
+                LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => {
                     Ok(AddressingMode::INDIRECT_PRE_DECREMENT)
                 }
                 _ => Err("Invalid pre indirect value, only An or SP registers allowed"),
@@ -616,10 +616,10 @@ impl SemanticChecker {
                     }
                 }
                 match operand.as_ref() {
-                    LexedOperand::Register(RegisterType::Address, _) => {
+                    LexedOperand::Register(LexedRegisterType::Address, _) => {
                         Ok(AddressingMode::INDIRECT)
                     }
-                    LexedOperand::Register(RegisterType::SP, _) => Ok(AddressingMode::INDIRECT),
+                    LexedOperand::Register(LexedRegisterType::SP, _) => Ok(AddressingMode::INDIRECT),
                     _ => Err("Invalid indirect value, only address registers allowed"),
                 }
             }
@@ -635,7 +635,7 @@ impl SemanticChecker {
                     Err(_) => return Err("Offset is not a valid decimal number"),
                 }
                 match operands[..] {
-                    [LexedOperand::Register(RegisterType::Address, _), LexedOperand::Register(_, _)] => {
+                    [LexedOperand::Register(LexedRegisterType::Address, _), LexedOperand::Register(_, _)] => {
                         Ok(AddressingMode::INDIRECT_DISPLACEMENT)
                     }
                     _ => Err(
