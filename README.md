@@ -29,3 +29,9 @@ move | add | sub | adda | divs | divu | muls | mulu | swap | clr | exg | neg | e
 
 directives:
 equ | org
+
+## Todo
+- Add more instructions
+- Add more directives
+- Add END directive
+- Refactor the LabelDirective 

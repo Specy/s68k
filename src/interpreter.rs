@@ -93,6 +93,15 @@ pub struct Cpu {
     a_reg: [Register; 8],
     ccr: Ccr,
 }
+impl Cpu {
+    pub fn new() -> Self {
+        Self {
+            d_reg: [Register::new(); 8],
+            a_reg: [Register::new(); 8],
+            ccr: Ccr { data: 0 },
+        }
+    }
+}
 pub struct Interpreter {
     memory: Memory,
     cpu: Cpu,
@@ -103,20 +112,12 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new(pre_interpreted_program: PreInterpreter, memory_size: usize) -> Self {
-        let program = HashMap::new();
-        for line in pre_interpreted_program.instructions {
-            program.insert(line.address, line);
-        }
         let mut interpreter = Self {
             memory: Memory::new(0),
-            cpu: Cpu {
-                d_reg: [Register::new(); 8],
-                a_reg: [Register::new(); 8],
-                ccr: Ccr { data: 0 },
-            },
+            cpu: Cpu::new(),
             pc: pre_interpreted_program.get_start_address(),
             final_instruction_address: pre_interpreted_program.get_final_instruction_address(),
-            program,
+            program: pre_interpreted_program.get_instructions_map(),
         };
         interpreter.prepare_memory(memory_size, Some(&pre_interpreted_program.labels));
         interpreter
@@ -142,16 +143,34 @@ impl Interpreter {
         }
     }
 
-
     pub fn has_finished(&self) -> bool {
         self.pc >= self.final_instruction_address
     }
 
     pub fn step(&mut self) {
-        let instruction = self.program.get(&self.pc);
+        match self.program.get(&self.pc) {
+            Some(ins) => {
+                self.execute_instruction(ins)
+            }
+            None if self.pc < self.final_instruction_address => {
+                panic!("Invalid instruction address: {}", self.pc);
+            }
+            _ => {}
+        }
         self.pc += 4;
     }
-    
+
+
+    fn execute_instruction(&self, instruction_line: &InstructionLine){
+        let ins = &instruction_line.instruction;
+        //TODO should i make an enum for the operand?
+        match ins.opcode.as_str(){
+            "move" => {
+
+            }
+            _ => panic!("Invalid or unimplemented instruction: {:?}", ins.opcode),
+        }
+    }
     pub fn run(&mut self) {
         while !self.has_finished() {
             self.step();

@@ -22,7 +22,7 @@ pub enum RegisterType {
     Address,
     Data,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Operand {
     Register(RegisterType, u8), //maybe use usize?
     Immediate(i32),
@@ -46,17 +46,18 @@ pub struct PreInterpreter {
     start_address: usize,
     final_instrucion_address: usize,
 }
-
+#[derive(Clone)]
 pub struct InstructionLine {
     pub instruction: Instruction,
     pub address: usize,
     pub parsed_line: ParsedLine,
 }
-#[derive(Debug)]
+//TODO should i split the opcodes into a enum and map them in the pre interpreter? or just make the interpreter use the strings?
+#[derive(Debug, Clone)]
 pub struct Instruction {
-    opcode: String,
-    operands: Vec<Operand>,
-    size: Size,
+    pub opcode: String,
+    pub operands: Vec<Operand>,
+    pub size: Size,
 }
 impl fmt::Debug for InstructionLine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -99,6 +100,9 @@ impl PreInterpreter {
     }
     pub fn get_final_instruction_address(&self) -> usize {
         self.final_instrucion_address
+    }
+    pub fn get_instructions_map(&self) -> HashMap<usize, InstructionLine> {
+        self.instructions.iter().map(|x| (x.address, x.clone())).collect()
     }
     fn load(&mut self, lines: &Vec<ParsedLine>) {
         self.populate_label_map(lines);

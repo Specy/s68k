@@ -19,6 +19,6 @@ fn main() {
     pre_interpreter.debug_print();
 
     //16 mb of memory
-    let interpreter = s68k.create_interpreter(pre_interpreter, 0xFFFFFF);
-
+    let mut interpreter = s68k.create_interpreter(pre_interpreter, 0xFFFFFF);
+    interpreter.run();
 }
