@@ -1,7 +1,7 @@
 use core::panic;
 use std::{collections::HashMap, hash::Hash};
 
-use crate::pre_interpreter::{Directive, InstructionLine, Label, PreInterpreter};
+use crate::{pre_interpreter::{Directive, InstructionLine, Label, PreInterpreter}, instructions::Instruction};
 
 #[derive(Debug)]
 pub struct Memory {
@@ -163,12 +163,12 @@ impl Interpreter {
 
     fn execute_instruction(&self, instruction_line: &InstructionLine){
         let ins = &instruction_line.instruction;
-        //TODO should i make an enum for the operand?
-        match ins.opcode.as_str(){
-            "move" => {
+        match ins{
+            Instruction::RTS => {
 
             }
-            _ => panic!("Invalid or unimplemented instruction: {:?}", ins.opcode),
+            //TODO add better string conversion
+            _ => panic!("Invalid or unimplemented instruction: {:?}", ins.get_instruction_name()),
         }
     }
     pub fn run(&mut self) {

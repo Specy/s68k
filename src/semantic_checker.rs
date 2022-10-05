@@ -2,7 +2,7 @@
 
 use crate::{
     constants::EQU,
-    lexer::{LexedLine, LexedOperand, ParsedLine, LexedRegisterType, Size},
+    lexer::{LexedLine, LexedOperand, ParsedLine, LexedRegisterType, LexedSize},
     utils::{num_to_signed_base, parse_char_or_num},
 };
 use bitflags::bitflags;
@@ -178,12 +178,12 @@ impl SemanticChecker {
                     "move" | "add" | "sub" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE, line);
                         self.verify_instruction_size(SizeRules::AnySize, line);
-                        self.verify_size_if_immediate(operands, line, size, Size::Word);
+                        self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "adda" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::ONLY_A_REG, line);
                         self.verify_instruction_size(SizeRules::AnySize, line);
-                        self.verify_size_if_immediate(operands, line, size, Size::Word);
+                        self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
 
                     "divs" | "divu" | "muls" | "mulu" => {
@@ -217,12 +217,12 @@ impl SemanticChecker {
                     "tst" => {
                         self.verify_one_arg(operands, Rules::NO_IMMEDIATE, line);
                         self.verify_instruction_size(SizeRules::AnySize, line);
-                        self.verify_size_if_immediate(operands, line, size, Size::Word);
+                        self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "cmp" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE, line);
                         self.verify_instruction_size(SizeRules::AnySize, line);
-                        self.verify_size_if_immediate(operands, line, size, Size::Word);
+                        self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi"
                     | "bhs" | "bsr" | "bra" => {
@@ -236,6 +236,7 @@ impl SemanticChecker {
                     }
                     "not" => {
                         self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
+                        self.verify_instruction_size(SizeRules::NoSize, line);
                     }
                     "or" | "and" | "eor" => {
                         self.verify_two_args(
@@ -254,6 +255,15 @@ impl SemanticChecker {
                             line.clone(),
                             format!("JSR instruction not yet implemented"),
                         ));
+                    }
+                    "rts" => {
+                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        if operands.len() != 0 {
+                            self.errors.push(SemanticError::new(
+                                line.clone(),
+                                format!("RTS instruction does not accept operands"),
+                            ));
+                        }
                     }
                     "lsl" | "lsr" | "asr" | "asl" | "rol" | "ror" => {
                         //TODO i think i need to check fo the size of the immediate value
@@ -321,7 +331,7 @@ impl SemanticChecker {
     fn verify_label(&mut self, line: &ParsedLine) {
         match &line.parsed {
             LexedLine::LabelDirective { directive, name } => {
-                if directive.size == Size::Unknown || directive.size == Size::Unspecified {
+                if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified {
                     self.errors.push(SemanticError::new(
                         line.clone(),
                         format!(
@@ -447,13 +457,13 @@ impl SemanticChecker {
         &mut self,
         args: &Vec<LexedOperand>,
         line: &ParsedLine,
-        size: &Size,
-        default: Size,
+        size: &LexedSize,
+        default: LexedSize,
     ) {
         let size_value = match size {
-            Size::Byte | Size::Word | Size::Long => size.clone() as i64,
-            Size::Unspecified => match default {
-                Size::Byte | Size::Word | Size::Long => default as i64,
+            LexedSize::Byte | LexedSize::Word | LexedSize::Long => size.clone() as i64,
+            LexedSize::Unspecified => match default {
+                LexedSize::Byte | LexedSize::Word | LexedSize::Long => default as i64,
                 _ => panic!("Invalid default size"),
             },
             _ => 0,
@@ -539,7 +549,7 @@ impl SemanticChecker {
         match &line.parsed {
             LexedLine::Instruction { size, .. } => match rule {
                 SizeRules::NoSize => {
-                    if *size != Size::Unspecified || *size == Size::Unknown {
+                    if *size != LexedSize::Unspecified || *size == LexedSize::Unknown {
                         self.errors.push(SemanticError::new(
                             line.clone(),
                             format!(
@@ -550,7 +560,7 @@ impl SemanticChecker {
                     }
                 }
                 SizeRules::OnlyLongOrWord => {
-                    if *size != Size::Long && *size != Size::Word {
+                    if *size != LexedSize::Long && *size != LexedSize::Word {
                         self.errors.push(SemanticError::new(
                             line.clone(),
                             format!(
@@ -561,7 +571,7 @@ impl SemanticChecker {
                     }
                 }
                 SizeRules::AnySize => {
-                    if *size == Size::Unknown {
+                    if *size == LexedSize::Unknown {
                         self.errors.push(SemanticError::new(
                             line.clone(),
                             format!("Unknown size at: \"{}\"", line.line),

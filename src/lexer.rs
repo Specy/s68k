@@ -1,17 +1,22 @@
 //CHECK COMMENT REMOVAL
-use crate::constants::{COMMENT, DIRECTIVES, EQU, OPERAND_SEPARATOR};
+use crate::{constants::{COMMENT, DIRECTIVES, EQU, OPERAND_SEPARATOR}};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
-
-
 pub enum LexedRegisterType {
     Address,
     Data,
     SP
 }
-
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LexedSize {
+    Byte,
+    Word,
+    Long,
+    Unspecified,
+    Unknown,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LexedOperand {
     Register(LexedRegisterType, String),
@@ -46,7 +51,7 @@ pub enum LexedLine {
     Instruction {
         name: String,
         operands: Vec<LexedOperand>,
-        size: Size,
+        size: LexedSize,
     },
     Comment {
         content: String,
@@ -65,19 +70,12 @@ pub enum OperandKind {
     Label,
     Address,
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Size {
-    Byte = 8,
-    Word = 16,
-    Long = 32,
-    Unspecified,
-    Unknown,
-}
+
 #[derive(Debug, Clone)]
 pub enum LineKind {
     Label,
     Directive,
-    Instruction { size: Size, name: String },
+    Instruction { size: LexedSize, name: String },
     Comment,
     Empty,
     Unknown,
@@ -105,7 +103,7 @@ At the same time, the directive should have dc/ds/dcb/etc and not just org
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabelDirective {
     pub name: String,
-    pub size: Size,
+    pub size: LexedSize,
     pub args: Vec<ArgSeparated>,
 }
 struct AsmRegex {
@@ -160,21 +158,21 @@ impl AsmRegex {
             _ => OperandKind::Label,
         }
     }
-    pub fn split_at_size(&self, data: &String) -> (String, Size) {
+    pub fn split_at_size(&self, data: &String) -> (String, LexedSize) {
         let data = data.to_string();
         let split = data.split('.').collect::<Vec<&str>>();
         match split[..] {
-            [first] => (first.to_string(), Size::Unspecified),
+            [first] => (first.to_string(), LexedSize::Unspecified),
             [first, size] => {
                 let size = match size {
-                    "b" => Size::Byte,
-                    "w" => Size::Word,
-                    "l" => Size::Long,
-                    _ => Size::Unknown,
+                    "b" => LexedSize::Byte,
+                    "w" => LexedSize::Word,
+                    "l" => LexedSize::Long,
+                    _ => LexedSize::Unknown,
                 };
                 (first.to_string(), size)
             }
-            _ => (data, Size::Unspecified),
+            _ => (data, LexedSize::Unspecified),
         }
     }
     pub fn split_into_operand_args(&self, line: &str) -> Vec<String> {

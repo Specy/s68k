@@ -7,6 +7,7 @@ mod pre_interpreter;
 mod semantic_checker;
 mod interpreter;
 mod utils;
+mod instructions;
 use crate::{
     lexer::{Lexer, ParsedLine},
     semantic_checker::{SemanticChecker, SemanticError},

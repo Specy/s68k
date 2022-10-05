@@ -1,6 +1,6 @@
 use crate::{
-    lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, ParsedLine, Size},
-    utils::parse_char_or_num,
+    lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, ParsedLine, LexedSize},
+    utils::parse_char_or_num, instructions::{Operand, RegisterType, Instruction, Size, ShiftDirection, Condition}, interpreter::Register,
 };
 use core::panic;
 use std::collections::HashMap;
@@ -17,27 +17,6 @@ pub struct Label {
     pub name: String,
     pub address: usize,
 }
-#[derive(Debug, Clone)]
-pub enum RegisterType {
-    Address,
-    Data,
-}
-#[derive(Debug, Clone)]
-pub enum Operand {
-    Register(RegisterType, u8), //maybe use usize?
-    Immediate(i32),
-    Indirect {
-        offset: String,
-        operand: Box<Operand>,
-    },
-    IndirectWithDisplacement {
-        offset: i32,
-        operands: Vec<Operand>,
-    },
-    PostIndirect(Box<Operand>),
-    PreIndirect(Box<Operand>),
-    Address(u32), //maybe use usize?
-}
 
 pub struct PreInterpreter {
     pub labels: HashMap<String, Label>,
@@ -52,13 +31,7 @@ pub struct InstructionLine {
     pub address: usize,
     pub parsed_line: ParsedLine,
 }
-//TODO should i split the opcodes into a enum and map them in the pre interpreter? or just make the interpreter use the strings?
-#[derive(Debug, Clone)]
-pub struct Instruction {
-    pub opcode: String,
-    pub operands: Vec<Operand>,
-    pub size: Size,
-}
+
 impl fmt::Debug for InstructionLine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InstructionLine")
@@ -196,13 +169,8 @@ impl PreInterpreter {
                         .iter()
                         .map(|x| self.parse_operand(x, line))
                         .collect();
-                    let instruction = Instruction {
-                        opcode: name.clone(),
-                        operands: parsed_operands,
-                        size: size.clone(),
-                    };
                     let instuction_line = InstructionLine {
-                        instruction,
+                        instruction: self.parse_instruction(name, parsed_operands, size),
                         address: self.line_addresses[i],
                         parsed_line: line.clone(),
                     };
@@ -213,6 +181,85 @@ impl PreInterpreter {
         }
     }
 
+    fn parse_instruction(&self, name: &String, mut operands: Vec<Operand>, size: &LexedSize) -> Instruction {
+        //TODO add better error logging
+        if operands.len() == 2 {
+            let (op1, op2) = (operands.remove(0), operands.remove(0));
+            match name.as_str() {
+                "move" => Instruction::MOVE(op1, op2, self.get_size(size, Size::Word)),
+                "add" => Instruction::ADD(op1, op2, self.get_size(size, Size::Word)),
+                "sub" => Instruction::SUB(op1, op2, self.get_size(size, Size::Word)),
+                "adda" => Instruction::ADDA(op1, op2, self.get_size(size, Size::Word)),
+                "divs" => Instruction::DIVS(op1, op2),
+                "divu" => Instruction::DIVU(op1, op2),
+                "muls" => Instruction::MULS(op1, op2),
+                "exg" => Instruction::EXG(op1, op2),
+                "cmp" => Instruction::CMP(op1, op2, self.get_size(size, Size::Word)),
+                "or" => Instruction::OR(op1, op2),
+                "and" => Instruction::AND(op1, op2),
+                "eor" => Instruction::EOR(op1, op2),
+                "lsl" => Instruction::LSd(op1, op2, ShiftDirection::Left, self.get_size(size, Size::Word)),
+                "lsr" => Instruction::LSd(op1, op2, ShiftDirection::Right, self.get_size(size, Size::Word)),
+                "asl" => Instruction::LSd(op1, op2, ShiftDirection::Left, self.get_size(size, Size::Word)),
+                "asr" => Instruction::LSd(op1, op2, ShiftDirection::Right, self.get_size(size, Size::Word)),
+                "rol" => Instruction::ROd(op1, op2, ShiftDirection::Left, self.get_size(size, Size::Word)),
+                "ror" => Instruction::ROd(op1, op2, ShiftDirection::Right, self.get_size(size, Size::Word)),
+                "btst" => Instruction::BTST(op1, op2),
+                "bset" => Instruction::BSET(op1, op2),
+                "bclr" => Instruction::BCLR(op1, op2),
+                "bchg" => Instruction::BCHG(op1, op2),
+                _ => panic!("Invalid instruction"),
+            }
+        } else if operands.len() == 1 {
+            let op = operands[0].clone();
+            match name.as_str() {
+                "clr" => Instruction::CLR(op, self.get_size(size, Size::Word)),
+                "neg" => Instruction::NEG(op, self.get_size(size, Size::Word)),
+                "ext" => Instruction::EXT(op, self.get_size(size, Size::Word)),
+                "tst" => Instruction::TST(op, self.get_size(size, Size::Word)),
+                //bcc
+                "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi"
+                | "bhs" | "bsr" | "bra" => {
+                    let condition = Condition::from_string(name);
+                    match condition{
+                        Ok(c) => Instruction::Bcc(op, c),
+                        Err(e) => panic!("{}",e)
+                    }
+                }
+                //scc
+                "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt"
+                | "shi" | "smi" | "spl" | "svc" | "svs" | "sf" | "st" => {
+                    let condition = Condition::from_string(name);
+                    match condition{
+                        Ok(c) => Instruction::Scc(op, c),
+                        Err(e) => panic!("{}", e)
+                    }
+                }
+
+                "not" => Instruction::NOT(op),
+                "jsr" => Instruction::JSR(op),
+                _ => panic!("Invalid instruction"),
+            }
+        } else if operands.len() == 0 {
+            match name.as_str() {
+                "rts" => Instruction::RTS,
+                _ => panic!("Invalid instruction"),
+            }
+        } else {
+            panic!("Invalid instruction");
+        }
+
+    }
+
+    fn get_size(&self, size: &LexedSize, default: Size) -> Size {
+        match size {
+            LexedSize::Byte => Size::Byte,
+            LexedSize::Word => Size::Word,
+            LexedSize::Long => Size::Long,
+            LexedSize::Unspecified => default,
+            _ => panic!("Invalid size"),
+        }
+    }
     fn parse_label_directive(&self, directive: &LabelDirective, line: &ParsedLine) -> Directive {
         let parsed_args: Vec<u32> = directive
             .args
@@ -227,16 +274,15 @@ impl PreInterpreter {
                 ) as u32
             })
             .collect();
-        //TODO finish this
         match directive.name.as_str() {
             "dc" => Directive::DC {
                 data: match &directive.size {
-                    Size::Byte => parsed_args.iter().map(|x| *x as u8).collect(),
-                    Size::Word => parsed_args
+                    LexedSize::Byte => parsed_args.iter().map(|x| *x as u8).collect(),
+                    LexedSize::Word => parsed_args
                         .iter()
                         .flat_map(|x| (*x as u16).to_be_bytes())
                         .collect(),
-                    Size::Long => parsed_args
+                    LexedSize::Long => parsed_args
                         .iter()
                         .flat_map(|x| (*x as u32).to_be_bytes())
                         .collect(),
@@ -244,7 +290,7 @@ impl PreInterpreter {
                 },
             },
             "ds" => {
-                if directive.size == Size::Unknown || directive.size == Size::Unspecified {
+                if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified {
                     panic!("Invalid or missing size for DS directive");
                 }
                 let data = match parsed_args[..] {
@@ -255,21 +301,21 @@ impl PreInterpreter {
             }
             "dcb" => {
                 let data = match directive.size {
-                    Size::Long => match parsed_args[..] {
+                    LexedSize::Long => match parsed_args[..] {
                         [size, default] => vec![default as u32; size as usize]
                             .iter()
                             .flat_map(|x| (*x as u32).to_be_bytes())
                             .collect(),
                         _ => panic!("Invalid number of arguments for DCB directive"),
                     },
-                    Size::Word => match parsed_args[..] {
+                    LexedSize::Word => match parsed_args[..] {
                         [size, default] => vec![default as u16; size as usize]
                             .iter()
                             .flat_map(|x| (*x as u16).to_be_bytes())
                             .collect(),
                         _ => panic!("Invalid number of arguments for DCB directive"),
                     },
-                    Size::Byte => match parsed_args[..] {
+                    LexedSize::Byte => match parsed_args[..] {
                         [size, default] => vec![default as u8; size as usize],
                         _ => panic!("Invalid number of arguments for DCB directive"),
                     },
