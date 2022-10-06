@@ -1,5 +1,5 @@
 //CHECK COMMENT REMOVAL
-use crate::{constants::{COMMENT, DIRECTIVES, EQU, OPERAND_SEPARATOR}};
+use crate::constants::{COMMENT, DIRECTIVES, EQU, OPERAND_SEPARATOR};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 pub enum LexedRegisterType {
     Address,
     Data,
-    SP
+    SP,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LexedSize {
@@ -23,7 +23,7 @@ impl LexedSize {
             LexedSize::Byte => 1,
             LexedSize::Word => 2,
             LexedSize::Long => 4,
-            _ => 0
+            _ => 0,
         }
     }
     pub fn to_bits(&self) -> u8 {
@@ -112,7 +112,7 @@ dc.b 1,2,3
 --------------------
 should be the same thing.
 
-At the same time, the directive should have dc/ds/dcb/etc and not just org 
+At the same time, the directive should have dc/ds/dcb/etc and not just org
 */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabelDirective {
@@ -493,7 +493,11 @@ impl Lexer {
                         }
                     }
                     LineKind::Directive => LexedLine::Directive {
-                        args: args.iter().filter(|s| !s.is_empty()).map(|s| s.to_string()).collect(),
+                        args: args
+                            .iter()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                            .collect(),
                     },
                     LineKind::Empty => LexedLine::Empty,
                     LineKind::Unknown => LexedLine::Unknown,

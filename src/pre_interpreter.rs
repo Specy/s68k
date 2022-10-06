@@ -1,6 +1,10 @@
 use crate::{
-    lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, ParsedLine, LexedSize},
-    utils::parse_char_or_num, instructions::{Operand, RegisterType, Instruction, Size, ShiftDirection, Condition, RegisterOperand}, interpreter::Register,
+    instructions::{
+        Condition, Instruction, Operand, RegisterOperand, RegisterType, ShiftDirection, Size,
+    },
+    interpreter::Register,
+    lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
+    utils::parse_char_or_num,
 };
 use core::panic;
 use std::collections::HashMap;
@@ -75,7 +79,10 @@ impl PreInterpreter {
         self.final_instrucion_address
     }
     pub fn get_instructions_map(&self) -> HashMap<usize, InstructionLine> {
-        self.instructions.iter().map(|x| (x.address, x.clone())).collect()
+        self.instructions
+            .iter()
+            .map(|x| (x.address, x.clone()))
+            .collect()
     }
     fn load(&mut self, lines: &Vec<ParsedLine>) {
         self.populate_label_map(lines);
@@ -181,7 +188,12 @@ impl PreInterpreter {
         }
     }
 
-    fn parse_instruction(&self, name: &String, mut operands: Vec<Operand>, size: &LexedSize) -> Instruction {
+    fn parse_instruction(
+        &self,
+        name: &String,
+        mut operands: Vec<Operand>,
+        size: &LexedSize,
+    ) -> Instruction {
         //TODO add better error logging
         if operands.len() == 2 {
             let (op1, op2) = (operands.remove(0), operands.remove(0));
@@ -189,9 +201,11 @@ impl PreInterpreter {
                 "move" => Instruction::MOVE(op1, op2, self.get_size(size, Size::Word)),
                 "add" => Instruction::ADD(op1, op2, self.get_size(size, Size::Word)),
                 "sub" => Instruction::SUB(op1, op2, self.get_size(size, Size::Word)),
-                "adda" => {
-                    Instruction::ADDA(op1, self.extract_register(op2).unwrap(), self.get_size(size, Size::Word))
-                },
+                "adda" => Instruction::ADDA(
+                    op1,
+                    self.extract_register(op2).unwrap(),
+                    self.get_size(size, Size::Word),
+                ),
                 "divs" => Instruction::DIVS(op1, self.extract_register(op2).unwrap()),
                 "divu" => Instruction::DIVU(op1, self.extract_register(op2).unwrap()),
                 "muls" => Instruction::MULS(op1, self.extract_register(op2).unwrap()),
@@ -200,12 +214,42 @@ impl PreInterpreter {
                 "or" => Instruction::OR(op1, op2),
                 "and" => Instruction::AND(op1, op2),
                 "eor" => Instruction::EOR(op1, op2),
-                "lsl" => Instruction::LSd(op1, op2, ShiftDirection::Left, self.get_size(size, Size::Word)),
-                "lsr" => Instruction::LSd(op1, op2, ShiftDirection::Right, self.get_size(size, Size::Word)),
-                "asl" => Instruction::LSd(op1, op2, ShiftDirection::Left, self.get_size(size, Size::Word)),
-                "asr" => Instruction::LSd(op1, op2, ShiftDirection::Right, self.get_size(size, Size::Word)),
-                "rol" => Instruction::ROd(op1, op2, ShiftDirection::Left, self.get_size(size, Size::Word)),
-                "ror" => Instruction::ROd(op1, op2, ShiftDirection::Right, self.get_size(size, Size::Word)),
+                "lsl" => Instruction::LSd(
+                    op1,
+                    op2,
+                    ShiftDirection::Left,
+                    self.get_size(size, Size::Word),
+                ),
+                "lsr" => Instruction::LSd(
+                    op1,
+                    op2,
+                    ShiftDirection::Right,
+                    self.get_size(size, Size::Word),
+                ),
+                "asl" => Instruction::LSd(
+                    op1,
+                    op2,
+                    ShiftDirection::Left,
+                    self.get_size(size, Size::Word),
+                ),
+                "asr" => Instruction::LSd(
+                    op1,
+                    op2,
+                    ShiftDirection::Right,
+                    self.get_size(size, Size::Word),
+                ),
+                "rol" => Instruction::ROd(
+                    op1,
+                    op2,
+                    ShiftDirection::Left,
+                    self.get_size(size, Size::Word),
+                ),
+                "ror" => Instruction::ROd(
+                    op1,
+                    op2,
+                    ShiftDirection::Right,
+                    self.get_size(size, Size::Word),
+                ),
                 "btst" => Instruction::BTST(op1, op2),
                 "bset" => Instruction::BSET(op1, op2),
                 "bclr" => Instruction::BCLR(op1, op2),
@@ -217,24 +261,27 @@ impl PreInterpreter {
             match name.as_str() {
                 "clr" => Instruction::CLR(op, self.get_size(size, Size::Word)),
                 "neg" => Instruction::NEG(op, self.get_size(size, Size::Word)),
-                "ext" => Instruction::EXT(self.extract_register(op).unwrap(), self.get_size(size, Size::Word)),
+                "ext" => Instruction::EXT(
+                    self.extract_register(op).unwrap(),
+                    self.get_size(size, Size::Word),
+                ),
                 "tst" => Instruction::TST(op, self.get_size(size, Size::Word)),
                 //bcc
-                "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi"
-                | "bhs" | "bsr" | "bra" => {
+                "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs"
+                | "bsr" | "bra" => {
                     let condition = Condition::from_string(name);
-                    match condition{
+                    match condition {
                         Ok(c) => Instruction::Bcc(op, c),
-                        Err(e) => panic!("{}",e)
+                        Err(e) => panic!("{}", e),
                     }
                 }
                 //scc
-                "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt"
-                | "shi" | "smi" | "spl" | "svc" | "svs" | "sf" | "st" => {
+                "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt" | "shi"
+                | "smi" | "spl" | "svc" | "svs" | "sf" | "st" => {
                     let condition = Condition::from_string(name);
-                    match condition{
+                    match condition {
                         Ok(c) => Instruction::Scc(op, c),
-                        Err(e) => panic!("{}", e)
+                        Err(e) => panic!("{}", e),
                     }
                 }
 
@@ -250,7 +297,6 @@ impl PreInterpreter {
         } else {
             panic!("Invalid instruction");
         }
-
     }
 
     fn get_size(&self, size: &LexedSize, default: Size) -> Size {
@@ -292,7 +338,8 @@ impl PreInterpreter {
                 },
             },
             "ds" => {
-                if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified {
+                if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified
+                {
                     panic!("Invalid or missing size for DS directive");
                 }
                 let data = match parsed_args[..] {
@@ -329,10 +376,10 @@ impl PreInterpreter {
         }
     }
 
-    pub fn extract_register(&self, operand: Operand) -> Result<RegisterOperand, &str>{
-        match operand{
+    pub fn extract_register(&self, operand: Operand) -> Result<RegisterOperand, &str> {
+        match operand {
             Operand::Register(reg) => Ok(reg),
-            _ => Err("Operand is not a register")
+            _ => Err("Operand is not a register"),
         }
     }
     fn parse_operand(&mut self, operand: &LexedOperand, line: &ParsedLine) -> Operand {
@@ -363,10 +410,15 @@ impl PreInterpreter {
             LexedOperand::Indirect { offset, operand } => {
                 let parsed_operand = self.parse_operand(operand, line);
                 let parsed_operand = self.extract_register(parsed_operand).unwrap();
-                Operand::Indirect {
-                    offset: offset.clone().parse().expect(
+                let offset = if offset == "" {
+                    0
+                } else {
+                    offset.parse().expect(
                         format!("Invalid numerical offset at line {}", line.line_index).as_str(),
-                    ),
+                    )
+                };
+                Operand::Indirect {
+                    offset,
                     operand: parsed_operand,
                 }
             }
@@ -379,10 +431,15 @@ impl PreInterpreter {
                         self.extract_register(parsed).unwrap()
                     })
                     .collect();
-                Operand::IndirectWithDisplacement {
-                    offset: offset.clone().parse().expect(
+                let offset = if offset == "" {
+                    0
+                } else {
+                    offset.parse().expect(
                         format!("Invalid numerical offset at line {}", line.line_index).as_str(),
-                    ),
+                    )
+                };
+                Operand::IndirectWithDisplacement {
+                    offset,
                     operands: parsed_operands,
                 }
             }
@@ -396,32 +453,28 @@ impl PreInterpreter {
                 let parsed_operand = self.extract_register(parsed_operand).unwrap();
                 Operand::PreIndirect(parsed_operand)
             }
-            LexedOperand::Immediate(num) => {
-                match num.chars().collect::<Vec<char>>()[..] {
-                    ['#', '0', 'b'] => {
-                        let value =
-                            i32::from_str_radix(&num[3..], 2).expect("Invalid binary number");
-                        Operand::Immediate(value as u32)
-                    }
-                    ['#', '0', 'o'] => {
-                        let value =
-                            i32::from_str_radix(&num[3..], 8).expect("Invalid octal number");
-                        Operand::Immediate(value as u32)
-                    }
-                    ['#', '$', ..] => {
-                        let value = i32::from_str_radix(&num[2..], 16).expect("Invalid hex number");
-                        Operand::Immediate(value as u32)
-                    }
-                    ['#', ..] => {
-                        let value = match self.labels.get(&num[1..]) {
-                            Some(label) => label.address as i32,
-                            None => num[1..].parse().expect("Invalid number"),
-                        };
-                        Operand::Immediate(value as u32)
-                    }
-                    _ => panic!("Invalid immediate value"),
+            LexedOperand::Immediate(num) => match num.chars().collect::<Vec<char>>()[..] {
+                ['#', '0', 'b'] => {
+                    let value = i32::from_str_radix(&num[3..], 2).expect("Invalid binary number");
+                    Operand::Immediate(value as u32)
                 }
-            }
+                ['#', '0', 'o'] => {
+                    let value = i32::from_str_radix(&num[3..], 8).expect("Invalid octal number");
+                    Operand::Immediate(value as u32)
+                }
+                ['#', '$', ..] => {
+                    let value = i32::from_str_radix(&num[2..], 16).expect("Invalid hex number");
+                    Operand::Immediate(value as u32)
+                }
+                ['#', ..] => {
+                    let value = match self.labels.get(&num[1..]) {
+                        Some(label) => label.address as i32,
+                        None => num[1..].parse().expect("Invalid number"),
+                    };
+                    Operand::Immediate(value as u32)
+                }
+                _ => panic!("Invalid immediate value"),
+            },
             _ => panic!("Invalid operand"),
         }
     }

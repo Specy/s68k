@@ -5,30 +5,26 @@ pub enum RegisterType {
     Data,
 }
 #[derive(Debug, Clone)]
-pub enum Size{
+pub enum Size {
     Byte,
     Word,
     Long,
 }
-impl Size{
-    pub fn to_bits(&self) -> usize{
-        match self{
-            Size::Byte => 8,
-            Size::Word => 16,
-            Size::Long => 32,
-        }
-    }
-    pub fn to_bytes(&self) -> usize{
-        match self{
+impl Size {
+    pub fn to_bytes(&self) -> usize {
+        match self {
             Size::Byte => 1,
             Size::Word => 2,
             Size::Long => 4,
         }
     }
+    pub fn to_bits(&self) -> usize {
+        self.to_bytes() * 8
+    }
 }
 
 #[derive(Debug, Clone)]
-pub enum RegisterOperand{
+pub enum RegisterOperand {
     Address(u8),
     Data(u8),
 }
@@ -72,10 +68,10 @@ pub enum Condition {
     GreaterThan,
     LessThanOrEqual,
 }
-impl Condition{
-    pub fn from_string(s: &str) -> Result<Condition, String>{
+impl Condition {
+    pub fn from_string(s: &str) -> Result<Condition, String> {
         let s = s.to_lowercase();
-        match s.as_str(){
+        match s.as_str() {
             "t" => Ok(Condition::True),
             "f" => Ok(Condition::False),
             "hi" => Ok(Condition::High),
@@ -102,7 +98,7 @@ pub enum ShiftDirection {
     Left,
 }
 #[derive(Clone, Debug)]
-pub enum Instruction{
+pub enum Instruction {
     MOVE(Operand, Operand, Size),
     ADD(Operand, Operand, Size),
     SUB(Operand, Operand, Size),
@@ -125,9 +121,9 @@ pub enum Instruction{
     AND(Operand, Operand),
     EOR(Operand, Operand),
     JSR(Operand),
-    ASd(Operand, Operand,ShiftDirection, Size),
-    ROd(Operand, Operand,ShiftDirection, Size),
-    LSd(Operand, Operand,ShiftDirection, Size),
+    ASd(Operand, Operand, ShiftDirection, Size),
+    ROd(Operand, Operand, ShiftDirection, Size),
+    LSd(Operand, Operand, ShiftDirection, Size),
     BTST(Operand, Operand),
     BCLR(Operand, Operand),
     BSET(Operand, Operand),
@@ -136,7 +132,7 @@ pub enum Instruction{
 }
 
 impl Instruction {
-    pub fn get_instruction_name(&self) -> String{
+    pub fn get_instruction_name(&self) -> String {
         let string = format!("{:?}", self);
         let mut string = string.split("(");
         string.next().unwrap().to_string()

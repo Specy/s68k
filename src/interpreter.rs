@@ -2,7 +2,7 @@ use core::panic;
 use std::{collections::HashMap, hash::Hash};
 
 use crate::{
-    instructions::{Instruction, Size, Operand, RegisterType, RegisterOperand},
+    instructions::{Instruction, Operand, RegisterOperand, RegisterType, Size},
     pre_interpreter::{Directive, InstructionLine, Label, PreInterpreter},
 };
 
@@ -266,7 +266,7 @@ impl Interpreter {
     fn execute_instruction(&mut self, instruction_line: &InstructionLine) {
         let ins = &instruction_line.instruction;
         match ins {
-            Instruction::MOVE(source,dest , size) => {
+            Instruction::MOVE(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size);
                 self.store_operand_value(dest, source_value, size);
             }
@@ -281,7 +281,9 @@ impl Interpreter {
             ),
         }
     }
+    #[rustfmt::skip]
     pub fn debug_status(&self) {
+        println!("\n-----INTERPRETER DEBUG-----\n");
         println!("PC: {:#010X} ({})", self.pc, self.pc);
         println!("D0: {:#010X} ({})", self.cpu.d_reg[0].get_long(), self.cpu.d_reg[0].get_long());
         println!("D1: {:#010X} ({})", self.cpu.d_reg[1].get_long(), self.cpu.d_reg[1].get_long());
@@ -309,31 +311,28 @@ impl Interpreter {
     pub fn set_register_value(&mut self, register: &RegisterOperand, value: u32, size: &Size) {
         match register {
             RegisterOperand::Address(num) => self.cpu.a_reg[*num as usize].store_size(size, value),
-            
-            RegisterOperand::Data(num) => self.cpu.d_reg[*num as usize].store_size(size, value)
+
+            RegisterOperand::Data(num) => self.cpu.d_reg[*num as usize].store_size(size, value),
         }
     }
-    pub fn get_operand_value(&mut self, op: &Operand, size: &Size) -> u32{
-        match op{
+    pub fn get_operand_value(&mut self, op: &Operand, size: &Size) -> u32 {
+        match op {
             Operand::Immediate(v) => *v,
             Operand::Register(op) => self.get_register_value(&op, size),
-            Operand::Address(address) => {
-                self.memory.read_size(*address, size)
-            }
+            Operand::Address(address) => self.memory.read_size(*address, size),
             Operand::Indirect { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
                 self.memory.read_size(address as usize, size)
             }
             Operand::PreIndirect(op) => {
-
                 let address = self.get_register_value(&op, &Size::Long) as usize - size.to_bytes();
                 self.set_register_value(&op, address as u32, &Size::Long);
                 self.memory.read_size(address, size)
             }
             Operand::PostIndirect(op) => {
                 let address = self.get_register_value(&op, &Size::Long) as usize;
-                self.set_register_value(&op,address as u32 + size.to_bytes() as u32, &Size::Long);
+                self.set_register_value(&op, address as u32 + size.to_bytes() as u32, &Size::Long);
                 self.memory.read_size(address, size)
             }
             Operand::IndirectWithDisplacement { offset, operands } => {
@@ -341,13 +340,11 @@ impl Interpreter {
             }
         }
     }
-    pub fn store_operand_value(&mut self, op: &Operand, value: u32, size: &Size){
-        match op{
+    pub fn store_operand_value(&mut self, op: &Operand, value: u32, size: &Size) {
+        match op {
             Operand::Immediate(_) => panic!("Cannot store value to immediate operand"),
             Operand::Register(op) => self.set_register_value(&op, value, size),
-            Operand::Address(address) => {
-                self.memory.write_size(*address, size, value)
-            }
+            Operand::Address(address) => self.memory.write_size(*address, size, value),
             Operand::Indirect { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
@@ -362,7 +359,7 @@ impl Interpreter {
             Operand::PostIndirect(op) => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&op, &Size::Long) as usize;
-                self.set_register_value(&op,address as u32 + size.to_bytes() as u32, &Size::Long);
+                self.set_register_value(&op, address as u32 + size.to_bytes() as u32, &Size::Long);
                 self.memory.write_size(address, size, value)
             }
             Operand::IndirectWithDisplacement { offset, operands } => {
