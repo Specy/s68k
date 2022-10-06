@@ -27,23 +27,27 @@ impl Size{
     }
 }
 
-
+#[derive(Debug, Clone)]
+pub enum RegisterOperand{
+    Address(u8),
+    Data(u8),
+}
 
 #[derive(Debug, Clone)]
 pub enum Operand {
-    Register(RegisterType, u8), //maybe use usize?
-    Immediate(i32),
+    Register(RegisterOperand), //maybe use usize?
+    Immediate(u32),
     Indirect {
-        offset: String,
-        operand: Box<Operand>,
+        offset: i32,
+        operand: RegisterOperand,
     },
     IndirectWithDisplacement {
         offset: i32,
-        operands: Vec<Operand>,
+        operands: Vec<RegisterOperand>,
     },
-    PostIndirect(Box<Operand>),
-    PreIndirect(Box<Operand>),
-    Address(u32), //maybe use usize?
+    PostIndirect(RegisterOperand),
+    PreIndirect(RegisterOperand),
+    Address(usize),
 }
 /*
 Thanks to:  https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/instructions.rs
@@ -102,16 +106,16 @@ pub enum Instruction{
     MOVE(Operand, Operand, Size),
     ADD(Operand, Operand, Size),
     SUB(Operand, Operand, Size),
-    ADDA(Operand, Operand, Size),
-    DIVS(Operand, Operand),
-    DIVU(Operand, Operand),
-    MULS(Operand, Operand),
-    MULU(Operand, Operand),
-    SWAP(Operand),
+    ADDA(Operand, RegisterOperand, Size),
+    DIVS(Operand, RegisterOperand),
+    DIVU(Operand, RegisterOperand),
+    MULS(Operand, RegisterOperand),
+    MULU(Operand, RegisterOperand),
+    SWAP(RegisterOperand),
     CLR(Operand, Size),
-    EXG(Operand, Operand),
+    EXG(RegisterOperand, Operand),
     NEG(Operand, Size),
-    EXT(Operand, Size),
+    EXT(RegisterOperand, Size),
     TST(Operand, Size),
     CMP(Operand, Operand, Size),
     Bcc(Operand, Condition),
@@ -134,7 +138,7 @@ pub enum Instruction{
 impl Instruction {
     pub fn get_instruction_name(&self) -> String{
         let string = format!("{:?}", self);
-        let string = string.split("(").collect::<Vec<&str>>();
-        string[0].to_string()
+        let mut string = string.split("(");
+        string.next().unwrap().to_string()
     }
 }

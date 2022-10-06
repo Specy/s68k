@@ -1,6 +1,6 @@
 use crate::{
     lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, ParsedLine, LexedSize},
-    utils::parse_char_or_num, instructions::{Operand, RegisterType, Instruction, Size, ShiftDirection, Condition}, interpreter::Register,
+    utils::parse_char_or_num, instructions::{Operand, RegisterType, Instruction, Size, ShiftDirection, Condition, RegisterOperand}, interpreter::Register,
 };
 use core::panic;
 use std::collections::HashMap;
@@ -189,11 +189,13 @@ impl PreInterpreter {
                 "move" => Instruction::MOVE(op1, op2, self.get_size(size, Size::Word)),
                 "add" => Instruction::ADD(op1, op2, self.get_size(size, Size::Word)),
                 "sub" => Instruction::SUB(op1, op2, self.get_size(size, Size::Word)),
-                "adda" => Instruction::ADDA(op1, op2, self.get_size(size, Size::Word)),
-                "divs" => Instruction::DIVS(op1, op2),
-                "divu" => Instruction::DIVU(op1, op2),
-                "muls" => Instruction::MULS(op1, op2),
-                "exg" => Instruction::EXG(op1, op2),
+                "adda" => {
+                    Instruction::ADDA(op1, self.extract_register(op2).unwrap(), self.get_size(size, Size::Word))
+                },
+                "divs" => Instruction::DIVS(op1, self.extract_register(op2).unwrap()),
+                "divu" => Instruction::DIVU(op1, self.extract_register(op2).unwrap()),
+                "muls" => Instruction::MULS(op1, self.extract_register(op2).unwrap()),
+                "exg" => Instruction::EXG(self.extract_register(op1).unwrap(), op2),
                 "cmp" => Instruction::CMP(op1, op2, self.get_size(size, Size::Word)),
                 "or" => Instruction::OR(op1, op2),
                 "and" => Instruction::AND(op1, op2),
@@ -215,7 +217,7 @@ impl PreInterpreter {
             match name.as_str() {
                 "clr" => Instruction::CLR(op, self.get_size(size, Size::Word)),
                 "neg" => Instruction::NEG(op, self.get_size(size, Size::Word)),
-                "ext" => Instruction::EXT(op, self.get_size(size, Size::Word)),
+                "ext" => Instruction::EXT(self.extract_register(op).unwrap(), self.get_size(size, Size::Word)),
                 "tst" => Instruction::TST(op, self.get_size(size, Size::Word)),
                 //bcc
                 "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi"
@@ -326,6 +328,13 @@ impl PreInterpreter {
             _ => panic!("Invalid directive"),
         }
     }
+
+    pub fn extract_register(&self, operand: Operand) -> Result<RegisterOperand, &str>{
+        match operand{
+            Operand::Register(reg) => Ok(reg),
+            _ => Err("Operand is not a register")
+        }
+    }
     fn parse_operand(&mut self, operand: &LexedOperand, line: &ParsedLine) -> Operand {
         match operand {
             LexedOperand::Register(register_type, register_name) => match register_type {
@@ -333,35 +342,42 @@ impl PreInterpreter {
                     let num: u8 = register_name[1..]
                         .parse()
                         .expect("Failed to parse register");
-                    Operand::Register(RegisterType::Address, num)
+                    Operand::Register(RegisterOperand::Address(num))
                 }
                 LexedRegisterType::Data => {
                     let num: u8 = register_name[1..]
                         .parse()
                         .expect("Failed to parse register");
-                    Operand::Register(RegisterType::Data, num)
+                    Operand::Register(RegisterOperand::Data(num))
                 }
-                LexedRegisterType::SP => Operand::Register(RegisterType::Address, 7),
+                LexedRegisterType::SP => Operand::Register(RegisterOperand::Address(7)),
             },
-            LexedOperand::Address(address) => match u32::from_str_radix(&address[1..], 16) {
+            LexedOperand::Address(address) => match usize::from_str_radix(&address[1..], 16) {
                 Ok(address) => Operand::Address(address),
                 Err(_) => panic!("Invalid address"),
             },
             LexedOperand::Label(label) => {
                 let label = self.labels.get(label).expect("label not found");
-                Operand::Address(label.address as u32)
+                Operand::Address(label.address)
             }
             LexedOperand::Indirect { offset, operand } => {
                 let parsed_operand = self.parse_operand(operand, line);
+                let parsed_operand = self.extract_register(parsed_operand).unwrap();
                 Operand::Indirect {
-                    offset: offset.clone(),
-                    operand: Box::new(parsed_operand),
+                    offset: offset.clone().parse().expect(
+                        format!("Invalid numerical offset at line {}", line.line_index).as_str(),
+                    ),
+                    operand: parsed_operand,
                 }
             }
             LexedOperand::IndirectWithDisplacement { offset, operands } => {
-                let parsed_operands: Vec<Operand> = operands
+                //TODO not sure how the indirect with displacement works
+                let parsed_operands: Vec<RegisterOperand> = operands
                     .iter()
-                    .map(|x| self.parse_operand(x, line))
+                    .map(|x| {
+                        let parsed = self.parse_operand(x, line);
+                        self.extract_register(parsed).unwrap()
+                    })
                     .collect();
                 Operand::IndirectWithDisplacement {
                     offset: offset.clone().parse().expect(
@@ -372,33 +388,33 @@ impl PreInterpreter {
             }
             LexedOperand::PostIndirect(operand) => {
                 let parsed_operand = self.parse_operand(operand, line);
-                Operand::PostIndirect(Box::new(parsed_operand))
+                let parsed_operand = self.extract_register(parsed_operand).unwrap();
+                Operand::PostIndirect(parsed_operand)
             }
             LexedOperand::PreIndirect(operand) => {
                 let parsed_operand = self.parse_operand(operand, line);
-                Operand::PreIndirect(Box::new(parsed_operand))
+                let parsed_operand = self.extract_register(parsed_operand).unwrap();
+                Operand::PreIndirect(parsed_operand)
             }
             LexedOperand::Immediate(num) => {
                 match num.chars().collect::<Vec<char>>()[..] {
                     ['#', '0', 'b'] => {
                         let value =
                             i32::from_str_radix(&num[3..], 2).expect("Invalid binary number");
-                        Operand::Immediate(value)
+                        Operand::Immediate(value as u32)
                     }
                     ['#', '0', 'o'] => {
                         let value =
                             i32::from_str_radix(&num[3..], 8).expect("Invalid octal number");
-                        Operand::Immediate(value)
+                        Operand::Immediate(value as u32)
                     }
                     ['#', '$', ..] => {
                         let value = i32::from_str_radix(&num[2..], 16).expect("Invalid hex number");
-                        Operand::Immediate(value)
+                        Operand::Immediate(value as u32)
                     }
                     ['#', ..] => {
-                        //TODO not sure if this is correct, the label is 64bits while the immediate is 32bits
-                        //it's unlikely for the program to exceed 16bits so it SHOULD be fine
                         let value = self.labels.get(&num[1..]).expect("Invalid label");
-                        Operand::Immediate(value.address as i32)
+                        Operand::Immediate(value.address as u32)
                     }
                     _ => panic!("Invalid immediate value"),
                 }
