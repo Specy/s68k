@@ -2,7 +2,7 @@
 
 use crate::{
     constants::EQU,
-    lexer::{LexedLine, LexedOperand, ParsedLine, LexedRegisterType, LexedSize},
+    lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     utils::{num_to_signed_base, parse_char_or_num},
 };
 use bitflags::bitflags;
@@ -145,7 +145,7 @@ impl SemanticChecker {
             match &line.parsed {
                 LexedLine::Empty | LexedLine::Comment { .. } => {}
 
-                LexedLine::LabelDirective { .. } => {
+                LexedLine::LabelDirective { .. } | LexedLine::Label { .. } => {
                     self.verify_label(line);
                 }
                 LexedLine::Directive { .. } => {
@@ -331,7 +331,8 @@ impl SemanticChecker {
     fn verify_label(&mut self, line: &ParsedLine) {
         match &line.parsed {
             LexedLine::LabelDirective { directive, name } => {
-                if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified {
+                if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified
+                {
                     self.errors.push(SemanticError::new(
                         line.clone(),
                         format!(
@@ -461,9 +462,10 @@ impl SemanticChecker {
         default: LexedSize,
     ) {
         let size_value = match size {
-            LexedSize::Byte | LexedSize::Word | LexedSize::Long => size.clone() as i64,
+            //TODO do i really have to use i64?
+            LexedSize::Byte | LexedSize::Word | LexedSize::Long => size.to_bits() as i64,
             LexedSize::Unspecified => match default {
-                LexedSize::Byte | LexedSize::Word | LexedSize::Long => default as i64,
+                LexedSize::Byte | LexedSize::Word | LexedSize::Long => default.to_bits() as i64,
                 _ => panic!("Invalid default size"),
             },
             _ => 0,
@@ -629,7 +631,9 @@ impl SemanticChecker {
                     LexedOperand::Register(LexedRegisterType::Address, _) => {
                         Ok(AddressingMode::INDIRECT)
                     }
-                    LexedOperand::Register(LexedRegisterType::SP, _) => Ok(AddressingMode::INDIRECT),
+                    LexedOperand::Register(LexedRegisterType::SP, _) => {
+                        Ok(AddressingMode::INDIRECT)
+                    }
                     _ => Err("Invalid indirect value, only address registers allowed"),
                 }
             }

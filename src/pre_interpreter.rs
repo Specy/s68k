@@ -413,8 +413,11 @@ impl PreInterpreter {
                         Operand::Immediate(value as u32)
                     }
                     ['#', ..] => {
-                        let value = self.labels.get(&num[1..]).expect("Invalid label");
-                        Operand::Immediate(value.address as u32)
+                        let value = match self.labels.get(&num[1..]) {
+                            Some(label) => label.address as i32,
+                            None => num[1..].parse().expect("Invalid number"),
+                        };
+                        Operand::Immediate(value as u32)
                     }
                     _ => panic!("Invalid immediate value"),
                 }

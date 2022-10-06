@@ -21,4 +21,5 @@ fn main() {
     //16 mb of memory
     let mut interpreter = s68k.create_interpreter(pre_interpreter, 0xFFFFFF);
     interpreter.run();
+    interpreter.debug_status();
 }

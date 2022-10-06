@@ -17,6 +17,20 @@ pub enum LexedSize {
     Unspecified,
     Unknown,
 }
+impl LexedSize {
+    pub fn to_bytes(&self) -> u8 {
+        match self {
+            LexedSize::Byte => 1,
+            LexedSize::Word => 2,
+            LexedSize::Long => 4,
+            _ => 0
+        }
+    }
+    pub fn to_bits(&self) -> u8 {
+        self.to_bytes() * 8
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LexedOperand {
     Register(LexedRegisterType, String),
