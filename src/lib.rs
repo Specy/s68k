@@ -64,11 +64,18 @@ impl S68k {
             Err(e) => Err(JsValue::from_str(&e.to_string())),
         }
     }
-    pub fn wasm_pre_process(&self) {
-        self.pre_process();
+    pub fn wasm_pre_process(&self) -> PreInterpreter{
+        self.pre_process()
     }
     pub fn wasm_semantic_check(&self) -> WasmSemanticErrors {
         WasmSemanticErrors::new(self.semantic_check())
+    }
+    pub fn wasm_create_interpreter(
+        &self,
+        pre_processed_program: PreInterpreter,
+        memory_size: usize,
+    ) -> Interpreter {
+        self.create_interpreter(pre_processed_program, memory_size)
     }
 }
 

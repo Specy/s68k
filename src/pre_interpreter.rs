@@ -1,3 +1,6 @@
+use serde::Serialize;
+use wasm_bindgen::prelude::wasm_bindgen;
+
 use crate::{
     instructions::{
         Condition, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
@@ -20,15 +23,15 @@ pub struct Label {
     pub name: String,
     pub address: usize,
 }
-
+#[wasm_bindgen]
 pub struct PreInterpreter {
-    pub labels: HashMap<String, Label>,
+    labels: HashMap<String, Label>,
     line_addresses: Vec<usize>,
-    pub instructions: Vec<InstructionLine>,
+    instructions: Vec<InstructionLine>,
     start_address: usize,
     final_instrucion_address: usize,
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct InstructionLine {
     pub instruction: Instruction,
     pub address: usize,
@@ -83,6 +86,9 @@ impl PreInterpreter {
             .iter()
             .map(|x| (x.address, x.clone()))
             .collect()
+    }
+    pub fn get_labels_map(&self) -> &HashMap<String, Label> {
+        &self.labels
     }
     fn load(&mut self, lines: &[ParsedLine]) {
         self.parse_instruction_lines(lines);

@@ -4,24 +4,26 @@
 */
 
 use crate::{
-    instructions::{
-        Condition, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
-    },
+    instructions::{Condition, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size},
     math::*,
     pre_interpreter::{Directive, InstructionLine, Label, PreInterpreter},
 };
 use bitflags::bitflags;
 use core::panic;
+use serde::Serialize;
 use std::{collections::HashMap, hash::Hash};
+use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
 #[derive(Debug)]
+#[wasm_bindgen]
 pub struct Memory {
     data: Vec<u8>,
     pub sp: usize,
 }
 
 bitflags! {
-    struct Flags: u16 {
+    #[wasm_bindgen]
+    pub struct Flags: u16 {
         const Carry    = 1<<1;
         const Overflow = 1<<2;
         const Zero     = 1<<3;
@@ -29,6 +31,7 @@ bitflags! {
         const Extend   = 1<<5;
     }
 }
+#[wasm_bindgen]
 impl Flags {
     pub fn new() -> Self {
         Flags::empty()
@@ -179,10 +182,22 @@ impl Memory {
         }
     }
 }
+#[wasm_bindgen]
+impl Memory {
+    pub fn wasm_read_bytes(&self, address: usize, size: usize) -> Vec<u8> {
+        match self.read_bytes(address, size) {
+            Ok(bytes) => bytes.to_vec(),
+            Err(_) => vec![],
+        }
+    }
+}
+
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy)]
 pub struct Register {
     data: u32,
 }
+
 impl Register {
     pub fn new() -> Self {
         Self { data: 0 }
@@ -196,6 +211,7 @@ impl Register {
     pub fn store_byte(&mut self, data: u8) {
         self.data = (self.data & 0xFFFFFF00) | u32::from(data);
     }
+
     pub fn get_long(&self) -> u32 {
         self.data
     }
@@ -223,6 +239,20 @@ impl Register {
         self.data = 0;
     }
 }
+#[wasm_bindgen]
+impl Register {
+    pub fn wasm_get_long(&self) -> u32 {
+        self.get_long()
+    }
+    pub fn wasm_get_word(&self) -> u16 {
+        self.get_word()
+    }
+    pub fn wasm_get_byte(&self) -> u8 {
+        self.get_byte()
+    }
+}
+#[derive(Debug, Clone, Copy)]
+#[wasm_bindgen]
 pub struct Cpu {
     d_reg: [Register; 8],
     a_reg: [Register; 8],
@@ -237,7 +267,27 @@ impl Cpu {
         }
     }
 }
-#[derive(Debug)]
+
+#[wasm_bindgen]
+impl Cpu {
+    pub fn wasm_get_d_reg(&self, index: usize) -> Register {
+        self.d_reg[index]
+    }
+    pub fn wasm_get_d_regs_value(&self) -> Vec<u32> {
+        self.d_reg.iter().map(|reg| reg.get_long()).collect()
+    }
+    pub fn wasm_get_a_regs_value(&self) -> Vec<u32> {
+        self.a_reg.iter().map(|reg| reg.get_long()).collect()
+    }
+    pub fn wasm_get_a_reg(&self, index: usize) -> Register {
+        self.a_reg[index]
+    }
+    pub fn wasm_get_ccr(&self) -> Flags {
+        self.ccr
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub enum RuntimeError {
     Raw(String),
     OutOfBounds(String),
@@ -248,6 +298,7 @@ pub enum RuntimeError {
 
 type RuntimeResult<T> = Result<T, RuntimeError>;
 
+#[wasm_bindgen]
 pub struct Interpreter {
     memory: Memory,
     cpu: Cpu,
@@ -260,7 +311,7 @@ pub struct Interpreter {
 impl Interpreter {
     pub fn new(pre_interpreted_program: PreInterpreter, memory_size: usize) -> Self {
         let mut interpreter = Self {
-            memory: Memory::new(0),
+            memory: Memory::new(memory_size),
             cpu: Cpu::new(),
             pc: pre_interpreted_program.get_start_address(),
             final_instruction_address: pre_interpreted_program.get_final_instruction_address(),
@@ -268,33 +319,23 @@ impl Interpreter {
             has_terminated: false,
         };
         interpreter.cpu.a_reg[7].store_long((memory_size >> 1) as u32);
-        match interpreter.prepare_memory(memory_size, Some(&pre_interpreted_program.labels)) {
+        match interpreter.prepare_memory(&pre_interpreted_program.get_labels_map()) {
             Ok(_) => interpreter,
             Err(e) => panic!("Error preparing memory: {:?}", e),
         }
     }
-    pub fn prepare_memory(
-        &mut self,
-        size: usize,
-        labels: Option<&HashMap<String, Label>>,
-    ) -> RuntimeResult<()> {
-        self.memory = Memory::new(size);
-        match labels {
-            Some(labels) => {
-                for (_, label) in labels {
-                    match &label.directive {
-                        Some(directive) => match directive {
-                            Directive::DC { data }
-                            | Directive::DS { data }
-                            | Directive::DCB { data } => {
-                                self.memory.write_bytes(label.address, &data)?;
-                            }
-                        },
-                        _ => {}
+
+    //TODO could make this an external function and pass the memory in
+    pub fn prepare_memory(&mut self, labels: &HashMap<String, Label>) -> RuntimeResult<()> {
+        for (_, label) in labels {
+            match &label.directive {
+                Some(directive) => match directive {
+                    Directive::DC { data } | Directive::DS { data } | Directive::DCB { data } => {
+                        self.memory.write_bytes(label.address, &data)?;
                     }
-                }
-            }
-            None => {}
+                },
+                _ => {}
+            };
         }
         Ok(())
     }
@@ -302,7 +343,15 @@ impl Interpreter {
     pub fn has_finished(&self) -> bool {
         self.pc > self.final_instruction_address
     }
-
+    pub fn get_cpu(&self) -> &Cpu {
+        &self.cpu
+    }
+    pub fn get_memory(&self) -> &Memory {
+        &self.memory
+    }
+    pub fn get_pc(&self) -> usize {
+        self.pc
+    }
     pub fn step(&mut self) -> RuntimeResult<()> {
         if self.has_terminated {
             return Err(RuntimeError::Raw("Program has terminated".to_string()));
@@ -728,16 +777,17 @@ impl Interpreter {
         while !self.has_finished() {
             match self.step() {
                 Ok(_) => {}
-                Err(e) => {
-                    match self.get_instruction_at(self.pc) {
-                        Some(ins) => {
-                            panic!("Runtime error at line:{} {:?}",ins.parsed_line.line_index, e);
-                        }
-                        None => {
-                            panic!("Unknown runtime error {:?}", e);
-                        }
+                Err(e) => match self.get_instruction_at(self.pc) {
+                    Some(ins) => {
+                        panic!(
+                            "Runtime error at line:{} {:?}",
+                            ins.parsed_line.line_index, e
+                        );
                     }
-                }
+                    None => {
+                        panic!("Unknown runtime error {:?}", e);
+                    }
+                },
             }
         }
     }
@@ -819,6 +869,36 @@ impl Interpreter {
                     || (!self.get_flag(Flags::Negative) && self.get_flag(Flags::Overflow))
             }
         }
+    }
+}
+#[wasm_bindgen]
+impl Interpreter {
+    pub fn wasm_read_memory_bytes(&self, address: usize, size: usize) -> Vec<u8> {
+        match self.memory.read_bytes(address, size) {
+            Ok(bytes) => bytes.to_vec(),
+            Err(_) => vec![],
+        }
+    }
+    pub fn wasm_get_cpu_snapshot(&self) -> Cpu {
+        self.cpu
+    }
+    pub fn wasm_get_pc(&self) -> usize {
+        self.pc
+    }
+    pub fn wasm_get_instruction_at(&self, address: usize) -> JsValue {
+        match self.get_instruction_at(address) {
+            Some(ins) => serde_wasm_bindgen::to_value(ins).unwrap(),
+            None => JsValue::NULL,
+        }
+    }
+    pub fn wasm_step(&mut self) -> JsValue {
+        match self.step() {
+            Ok(_) => JsValue::UNDEFINED,
+            Err(e) => serde_wasm_bindgen::to_value(&e).unwrap(),
+        }
+    }
+    pub fn wasm_run(&mut self) {
+        self.run();
     }
 }
 

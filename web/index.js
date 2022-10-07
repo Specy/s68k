@@ -10,7 +10,7 @@ run.addEventListener("click", () => {
     const errors = s68k.wasm_semantic_check()
     const lines = s68k.wasm_get_lexed_lines()
     console.log(lines)
-    console.log(errors) 
+    //console.log(errors) 
     localStorage.setItem("s68k_code", text)
     errorWrapper.innerHTML = ""
     for (let i = 0; i < errors.get_length(); i++) {
@@ -21,4 +21,15 @@ run.addEventListener("click", () => {
         console.log(error.wasm_get_line())
         errorWrapper.appendChild(errorEl)
     }
+    const preProcess = s68k.wasm_pre_process()
+    //console.log(preProcess)
+    const interpreter = s68k.wasm_create_interpreter(preProcess, Math.pow(2, 16))
+    interpreter.wasm_run()
+    const cpu = interpreter.wasm_get_cpu_snapshot()
+    console.group("D registers")
+    console.table(cpu.wasm_get_d_regs_value())
+    console.groupEnd()
+    console.group("A registers")
+    console.table(cpu.wasm_get_a_regs_value())
+    console.groupEnd()
 })

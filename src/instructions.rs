@@ -3,7 +3,8 @@ use std::{
     str::FromStr,
 };
 
-#[derive(Debug, Clone)]
+use serde::Serialize;
+#[derive(Debug, Clone, Serialize)]
 pub enum Size {
     Byte,
     Word,
@@ -22,13 +23,13 @@ impl Size {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum RegisterOperand {
     Address(u8),
     Data(u8),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum Operand {
     Register(RegisterOperand),
     Immediate(u32),
@@ -48,7 +49,7 @@ pub enum Operand {
 Thanks to:  https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/instructions.rs
 for the Conditions and inspiration
  */
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub enum Condition {
     True,
     False,
@@ -92,17 +93,18 @@ impl FromStr for Condition {
         })
     }
 }
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub enum ShiftDirection {
     Right,
     Left,
 }
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub enum Sign {
     Signed,
     Unsigned,
 }
-#[derive(Clone, Debug)]
+
+#[derive(Clone, Debug, Serialize)]
 pub enum Instruction {
     MOVE(Operand, Operand, Size),
     ADD(Operand, Operand, Size),
