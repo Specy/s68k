@@ -1,7 +1,7 @@
 use s68k::S68k;
 use std::fs;
 fn main() {
-    let example_code = fs::read_to_string("example-code2.asm").expect("Unable to read file");
+    let example_code = fs::read_to_string("code-to-run.asm").expect("Unable to read file");
     let s68k = S68k::new(example_code);
     println!("\n---------LEXED---------\n");
     for line in s68k.get_lexed_lines() {

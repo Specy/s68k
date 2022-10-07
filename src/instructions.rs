@@ -1,9 +1,8 @@
-use std::fmt::{self, Debug};
-#[derive(Debug, Clone)]
-pub enum RegisterType {
-    Address,
-    Data,
-}
+use std::{
+    fmt::{self, Debug},
+    str::FromStr,
+};
+
 #[derive(Debug, Clone)]
 pub enum Size {
     Byte,
@@ -68,28 +67,29 @@ pub enum Condition {
     GreaterThan,
     LessThanOrEqual,
 }
-impl Condition {
-    pub fn from_string(s: &str) -> Result<Condition, String> {
+impl FromStr for Condition {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Condition, Self::Err> {
         let s = s.to_lowercase();
-        match s.as_str() {
-            "t" => Ok(Condition::True),
-            "f" => Ok(Condition::False),
-            "hi" => Ok(Condition::High),
-            "ls" => Ok(Condition::LowOrSame),
-            "cc" => Ok(Condition::CarryClear),
-            "cs" => Ok(Condition::CarrySet),
-            "ne" => Ok(Condition::NotEqual),
-            "eq" => Ok(Condition::Equal),
-            "vc" => Ok(Condition::OverflowClear),
-            "vs" => Ok(Condition::OverflowSet),
-            "pl" => Ok(Condition::Plus),
-            "mi" => Ok(Condition::Minus),
-            "ge" => Ok(Condition::GreaterThanOrEqual),
-            "lt" => Ok(Condition::LessThan),
-            "gt" => Ok(Condition::GreaterThan),
-            "le" => Ok(Condition::LessThanOrEqual),
-            _ => Err(format!("Invalid condition: {}", s)),
-        }
+        Ok(match s.as_str() {
+            "t" => Condition::True,
+            "f" => Condition::False,
+            "hi" => Condition::High,
+            "ls" => Condition::LowOrSame,
+            "cc" => Condition::CarryClear,
+            "cs" => Condition::CarrySet,
+            "ne" => Condition::NotEqual,
+            "eq" => Condition::Equal,
+            "vc" => Condition::OverflowClear,
+            "vs" => Condition::OverflowSet,
+            "pl" => Condition::Plus,
+            "mi" => Condition::Minus,
+            "ge" => Condition::GreaterThanOrEqual,
+            "lt" => Condition::LessThan,
+            "gt" => Condition::GreaterThan,
+            "le" => Condition::LessThanOrEqual,
+            _ => return Err(format!("Invalid condition: {}", s)),
+        })
     }
 }
 #[derive(Copy, Clone, Debug, PartialEq)]

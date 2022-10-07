@@ -1,8 +1,7 @@
 use crate::{
     instructions::{
-        Condition, Instruction, Operand, RegisterOperand, RegisterType, ShiftDirection, Sign, Size,
+        Condition, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
     },
-    interpreter::Register,
     lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     utils::parse_char_or_num,
 };
@@ -46,10 +45,11 @@ impl fmt::Debug for InstructionLine {
     }
 }
 impl PreInterpreter {
-    pub fn new(lines: &Vec<ParsedLine>) -> PreInterpreter {
+    pub fn new(lines: &[ParsedLine]) -> PreInterpreter {
+        let (labels, line_addresses) = parse_labels_and_addresses(lines);
         let mut pre_interpreter = PreInterpreter {
-            labels: HashMap::new(),
-            line_addresses: Vec::new(),
+            labels,
+            line_addresses,
             instructions: Vec::new(),
             start_address: 0,
             final_instrucion_address: 0,
@@ -84,8 +84,7 @@ impl PreInterpreter {
             .map(|x| (x.address, x.clone()))
             .collect()
     }
-    fn load(&mut self, lines: &Vec<ParsedLine>) {
-        self.populate_label_map(lines);
+    fn load(&mut self, lines: &[ParsedLine]) {
         self.parse_instruction_lines(lines);
 
         let start = self.labels.get("start");
@@ -100,69 +99,9 @@ impl PreInterpreter {
             None => 0,
         };
     }
-    fn populate_label_map(&mut self, lines: &Vec<ParsedLine>) {
-        let mut last_address = 4096; //same as ORG $1000
-        for line in lines.iter() {
-            self.line_addresses.push(last_address);
-            match &line.parsed {
-                LexedLine::Directive { args, .. } => {
-                    if args[0] == "org" {
-                        let hex = args[1].trim_start_matches("$");
-                        let parsed = usize::from_str_radix(hex, 16).expect("Invalid hex value");
-                        if parsed < last_address {
-                            panic!("The address of the ORG directive ({}) must be greater than the previous address ({})",parsed, last_address);
-                        }
-                        last_address = usize::from_str_radix(hex, 16).expect("Invalid hex value");
-                    }
-                }
-                LexedLine::Label { name, .. } => {
-                    let name = name.to_string();
-                    self.labels.insert(
-                        name.clone(),
-                        Label {
-                            name,
-                            directive: None,
-                            address: last_address,
-                        },
-                    );
-                }
-                LexedLine::LabelDirective { name, directive } => {
-                    let parsed_directive = self.parse_label_directive(directive, line);
-                    self.labels.insert(
-                        name.clone(),
-                        Label {
-                            name: name.clone(),
-                            directive: Some(parsed_directive),
-                            address: last_address,
-                        },
-                    );
-                    match directive.name.as_str() {
-                        "dcb" | "ds" => {
-                            let bytes = directive.args[0].value.parse::<usize>().expect(
-                                format!("Invalid number at line {}", line.line_index).as_str(),
-                            );
-                            last_address += bytes * directive.size.clone() as usize;
-                        }
-                        "dc" => {
-                            let args = directive.args.len();
-                            last_address += args * directive.size.clone() as usize;
-                        }
-                        _ => {}
-                    }
-                }
-                LexedLine::Instruction { .. } => {
-                    last_address += 4;
-                }
+    
 
-                _ => {}
-            }
-            //this aligns the address to the next 4 byte boundary, it works by incrementing the address by 3 then
-            //masking the first 2 bits to 0
-            last_address = (last_address + 3) & !3;
-        }
-    }
-
-    fn parse_instruction_lines(&mut self, lines: &Vec<ParsedLine>) {
+    fn parse_instruction_lines(&mut self, lines: &[ParsedLine]) {
         for (i, line) in lines.iter().enumerate() {
             match &line.parsed {
                 LexedLine::Instruction {
@@ -285,9 +224,8 @@ impl PreInterpreter {
                 }
                 "tst" => Instruction::TST(op, self.get_size(size, Size::Word)),
                 "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs" => {
-                    let condition = Condition::from_string(&name[1..]).unwrap();
                     let address = self.extract_address(&op).unwrap();
-                    Instruction::Bcc(address, condition)
+                    Instruction::Bcc(address, name[1..].parse().unwrap())
                 }
                 "bra" => {
                     let address = self.extract_address(&op).unwrap();
@@ -301,8 +239,7 @@ impl PreInterpreter {
                 //scc
                 "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt" | "shi"
                 | "smi" | "spl" | "svc" | "svs" | "sf" | "st" => {
-                    let condition = Condition::from_string(name).unwrap();
-                    Instruction::Scc(op, condition)
+                    Instruction::Scc(op, name.parse().unwrap())
                 }
                 //not sure if the default is word
                 "not" => Instruction::NOT(op, self.get_size(size, Size::Word)),
@@ -328,73 +265,6 @@ impl PreInterpreter {
             LexedSize::Long => Size::Long,
             LexedSize::Unspecified => default,
             _ => panic!("Invalid size"),
-        }
-    }
-    fn parse_label_directive(&self, directive: &LabelDirective, line: &ParsedLine) -> Directive {
-        let parsed_args: Vec<u32> = directive
-            .args
-            .iter()
-            .map(|x| {
-                parse_char_or_num(&x.value).expect(
-                    format!(
-                        "Invalid numerical directive argument at line {}",
-                        line.line_index
-                    )
-                    .as_str(),
-                ) as u32
-            })
-            .collect();
-        match directive.name.as_str() {
-            "dc" => Directive::DC {
-                data: match &directive.size {
-                    LexedSize::Byte => parsed_args.iter().map(|x| *x as u8).collect(),
-                    LexedSize::Word => parsed_args
-                        .iter()
-                        .flat_map(|x| (*x as u16).to_be_bytes())
-                        .collect(),
-                    LexedSize::Long => parsed_args
-                        .iter()
-                        .flat_map(|x| (*x as u32).to_be_bytes())
-                        .collect(),
-                    _ => panic!("Invalid or missing size for DC directive"),
-                },
-            },
-            "ds" => {
-                if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified
-                {
-                    panic!("Invalid or missing size for DS directive");
-                }
-                let data = match parsed_args[..] {
-                    [amount] => vec![0; amount as usize * directive.size.clone() as usize / 8],
-                    _ => panic!("Invalid number of arguments for DS directive"),
-                };
-                Directive::DS { data }
-            }
-            "dcb" => {
-                let data = match directive.size {
-                    LexedSize::Long => match parsed_args[..] {
-                        [size, default] => vec![default as u32; size as usize]
-                            .iter()
-                            .flat_map(|x| (*x as u32).to_be_bytes())
-                            .collect(),
-                        _ => panic!("Invalid number of arguments for DCB directive"),
-                    },
-                    LexedSize::Word => match parsed_args[..] {
-                        [size, default] => vec![default as u16; size as usize]
-                            .iter()
-                            .flat_map(|x| (*x as u16).to_be_bytes())
-                            .collect(),
-                        _ => panic!("Invalid number of arguments for DCB directive"),
-                    },
-                    LexedSize::Byte => match parsed_args[..] {
-                        [size, default] => vec![default as u8; size as usize],
-                        _ => panic!("Invalid number of arguments for DCB directive"),
-                    },
-                    _ => panic!("Invalid or missing size for DCB directive"),
-                };
-                Directive::DCB { data }
-            }
-            _ => panic!("Invalid directive"),
         }
     }
 
@@ -515,4 +385,136 @@ impl PreInterpreter {
             _ => panic!("Invalid operand"),
         }
     }
+}
+
+fn parse_label_directive(directive: &LabelDirective, line: &ParsedLine) -> Directive {
+    let parsed_args: Vec<u32> = directive
+        .args
+        .iter()
+        .map(|x| {
+            parse_char_or_num(&x.value).expect(
+                format!(
+                    "Invalid numerical directive argument at line {}",
+                    line.line_index
+                )
+                .as_str(),
+            ) as u32
+        })
+        .collect();
+    match directive.name.as_str() {
+        "dc" => Directive::DC {
+            data: match &directive.size {
+                LexedSize::Byte => parsed_args.iter().map(|x| *x as u8).collect(),
+                LexedSize::Word => parsed_args
+                    .iter()
+                    .flat_map(|x| (*x as u16).to_be_bytes())
+                    .collect(),
+                LexedSize::Long => parsed_args
+                    .iter()
+                    .flat_map(|x| (*x as u32).to_be_bytes())
+                    .collect(),
+                _ => panic!("Invalid or missing size for DC directive"),
+            },
+        },
+        "ds" => {
+            if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified
+            {
+                panic!("Invalid or missing size for DS directive");
+            }
+            let data = match parsed_args[..] {
+                [amount] => vec![0; amount as usize * directive.size.clone() as usize / 8],
+                _ => panic!("Invalid number of arguments for DS directive"),
+            };
+            Directive::DS { data }
+        }
+        "dcb" => {
+            let data = match directive.size {
+                LexedSize::Long => match parsed_args[..] {
+                    [size, default] => vec![default as u32; size as usize]
+                        .iter()
+                        .flat_map(|x| (*x as u32).to_be_bytes())
+                        .collect(),
+                    _ => panic!("Invalid number of arguments for DCB directive"),
+                },
+                LexedSize::Word => match parsed_args[..] {
+                    [size, default] => vec![default as u16; size as usize]
+                        .iter()
+                        .flat_map(|x| (*x as u16).to_be_bytes())
+                        .collect(),
+                    _ => panic!("Invalid number of arguments for DCB directive"),
+                },
+                LexedSize::Byte => match parsed_args[..] {
+                    [size, default] => vec![default as u8; size as usize],
+                    _ => panic!("Invalid number of arguments for DCB directive"),
+                },
+                _ => panic!("Invalid or missing size for DCB directive"),
+            };
+            Directive::DCB { data }
+        }
+        _ => panic!("Invalid directive"),
+    }
+}
+fn parse_labels_and_addresses(lines: &[ParsedLine]) -> (HashMap<String, Label>, Vec<usize> ) {
+    let mut last_address = 4096; //same as ORG $1000
+    let mut labels = HashMap::new();
+    let mut line_addresses: Vec<usize> = Vec::new();
+    for line in lines.iter() {
+        line_addresses.push(last_address);
+        match &line.parsed {
+            LexedLine::Directive { args, .. } => {
+                if args[0] == "org" {
+                    let hex = args[1].trim_start_matches("$");
+                    let parsed = usize::from_str_radix(hex, 16).expect("Invalid hex value");
+                    if parsed < last_address {
+                        panic!("The address of the ORG directive ({}) must be greater than the previous address ({})",parsed, last_address);
+                    }
+                    last_address = usize::from_str_radix(hex, 16).expect("Invalid hex value");
+                }
+            }
+            LexedLine::Label { name, .. } => {
+                let name = name.to_string();
+                labels.insert(
+                    name.clone(),
+                    Label {
+                        name,
+                        directive: None,
+                        address: last_address,
+                    },
+                );
+            }
+            LexedLine::LabelDirective { name, directive } => {
+                let parsed_directive = parse_label_directive(directive, line);
+                labels.insert(
+                    name.clone(),
+                    Label {
+                        name: name.clone(),
+                        directive: Some(parsed_directive),
+                        address: last_address,
+                    },
+                );
+                match directive.name.as_str() {
+                    "dcb" | "ds" => {
+                        let bytes = directive.args[0].value.parse::<usize>().expect(
+                            format!("Invalid number at line {}", line.line_index).as_str(),
+                        );
+                        last_address += bytes * directive.size.clone() as usize;
+                    }
+                    "dc" => {
+                        let args = directive.args.len();
+                        last_address += args * directive.size.clone() as usize;
+                    }
+                    _ => {}
+                }
+            }
+            LexedLine::Instruction { .. } => {
+                last_address += 4;
+            }
+
+            _ => {}
+        }
+        //this aligns the address to the next 4 byte boundary, it works by incrementing the address by 3 then
+        //masking the first 2 bits to 0
+        last_address = (last_address + 3) & !3;
+    }
+    (labels, line_addresses)
 }

@@ -116,7 +116,7 @@ pub struct SemanticChecker {
     lines: Vec<ParsedLine>,
 }
 impl SemanticChecker {
-    pub fn new(lines: &Vec<ParsedLine>) -> SemanticChecker {
+    pub fn new(lines: &[ParsedLine]) -> SemanticChecker {
         let mut syntax_checker = SemanticChecker {
             errors: Vec::new(),
             lines: Vec::new(),
@@ -126,7 +126,7 @@ impl SemanticChecker {
         syntax_checker
     }
 
-    pub fn check(&mut self, lines: &Vec<ParsedLine>) {
+    pub fn check(&mut self, lines: &[ParsedLine]) {
         self.lines = lines.iter().map(|x| x.clone()).collect();
         for line in lines.iter() {
             match &line.parsed {
@@ -436,7 +436,7 @@ impl SemanticChecker {
     }
     fn verify_two_args(
         &mut self,
-        args: &Vec<LexedOperand>,
+        args: &[LexedOperand],
         rule1: Rules,
         rule2: Rules,
         line: &ParsedLine,
@@ -453,7 +453,7 @@ impl SemanticChecker {
         }
     }
 
-    fn verify_one_arg(&mut self, args: &Vec<LexedOperand>, rule: Rules, line: &ParsedLine) {
+    fn verify_one_arg(&mut self, args: &[LexedOperand], rule: Rules, line: &ParsedLine) {
         match &args[..] {
             [first] => {
                 self.verify_arg_rule(first, rule, line, 1);
@@ -466,7 +466,7 @@ impl SemanticChecker {
     }
     fn verify_size_if_immediate(
         &mut self,
-        args: &Vec<LexedOperand>,
+        args: &[LexedOperand],
         line: &ParsedLine,
         size: &LexedSize,
         default: LexedSize,
@@ -500,7 +500,7 @@ impl SemanticChecker {
 
     fn verify_value_bounds_if_immediate(
         &mut self,
-        args: &Vec<LexedOperand>,
+        args: &[LexedOperand],
         arg_position: usize,
         line: &ParsedLine,
         min: i64,
@@ -697,6 +697,7 @@ impl SemanticChecker {
                 Ok(n) => Ok(n),
                 Err(_) => Err("Invalid hex number"),
             },
+            ['#','\'', c, '\''] => Ok(c as i64),
             ['#', ..] => {
                 //TODO not sure if this should be checked here
                 let label = &num[1..];

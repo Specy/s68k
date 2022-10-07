@@ -3,10 +3,9 @@
     https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/execute.rs
 */
 
-
 use crate::{
     instructions::{
-        Condition, Instruction, Operand, RegisterOperand, RegisterType, ShiftDirection, Sign, Size,
+        Condition, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
     },
     math::*,
     pre_interpreter::{Directive, InstructionLine, Label, PreInterpreter},
@@ -155,25 +154,29 @@ impl Memory {
     pub fn write_byte(&mut self, address: usize, value: u8) {
         self.data[address] = value;
     }
-    pub fn write_bytes(&mut self, address: usize, bytes: &[u8]) {
-        if (address + bytes.len()) > self.data.len() {
-            panic!(
-                "Memory out of bounds, address: {}, size: {}",
-                address,
-                bytes.len()
-            );
+    pub fn write_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
+        match (address + bytes.len()) > self.data.len() {
+            true => Err(RuntimeError::OutOfBounds(
+                format!(
+                    "Memory out of bounds, address: {}, size: {}",
+                    address,
+                    bytes.len()
+                )
+                .to_string(),
+            )),
+            false => {
+                self.data[address..address + bytes.len()].copy_from_slice(bytes);
+                Ok(())
+            }
         }
-        self.data[address..address + bytes.len()].copy_from_slice(bytes);
     }
-    pub fn read_bytes(&self, address: usize, size: usize) -> &[u8] {
-        if (address + size) > self.data.len() {
-            panic!(
-                "Memory out of bounds, address \"{}\" is not in range 0..{}",
-                address,
-                self.data.len()
-            );
+    pub fn read_bytes(&self, address: usize, size: usize) -> RuntimeResult<&[u8]> {
+        match (address + size) > self.data.len() {
+            true => Err(RuntimeError::OutOfBounds(
+                format!("Memory out of bounds, address: {}, size: {}", address, size).to_string(),
+            )),
+            false => Ok(&self.data[address..address + size]),
         }
-        &self.data[address..address + size]
     }
 }
 #[derive(Debug, Clone, Copy)]
@@ -234,12 +237,24 @@ impl Cpu {
         }
     }
 }
+#[derive(Debug)]
+pub enum RuntimeError {
+    Raw(String),
+    OutOfBounds(String),
+    DivisionByZero,
+    IncorrectAddressingMode(String),
+    Unimplemented,
+}
+
+type RuntimeResult<T> = Result<T, RuntimeError>;
+
 pub struct Interpreter {
     memory: Memory,
     cpu: Cpu,
     pc: usize,
     program: HashMap<usize, InstructionLine>,
     final_instruction_address: usize,
+    has_terminated: bool,
 }
 
 impl Interpreter {
@@ -250,12 +265,19 @@ impl Interpreter {
             pc: pre_interpreted_program.get_start_address(),
             final_instruction_address: pre_interpreted_program.get_final_instruction_address(),
             program: pre_interpreted_program.get_instructions_map(),
+            has_terminated: false,
         };
         interpreter.cpu.a_reg[7].store_long((memory_size >> 1) as u32);
-        interpreter.prepare_memory(memory_size, Some(&pre_interpreted_program.labels));
-        interpreter
+        match interpreter.prepare_memory(memory_size, Some(&pre_interpreted_program.labels)) {
+            Ok(_) => interpreter,
+            Err(e) => panic!("Error preparing memory: {:?}", e),
+        }
     }
-    pub fn prepare_memory(&mut self, size: usize, labels: Option<&HashMap<String, Label>>) {
+    pub fn prepare_memory(
+        &mut self,
+        size: usize,
+        labels: Option<&HashMap<String, Label>>,
+    ) -> RuntimeResult<()> {
         self.memory = Memory::new(size);
         match labels {
             Some(labels) => {
@@ -265,7 +287,7 @@ impl Interpreter {
                             Directive::DC { data }
                             | Directive::DS { data }
                             | Directive::DCB { data } => {
-                                self.memory.write_bytes(label.address, &data);
+                                self.memory.write_bytes(label.address, &data)?;
                             }
                         },
                         _ => {}
@@ -274,23 +296,33 @@ impl Interpreter {
             }
             None => {}
         }
+        Ok(())
     }
 
     pub fn has_finished(&self) -> bool {
         self.pc > self.final_instruction_address
     }
 
-    pub fn step(&mut self) {
+    pub fn step(&mut self) -> RuntimeResult<()> {
+        if self.has_terminated {
+            return Err(RuntimeError::Raw("Program has terminated".to_string()));
+        }
         match self.get_instruction_at(self.pc) {
             Some(ins) => {
-                self.execute_instruction(&ins.clone());
+                //need to find a way to remove this clone
+                self.execute_instruction(&ins.clone())?;
             }
             None if self.pc < self.final_instruction_address => {
-                panic!("Invalid instruction address: {}", self.pc);
+                self.has_terminated = true;
+                return Err(RuntimeError::OutOfBounds(format!(
+                    "Invalid instruction address: {}",
+                    self.pc
+                )));
             }
             _ => {}
         }
         self.increment_pc(4);
+        Ok(())
     }
     pub fn increment_pc(&mut self, amount: usize) {
         self.pc += amount;
@@ -298,42 +330,42 @@ impl Interpreter {
     pub fn get_instruction_at(&self, address: usize) -> Option<&InstructionLine> {
         self.program.get(&address)
     }
-    fn execute_instruction(&mut self, instruction_line: &InstructionLine) {
+    fn execute_instruction(&mut self, instruction_line: &InstructionLine) -> RuntimeResult<()> {
         let ins = &instruction_line.instruction;
         //println!("PC {:#X} - {:?}", self.pc, instruction_line);
         match ins {
             Instruction::MOVE(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size);
+                let source_value = self.get_operand_value(source, size)?;
                 self.set_logic_flags(source_value, size);
-                self.store_operand_value(dest, source_value, size);
+                self.store_operand_value(dest, source_value, size)?;
             }
             Instruction::ADD(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size);
-                let dest_value = self.get_operand_value(dest, size);
+                let source_value = self.get_operand_value(source, size)?;
+                let dest_value = self.get_operand_value(dest, size)?;
                 let (result, carry) = overflowing_add_sized(dest_value, source_value, size);
                 let overflow = has_add_overflowed(dest_value, source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
                 self.set_flag(Flags::Extend, carry);
-                self.store_operand_value(dest, result, size);
+                self.store_operand_value(dest, result, size)?;
             }
             Instruction::SUB(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size);
-                let dest_value = self.get_operand_value(dest, size);
+                let source_value = self.get_operand_value(source, size)?;
+                let dest_value = self.get_operand_value(dest, size)?;
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
                 self.set_flag(Flags::Extend, carry);
-                self.store_operand_value(dest, result, size);
+                self.store_operand_value(dest, result, size)?;
             }
             Instruction::ADDA(source, dest, size) => {
                 let source_value =
-                    sign_extend_to_long(self.get_operand_value(source, size), size) as u32;
+                    sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
                 let dest_value = self.get_register_value(dest, size);
                 let (result, _) = overflowing_add_sized(dest_value, source_value, &Size::Long);
                 self.set_register_value(dest, result, &Size::Long);
             }
             Instruction::MULx(source, dest, sign) => {
-                let src_val = self.get_operand_value(source, &Size::Word);
+                let src_val = self.get_operand_value(source, &Size::Word)?;
                 let dest_val =
                     get_value_sized(self.get_register_value(dest, &Size::Long), &Size::Word);
                 let result = match sign {
@@ -347,12 +379,12 @@ impl Interpreter {
                 self.set_register_value(dest, result as u32, &Size::Long);
             }
             Instruction::LSd(amount_source, dest, direction, size) => {
-                let amount = self.get_operand_value(amount_source, size) % 64;
-                let mut pair = (self.get_operand_value(dest, size), false);
+                let amount = self.get_operand_value(amount_source, size)? % 64;
+                let mut pair = (self.get_operand_value(dest, size)?, false);
                 for _ in 0..amount {
                     pair = shift(direction, pair.0, size, false);
                 }
-                self.store_operand_value(dest, pair.0, size);
+                self.store_operand_value(dest, pair.0, size)?;
                 self.set_logic_flags(pair.0, size);
                 self.set_flag(Flags::Overflow, false);
                 if amount != 0 {
@@ -363,7 +395,7 @@ impl Interpreter {
                 }
             }
             Instruction::BRA(address) => {
-                //instead of using the absolute address, the original language uses pc + 2 + offset 
+                //instead of using the absolute address, the original language uses pc + 2 + offset
                 self.pc = *address as usize;
             }
             Instruction::BSR(address) => {
@@ -371,47 +403,46 @@ impl Interpreter {
                 self.pc = *address as usize;
             }
             Instruction::JMP(op) => {
-                let addr = self.get_operand_value(op, &Size::Long);
+                let addr = self.get_operand_value(op, &Size::Long)?;
                 self.pc = addr as usize;
             }
             Instruction::JSR(source) => {
-                let addr = self.get_operand_value(source, &Size::Long);
+                let addr = self.get_operand_value(source, &Size::Long)?;
                 self.memory.push(&MemoryCell::Long(self.pc as u32));
                 self.pc = addr as usize;
-                
             }
             Instruction::BCHG(bit_source, dest) => {
-                let bit = self.get_operand_value(bit_source, &Size::Byte);
-                let mut source_value = self.get_operand_value(dest, &Size::Long);
+                let bit = self.get_operand_value(bit_source, &Size::Byte)?;
+                let mut source_value = self.get_operand_value(dest, &Size::Long)?;
                 let mask = self.set_bit_test_flags(source_value, bit, &Size::Long);
                 source_value = (source_value & !mask) | (!(source_value & mask) & mask);
-                self.store_operand_value(dest, source_value, &Size::Long);
+                self.store_operand_value(dest, source_value, &Size::Long)?;
             }
             Instruction::BCLR(bit_source, dest) => {
-                let bit = self.get_operand_value(bit_source, &Size::Byte);
-                let mut src_val = self.get_operand_value(dest, &Size::Long);
+                let bit = self.get_operand_value(bit_source, &Size::Byte)?;
+                let mut src_val = self.get_operand_value(dest, &Size::Long)?;
                 let mask = self.set_bit_test_flags(src_val, bit, &Size::Long);
                 src_val = src_val & !mask;
-                self.store_operand_value(dest, src_val, &Size::Long);
+                self.store_operand_value(dest, src_val, &Size::Long)?;
             }
             Instruction::BSET(bit_source, dest) => {
-                let bit = self.get_operand_value(bit_source, &Size::Byte);
-                let mut value = self.get_operand_value(dest, &Size::Long);
+                let bit = self.get_operand_value(bit_source, &Size::Byte)?;
+                let mut value = self.get_operand_value(dest, &Size::Long)?;
                 let mask = self.set_bit_test_flags(value, bit, &Size::Long);
                 value = value | mask;
-                self.store_operand_value(dest, value, &Size::Long);
+                self.store_operand_value(dest, value, &Size::Long)?;
             }
 
             Instruction::BTST(bit, op2) => {
-                let bit = self.get_operand_value(bit, &Size::Byte);
-                let value = self.get_operand_value(op2, &Size::Long);
+                let bit = self.get_operand_value(bit, &Size::Byte)?;
+                let value = self.get_operand_value(op2, &Size::Long)?;
                 self.set_bit_test_flags(value, bit, &Size::Long);
             }
             Instruction::ASd(amount, dest, direction, size) => {
-                let amount_value = self.get_operand_value(amount, size) % 64;
-                let dest_value = self.get_operand_value(dest, size);
+                let amount_value = self.get_operand_value(amount, size)? % 64;
+                let dest_value = self.get_operand_value(dest, size)?;
                 let mut has_overflowed = false;
-                let (mut value,mut has_carry) = (dest_value, false);
+                let (mut value, mut has_carry) = (dest_value, false);
                 let mut previous_msb = get_sign(value, size);
                 for _ in 0..amount_value {
                     (value, has_carry) = shift(direction, value, size, true);
@@ -420,7 +451,7 @@ impl Interpreter {
                     }
                     previous_msb = get_sign(value, size);
                 }
-                self.store_operand_value(dest, value, size);
+                self.store_operand_value(dest, value, size)?;
 
                 let carry = match direction {
                     ShiftDirection::Left => has_carry,
@@ -442,12 +473,12 @@ impl Interpreter {
                 }
             }
             Instruction::ROd(amount, dest, direction, size) => {
-                let count = self.get_operand_value(amount, size) % 64;
-                let (mut value,mut carry) = (self.get_operand_value(dest, size), false);
+                let count = self.get_operand_value(amount, size)? % 64;
+                let (mut value, mut carry) = (self.get_operand_value(dest, size)?, false);
                 for _ in 0..count {
                     (value, carry) = rotate(direction, value, size);
                 }
-                self.store_operand_value(dest, value, size);
+                self.store_operand_value(dest, value, size)?;
                 self.set_logic_flags(value, size);
                 if carry {
                     self.set_flag(Flags::Carry, true);
@@ -455,51 +486,51 @@ impl Interpreter {
             }
             Instruction::SUBA(source, dest, size) => {
                 let source_value =
-                    sign_extend_to_long(self.get_operand_value(source, size), size) as u32;
+                    sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
                 let dest_value = self.get_register_value(dest, size);
                 let (result, _) = overflowing_sub_sized(dest_value, source_value, &Size::Long);
                 self.set_register_value(dest, result, &Size::Long);
             }
             Instruction::AND(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size);
-                let dest_value = self.get_operand_value(dest, size);
+                let source_value = self.get_operand_value(source, size)?;
+                let dest_value = self.get_operand_value(dest, size)?;
                 let result = get_value_sized(dest_value & source_value, size);
-                self.store_operand_value(dest, result, size);
+                self.store_operand_value(dest, result, size)?;
                 self.set_logic_flags(result, size);
             }
             Instruction::OR(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size);
-                let dest_value = self.get_operand_value(dest, size);
+                let source_value = self.get_operand_value(source, size)?;
+                let dest_value = self.get_operand_value(dest, size)?;
                 let result = get_value_sized(dest_value | source_value, size);
-                self.store_operand_value(dest, result, size);
+                self.store_operand_value(dest, result, size)?;
                 self.set_logic_flags(result, size);
             }
             Instruction::EOR(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size);
-                let dest_value = self.get_operand_value(dest, size);
+                let source_value = self.get_operand_value(source, size)?;
+                let dest_value = self.get_operand_value(dest, size)?;
                 let result = get_value_sized(dest_value ^ source_value, size);
-                self.store_operand_value(dest, result, size);
+                self.store_operand_value(dest, result, size)?;
                 self.set_logic_flags(result, size);
             }
             Instruction::NOT(op, size) => {
                 //watchout for the "!"
-                let value = !self.get_operand_value(op, size);
+                let value = !self.get_operand_value(op, size)?;
                 let value = get_value_sized(value, size);
-                self.store_operand_value(op, value, size);
+                self.store_operand_value(op, value, size)?;
                 self.set_logic_flags(value, size);
             }
             Instruction::NEG(source, size) => {
-                let original = self.get_operand_value(source, size);
+                let original = self.get_operand_value(source, size)?;
                 let (result, overflow) = overflowing_sub_signed_sized(0, original, size);
                 let carry = result != 0;
-                self.store_operand_value(source, result, size);
+                self.store_operand_value(source, result, size)?;
                 self.set_compare_flags(result, size, carry, overflow);
                 self.set_flag(Flags::Extend, carry);
             }
             Instruction::DIVx(source, dest, sign) => {
-                let source_value = self.get_operand_value(source, &Size::Word);
+                let source_value = self.get_operand_value(source, &Size::Word)?;
                 if source_value == 0 {
-                    panic!("Division by zero");
+                    return Err(RuntimeError::DivisionByZero);
                 }
 
                 let dest_value = self.get_register_value(dest, &Size::Long);
@@ -560,12 +591,12 @@ impl Interpreter {
                 self.set_logic_flags(new_value, &Size::Long);
             }
             Instruction::TST(source, size) => {
-                let value = self.get_operand_value(source, size);
+                let value = self.get_operand_value(source, size)?;
                 self.set_logic_flags(value, size);
             }
             Instruction::CMP(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size);
-                let dest_value = self.get_operand_value(dest, size);
+                let source_value = self.get_operand_value(source, size)?;
+                let dest_value = self.get_operand_value(dest, size)?;
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
@@ -576,24 +607,24 @@ impl Interpreter {
                 }
             }
             Instruction::CLR(dest, size) => {
-                self.get_operand_value(dest, size); //apply side effects
-                self.store_operand_value(dest, 0, size);
+                self.get_operand_value(dest, size)?; //apply side effects
+                self.store_operand_value(dest, 0, size)?;
                 self.cpu.ccr.clear();
                 self.set_flag(Flags::Zero, true);
             }
             Instruction::Scc(op, condition) => {
                 if self.get_condition_value(condition) {
-                    self.store_operand_value(op, 0xFF, &Size::Byte);
+                    self.store_operand_value(op, 0xFF, &Size::Byte)?;
                 } else {
-                    self.store_operand_value(op, 0x00, &Size::Byte);
+                    self.store_operand_value(op, 0x00, &Size::Byte)?;
                 }
             }
-
             Instruction::RTS => {
                 let return_address = self.memory.pop(Size::Long).get_long();
                 self.pc = return_address as usize;
             }
-        }
+        };
+        Ok(())
     }
     #[rustfmt::skip]
     pub fn debug_status(&self) {
@@ -627,66 +658,87 @@ impl Interpreter {
     pub fn set_register_value(&mut self, register: &RegisterOperand, value: u32, size: &Size) {
         match register {
             RegisterOperand::Address(num) => self.cpu.a_reg[*num as usize].store_size(size, value),
-
             RegisterOperand::Data(num) => self.cpu.d_reg[*num as usize].store_size(size, value),
         }
     }
-    pub fn get_operand_value(&mut self, op: &Operand, size: &Size) -> u32 {
+    pub fn get_operand_value(&mut self, op: &Operand, size: &Size) -> RuntimeResult<u32> {
         match op {
-            Operand::Immediate(v) => *v,
-            Operand::Register(op) => self.get_register_value(&op, size),
-            Operand::Address(address) => self.memory.read_size(*address, size),
+            Operand::Immediate(v) => Ok(*v),
+            Operand::Register(op) => Ok(self.get_register_value(&op, size)),
+            Operand::Address(address) => Ok(self.memory.read_size(*address, size)),
             Operand::Indirect { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
-                self.memory.read_size(address as usize, size)
+                Ok(self.memory.read_size(address as usize, size))
             }
             Operand::PreIndirect(op) => {
                 let address = self.get_register_value(&op, &Size::Long) as usize - size.to_bytes();
                 self.set_register_value(&op, address as u32, &Size::Long);
-                self.memory.read_size(address, size)
+                Ok(self.memory.read_size(address, size))
             }
             Operand::PostIndirect(op) => {
                 let address = self.get_register_value(&op, &Size::Long) as usize;
                 self.set_register_value(&op, address as u32 + size.to_bytes() as u32, &Size::Long);
-                self.memory.read_size(address, size)
+                Ok(self.memory.read_size(address, size))
             }
             Operand::IndirectWithDisplacement { offset, operands } => {
-                unimplemented!("IndirectWithDisplacement");
+                Err(RuntimeError::Unimplemented)
             }
         }
     }
-    pub fn store_operand_value(&mut self, op: &Operand, value: u32, size: &Size) {
+    pub fn store_operand_value(
+        &mut self,
+        op: &Operand,
+        value: u32,
+        size: &Size,
+    ) -> RuntimeResult<()> {
         match op {
-            Operand::Immediate(_) => panic!("Cannot store value to immediate operand"),
-            Operand::Register(op) => self.set_register_value(&op, value, size),
-            Operand::Address(address) => self.memory.write_size(*address, size, value),
+            Operand::Immediate(_) => Err(RuntimeError::IncorrectAddressingMode(
+                "Attempted to store to immediate value".to_string(),
+            )),
+            Operand::Register(op) => Ok(self.set_register_value(&op, value, size)),
+            Operand::Address(address) => Ok(self.memory.write_size(*address, size, value)),
             Operand::Indirect { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
-                self.memory.write_size(address as usize, size, value)
+                Ok(self.memory.write_size(address as usize, size, value))
             }
             Operand::PreIndirect(op) => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&op, &Size::Long) as usize - size.to_bytes();
                 self.set_register_value(&op, address as u32, &Size::Long);
-                self.memory.write_size(address, size, value)
+                Ok(self.memory.write_size(address, size, value))
             }
             Operand::PostIndirect(op) => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&op, &Size::Long) as usize;
                 self.set_register_value(&op, address as u32 + size.to_bytes() as u32, &Size::Long);
-                self.memory.write_size(address, size, value)
+                Ok(self.memory.write_size(address, size, value))
             }
             Operand::IndirectWithDisplacement { offset, operands } => {
-                unimplemented!("IndirectWithDisplacement");
+                Err(RuntimeError::Unimplemented)
             }
         }
     }
 
     pub fn run(&mut self) {
+        if self.has_terminated {
+            panic!("Attempted to run terminated emulator");
+        }
         while !self.has_finished() {
-            self.step();
+            match self.step() {
+                Ok(_) => {}
+                Err(e) => {
+                    match self.get_instruction_at(self.pc) {
+                        Some(ins) => {
+                            panic!("Runtime error at line:{} {:?}",ins.parsed_line.line_index, e);
+                        }
+                        None => {
+                            panic!("Unknown runtime error {:?}", e);
+                        }
+                    }
+                }
+            }
         }
     }
 
