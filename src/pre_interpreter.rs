@@ -1,6 +1,6 @@
 use crate::{
     instructions::{
-        Condition, Instruction, Operand, RegisterOperand, RegisterType, ShiftDirection, Size, Sign,
+        Condition, Instruction, Operand, RegisterOperand, RegisterType, ShiftDirection, Sign, Size,
     },
     interpreter::Register,
     lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
@@ -128,7 +128,6 @@ impl PreInterpreter {
                 }
                 LexedLine::LabelDirective { name, directive } => {
                     let parsed_directive = self.parse_label_directive(directive, line);
-                    println!("parsed directive: {:?}", parsed_directive);
                     self.labels.insert(
                         name.clone(),
                         Label {
@@ -146,7 +145,6 @@ impl PreInterpreter {
                         }
                         "dc" => {
                             let args = directive.args.len();
-                            println!("args: {}", args);
                             last_address += args * directive.size.clone() as usize;
                         }
                         _ => {}
@@ -211,10 +209,17 @@ impl PreInterpreter {
                     self.get_size(size, Size::Word),
                 ),
                 "divs" => Instruction::DIVx(op1, self.extract_register(op2).unwrap(), Sign::Signed),
-                "divu" => Instruction::DIVx(op1, self.extract_register(op2).unwrap(), Sign::Unsigned),
+                "divu" => {
+                    Instruction::DIVx(op1, self.extract_register(op2).unwrap(), Sign::Unsigned)
+                }
                 "muls" => Instruction::MULx(op1, self.extract_register(op2).unwrap(), Sign::Signed),
-                "mulu" => Instruction::MULx(op1, self.extract_register(op2).unwrap(), Sign::Unsigned),
-                "exg" => Instruction::EXG(self.extract_register(op1).unwrap(), self.extract_register(op2).unwrap()),
+                "mulu" => {
+                    Instruction::MULx(op1, self.extract_register(op2).unwrap(), Sign::Unsigned)
+                }
+                "exg" => Instruction::EXG(
+                    self.extract_register(op1).unwrap(),
+                    self.extract_register(op2).unwrap(),
+                ),
                 "cmp" => Instruction::CMP(op1, op2, self.get_size(size, Size::Word)),
                 "or" => Instruction::OR(op1, op2, self.get_size(size, Size::Word)),
                 "and" => Instruction::AND(op1, op2, self.get_size(size, Size::Word)),
@@ -279,11 +284,18 @@ impl PreInterpreter {
                     Instruction::EXT(self.extract_register(op).unwrap(), Size::Byte, Size::Long)
                 }
                 "tst" => Instruction::TST(op, self.get_size(size, Size::Word)),
-                "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs"
-                | "bsr" | "bra" => {
-                    let condition = Condition::from_string(name).unwrap();
+                "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs" => {
+                    let condition = Condition::from_string(&name[1..]).unwrap();
                     let address = self.extract_address(&op).unwrap();
                     Instruction::Bcc(address, condition)
+                }
+                "bra" => {
+                    let address = self.extract_address(&op).unwrap();
+                    Instruction::BRA(address)
+                }
+                "bsr" => {
+                    let address = self.extract_address(&op).unwrap();
+                    Instruction::BSR(address)
                 }
                 "jmp" => Instruction::JMP(op),
                 //scc
@@ -295,15 +307,17 @@ impl PreInterpreter {
                 //not sure if the default is word
                 "not" => Instruction::NOT(op, self.get_size(size, Size::Word)),
                 "jsr" => Instruction::JSR(op),
-                _ => panic!("Invalid instruction"),
+
+                "trap" => panic!("trap not yet implemented"),
+                _ => panic!("Invalid instruction {}", name),
             }
         } else if operands.len() == 0 {
             match name.as_str() {
                 "rts" => Instruction::RTS,
-                _ => panic!("Invalid instruction"),
+                _ => panic!("Invalid instruction {}", name),
             }
         } else {
-            panic!("Invalid instruction");
+            panic!("Invalid instruction {}", name);
         }
     }
 
@@ -469,21 +483,30 @@ impl PreInterpreter {
             }
             LexedOperand::Immediate(num) => match num.chars().collect::<Vec<char>>()[..] {
                 ['#', '0', 'b'] => {
-                    let value = i32::from_str_radix(&num[3..], 2).expect("Invalid binary number");
+                    let value = i32::from_str_radix(&num[3..], 2)
+                        .expect(format!("Invalid binary number: {}", &num).as_str());
                     Operand::Immediate(value as u32)
                 }
                 ['#', '0', 'o'] => {
-                    let value = i32::from_str_radix(&num[3..], 8).expect("Invalid octal number");
+                    let value = i32::from_str_radix(&num[3..], 8)
+                        .expect(format!("Invalid octal number: {}", &num).as_str());
                     Operand::Immediate(value as u32)
                 }
                 ['#', '$', ..] => {
-                    let value = i32::from_str_radix(&num[2..], 16).expect("Invalid hex number");
+                    let value = i32::from_str_radix(&num[2..], 16)
+                        .expect(format!("Invalid hex number: {}", &num).as_str());
                     Operand::Immediate(value as u32)
+                }
+                ['#', '\'', c, '\''] => {
+                    let value = c as u32;
+                    Operand::Immediate(value)
                 }
                 ['#', ..] => {
                     let value = match self.labels.get(&num[1..]) {
                         Some(label) => label.address as i32,
-                        None => num[1..].parse().expect("Invalid number"),
+                        None => num[1..]
+                            .parse()
+                            .expect(format!("Invalid number: {}", &num).as_str()),
                     };
                     Operand::Immediate(value as u32)
                 }

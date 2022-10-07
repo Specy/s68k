@@ -1,5 +1,5 @@
 //CHECK COMMENT REMOVAL
-use crate::constants::{COMMENT, DIRECTIVES, EQU, OPERAND_SEPARATOR};
+use crate::constants::{COMMENT_1, DIRECTIVES, EQU, OPERAND_SEPARATOR, COMMENT_2};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -71,7 +71,6 @@ pub enum LexedLine {
         content: String,
     },
     Empty,
-    Unknown,
 }
 #[derive(Debug)]
 pub enum OperandKind {
@@ -92,7 +91,6 @@ pub enum LineKind {
     Instruction { size: LexedSize, name: String },
     Comment,
     Empty,
-    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +129,7 @@ struct AsmRegex {
     pre_indirect: Regex,
     label_line: Regex,
     comment_line: Regex,
+    comment: Regex,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArgSeparated {
@@ -157,7 +156,8 @@ impl AsmRegex {
             pre_indirect: Regex::new(r"^-\(\S+\)$").unwrap(),
             address: Regex::new(r"^\$\S+$").unwrap(),
             label_line: Regex::new(r"^\S+:.*").unwrap(),
-            comment_line: Regex::new(r"^;.*").unwrap(),
+            comment_line: Regex::new(r"^(;|\*).*").unwrap(),
+            comment: Regex::new(r"(;|\*).*").unwrap(),
         }
     }
     pub fn get_operand_kind(&self, operand: &String) -> OperandKind {
@@ -195,7 +195,9 @@ impl AsmRegex {
         let mut current_arg = String::new();
         //TODO maybe make it handle multiple parenthesis, shouldn't be needed for now
         let mut in_parenthesis = false;
-
+        if line.len() == 0 {
+            return args;
+        }
         for c in line.chars() {
             match c {
                 '(' => {
@@ -214,7 +216,7 @@ impl AsmRegex {
                         current_arg = String::new();
                     }
                 }
-                ';' => break,
+                COMMENT_1 | COMMENT_2 => break,
                 _ => current_arg.push(c),
             }
         }
@@ -228,6 +230,9 @@ impl AsmRegex {
         let mut in_parenthesis = false;
         let mut last_char = ' ';
         let mut last_separator = ' ';
+        if line.len() == 0 {
+            return args;
+        }
         //TODO fix this, it doesn't work correctly but works in the context of the language
         for c in line.chars() {
             match c {
@@ -251,7 +256,7 @@ impl AsmRegex {
                         last_separator = c;
                     }
                 }
-                ';' => break,
+                COMMENT_1 | COMMENT_2 => break,
                 ' ' => {
                     if last_char == ',' {
                         continue;
@@ -301,6 +306,9 @@ impl AsmRegex {
             .map(|x| x.to_string())
             .collect::<Vec<String>>()
     }
+    pub fn split_at_comment<'a>(&self, string: &'a str) -> Vec<&'a str> {
+       self.comment.split(&string).collect()
+    }
     pub fn get_line_kind(&self, line: &String) -> LineKind {
         let line = line.trim();
         let args = line
@@ -319,7 +327,13 @@ impl AsmRegex {
                     name: instruction,
                 }
             }
-            _ => LineKind::Unknown,
+            [_] => {
+                let (instruction, size) = self.split_at_size(&args[0]);
+                LineKind::Instruction {
+                    size,
+                    name: instruction,
+                }
+            },
         }
     }
 }
@@ -368,11 +382,11 @@ impl Lexer {
                 if equ_map_indexes.contains_key(&i) {
                     return line.to_string();
                 }
-                let split_at_comments = line.split(COMMENT).collect::<Vec<&str>>();
+                let split_at_comments = self.regex.split_at_comment(line);
                 match split_at_comments[..] {
                     [code, ..] => {
                         //TODO maybe replace only if not around special characters
-                        let comment = split_at_comments[1..].join(COMMENT);
+                        let comment = split_at_comments[1..].join(&COMMENT_1.to_string());
                         let mut new_line = code.to_string();
                         for equ in equs.iter() {
                             if new_line.contains(&equ.name) {
@@ -394,7 +408,7 @@ impl Lexer {
     pub fn parse_operands(&self, operands: Vec<String>) -> Vec<LexedOperand> {
         operands
             .iter()
-            .take_while(|o| !o.contains(COMMENT))
+            .take_while(|o| !o.contains(COMMENT_1) && !o.contains(COMMENT_2))
             .map(|o| self.parse_operand(o))
             .collect()
     }
@@ -500,7 +514,6 @@ impl Lexer {
                             .collect(),
                     },
                     LineKind::Empty => LexedLine::Empty,
-                    LineKind::Unknown => LexedLine::Unknown,
                 };
                 ParsedLine {
                     parsed: parsed_line,

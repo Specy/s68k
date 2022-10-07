@@ -61,6 +61,7 @@ bitflags! {
         const ONLY_D_REG_OR_INDIRECT = !(AdrMode::D_REG.bits | AdrMode::INDIRECT.bits);
         const ONLY_D_REG_OR_INDIRECT_OR_ADDRESS = !(AdrMode::D_REG.bits | AdrMode::INDIRECT.bits | AdrMode::ADDRESS.bits);
         const ONLY_ADDRESS_OR_LABEL = !(AdrMode::ADDRESS.bits | AdrMode::LABEL.bits);
+        const ONLY_IMMEDIATE = !AdrMode::IMMEDIATE.bits;
         const ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE = !(AdrMode::INDIRECT.bits | AdrMode::INDIRECT_DISPLACEMENT.bits  |  AdrMode::ADDRESS.bits | AdrMode::ADDRESS.bits | AdrMode::LABEL.bits);
     }
 }
@@ -253,12 +254,16 @@ impl SemanticChecker {
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
                     "jsr" => {
-                        //TODO not sure of the rules here
                         self.verify_one_arg(operands, Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE, line);
+                        self.verify_instruction_size(SizeRules::NoSize, line);
+
+                    }
+                    "trap" => {
+                        self.verify_one_arg(operands, Rules::ONLY_IMMEDIATE, line);
                         self.verify_instruction_size(SizeRules::NoSize, line);
                         self.errors.push(SemanticError::new(
                             line.clone(),
-                            format!("JSR instruction not yet implemented"),
+                            format!("TRAP instruction not yet implemented"),
                         ));
                     }
                     "rts" => {

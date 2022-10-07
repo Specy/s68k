@@ -127,7 +127,5 @@ for_end:
     move.w (sp)+,d1
     move.l (sp)+,d0
     rts
-    
-    
+
 end:
-    END    START        ; last line of source

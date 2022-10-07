@@ -134,6 +134,7 @@ pub enum Instruction {
     BSET(Operand, Operand),
     BCHG(Operand, Operand),
     JMP(Operand),
+    BSR(u32),
     RTS,
 }
 

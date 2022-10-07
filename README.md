@@ -45,4 +45,7 @@ equ, org, dc, ds, dcb
 - Add tests
 - Refactor the LabelDirective 
 
+## Known bugs
+- argument splitting is not the best, for example `move.l #',', d1` will split at the comma
+- comment splitting is not the best, for example `move.l #';', d1 ; this is a comment` will split at the ;
 

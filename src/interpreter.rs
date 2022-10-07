@@ -251,6 +251,7 @@ impl Interpreter {
             final_instruction_address: pre_interpreted_program.get_final_instruction_address(),
             program: pre_interpreted_program.get_instructions_map(),
         };
+        interpreter.cpu.a_reg[7].store_long((memory_size >> 1) as u32);
         interpreter.prepare_memory(memory_size, Some(&pre_interpreted_program.labels));
         interpreter
     }
@@ -299,6 +300,7 @@ impl Interpreter {
     }
     fn execute_instruction(&mut self, instruction_line: &InstructionLine) {
         let ins = &instruction_line.instruction;
+        //println!("PC {:#X} - {:?}", self.pc, instruction_line);
         match ins {
             Instruction::MOVE(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size);
@@ -364,17 +366,20 @@ impl Interpreter {
                 //instead of using the absolute address, the original language uses pc + 2 + offset 
                 self.pc = *address as usize;
             }
+            Instruction::BSR(address) => {
+                self.memory.push(&MemoryCell::Long(self.pc as u32));
+                self.pc = *address as usize;
+            }
             Instruction::JMP(op) => {
                 let addr = self.get_operand_value(op, &Size::Long);
                 self.pc = addr as usize;
             }
             Instruction::JSR(source) => {
-                let previous_pc = self.pc;
                 let addr = self.get_operand_value(source, &Size::Long);
+                self.memory.push(&MemoryCell::Long(self.pc as u32));
                 self.pc = addr as usize;
-                self.memory.push(&MemoryCell::Long(previous_pc as u32));
+                
             }
-
             Instruction::BCHG(bit_source, dest) => {
                 let bit = self.get_operand_value(bit_source, &Size::Byte);
                 let mut source_value = self.get_operand_value(dest, &Size::Long);
