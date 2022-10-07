@@ -352,14 +352,14 @@ impl Interpreter {
     pub fn get_pc(&self) -> usize {
         self.pc
     }
-    pub fn step(&mut self) -> RuntimeResult<()> {
-        if self.has_terminated {
-            return Err(RuntimeError::Raw("Program has terminated".to_string()));
-        }
+    pub fn step(&mut self) -> RuntimeResult<InstructionLine> {
         match self.get_instruction_at(self.pc) {
             Some(ins) => {
+                let clone = ins.clone();
                 //need to find a way to remove this clone
-                self.execute_instruction(&ins.clone())?;
+                self.execute_instruction(&clone)?;
+                self.increment_pc(4);
+                Ok(clone)
             }
             None if self.pc < self.final_instruction_address => {
                 self.has_terminated = true;
@@ -368,10 +368,11 @@ impl Interpreter {
                     self.pc
                 )));
             }
-            _ => {}
+            None => {
+                self.has_terminated = true;
+                return Err(RuntimeError::Raw("Program has terminated".to_string()));
+            }
         }
-        self.increment_pc(4);
-        Ok(())
     }
     pub fn increment_pc(&mut self, amount: usize) {
         self.pc += amount;
@@ -893,7 +894,7 @@ impl Interpreter {
     }
     pub fn wasm_step(&mut self) -> JsValue {
         match self.step() {
-            Ok(_) => JsValue::UNDEFINED,
+            Ok(line) => serde_wasm_bindgen::to_value(&line).unwrap(),
             Err(e) => serde_wasm_bindgen::to_value(&e).unwrap(),
         }
     }

@@ -2,9 +2,7 @@ use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
-    instructions::{
-        Condition, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
-    },
+    instructions::{Condition, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size},
     lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     utils::parse_char_or_num,
 };
@@ -75,18 +73,22 @@ impl PreInterpreter {
             println!("{}) {:#?}", i, value);
         }
     }
+
     pub fn get_start_address(&self) -> usize {
         self.start_address
     }
+
     pub fn get_final_instruction_address(&self) -> usize {
         self.final_instrucion_address
     }
+
     pub fn get_instructions_map(&self) -> HashMap<usize, InstructionLine> {
         self.instructions
             .iter()
             .map(|x| (x.address, x.clone()))
             .collect()
     }
+
     pub fn get_labels_map(&self) -> &HashMap<String, Label> {
         &self.labels
     }
@@ -105,7 +107,6 @@ impl PreInterpreter {
             None => 0,
         };
     }
-    
 
     fn parse_instruction_lines(&mut self, lines: &[ParsedLine]) {
         for (i, line) in lines.iter().enumerate() {
@@ -423,8 +424,7 @@ fn parse_label_directive(directive: &LabelDirective, line: &ParsedLine) -> Direc
             },
         },
         "ds" => {
-            if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified
-            {
+            if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified {
                 panic!("Invalid or missing size for DS directive");
             }
             let data = match parsed_args[..] {
@@ -460,7 +460,7 @@ fn parse_label_directive(directive: &LabelDirective, line: &ParsedLine) -> Direc
         _ => panic!("Invalid directive"),
     }
 }
-fn parse_labels_and_addresses(lines: &[ParsedLine]) -> (HashMap<String, Label>, Vec<usize> ) {
+fn parse_labels_and_addresses(lines: &[ParsedLine]) -> (HashMap<String, Label>, Vec<usize>) {
     let mut last_address = 4096; //same as ORG $1000
     let mut labels = HashMap::new();
     let mut line_addresses: Vec<usize> = Vec::new();
@@ -500,9 +500,10 @@ fn parse_labels_and_addresses(lines: &[ParsedLine]) -> (HashMap<String, Label>, 
                 );
                 match directive.name.as_str() {
                     "dcb" | "ds" => {
-                        let bytes = directive.args[0].value.parse::<usize>().expect(
-                            format!("Invalid number at line {}", line.line_index).as_str(),
-                        );
+                        let bytes = directive.args[0]
+                            .value
+                            .parse::<usize>()
+                            .expect(format!("Invalid number at line {}", line.line_index).as_str());
                         last_address += bytes * directive.size.clone() as usize;
                     }
                     "dc" => {
