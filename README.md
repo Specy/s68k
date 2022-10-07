@@ -15,7 +15,7 @@ The interpreter is split into individual modules that can be used standalone for
 
 - pre interpreter: it will do a final processing of the code, like converting the immediates to actual numbers, registers to indexes, prepares the table of labels, etc... 
 
-- interpreter: *UNDER DEVELOPMENT*, the final piece of the project and probably the most complex, whose job will be to actually execute the code
+- interpreter: the final piece of the project and probably the most complex, whose job will be to actually execute the code
 
 **WARNING** as this is only an interpreter, it does not load the actual program in memory so it won't be possible to modify instructions at runtime
 
@@ -24,14 +24,25 @@ The interpreter is split into individual modules that can be used standalone for
 - Assembler
 - Disassembler (unlikely)
 
-## Supported instructions:
-move | add | sub | suba | adda | divs | divu | muls | mulu | swap | clr | exg | neg | ext | tst | cmp | beq | bne | blt | ble | bgt | bge | blo | bls | bhi | bhs | scc | scs | seq | sne | sge | sgt | sle | sls | slt | shi | smi | spl | svc | svs | sf | st | not | or | and | eor | lsl | lsr | asr | asl | rol | ror | btst | bclr | bchg | bset | bsr | bra | jsr
+## Supported instructions
+| Type                   |  Instructions                                                                    |
+|------------------------|----------------------------------------------------------------------------------|
+| Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu                                     |
+| Comparison             | tst, cmp                                                                         |
+| Branching and jumping  | beq, bne, blt, ble, bgt, bge, blo, bls, bhi, bhs, bsr, bra, jsr, rts             |
+| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st     |
+| Bitwise                | not, or, and, eor, lsl, lsr, asr, asl, rol, ror, btst, bclr, bchg, bset          |
+| Other                  | clr, exg, neg, ext, swap, move                                                   |
 
-directives:
-equ | org | dc | ds | dcb
+
+## Supported directives
+equ, org, dc, ds, dcb
 
 ## Todo
 - Add more instructions
 - Add more directives
 - Add END directive
+- Add tests
 - Refactor the LabelDirective 
+
+

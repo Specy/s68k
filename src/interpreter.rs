@@ -361,7 +361,7 @@ impl Interpreter {
                 }
             }
             Instruction::BRA(address) => {
-                //TODO what's the difference between bra and jmp?
+                //instead of using the absolute address, the original language uses pc + 2 + offset 
                 self.pc = *address as usize;
             }
             Instruction::JMP(op) => {
@@ -369,7 +369,6 @@ impl Interpreter {
                 self.pc = addr as usize;
             }
             Instruction::JSR(source) => {
-                //TODO what's the difference between jsr and bsr?
                 let previous_pc = self.pc;
                 let addr = self.get_operand_value(source, &Size::Long);
                 self.pc = addr as usize;
@@ -588,7 +587,7 @@ impl Interpreter {
             Instruction::RTS => {
                 let return_address = self.memory.pop(Size::Long).get_long();
                 self.pc = return_address as usize;
-            } //TODO add better string conversion
+            }
         }
     }
     #[rustfmt::skip]

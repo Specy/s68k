@@ -119,7 +119,7 @@ pub enum Instruction {
     TST(Operand, Size),
     CMP(Operand, Operand, Size),
     Bcc(u32, Condition),
-    BRA(u32),
+    BRA(u32), //could use offset instead of address
     Scc(Operand, Condition),
     NOT(Operand, Size),
     OR(Operand, Operand, Size),
