@@ -31,7 +31,7 @@ pub enum RegisterOperand {
 
 #[derive(Debug, Clone)]
 pub enum Operand {
-    Register(RegisterOperand), //maybe use usize?
+    Register(RegisterOperand),
     Immediate(u32),
     Indirect {
         offset: i32,
@@ -97,29 +97,34 @@ pub enum ShiftDirection {
     Right,
     Left,
 }
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Sign {
+    Signed,
+    Unsigned,
+}
 #[derive(Clone, Debug)]
 pub enum Instruction {
     MOVE(Operand, Operand, Size),
     ADD(Operand, Operand, Size),
     SUB(Operand, Operand, Size),
     ADDA(Operand, RegisterOperand, Size),
-    DIVS(Operand, RegisterOperand),
-    DIVU(Operand, RegisterOperand),
-    MULS(Operand, RegisterOperand),
-    MULU(Operand, RegisterOperand),
+    SUBA(Operand, RegisterOperand, Size),
+    DIVx(Operand, RegisterOperand, Sign),
+    MULx(Operand, RegisterOperand, Sign),
     SWAP(RegisterOperand),
     CLR(Operand, Size),
-    EXG(RegisterOperand, Operand),
+    EXG(RegisterOperand, RegisterOperand),
     NEG(Operand, Size),
-    EXT(RegisterOperand, Size),
+    EXT(RegisterOperand, Size, Size),
     TST(Operand, Size),
     CMP(Operand, Operand, Size),
-    Bcc(Operand, Condition),
+    Bcc(u32, Condition),
+    BRA(u32),
     Scc(Operand, Condition),
-    NOT(Operand),
-    OR(Operand, Operand),
-    AND(Operand, Operand),
-    EOR(Operand, Operand),
+    NOT(Operand, Size),
+    OR(Operand, Operand, Size),
+    AND(Operand, Operand, Size),
+    EOR(Operand, Operand, Size),
     JSR(Operand),
     ASd(Operand, Operand, ShiftDirection, Size),
     ROd(Operand, Operand, ShiftDirection, Size),
@@ -128,6 +133,7 @@ pub enum Instruction {
     BCLR(Operand, Operand),
     BSET(Operand, Operand),
     BCHG(Operand, Operand),
+    JMP(Operand),
     RTS,
 }
 

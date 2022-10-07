@@ -8,6 +8,7 @@ mod lexer;
 mod pre_interpreter;
 mod semantic_checker;
 mod utils;
+mod math;
 use crate::{
     lexer::{Lexer, ParsedLine},
     semantic_checker::{SemanticChecker, SemanticError},

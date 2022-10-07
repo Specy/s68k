@@ -34,7 +34,7 @@ impl SemanticError {
 }
 
 bitflags! {
-    struct AddressingMode: usize {
+    struct AdrMode: usize {
         const D_REG = 1<<0;
         const A_REG = 1<<1;
         const INDIRECT = 1<<9;
@@ -47,35 +47,36 @@ bitflags! {
     }
     struct Rules: usize {
         const NONE = 0;
-        const NO_D_REG = AddressingMode::D_REG.bits;
-        const NO_A_REG = AddressingMode::A_REG.bits;
-        const NO_IMMEDIATE = AddressingMode::IMMEDIATE.bits;
-        const NO_LABEL = AddressingMode::LABEL.bits;
-        const NO_ADDRESS = AddressingMode::ADDRESS.bits;
-        const NO_INDIRECT = AddressingMode::INDIRECT.bits;
+        const NO_D_REG = AdrMode::D_REG.bits;
+        const NO_A_REG = AdrMode::A_REG.bits;
+        const NO_IMMEDIATE = AdrMode::IMMEDIATE.bits;
+        const NO_LABEL = AdrMode::LABEL.bits;
+        const NO_ADDRESS = AdrMode::ADDRESS.bits;
+        const NO_INDIRECT = AdrMode::INDIRECT.bits;
 
-        const ONLY_REG = !(AddressingMode::D_REG.bits | AddressingMode::A_REG.bits);
-        const ONLY_A_REG = !AddressingMode::A_REG.bits;
-        const ONLY_D_REG = !AddressingMode::D_REG.bits;
-        const ONLY_INDIRECT = !AddressingMode::INDIRECT.bits;
-        const ONLY_D_REG_OR_INDIRECT = !(AddressingMode::D_REG.bits | AddressingMode::INDIRECT.bits);
-        const ONLY_D_REG_OR_INDIRECT_OR_ADDRESS = !(AddressingMode::D_REG.bits | AddressingMode::INDIRECT.bits | AddressingMode::ADDRESS.bits);
-        const ONLY_ADDRESS_OR_LABEL = !(AddressingMode::ADDRESS.bits | AddressingMode::LABEL.bits);
+        const ONLY_REG = !(AdrMode::D_REG.bits | AdrMode::A_REG.bits);
+        const ONLY_A_REG = !AdrMode::A_REG.bits;
+        const ONLY_D_REG = !AdrMode::D_REG.bits;
+        const ONLY_INDIRECT = !AdrMode::INDIRECT.bits;
+        const ONLY_D_REG_OR_INDIRECT = !(AdrMode::D_REG.bits | AdrMode::INDIRECT.bits);
+        const ONLY_D_REG_OR_INDIRECT_OR_ADDRESS = !(AdrMode::D_REG.bits | AdrMode::INDIRECT.bits | AdrMode::ADDRESS.bits);
+        const ONLY_ADDRESS_OR_LABEL = !(AdrMode::ADDRESS.bits | AdrMode::LABEL.bits);
+        const ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE = !(AdrMode::INDIRECT.bits | AdrMode::INDIRECT_DISPLACEMENT.bits  |  AdrMode::ADDRESS.bits | AdrMode::ADDRESS.bits | AdrMode::LABEL.bits);
     }
 }
 //TODO refactor this
-impl AddressingMode {
+impl AdrMode {
     pub fn get_name(&self) -> String {
         match *self {
-            AddressingMode::D_REG => "Dn",
-            AddressingMode::A_REG => "An",
-            AddressingMode::INDIRECT => "(An)",
-            AddressingMode::INDIRECT_POST_INCREMENT => "(An)+",
-            AddressingMode::INDIRECT_PRE_DECREMENT => "-(An)",
-            AddressingMode::INDIRECT_DISPLACEMENT => "(Dn, An)",
-            AddressingMode::IMMEDIATE => "Im",
-            AddressingMode::LABEL => "<LABEL>",
-            AddressingMode::ADDRESS => "Ea",
+            AdrMode::D_REG => "Dn",
+            AdrMode::A_REG => "An",
+            AdrMode::INDIRECT => "(An)",
+            AdrMode::INDIRECT_POST_INCREMENT => "(An)+",
+            AdrMode::INDIRECT_PRE_DECREMENT => "-(An)",
+            AdrMode::INDIRECT_DISPLACEMENT => "(Dn, An)",
+            AdrMode::IMMEDIATE => "Im",
+            AdrMode::LABEL => "<LABEL>",
+            AdrMode::ADDRESS => "Ea",
             _ => "UNKNOWN",
         }
         .to_string()
@@ -180,7 +181,7 @@ impl SemanticChecker {
                         self.verify_instruction_size(SizeRules::AnySize, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
-                    "adda" => {
+                    "adda" | "suba" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::ONLY_A_REG, line);
                         self.verify_instruction_size(SizeRules::AnySize, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
@@ -231,12 +232,12 @@ impl SemanticChecker {
                     }
                     "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt"
                     | "shi" | "smi" | "spl" | "svc" | "svs" | "sf" | "st" => {
-                        self.verify_one_arg(operands, Rules::ONLY_ADDRESS_OR_LABEL, line);
+                        self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
                     "not" => {
                         self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_instruction_size(SizeRules::AnySize, line);
                     }
                     "or" | "and" | "eor" => {
                         self.verify_two_args(
@@ -245,11 +246,15 @@ impl SemanticChecker {
                             Rules::NO_IMMEDIATE | Rules::NO_A_REG,
                             line,
                         );
+                        self.verify_instruction_size(SizeRules::AnySize, line);
+                    }
+                    "jmp" => {
+                        self.verify_one_arg(operands, Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE, line);
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
                     "jsr" => {
-                        //also accepts displacement
-                        self.verify_one_arg(operands, Rules::ONLY_ADDRESS_OR_LABEL, line);
+                        //TODO not sure of the rules here
+                        self.verify_one_arg(operands, Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE, line);
                         self.verify_instruction_size(SizeRules::NoSize, line);
                         self.errors.push(SemanticError::new(
                             line.clone(),
@@ -584,33 +589,33 @@ impl SemanticChecker {
             _ => panic!("Line is not an instruction"),
         }
     }
-    fn get_addressing_mode(&mut self, operand: &LexedOperand) -> Result<AddressingMode, &str> {
+    fn get_addressing_mode(&mut self, operand: &LexedOperand) -> Result<AdrMode, &str> {
         match operand {
             LexedOperand::Register(reg_type, reg_name) => match reg_type {
                 LexedRegisterType::Data => match reg_name[1..].parse::<i8>() {
-                    Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::D_REG),
+                    Ok(reg) if reg >= 0 && reg < 8 => Ok(AdrMode::D_REG),
                     _ => Err("Invalid data register"),
                 },
                 LexedRegisterType::Address => match reg_name[1..].parse::<i8>() {
-                    Ok(reg) if reg >= 0 && reg < 8 => Ok(AddressingMode::A_REG),
+                    Ok(reg) if reg >= 0 && reg < 8 => Ok(AdrMode::A_REG),
                     _ => Err("Invalid address register"),
                 },
-                LexedRegisterType::SP => Ok(AddressingMode::A_REG),
+                LexedRegisterType::SP => Ok(AdrMode::A_REG),
             },
 
             LexedOperand::Immediate(num) => match self.get_immediate_value(num) {
-                Ok(_) => Ok(AddressingMode::IMMEDIATE),
+                Ok(_) => Ok(AdrMode::IMMEDIATE),
                 Err(e) => Err(e),
             },
             LexedOperand::PostIndirect(boxed_arg) => match boxed_arg.as_ref() {
                 LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => {
-                    Ok(AddressingMode::INDIRECT_POST_INCREMENT)
+                    Ok(AdrMode::INDIRECT_POST_INCREMENT)
                 }
                 _ => Err("Invalid post indirect value, only address or SP registers allowed"),
             },
             LexedOperand::PreIndirect(boxed_arg) => match boxed_arg.as_ref() {
                 LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => {
-                    Ok(AddressingMode::INDIRECT_PRE_DECREMENT)
+                    Ok(AdrMode::INDIRECT_PRE_DECREMENT)
                 }
                 _ => Err("Invalid pre indirect value, only An or SP registers allowed"),
             },
@@ -629,10 +634,10 @@ impl SemanticChecker {
                 }
                 match operand.as_ref() {
                     LexedOperand::Register(LexedRegisterType::Address, _) => {
-                        Ok(AddressingMode::INDIRECT)
+                        Ok(AdrMode::INDIRECT)
                     }
                     LexedOperand::Register(LexedRegisterType::SP, _) => {
-                        Ok(AddressingMode::INDIRECT)
+                        Ok(AdrMode::INDIRECT)
                     }
                     _ => Err("Invalid indirect value, only address registers allowed"),
                 }
@@ -650,7 +655,7 @@ impl SemanticChecker {
                 }
                 match operands[..] {
                     [LexedOperand::Register(LexedRegisterType::Address, _), LexedOperand::Register(_, _)] => {
-                        Ok(AddressingMode::INDIRECT_DISPLACEMENT)
+                        Ok(AdrMode::INDIRECT_DISPLACEMENT)
                     }
                     _ => Err(
                         "Invalid indirect with displacement value, only \"(An, Dn/An)\" allowed",
@@ -659,13 +664,13 @@ impl SemanticChecker {
             }
             LexedOperand::Label(name) => {
                 if self.labels.contains_key(name) {
-                    Ok(AddressingMode::LABEL)
+                    Ok(AdrMode::LABEL)
                 } else {
                     Err("Label does not exist")
                 }
             }
             LexedOperand::Address(data) => match i64::from_str_radix(&data[1..], 16) {
-                Ok(_) => Ok(AddressingMode::ADDRESS),
+                Ok(_) => Ok(AdrMode::ADDRESS),
                 Err(_) => Err("Invalid hex address"),
             },
             LexedOperand::Other(_) => Err("Unknown operand"),

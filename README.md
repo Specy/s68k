@@ -17,18 +17,18 @@ The interpreter is split into individual modules that can be used standalone for
 
 - interpreter: *UNDER DEVELOPMENT*, the final piece of the project and probably the most complex, whose job will be to actually execute the code
 
-**WARNING** as this is only an interpreter, it does not load the actual program in memory, hence there might be some limitations when doing jumps and branches that use (like jsr instruction)
+**WARNING** as this is only an interpreter, it does not load the actual program in memory so it won't be possible to modify instructions at runtime
+
 ## Might do
-- Add jsr instruction
 - Interrupts for input and output (trap instruction)
 - Assembler
 - Disassembler (unlikely)
 
 ## Supported instructions:
-move | add | sub | adda | divs | divu | muls | mulu | swap | clr | exg | neg | ext | tst | cmp | beq | bne | blt | ble | bgt | bge | blo | bls | bhi | bhs | scc | scs | seq | sne | sge | sgt | sle | sls | slt | shi | smi | spl | svc | svs | sf | st | not | or | and | eor | lsl | lsr | asr | asl | rol | ror | btst | bclr | bchg | bset | bsr | bra
+move | add | sub | suba | adda | divs | divu | muls | mulu | swap | clr | exg | neg | ext | tst | cmp | beq | bne | blt | ble | bgt | bge | blo | bls | bhi | bhs | scc | scs | seq | sne | sge | sgt | sle | sls | slt | shi | smi | spl | svc | svs | sf | st | not | or | and | eor | lsl | lsr | asr | asl | rol | ror | btst | bclr | bchg | bset | bsr | bra | jsr
 
 directives:
-equ | org
+equ | org | dc | ds | dcb
 
 ## Todo
 - Add more instructions

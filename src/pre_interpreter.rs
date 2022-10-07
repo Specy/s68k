@@ -1,6 +1,6 @@
 use crate::{
     instructions::{
-        Condition, Instruction, Operand, RegisterOperand, RegisterType, ShiftDirection, Size,
+        Condition, Instruction, Operand, RegisterOperand, RegisterType, ShiftDirection, Size, Sign,
     },
     interpreter::Register,
     lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
@@ -187,7 +187,6 @@ impl PreInterpreter {
             }
         }
     }
-
     fn parse_instruction(
         &self,
         name: &String,
@@ -206,14 +205,20 @@ impl PreInterpreter {
                     self.extract_register(op2).unwrap(),
                     self.get_size(size, Size::Word),
                 ),
-                "divs" => Instruction::DIVS(op1, self.extract_register(op2).unwrap()),
-                "divu" => Instruction::DIVU(op1, self.extract_register(op2).unwrap()),
-                "muls" => Instruction::MULS(op1, self.extract_register(op2).unwrap()),
-                "exg" => Instruction::EXG(self.extract_register(op1).unwrap(), op2),
+                "suba" => Instruction::SUBA(
+                    op1,
+                    self.extract_register(op2).unwrap(),
+                    self.get_size(size, Size::Word),
+                ),
+                "divs" => Instruction::DIVx(op1, self.extract_register(op2).unwrap(), Sign::Signed),
+                "divu" => Instruction::DIVx(op1, self.extract_register(op2).unwrap(), Sign::Unsigned),
+                "muls" => Instruction::MULx(op1, self.extract_register(op2).unwrap(), Sign::Signed),
+                "mulu" => Instruction::MULx(op1, self.extract_register(op2).unwrap(), Sign::Unsigned),
+                "exg" => Instruction::EXG(self.extract_register(op1).unwrap(), self.extract_register(op2).unwrap()),
                 "cmp" => Instruction::CMP(op1, op2, self.get_size(size, Size::Word)),
-                "or" => Instruction::OR(op1, op2),
-                "and" => Instruction::AND(op1, op2),
-                "eor" => Instruction::EOR(op1, op2),
+                "or" => Instruction::OR(op1, op2, self.get_size(size, Size::Word)),
+                "and" => Instruction::AND(op1, op2, self.get_size(size, Size::Word)),
+                "eor" => Instruction::EOR(op1, op2, self.get_size(size, Size::Word)),
                 "lsl" => Instruction::LSd(
                     op1,
                     op2,
@@ -264,28 +269,31 @@ impl PreInterpreter {
                 "ext" => Instruction::EXT(
                     self.extract_register(op).unwrap(),
                     self.get_size(size, Size::Word),
+                    match size {
+                        LexedSize::Byte => Size::Word,
+                        LexedSize::Word => Size::Long,
+                        _ => panic!("Invalid size"),
+                    },
                 ),
+                "extb" => {
+                    Instruction::EXT(self.extract_register(op).unwrap(), Size::Byte, Size::Long)
+                }
                 "tst" => Instruction::TST(op, self.get_size(size, Size::Word)),
-                //bcc
                 "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs"
                 | "bsr" | "bra" => {
-                    let condition = Condition::from_string(name);
-                    match condition {
-                        Ok(c) => Instruction::Bcc(op, c),
-                        Err(e) => panic!("{}", e),
-                    }
+                    let condition = Condition::from_string(name).unwrap();
+                    let address = self.extract_address(&op).unwrap();
+                    Instruction::Bcc(address, condition)
                 }
+                "jmp" => Instruction::JMP(op),
                 //scc
                 "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt" | "shi"
                 | "smi" | "spl" | "svc" | "svs" | "sf" | "st" => {
-                    let condition = Condition::from_string(name);
-                    match condition {
-                        Ok(c) => Instruction::Scc(op, c),
-                        Err(e) => panic!("{}", e),
-                    }
+                    let condition = Condition::from_string(name).unwrap();
+                    Instruction::Scc(op, condition)
                 }
-
-                "not" => Instruction::NOT(op),
+                //not sure if the default is word
+                "not" => Instruction::NOT(op, self.get_size(size, Size::Word)),
                 "jsr" => Instruction::JSR(op),
                 _ => panic!("Invalid instruction"),
             }
@@ -380,6 +388,12 @@ impl PreInterpreter {
         match operand {
             Operand::Register(reg) => Ok(reg),
             _ => Err("Operand is not a register"),
+        }
+    }
+    fn extract_address(&self, operand: &Operand) -> Result<u32, &str> {
+        match operand {
+            Operand::Address(addr) => Ok(*addr as u32),
+            _ => Err("Operand is not an address"),
         }
     }
     fn parse_operand(&mut self, operand: &LexedOperand, line: &ParsedLine) -> Operand {

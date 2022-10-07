@@ -1,15 +1,52 @@
-use core::panic;
-use std::{collections::HashMap, hash::Hash};
+/*
+    Some of the implementations were inspired/taken from here, especially the complex flag handling and some mathematical operations
+    https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/execute.rs
+*/
+
 
 use crate::{
-    instructions::{Instruction, Operand, RegisterOperand, RegisterType, Size},
+    instructions::{
+        Condition, Instruction, Operand, RegisterOperand, RegisterType, ShiftDirection, Sign, Size,
+    },
+    math::*,
     pre_interpreter::{Directive, InstructionLine, Label, PreInterpreter},
 };
+use bitflags::bitflags;
+use core::panic;
+use std::{collections::HashMap, hash::Hash};
 
 #[derive(Debug)]
 pub struct Memory {
     data: Vec<u8>,
     pub sp: usize,
+}
+
+bitflags! {
+    struct Flags: u16 {
+        const Carry    = 1<<1;
+        const Overflow = 1<<2;
+        const Zero     = 1<<3;
+        const Negative = 1<<4;
+        const Extend   = 1<<5;
+    }
+}
+impl Flags {
+    pub fn new() -> Self {
+        Flags::empty()
+    }
+    pub fn clear(&mut self) {
+        self.bits = 0;
+    }
+    pub fn get_status(&self) -> String {
+        format!(
+            "X:{} N:{} Z:{} V:{} C:{}",
+            self.contains(Flags::Extend) as u8,
+            self.contains(Flags::Negative) as u8,
+            self.contains(Flags::Zero) as u8,
+            self.contains(Flags::Overflow) as u8,
+            self.contains(Flags::Carry) as u8
+        )
+    }
 }
 
 pub enum MemoryCell {
@@ -183,20 +220,17 @@ impl Register {
         self.data = 0;
     }
 }
-pub struct Ccr {
-    data: u8,
-}
 pub struct Cpu {
     d_reg: [Register; 8],
     a_reg: [Register; 8],
-    ccr: Ccr,
+    ccr: Flags,
 }
 impl Cpu {
     pub fn new() -> Self {
         Self {
             d_reg: [Register::new(); 8],
             a_reg: [Register::new(); 8],
-            ccr: Ccr { data: 0 },
+            ccr: Flags::new(),
         }
     }
 }
@@ -268,17 +302,293 @@ impl Interpreter {
         match ins {
             Instruction::MOVE(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size);
+                self.set_logic_flags(source_value, size);
                 self.store_operand_value(dest, source_value, size);
             }
+            Instruction::ADD(source, dest, size) => {
+                let source_value = self.get_operand_value(source, size);
+                let dest_value = self.get_operand_value(dest, size);
+                let (result, carry) = overflowing_add_sized(dest_value, source_value, size);
+                let overflow = has_add_overflowed(dest_value, source_value, result, size);
+                self.set_compare_flags(result, size, carry, overflow);
+                self.set_flag(Flags::Extend, carry);
+                self.store_operand_value(dest, result, size);
+            }
+            Instruction::SUB(source, dest, size) => {
+                let source_value = self.get_operand_value(source, size);
+                let dest_value = self.get_operand_value(dest, size);
+                let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
+                let overflow = has_sub_overflowed(dest_value, source_value, result, size);
+                self.set_compare_flags(result, size, carry, overflow);
+                self.set_flag(Flags::Extend, carry);
+                self.store_operand_value(dest, result, size);
+            }
+            Instruction::ADDA(source, dest, size) => {
+                let source_value =
+                    sign_extend_to_long(self.get_operand_value(source, size), size) as u32;
+                let dest_value = self.get_register_value(dest, size);
+                let (result, _) = overflowing_add_sized(dest_value, source_value, &Size::Long);
+                self.set_register_value(dest, result, &Size::Long);
+            }
+            Instruction::MULx(source, dest, sign) => {
+                let src_val = self.get_operand_value(source, &Size::Word);
+                let dest_val =
+                    get_value_sized(self.get_register_value(dest, &Size::Long), &Size::Word);
+                let result = match sign {
+                    Sign::Signed => {
+                        ((((dest_val as u16) as i16) as i64) * (((src_val as u16) as i16) as i64))
+                            as u64
+                    }
+                    Sign::Unsigned => dest_val as u64 * src_val as u64,
+                };
+                self.set_compare_flags(result as u32, &Size::Long, false, false);
+                self.set_register_value(dest, result as u32, &Size::Long);
+            }
+            Instruction::LSd(amount_source, dest, direction, size) => {
+                let amount = self.get_operand_value(amount_source, size) % 64;
+                let mut pair = (self.get_operand_value(dest, size), false);
+                for _ in 0..amount {
+                    pair = shift(direction, pair.0, size, false);
+                }
+                self.store_operand_value(dest, pair.0, size);
+                self.set_logic_flags(pair.0, size);
+                self.set_flag(Flags::Overflow, false);
+                if amount != 0 {
+                    self.set_flag(Flags::Extend, pair.1);
+                    self.set_flag(Flags::Carry, pair.1);
+                } else {
+                    self.set_flag(Flags::Carry, false);
+                }
+            }
+            Instruction::BRA(address) => {
+                //TODO what's the difference between bra and jmp?
+                self.pc = *address as usize;
+            }
+            Instruction::JMP(op) => {
+                let addr = self.get_operand_value(op, &Size::Long);
+                self.pc = addr as usize;
+            }
+            Instruction::JSR(source) => {
+                //TODO what's the difference between jsr and bsr?
+                let previous_pc = self.pc;
+                let addr = self.get_operand_value(source, &Size::Long);
+                self.pc = addr as usize;
+                self.memory.push(&MemoryCell::Long(previous_pc as u32));
+            }
+
+            Instruction::BCHG(bit_source, dest) => {
+                let bit = self.get_operand_value(bit_source, &Size::Byte);
+                let mut source_value = self.get_operand_value(dest, &Size::Long);
+                let mask = self.set_bit_test_flags(source_value, bit, &Size::Long);
+                source_value = (source_value & !mask) | (!(source_value & mask) & mask);
+                self.store_operand_value(dest, source_value, &Size::Long);
+            }
+            Instruction::BCLR(bit_source, dest) => {
+                let bit = self.get_operand_value(bit_source, &Size::Byte);
+                let mut src_val = self.get_operand_value(dest, &Size::Long);
+                let mask = self.set_bit_test_flags(src_val, bit, &Size::Long);
+                src_val = src_val & !mask;
+                self.store_operand_value(dest, src_val, &Size::Long);
+            }
+            Instruction::BSET(bit_source, dest) => {
+                let bit = self.get_operand_value(bit_source, &Size::Byte);
+                let mut value = self.get_operand_value(dest, &Size::Long);
+                let mask = self.set_bit_test_flags(value, bit, &Size::Long);
+                value = value | mask;
+                self.store_operand_value(dest, value, &Size::Long);
+            }
+
+            Instruction::BTST(bit, op2) => {
+                let bit = self.get_operand_value(bit, &Size::Byte);
+                let value = self.get_operand_value(op2, &Size::Long);
+                self.set_bit_test_flags(value, bit, &Size::Long);
+            }
+            Instruction::ASd(amount, dest, direction, size) => {
+                let amount_value = self.get_operand_value(amount, size) % 64;
+                let dest_value = self.get_operand_value(dest, size);
+                let mut has_overflowed = false;
+                let (mut value,mut has_carry) = (dest_value, false);
+                let mut previous_msb = get_sign(value, size);
+                for _ in 0..amount_value {
+                    (value, has_carry) = shift(direction, value, size, true);
+                    if get_sign(value, size) != previous_msb {
+                        has_overflowed = true;
+                    }
+                    previous_msb = get_sign(value, size);
+                }
+                self.store_operand_value(dest, value, size);
+
+                let carry = match direction {
+                    ShiftDirection::Left => has_carry,
+                    ShiftDirection::Right => {
+                        if amount_value < size.to_bits() as u32 {
+                            has_carry
+                        } else {
+                            false
+                        }
+                    }
+                };
+                self.set_logic_flags(value, size);
+                self.set_flag(Flags::Overflow, has_overflowed);
+                if amount_value != 0 {
+                    self.set_flag(Flags::Extend, carry);
+                    self.set_flag(Flags::Carry, carry);
+                } else {
+                    self.set_flag(Flags::Carry, false);
+                }
+            }
+            Instruction::ROd(amount, dest, direction, size) => {
+                let count = self.get_operand_value(amount, size) % 64;
+                let (mut value,mut carry) = (self.get_operand_value(dest, size), false);
+                for _ in 0..count {
+                    (value, carry) = rotate(direction, value, size);
+                }
+                self.store_operand_value(dest, value, size);
+                self.set_logic_flags(value, size);
+                if carry {
+                    self.set_flag(Flags::Carry, true);
+                }
+            }
+            Instruction::SUBA(source, dest, size) => {
+                let source_value =
+                    sign_extend_to_long(self.get_operand_value(source, size), size) as u32;
+                let dest_value = self.get_register_value(dest, size);
+                let (result, _) = overflowing_sub_sized(dest_value, source_value, &Size::Long);
+                self.set_register_value(dest, result, &Size::Long);
+            }
+            Instruction::AND(source, dest, size) => {
+                let source_value = self.get_operand_value(source, size);
+                let dest_value = self.get_operand_value(dest, size);
+                let result = get_value_sized(dest_value & source_value, size);
+                self.store_operand_value(dest, result, size);
+                self.set_logic_flags(result, size);
+            }
+            Instruction::OR(source, dest, size) => {
+                let source_value = self.get_operand_value(source, size);
+                let dest_value = self.get_operand_value(dest, size);
+                let result = get_value_sized(dest_value | source_value, size);
+                self.store_operand_value(dest, result, size);
+                self.set_logic_flags(result, size);
+            }
+            Instruction::EOR(source, dest, size) => {
+                let source_value = self.get_operand_value(source, size);
+                let dest_value = self.get_operand_value(dest, size);
+                let result = get_value_sized(dest_value ^ source_value, size);
+                self.store_operand_value(dest, result, size);
+                self.set_logic_flags(result, size);
+            }
+            Instruction::NOT(op, size) => {
+                //watchout for the "!"
+                let value = !self.get_operand_value(op, size);
+                let value = get_value_sized(value, size);
+                self.store_operand_value(op, value, size);
+                self.set_logic_flags(value, size);
+            }
+            Instruction::NEG(source, size) => {
+                let original = self.get_operand_value(source, size);
+                let (result, overflow) = overflowing_sub_signed_sized(0, original, size);
+                let carry = result != 0;
+                self.store_operand_value(source, result, size);
+                self.set_compare_flags(result, size, carry, overflow);
+                self.set_flag(Flags::Extend, carry);
+            }
+            Instruction::DIVx(source, dest, sign) => {
+                let source_value = self.get_operand_value(source, &Size::Word);
+                if source_value == 0 {
+                    panic!("Division by zero");
+                }
+
+                let dest_value = self.get_register_value(dest, &Size::Long);
+                let dest_value = get_value_sized(dest_value, &Size::Long);
+                let (remainder, quotient, has_overflowed) = match sign {
+                    Sign::Signed => {
+                        let dest_value = dest_value as i32;
+                        let source_value = sign_extend_to_long(source_value, &Size::Word) as i32;
+                        let quotient = dest_value / source_value;
+                        (
+                            (dest_value % source_value) as u32,
+                            quotient as u32,
+                            quotient > i16::MAX as i32 || quotient < i16::MIN as i32,
+                        )
+                    }
+                    Sign::Unsigned => {
+                        let quotient = dest_value / source_value;
+                        (
+                            dest_value % source_value,
+                            quotient,
+                            (quotient & 0xFFFF0000) != 0,
+                        )
+                    }
+                };
+                if !has_overflowed {
+                    self.set_compare_flags(quotient as u32, &Size::Word, false, false);
+                    self.set_register_value(
+                        dest,
+                        (remainder << 16) | (0xFFFF & quotient),
+                        &Size::Long,
+                    );
+                } else {
+                    self.set_flag(Flags::Carry, false);
+                    self.set_flag(Flags::Overflow, true);
+                }
+            }
+            Instruction::EXG(reg1, reg2) => {
+                let reg1_value = self.get_register_value(reg1, &Size::Long);
+                let reg2_value = self.get_register_value(reg2, &Size::Long);
+                self.set_register_value(reg1, reg2_value, &Size::Long);
+                self.set_register_value(reg2, reg1_value, &Size::Long);
+            }
+            Instruction::EXT(reg, from, to) => {
+                let input = get_value_sized(self.get_register_value(reg, &Size::Long), from);
+                let result = match (from, to) {
+                    (Size::Byte, Size::Word) => ((((input as u8) as i8) as i16) as u16) as u32,
+                    (Size::Word, Size::Long) => (((input as u16) as i16) as i32) as u32,
+                    (Size::Byte, Size::Long) => (((input as u8) as i8) as i32) as u32,
+                    _ => panic!("Invalid size for EXT instruction"),
+                };
+                self.set_register_value(reg, result, &Size::Long);
+                self.set_logic_flags(result, to);
+            }
+            Instruction::SWAP(reg) => {
+                let value = self.get_register_value(reg, &Size::Long);
+                let new_value = ((value & 0x0000FFFF) << 16) | ((value & 0xFFFF0000) >> 16);
+                self.set_register_value(reg, new_value, &Size::Long);
+                self.set_logic_flags(new_value, &Size::Long);
+            }
+            Instruction::TST(source, size) => {
+                let value = self.get_operand_value(source, size);
+                self.set_logic_flags(value, size);
+            }
+            Instruction::CMP(source, dest, size) => {
+                let source_value = self.get_operand_value(source, size);
+                let dest_value = self.get_operand_value(dest, size);
+                let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
+                let overflow = has_sub_overflowed(dest_value, source_value, result, size);
+                self.set_compare_flags(result, size, carry, overflow);
+            }
+            Instruction::Bcc(address, condition) => {
+                if self.get_condition_value(condition) {
+                    self.pc = *address as usize;
+                }
+            }
+            Instruction::CLR(dest, size) => {
+                self.get_operand_value(dest, size); //apply side effects
+                self.store_operand_value(dest, 0, size);
+                self.cpu.ccr.clear();
+                self.set_flag(Flags::Zero, true);
+            }
+            Instruction::Scc(op, condition) => {
+                if self.get_condition_value(condition) {
+                    self.store_operand_value(op, 0xFF, &Size::Byte);
+                } else {
+                    self.store_operand_value(op, 0x00, &Size::Byte);
+                }
+            }
+
             Instruction::RTS => {
                 let return_address = self.memory.pop(Size::Long).get_long();
                 self.pc = return_address as usize;
-            }
-            //TODO add better string conversion
-            _ => panic!(
-                "Invalid or unimplemented instruction: {:?}",
-                ins.get_instruction_name()
-            ),
+            } //TODO add better string conversion
         }
     }
     #[rustfmt::skip]
@@ -301,6 +611,8 @@ impl Interpreter {
         println!("A5: {:#010X} ({})", self.cpu.a_reg[5].get_long(), self.cpu.a_reg[5].get_long());
         println!("A6: {:#010X} ({})", self.cpu.a_reg[6].get_long(), self.cpu.a_reg[6].get_long());
         println!("A7: {:#010X} ({})", self.cpu.a_reg[7].get_long(), self.cpu.a_reg[7].get_long());
+        let ccr = self.cpu.ccr.get_status();
+        println!("{}", ccr);
     }
     pub fn get_register_value(&self, register: &RegisterOperand, size: &Size) -> u32 {
         match register {
@@ -371,6 +683,85 @@ impl Interpreter {
     pub fn run(&mut self) {
         while !self.has_finished() {
             self.step();
+        }
+    }
+
+    fn get_flag(&self, flag: Flags) -> bool {
+        self.cpu.ccr.contains(flag)
+    }
+    fn set_flag(&mut self, flag: Flags, value: bool) {
+        self.cpu.ccr.set(flag, value)
+    }
+    fn set_logic_flags(&mut self, value: u32, size: &Size) {
+        let mut flags = Flags::new();
+        if get_sign(value, size) {
+            flags |= Flags::Negative;
+        }
+        if value == 0 {
+            flags |= Flags::Zero;
+        }
+        self.cpu.ccr.set(Flags::Carry, false);
+        self.cpu.ccr |= flags;
+    }
+    fn set_bit_test_flags(&mut self, value: u32, bitnum: u32, size: &Size) -> u32 {
+        let mask = 0x1 << (bitnum % size.to_bits() as u32);
+        self.set_flag(Flags::Zero, (value & mask) == 0);
+        mask
+    }
+    fn set_compare_flags(&mut self, value: u32, size: &Size, carry: bool, overflow: bool) {
+        let value = sign_extend_to_long(value, &size);
+        let mut flags = Flags::new();
+        if value < 0 {
+            flags |= Flags::Negative;
+        }
+        if value == 0 {
+            flags |= Flags::Zero;
+        }
+        if carry {
+            flags |= Flags::Carry;
+        }
+        if overflow {
+            flags |= Flags::Overflow;
+        }
+        self.cpu.ccr.set(Flags::Carry, false);
+        self.cpu.ccr |= flags;
+    }
+
+    fn get_condition_value(&self, cond: &Condition) -> bool {
+        match cond {
+            Condition::True => true,
+            Condition::False => false,
+            Condition::High => !self.get_flag(Flags::Carry) && !self.get_flag(Flags::Zero),
+            Condition::LowOrSame => self.get_flag(Flags::Carry) || self.get_flag(Flags::Zero),
+            Condition::CarryClear => !self.get_flag(Flags::Carry),
+            Condition::CarrySet => self.get_flag(Flags::Carry),
+            Condition::NotEqual => !self.get_flag(Flags::Zero),
+            Condition::Equal => self.get_flag(Flags::Zero),
+            Condition::OverflowClear => !self.get_flag(Flags::Overflow),
+            Condition::OverflowSet => self.get_flag(Flags::Overflow),
+            Condition::Plus => !self.get_flag(Flags::Negative),
+            Condition::Minus => self.get_flag(Flags::Negative),
+            Condition::GreaterThanOrEqual => {
+                (self.get_flag(Flags::Negative) && self.get_flag(Flags::Overflow))
+                    || (!self.get_flag(Flags::Negative) && !self.get_flag(Flags::Overflow))
+            }
+            Condition::LessThan => {
+                (self.get_flag(Flags::Negative) && !self.get_flag(Flags::Overflow))
+                    || (!self.get_flag(Flags::Negative) && self.get_flag(Flags::Overflow))
+            }
+            Condition::GreaterThan => {
+                (self.get_flag(Flags::Negative)
+                    && self.get_flag(Flags::Overflow)
+                    && !self.get_flag(Flags::Zero))
+                    || (!self.get_flag(Flags::Negative)
+                        && !self.get_flag(Flags::Overflow)
+                        && !self.get_flag(Flags::Zero))
+            }
+            Condition::LessThanOrEqual => {
+                self.get_flag(Flags::Zero)
+                    || (self.get_flag(Flags::Negative) && !self.get_flag(Flags::Overflow))
+                    || (!self.get_flag(Flags::Negative) && self.get_flag(Flags::Overflow))
+            }
         }
     }
 }
