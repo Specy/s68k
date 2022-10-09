@@ -13,6 +13,7 @@
     "webpack-dev-server": "^4.11.1"
   },
   "dependencies": {
+    "copy-webpack-plugin": "^11.0.0",
     "s68k": "^0.1.0"
   }
 }

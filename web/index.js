@@ -15,8 +15,6 @@ compile.addEventListener("click", () => {
     const text = code.value
     currentProgram = new S68k(text)
     const errors = currentProgram.wasm_semantic_check()
-    const lines = currentProgram.wasm_get_lexed_lines()
-    console.log(lines)
     localStorage.setItem("s68k_code", text)
     errorWrapper.innerHTML = ""
     for (let i = 0; i < errors.get_length(); i++) {
@@ -41,7 +39,7 @@ function disableButtons(value) {
     clear.disabled = value
 }
 
-function disableExecution(value){
+function disableExecution(value) {
     run.disabled = value
     step.disabled = value
 }
@@ -53,10 +51,16 @@ clear.addEventListener("click", () => {
     currentInstruction.innerText = ""
 })
 
+function handleInterrupt() {
+
+}
+
+
 run.addEventListener('click', () => {
     currentInterpreter.wasm_run()
     const cpu = currentInterpreter.wasm_get_cpu_snapshot()
     updateRegisters([...cpu.wasm_get_d_regs_value(), ...cpu.wasm_get_a_regs_value()])
+
     disableExecution(true)
 })
 
