@@ -1,0 +1,13 @@
+{
+  "name": "s68k",
+  "version": "0.1.1",
+  "files": [
+    "s68k_bg.wasm",
+    "s68k.js",
+    "s68k_bg.js",
+    "s68k.d.ts"
+  ],
+  "module": "s68k.js",
+  "types": "s68k.d.ts",
+  "sideEffects": false
+}

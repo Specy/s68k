@@ -1,9 +1,9 @@
-use interpreter::Interpreter;
+use interpreter::{Interpreter};
 use pre_interpreter::PreInterpreter;
 use wasm_bindgen::prelude::*;
 mod constants;
-mod instructions;
-mod interpreter;
+pub mod instructions;
+pub mod interpreter;
 mod lexer;
 mod pre_interpreter;
 mod semantic_checker;
@@ -13,6 +13,7 @@ use crate::{
     lexer::{Lexer, ParsedLine},
     semantic_checker::{SemanticChecker, SemanticError},
 };
+
 #[wasm_bindgen]
 pub struct S68k {
     code: String,

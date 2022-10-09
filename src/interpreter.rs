@@ -4,7 +4,10 @@
 */
 
 use crate::{
-    instructions::{Condition, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size},
+    instructions::{
+        Condition, Instruction, Interrupt, InterruptResult, Operand, RegisterOperand,
+        ShiftDirection, Sign, Size,
+    },
     math::*,
     pre_interpreter::{Directive, InstructionLine, Label, PreInterpreter},
 };
@@ -296,7 +299,16 @@ pub enum RuntimeError {
     Unimplemented,
 }
 
-type RuntimeResult<T> = Result<T, RuntimeError>;
+pub type RuntimeResult<T> = Result<T, RuntimeError>;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Copy)]
+#[wasm_bindgen]
+pub enum InterpreterStatus {
+    Running,
+    Interrupt,
+    Terminated,
+    TerminatedWithException,
+}
 
 #[wasm_bindgen]
 pub struct Interpreter {
@@ -305,7 +317,8 @@ pub struct Interpreter {
     pc: usize,
     program: HashMap<usize, InstructionLine>,
     final_instruction_address: usize,
-    has_terminated: bool,
+    current_interrupt: Option<Interrupt>,
+    status: InterpreterStatus,
 }
 
 impl Interpreter {
@@ -316,7 +329,8 @@ impl Interpreter {
             pc: pre_interpreted_program.get_start_address(),
             final_instruction_address: pre_interpreted_program.get_final_instruction_address(),
             program: pre_interpreted_program.get_instructions_map(),
-            has_terminated: false,
+            current_interrupt: None,
+            status: InterpreterStatus::Running,
         };
         interpreter.cpu.a_reg[7].store_long((memory_size >> 1) as u32);
         match interpreter.prepare_memory(&pre_interpreted_program.get_labels_map()) {
@@ -340,9 +354,6 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn has_finished(&self) -> bool {
-        self.pc > self.final_instruction_address
-    }
     pub fn get_cpu(&self) -> &Cpu {
         &self.cpu
     }
@@ -352,33 +363,112 @@ impl Interpreter {
     pub fn get_pc(&self) -> usize {
         self.pc
     }
-    pub fn step(&mut self) -> RuntimeResult<InstructionLine> {
+
+    pub fn get_status(&self) -> &InterpreterStatus {
+        &self.status
+    }
+    fn set_status(&mut self, status: InterpreterStatus) {
+        match self.status {
+            InterpreterStatus::Terminated | InterpreterStatus::TerminatedWithException => {
+                panic!("Cannot change status of terminated program")
+            }
+            _ => self.status = status,
+        }
+    }
+    pub fn has_terminated(&self) -> bool {
+        return self.status == InterpreterStatus::Terminated
+            || self.status == InterpreterStatus::TerminatedWithException;
+    }
+    pub fn has_reached_botton(&self) -> bool {
+        self.pc > self.final_instruction_address
+    }
+    pub fn step(&mut self) -> RuntimeResult<(InstructionLine, InterpreterStatus)> {
         match self.get_instruction_at(self.pc) {
+            _ if self.status == InterpreterStatus::Terminated
+                || self.status == InterpreterStatus::TerminatedWithException =>
+            {
+                Err(RuntimeError::Raw(
+                    "Attempt to run terminated program".to_string(),
+                ))
+            }
+            _ if self.status == InterpreterStatus::Interrupt => Err(RuntimeError::Raw(
+                "Attempted to step while interrupt is pending".to_string(),
+            )),
+
             Some(ins) => {
                 let clone = ins.clone();
                 //need to find a way to remove this clone
                 self.execute_instruction(&clone)?;
                 self.increment_pc(4);
-                Ok(clone)
+                let status = self.get_status();
+                //TODO not sure if doing this before or after running the instruction
+                if self.has_reached_botton() && *status != InterpreterStatus::Interrupt {
+                    self.set_status(InterpreterStatus::Terminated);
+                }
+                Ok((clone, self.status))
             }
             None if self.pc < self.final_instruction_address => {
-                self.has_terminated = true;
+                self.set_status(InterpreterStatus::TerminatedWithException);
                 return Err(RuntimeError::OutOfBounds(format!(
                     "Invalid instruction address: {}",
-                    self.pc
+                    self.pc,
                 )));
             }
             None => {
-                self.has_terminated = true;
+                self.set_status(InterpreterStatus::TerminatedWithException);
                 return Err(RuntimeError::Raw("Program has terminated".to_string()));
             }
         }
     }
-    pub fn increment_pc(&mut self, amount: usize) {
+    pub fn answer_interrupt(&mut self, interrupt_result: InterruptResult) -> RuntimeResult<()> {
+        match interrupt_result {
+            InterruptResult::DisplayNumber
+            | InterruptResult::DisplayStringWithCRLF
+            | InterruptResult::DisplayStringWithoutCRLF => {}
+            InterruptResult::ReadKeyboardString(str) => {
+                if str.len() > 80 {
+                    //TODO should i error or truncate?
+                    return Err(RuntimeError::Raw(
+                        "String is longer than 80 chars".to_string(),
+                    ));
+                }
+                let address = self.cpu.a_reg[0].get_long() as usize;
+                self.memory.write_bytes(address, str.as_bytes())?;
+                self.cpu.d_reg[1].store_word(str.len() as u16);
+            }
+            InterruptResult::ReadNumber(num) => {
+                self.cpu.d_reg[1].store_long(num as u32);
+            }
+            InterruptResult::ReadChar(char) => {
+                self.cpu.d_reg[1].store_byte(char as u8);
+            }
+            InterruptResult::GetTime(time) => {
+                self.cpu.d_reg[1].store_long(time);
+            }
+            InterruptResult::Terminate => {
+                self.set_status(InterpreterStatus::Terminated);
+            }
+        };
+        self.current_interrupt = None;
+        //edge case if the last instruction is an interrupt
+        self.status = if self.has_reached_botton() {
+            InterpreterStatus::Terminated
+        } else {
+            InterpreterStatus::Running
+        };
+        Ok(())
+    }
+    fn increment_pc(&mut self, amount: usize) {
         self.pc += amount;
     }
     pub fn get_instruction_at(&self, address: usize) -> Option<&InstructionLine> {
         self.program.get(&address)
+    }
+    pub fn get_current_interrupt(&self) -> RuntimeResult<Interrupt> {
+        match &self.current_interrupt {
+            Some(interrupt) => Ok(interrupt.clone()),
+            None => Err(RuntimeError::Raw("No interrupt pending".to_string())),
+        }
     }
     fn execute_instruction(&mut self, instruction_line: &InstructionLine) -> RuntimeResult<()> {
         let ins = &instruction_line.instruction;
@@ -582,7 +672,6 @@ impl Interpreter {
                 if source_value == 0 {
                     return Err(RuntimeError::DivisionByZero);
                 }
-
                 let dest_value = self.get_register_value(dest, &Size::Long);
                 let dest_value = get_value_sized(dest_value, &Size::Long);
                 let (remainder, quotient, has_overflowed) = match sign {
@@ -673,6 +762,20 @@ impl Interpreter {
                 let return_address = self.memory.pop(Size::Long).get_long();
                 self.pc = return_address as usize;
             }
+            Instruction::TRAP(value) => match value {
+                15 => {
+                    let task = self.cpu.d_reg[0].get_byte();
+                    let interrupt = self.get_interrupt(task)?;
+                    self.current_interrupt = Some(interrupt);
+                    self.set_status(InterpreterStatus::Interrupt);
+                }
+                _ => {
+                    return Err(RuntimeError::Raw(format!(
+                        "Unknown trap: {}, only IO with #15 allowed",
+                        value
+                    )))
+                }
+            },
         };
         Ok(())
     }
@@ -711,7 +814,40 @@ impl Interpreter {
             RegisterOperand::Data(num) => self.cpu.d_reg[*num as usize].store_size(size, value),
         }
     }
-    pub fn get_operand_value(&mut self, op: &Operand, size: &Size) -> RuntimeResult<u32> {
+
+    fn get_interrupt(&mut self, value: u8) -> RuntimeResult<Interrupt> {
+        match value {
+            0 | 1 => {
+                let address = self.cpu.a_reg[1].get_long();
+                let length = self.cpu.d_reg[1].get_word() as i32;
+                if length > 255 || length < 0 {
+                    return Err(RuntimeError::Raw(format!("Invalid String read, length of string in d1 register is: {}, expected between 0 and 255", length)));
+                } else {
+                    let bytes = self.memory.read_bytes(address as usize, length as usize)?;
+                    //TODO implement call to interrupt handler
+                    match String::from_utf8(bytes.to_vec()) {
+                        Ok(str) if value == 0 => Ok(Interrupt::DisplayStringWithCRLF(str)),
+                        Ok(str) if value == 1 => Ok(Interrupt::DisplayStringWithoutCRLF(str)),
+                        Err(_) | Ok(_) => Err(RuntimeError::Raw(format!(
+                            "Invalid String read, received: {:?}, expected UTF-8",
+                            bytes
+                        ))),
+                    }
+                }
+            }
+            2 => Ok(Interrupt::ReadKeyboardString),
+            3 => {
+                let value = self.cpu.d_reg[1].get_long();
+                Ok(Interrupt::DisplayNumber(value))
+            }
+            4 => Ok(Interrupt::ReadNumber),
+            5 => Ok(Interrupt::ReadChar),
+            6 => Ok(Interrupt::GetTime),
+            7 => Ok(Interrupt::Terminate),
+            _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
+        }
+    }
+    fn get_operand_value(&mut self, op: &Operand, size: &Size) -> RuntimeResult<u32> {
         match op {
             Operand::Immediate(v) => Ok(*v),
             Operand::Register(op) => Ok(self.get_register_value(&op, size)),
@@ -736,12 +872,7 @@ impl Interpreter {
             }
         }
     }
-    pub fn store_operand_value(
-        &mut self,
-        op: &Operand,
-        value: u32,
-        size: &Size,
-    ) -> RuntimeResult<()> {
+    fn store_operand_value(&mut self, op: &Operand, value: u32, size: &Size) -> RuntimeResult<()> {
         match op {
             Operand::Immediate(_) => Err(RuntimeError::IncorrectAddressingMode(
                 "Attempted to store to immediate value".to_string(),
@@ -770,30 +901,42 @@ impl Interpreter {
             }
         }
     }
-
-    pub fn run(&mut self) {
-        if self.has_terminated {
-            panic!("Attempted to run terminated emulator");
+    pub fn run(&mut self) -> RuntimeResult<InterpreterStatus> {
+        if self.status == InterpreterStatus::Terminated
+            || self.status == InterpreterStatus::TerminatedWithException
+        {
+            return Err(RuntimeError::Raw(
+                "Attempted to run terminated emulator".to_string(),
+            ));
         }
-        while !self.has_finished() {
+        if self.status == InterpreterStatus::Interrupt {
+            return Err(RuntimeError::Raw(
+                "Attempted to run emulator with pending interrupt".to_string(),
+            ));
+        }
+        while self.status == InterpreterStatus::Running {
             match self.step() {
                 Ok(_) => {}
                 Err(e) => match self.get_instruction_at(self.pc) {
                     Some(ins) => {
-                        panic!(
+                        return Err(RuntimeError::Raw(format!(
                             "Runtime error at line:{} {:?}",
                             ins.parsed_line.line_index, e
-                        );
+                        )))
                     }
                     None => {
-                        panic!("Unknown runtime error {:?}", e);
+                        return Err(RuntimeError::Raw(format!(
+                            "Unknown Runtime error at PC:{} {:?}",
+                            self.pc, e
+                        )));
                     }
                 },
             }
         }
+        Ok(self.status)
     }
 
-    fn get_flag(&self, flag: Flags) -> bool {
+    pub fn get_flag(&self, flag: Flags) -> bool {
         self.cpu.ccr.contains(flag)
     }
     fn set_flag(&mut self, flag: Flags, value: bool) {
@@ -834,7 +977,7 @@ impl Interpreter {
         self.cpu.ccr |= flags;
     }
 
-    fn get_condition_value(&self, cond: &Condition) -> bool {
+    pub fn get_condition_value(&self, cond: &Condition) -> bool {
         match cond {
             Condition::True => true,
             Condition::False => false,
@@ -898,13 +1041,10 @@ impl Interpreter {
             Err(e) => serde_wasm_bindgen::to_value(&e).unwrap(),
         }
     }
-    pub fn wasm_run(&mut self) {
-        self.run();
+    pub fn wasm_run(&mut self) -> InterpreterStatus {
+        match self.run() {
+            Ok(status) => status,
+            Err(e) => panic!("Runtime error {:?}", e),
+        }
     }
 }
-
-/*
-Detecting overflows can be done with checked_add (returns None on overflow) or overflowing_add (returns a tuple of (wrapped_result, did_it_overflow)).
-Also be aware of saturating_add (stops "just short" of overflowing, e.g. 250u8.saturating_add(10) == 255u8) and wrapping_add (explicitly wraps).
-These operations all exist for sub and mul as well, and div has a checked variant (catches x / 0 and iX::MIN / -1)
-*/

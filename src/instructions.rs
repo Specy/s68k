@@ -137,7 +137,30 @@ pub enum Instruction {
     BCHG(Operand, Operand),
     JMP(Operand),
     BSR(u32),
+    TRAP(u8),
     RTS,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum Interrupt{
+    DisplayStringWithCRLF(String),
+    DisplayStringWithoutCRLF(String),
+    ReadKeyboardString,
+    DisplayNumber(u32),
+    ReadNumber,
+    ReadChar,
+    GetTime,
+    Terminate,
+}
+pub enum InterruptResult{
+    DisplayStringWithCRLF,
+    DisplayStringWithoutCRLF,
+    ReadKeyboardString(String),
+    DisplayNumber,
+    ReadNumber(i32),
+    ReadChar(char),
+    GetTime(u32),
+    Terminate,
 }
 
 impl Instruction {

@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
     instructions::{Condition, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size},
+    interpreter::RuntimeError,
     lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     utils::parse_char_or_num,
 };
@@ -35,7 +36,13 @@ pub struct InstructionLine {
     pub address: usize,
     pub parsed_line: ParsedLine,
 }
+pub enum CompilationError {
+    Raw(String),
+    InvalidTrap(String),
+    InvalidAddressingMode(String),
+}
 
+pub type CompilationResult<T> = Result<T, CompilationError>;
 impl fmt::Debug for InstructionLine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InstructionLine")
@@ -96,19 +103,20 @@ impl PreInterpreter {
         self.parse_instruction_lines(lines);
 
         let start = self.labels.get("start");
-        match start {
-            Some(label) => {
-                self.start_address = label.address;
-            }
-            None => {}
-        }
+        self.start_address = match start {
+            Some(label) => label.address,
+            None => match self.instructions.first() {
+                Some(instruction) => instruction.address,
+                None => 0,
+            },
+        };
         self.final_instrucion_address = match self.instructions.last() {
             Some(instruction) => instruction.address,
             None => 0,
         };
     }
 
-    fn parse_instruction_lines(&mut self, lines: &[ParsedLine]) {
+    fn parse_instruction_lines(&mut self, lines: &[ParsedLine]) -> CompilationResult<()> {
         for (i, line) in lines.iter().enumerate() {
             match &line.parsed {
                 LexedLine::Instruction {
@@ -121,7 +129,7 @@ impl PreInterpreter {
                         .map(|x| self.parse_operand(x, line))
                         .collect();
                     let instuction_line = InstructionLine {
-                        instruction: self.parse_instruction(name, parsed_operands, size),
+                        instruction: self.parse_instruction(name, parsed_operands, size)?,
                         address: self.line_addresses[i],
                         parsed_line: line.clone(),
                     };
@@ -130,17 +138,18 @@ impl PreInterpreter {
                 _ => {}
             }
         }
+        Ok(())
     }
     fn parse_instruction(
         &self,
         name: &String,
         mut operands: Vec<Operand>,
         size: &LexedSize,
-    ) -> Instruction {
+    ) -> CompilationResult<Instruction> {
         //TODO add better error logging
         if operands.len() == 2 {
             let (op1, op2) = (operands.remove(0), operands.remove(0));
-            match name.as_str() {
+            let parsed = match name.as_str() {
                 "move" => Instruction::MOVE(op1, op2, self.get_size(size, Size::Word)),
                 "add" => Instruction::ADD(op1, op2, self.get_size(size, Size::Word)),
                 "sub" => Instruction::SUB(op1, op2, self.get_size(size, Size::Word)),
@@ -211,10 +220,11 @@ impl PreInterpreter {
                 "bclr" => Instruction::BCLR(op1, op2),
                 "bchg" => Instruction::BCHG(op1, op2),
                 _ => panic!("Invalid instruction"),
-            }
+            };
+            Ok(parsed)
         } else if operands.len() == 1 {
             let op = operands[0].clone();
-            match name.as_str() {
+            let result = match name.as_str() {
                 "clr" => Instruction::CLR(op, self.get_size(size, Size::Word)),
                 "neg" => Instruction::NEG(op, self.get_size(size, Size::Word)),
                 "ext" => Instruction::EXT(
@@ -252,14 +262,25 @@ impl PreInterpreter {
                 "not" => Instruction::NOT(op, self.get_size(size, Size::Word)),
                 "jsr" => Instruction::JSR(op),
 
-                "trap" => panic!("trap not yet implemented"),
+                "trap" => {
+                    let value = self.extract_immediate(&op)? as i32;
+                    if value > 15 || value < 0 {
+                        return Err(CompilationError::InvalidTrap(format!(
+                            "Invalid trap value: {}, must be between 0 and 15",
+                            value
+                        )));
+                    }
+                    Instruction::TRAP(value as u8)
+                }
                 _ => panic!("Invalid instruction {}", name),
-            }
+            };
+            Ok(result)
         } else if operands.len() == 0 {
-            match name.as_str() {
+            let result = match name.as_str() {
                 "rts" => Instruction::RTS,
                 _ => panic!("Invalid instruction {}", name),
-            }
+            };
+            Ok(result)
         } else {
             panic!("Invalid instruction {}", name);
         }
@@ -274,7 +295,14 @@ impl PreInterpreter {
             _ => panic!("Invalid size"),
         }
     }
-
+    fn extract_immediate(&self, operand: &Operand) -> CompilationResult<u32> {
+        match operand {
+            Operand::Immediate(imm) => Ok(*imm),
+            _ => Err(CompilationError::InvalidAddressingMode(
+                "Expected Immediate".to_string(),
+            )),
+        }
+    }
     pub fn extract_register(&self, operand: Operand) -> Result<RegisterOperand, &str> {
         match operand {
             Operand::Register(reg) => Ok(reg),

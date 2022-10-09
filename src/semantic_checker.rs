@@ -250,21 +250,36 @@ impl SemanticChecker {
                         self.verify_instruction_size(SizeRules::AnySize, line);
                     }
                     "jmp" => {
-                        self.verify_one_arg(operands, Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE, line);
+                        self.verify_one_arg(
+                            operands,
+                            Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE,
+                            line,
+                        );
                         self.verify_instruction_size(SizeRules::NoSize, line);
                     }
                     "jsr" => {
-                        self.verify_one_arg(operands, Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE, line);
+                        self.verify_one_arg(
+                            operands,
+                            Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE,
+                            line,
+                        );
                         self.verify_instruction_size(SizeRules::NoSize, line);
-
                     }
                     "trap" => {
                         self.verify_one_arg(operands, Rules::ONLY_IMMEDIATE, line);
                         self.verify_instruction_size(SizeRules::NoSize, line);
-                        self.errors.push(SemanticError::new(
-                            line.clone(),
-                            format!("TRAP instruction not yet implemented"),
-                        ));
+                        match &operands[..] {
+                            [LexedOperand::Immediate(value)] => {
+                                let value = self.get_immediate_value(value).unwrap();
+                                if value != 15 {
+                                    self.errors.push(SemanticError::new(
+                                        line.clone(),
+                                        format!("Only implemented TRAP is 15 for IO {}", value),
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                     "rts" => {
                         self.verify_instruction_size(SizeRules::NoSize, line);
@@ -276,7 +291,6 @@ impl SemanticChecker {
                         }
                     }
                     "lsl" | "lsr" | "asr" | "asl" | "rol" | "ror" => {
-                        //TODO i think i need to check fo the size of the immediate value
                         self.verify_two_args(
                             operands,
                             Rules::NO_A_REG,
@@ -638,12 +652,8 @@ impl SemanticChecker {
                     }
                 }
                 match operand.as_ref() {
-                    LexedOperand::Register(LexedRegisterType::Address, _) => {
-                        Ok(AdrMode::INDIRECT)
-                    }
-                    LexedOperand::Register(LexedRegisterType::SP, _) => {
-                        Ok(AdrMode::INDIRECT)
-                    }
+                    LexedOperand::Register(LexedRegisterType::Address, _) => Ok(AdrMode::INDIRECT),
+                    LexedOperand::Register(LexedRegisterType::SP, _) => Ok(AdrMode::INDIRECT),
                     _ => Err("Invalid indirect value, only address registers allowed"),
                 }
             }
@@ -697,7 +707,7 @@ impl SemanticChecker {
                 Ok(n) => Ok(n),
                 Err(_) => Err("Invalid hex number"),
             },
-            ['#','\'', c, '\''] => Ok(c as i64),
+            ['#', '\'', c, '\''] => Ok(c as i64),
             ['#', ..] => {
                 //TODO not sure if this should be checked here
                 let label = &num[1..];
