@@ -17,12 +17,6 @@ use serde::Serialize;
 use std::{collections::HashMap, hash::Hash};
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
-#[derive(Debug)]
-#[wasm_bindgen]
-pub struct Memory {
-    data: Vec<u8>,
-    pub sp: usize,
-}
 
 bitflags! {
     #[wasm_bindgen]
@@ -82,10 +76,17 @@ impl MemoryCell {
         }
     }
 }
+
+#[derive(Debug)]
+#[wasm_bindgen]
+pub struct Memory {
+    data: Vec<u8>,
+    pub sp: usize,
+}
 impl Memory {
     pub fn new(size: usize) -> Self {
         Self {
-            data: vec![0; size],
+            data: vec![255; size],
             sp: size,
         }
     }
@@ -397,8 +398,8 @@ impl Interpreter {
             Some(ins) => {
                 let clone = ins.clone();
                 //need to find a way to remove this clone
-                self.execute_instruction(&clone)?;
                 self.increment_pc(4);
+                self.execute_instruction(&clone)?;
                 let status = self.get_status();
                 //TODO not sure if doing this before or after running the instruction
                 if self.has_reached_bottom() && *status != InterpreterStatus::Interrupt {
@@ -1029,6 +1030,9 @@ impl Interpreter {
     }
     pub fn wasm_get_pc(&self) -> usize {
         self.pc
+    }
+    pub fn wasm_get_sp(&self) -> usize {
+        self.memory.sp
     }
     pub fn wasm_get_instruction_at(&self, address: usize) -> JsValue {
         match self.get_instruction_at(address) {

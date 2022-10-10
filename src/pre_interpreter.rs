@@ -2,8 +2,7 @@ use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
-    instructions::{Condition, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size},
-    interpreter::RuntimeError,
+    instructions::{ Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size},
     lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     utils::parse_char_or_num,
 };

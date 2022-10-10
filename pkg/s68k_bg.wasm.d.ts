@@ -1,13 +1,13 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
-export function __wbg_memory_free(a: number): void;
-export function __wbg_get_memory_sp(a: number): number;
-export function __wbg_set_memory_sp(a: number, b: number): void;
 export function __wbg_flags_free(a: number): void;
 export function flags_new(): number;
 export function flags_clear(a: number): void;
 export function flags_get_status(a: number, b: number): void;
+export function __wbg_memory_free(a: number): void;
+export function __wbg_get_memory_sp(a: number): number;
+export function __wbg_set_memory_sp(a: number, b: number): void;
 export function memory_wasm_read_bytes(a: number, b: number, c: number, d: number): void;
 export function __wbg_register_free(a: number): void;
 export function register_wasm_get_long(a: number): number;

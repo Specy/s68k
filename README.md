@@ -20,7 +20,6 @@ The interpreter is split into individual modules that can be used standalone for
 **WARNING** as this is only an interpreter, it does not load the actual program in memory so it won't be possible to modify instructions at runtime
 
 ## Might do
-- Interrupts for input and output (trap instruction)
 - Assembler
 - Disassembler (unlikely)
 
@@ -33,7 +32,7 @@ The interpreter is split into individual modules that can be used standalone for
 | Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st     |
 | Bitwise                | not, or, and, eor, lsl, lsr, asr, asl, rol, ror, btst, bclr, bchg, bset          |
 | Other                  | clr, exg, neg, ext, swap, move                                                   |
-
+| Interrupt              | trap #15, with implemented interrupts from 0 to 7
 
 ## Supported directives
 equ, org, dc, ds, dcb
