@@ -2,6 +2,41 @@
 /* eslint-disable */
 /**
 */
+export enum InterpreterStatus {
+  Running,
+  Interrupt,
+  Terminated,
+  TerminatedWithException,
+}
+/**
+*/
+export enum Size {
+  Byte,
+  Word,
+  Long,
+}
+/**
+*/
+export enum Condition {
+  True,
+  False,
+  High,
+  LowOrSame,
+  CarryClear,
+  CarrySet,
+  NotEqual,
+  Equal,
+  OverflowClear,
+  OverflowSet,
+  Plus,
+  Minus,
+  GreaterThanOrEqual,
+  LessThan,
+  GreaterThan,
+  LessThanOrEqual,
+}
+/**
+*/
 export class Cpu {
   free(): void;
 /**
@@ -71,8 +106,51 @@ export class Interpreter {
 */
   wasm_step(): any;
 /**
+* @returns {number}
 */
-  wasm_run(): void;
+  wasm_run(): number;
+/**
+* @returns {number}
+*/
+  wasm_get_status(): number;
+/**
+* @param {Flags} flag
+* @returns {boolean}
+*/
+  wasm_get_flag(flag: Flags): boolean;
+/**
+* @param {number} cond
+* @returns {boolean}
+*/
+  wasm_get_condition_value(cond: number): boolean;
+/**
+* @param {any} reg
+* @param {number} size
+* @returns {number}
+*/
+  wasm_get_register_value(reg: any, size: number): number;
+/**
+* @param {any} reg
+* @param {number} value
+* @param {number} size
+*/
+  wasm_set_register_value(reg: any, value: number, size: number): void;
+/**
+* @returns {boolean}
+*/
+  wasm_has_reached_bottom(): boolean;
+/**
+* @returns {boolean}
+*/
+  wasm_has_terminated(): boolean;
+/**
+* @returns {any}
+*/
+  wasm_get_current_interrupt(): any;
+/**
+* @param {any} value
+*/
+  wasm_answer_interrupt(value: any): void;
 }
 /**
 */
@@ -158,6 +236,10 @@ export class WasmSemanticErrors {
 * @returns {number}
 */
   get_length(): number;
+/**
+* @returns {any[]}
+*/
+  get_errors(): any[];
 /**
 * @param {number} index
 * @returns {SemanticError}

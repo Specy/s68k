@@ -95,6 +95,12 @@ impl WasmSemanticErrors {
     pub fn get_length(&self) -> usize {
         self.errors.len()
     }
+    pub fn get_errors(&self) -> Vec<JsValue> {
+        self.errors
+            .iter()
+            .map(|e| serde_wasm_bindgen::to_value(e).unwrap())
+            .collect()
+    }
     pub fn get_error_at_index(&self, index: usize) -> SemanticError {
         self.errors[index].clone()
     }

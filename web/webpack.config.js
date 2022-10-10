@@ -16,6 +16,16 @@ module.exports = {
     path: path.resolve(__dirname, "build"),
     filename: "bootstrap.js",
   },
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        use: 'ts-loader',
+        exclude: /node_modules/,
+      },
+    ],
+  },
+
   mode: "development",
   devServer: {
     port: 3000,

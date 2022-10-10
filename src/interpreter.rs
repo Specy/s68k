@@ -340,7 +340,7 @@ impl Interpreter {
     }
 
     //TODO could make this an external function and pass the memory in
-    pub fn prepare_memory(&mut self, labels: &HashMap<String, Label>) -> RuntimeResult<()> {
+    fn prepare_memory(&mut self, labels: &HashMap<String, Label>) -> RuntimeResult<()> {
         for (_, label) in labels {
             match &label.directive {
                 Some(directive) => match directive {
@@ -363,7 +363,6 @@ impl Interpreter {
     pub fn get_pc(&self) -> usize {
         self.pc
     }
-
     pub fn get_status(&self) -> &InterpreterStatus {
         &self.status
     }
@@ -379,7 +378,7 @@ impl Interpreter {
         return self.status == InterpreterStatus::Terminated
             || self.status == InterpreterStatus::TerminatedWithException;
     }
-    pub fn has_reached_botton(&self) -> bool {
+    pub fn has_reached_bottom(&self) -> bool {
         self.pc > self.final_instruction_address
     }
     pub fn step(&mut self) -> RuntimeResult<(InstructionLine, InterpreterStatus)> {
@@ -402,7 +401,7 @@ impl Interpreter {
                 self.increment_pc(4);
                 let status = self.get_status();
                 //TODO not sure if doing this before or after running the instruction
-                if self.has_reached_botton() && *status != InterpreterStatus::Interrupt {
+                if self.has_reached_bottom() && *status != InterpreterStatus::Interrupt {
                     self.set_status(InterpreterStatus::Terminated);
                 }
                 Ok((clone, self.status))
@@ -451,7 +450,7 @@ impl Interpreter {
         };
         self.current_interrupt = None;
         //edge case if the last instruction is an interrupt
-        self.status = if self.has_reached_botton() {
+        self.status = if self.has_reached_bottom() {
             InterpreterStatus::Terminated
         } else {
             InterpreterStatus::Running
@@ -1015,6 +1014,8 @@ impl Interpreter {
         }
     }
 }
+
+
 #[wasm_bindgen]
 impl Interpreter {
     pub fn wasm_read_memory_bytes(&self, address: usize, size: usize) -> Vec<u8> {
@@ -1047,4 +1048,39 @@ impl Interpreter {
             Err(e) => panic!("Runtime error {:?}", e),
         }
     }
+    pub fn wasm_get_status(&self) -> InterpreterStatus {
+        *self.get_status()
+    }
+    pub fn wasm_get_flag(&self, flag: Flags) -> bool {
+        self.get_flag(flag)
+    }
+    pub fn wasm_get_condition_value(&self, cond: Condition) -> bool {
+        self.get_condition_value(&cond)
+    }
+    pub fn wasm_get_register_value(&self, reg: JsValue, size: Size) -> u32 {
+        let reg: RegisterOperand = serde_wasm_bindgen::from_value(reg).unwrap();
+        self.get_register_value(&reg, &size)
+    }
+    pub fn wasm_set_register_value(&mut self, reg: JsValue, value: u32, size: Size) {
+        let reg: RegisterOperand = serde_wasm_bindgen::from_value(reg).unwrap();
+        self.set_register_value(&reg, value, &size)
+    }
+    pub fn wasm_has_reached_bottom(&self) -> bool {
+        self.has_reached_bottom()
+    }
+    pub fn wasm_has_terminated(&self) -> bool {
+        self.has_terminated()
+    }
+    pub fn wasm_get_current_interrupt(&self) -> JsValue {
+        match &self.get_current_interrupt(){
+            Ok(interrupt) => serde_wasm_bindgen::to_value(interrupt).unwrap(),
+            Err(_) => JsValue::NULL,
+        }
+    }
+    pub fn wasm_answer_interrupt(&mut self, value: JsValue) {
+        let value: InterruptResult = serde_wasm_bindgen::from_value(value).unwrap();
+        self.answer_interrupt(value).unwrap();
+    }
 }
+
+

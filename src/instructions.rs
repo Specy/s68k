@@ -1,9 +1,11 @@
 use std::{
-    fmt::{self, Debug},
+    fmt::{Debug},
     str::FromStr,
 };
 
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
+use wasm_bindgen::{prelude::wasm_bindgen};
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize)]
 pub enum Size {
     Byte,
@@ -23,7 +25,7 @@ impl Size {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RegisterOperand {
     Address(u8),
     Data(u8),
@@ -49,7 +51,9 @@ pub enum Operand {
 Thanks to:  https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/instructions.rs
 for the Conditions and inspiration
  */
+#[wasm_bindgen]
 #[derive(Copy, Clone, Debug, Serialize)]
+#[serde(tag = "type", content = "value")]
 pub enum Condition {
     True,
     False,
@@ -141,7 +145,8 @@ pub enum Instruction {
     RTS,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
 pub enum Interrupt{
     DisplayStringWithCRLF(String),
     DisplayStringWithoutCRLF(String),
@@ -152,6 +157,8 @@ pub enum Interrupt{
     GetTime,
     Terminate,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
 pub enum InterruptResult{
     DisplayStringWithCRLF,
     DisplayStringWithoutCRLF,
