@@ -156,7 +156,11 @@
 <body>
 	<div class="row" style="flex:1; min-height: 90vh;">
 		<div class="code">
-			<textarea id="code-text"></textarea>
+			<textarea id="code-text">
+				ORG $1000
+
+				START:
+			</textarea>
 			<div style="display:flex; gap: 0.4rem; align-items: center; margin-top: 0.4rem;">
 				<button id="compile-button">
 					Compile
@@ -185,7 +189,7 @@
 			<div class="row" style="width:100%">
 				<button id="mem-before" style="padding: 0.8rem 1rem">
 					< </button>
-						<input value="0" id="mem-address" />
+						<input value="4096" id="mem-address" />
 						<button id="mem-after" style="padding: 0.8rem 1rem">
 							>
 						</button>
