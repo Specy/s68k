@@ -23,13 +23,22 @@
 
 		body {
 			padding: 1rem;
+			overflow-y: scroll;
+		}
+
+		::-webkit-scrollbar-thumb {
+			background: #22313f;
+			border-radius: 2px;
+		}
+
+		::-webkit-scrollbar {
+			width: 0.5rem;
 		}
 
 		.code {
 			display: flex;
 			flex-direction: column;
 			flex: 1;
-			height: 30rem;
 		}
 
 		.code textarea {
@@ -45,12 +54,14 @@
 			border-radius: 0.4rem;
 			background-color: #F5F5F5;
 		}
-		input{
+
+		input {
 			border-radius: 0.3rem;
 			border: none;
 			width: 7rem;
 			padding: 0 1rem;
 		}
+
 		button {
 			width: fit-content;
 			padding: 0.6rem;
@@ -108,15 +119,16 @@
 		}
 
 		#std-out {
-			width: 20rem;
+			flex: 1;
+			max-height: 8rem;
 			padding: 0.5rem;
 			margin-top: 1rem;
-			min-height: 5rem;
 			border-radius: 0.5rem;
 			background-color: #1e2a35;
 			color: #F5F5F5;
 		}
-		#memory{
+
+		#memory {
 			display: grid;
 			grid-template-columns: repeat(16, 1fr);
 			grid-template-rows: repeat(16, 1fr);
@@ -128,23 +140,24 @@
 			color: #F5F5F5;
 			border-radius: 0.5rem;
 		}
-		#memory span{
+
+		#memory span {
 			display: flex;
 			align-items: center;
 			justify-content: center;
 		}
-		#mem-address{
+
+		#mem-address {
 			flex: 1;
 		}
 	</style>
 </head>
 
 <body>
-	<div class="row" style="margin-top: 2rem; flex:1">
+	<div class="row" style="flex:1; min-height: 90vh;">
 		<div class="code">
 			<textarea id="code-text"></textarea>
 			<div style="display:flex; gap: 0.4rem; align-items: center; margin-top: 0.4rem;">
-
 				<button id="compile-button">
 					Compile
 				</button>
@@ -161,6 +174,9 @@
 
 				</div>
 			</div>
+			<div id="std-out">
+
+			</div>
 		</div>
 		<div id="registers">
 
@@ -168,23 +184,17 @@
 		<div style="display: flex; flex-direction:column">
 			<div class="row" style="width:100%">
 				<button id="mem-before" style="padding: 0.8rem 1rem">
-					<
-				</button>
-				<input value="0" id="mem-address"/>
-				<button id="mem-after" style="padding: 0.8rem 1rem">
-					>
-				</button>
+					< </button>
+						<input value="0" id="mem-address" />
+						<button id="mem-after" style="padding: 0.8rem 1rem">
+							>
+						</button>
 			</div>
 			<div id="memory">
 
 			</div>
 		</div>
 	</div>
-	<div id="std-out">
-
-	</div>
-
-
 	<div id="error-wrapper">
 
 	</div>

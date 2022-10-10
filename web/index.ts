@@ -31,13 +31,16 @@ compile.addEventListener("click", () => {
         console.log(error.wasm_get_line())
         errorWrapper.appendChild(errorEl)
     })
-    const preProcess = currentProgram.wasm_pre_process()
-    currentInterpreter = currentProgram.wasm_create_interpreter(preProcess, Math.pow(2, 16))
     updateRegisters(Array(regs.length).fill(0))
-    disableButtons(false)
     updateMemoryTable()
     stdOut.innerText = ""
     currentInstruction.innerText = ""
+    disableButtons(true)
+    if(!er.length){
+        const preProcess = currentProgram.wasm_pre_process()
+        currentInterpreter = currentProgram.wasm_create_interpreter(preProcess, Math.pow(2, 16))
+        disableButtons(false)
+    }
 })
 
 
@@ -61,23 +64,23 @@ clear.addEventListener("click", () => {
     updateMemoryTable()
 })
 
-type Interrupt = { type: "DisplayStringWithCRLF", value: string} |
-    { type: "DisplayStringWithoutCRLF", value: string} |
-    { type: "ReadKeyboardString" } |
-    { type: "DisplayNumber", value: number } |
-    { type: "ReadNumber" } |
-    { type: "ReadChar" } |
-    { type: "GetTime" } |
-    { type: "Terminate" }
+type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
+{ type: "DisplayStringWithoutCRLF", value: string } |
+{ type: "ReadKeyboardString" } |
+{ type: "DisplayNumber", value: number } |
+{ type: "ReadNumber" } |
+{ type: "ReadChar" } |
+{ type: "GetTime" } |
+{ type: "Terminate" }
 
 type InterruptResult = { type: "DisplayStringWithCRLF" } |
-    { type: "DisplayStringWithoutCRLF" } |
-    { type: "ReadKeyboardString", value: string } |
-    { type: "DisplayNumber" } |
-    { type: "ReadNumber", value: number } |
-    { type: "ReadChar", value: string } |
-    { type: "GetTime", value: number } |
-    { type: "Terminate" }
+{ type: "DisplayStringWithoutCRLF" } |
+{ type: "ReadKeyboardString", value: string } |
+{ type: "DisplayNumber" } |
+{ type: "ReadNumber", value: number } |
+{ type: "ReadChar", value: string } |
+{ type: "GetTime", value: number } |
+{ type: "Terminate" }
 
 
 function handleInterrupt(interrupt: Interrupt) {
@@ -97,7 +100,7 @@ function handleInterrupt(interrupt: Interrupt) {
         }
         case "ReadKeyboardString": {
             const input = prompt("Enter a string")
-            const result:InterruptResult = { type: "ReadKeyboardString", value: input ?? "" }
+            const result: InterruptResult = { type: "ReadKeyboardString", value: input ?? "" }
             currentInterpreter?.wasm_answer_interrupt(result)
             break
         }
@@ -109,23 +112,23 @@ function handleInterrupt(interrupt: Interrupt) {
         }
         case "ReadNumber": {
             const input = prompt("Enter a number")
-            const result:InterruptResult = { type: "ReadNumber", value: parseInt(input ?? "0") }
+            const result: InterruptResult = { type: "ReadNumber", value: parseInt(input ?? "0") }
             currentInterpreter?.wasm_answer_interrupt(result)
             break
         }
         case "ReadChar": {
             const input = prompt("Enter a char")
-            const result:InterruptResult = { type: "ReadChar", value: input ?? "" }
+            const result: InterruptResult = { type: "ReadChar", value: input ?? "" }
             currentInterpreter?.wasm_answer_interrupt(result)
             break
         }
         case "GetTime": {
-            const result:InterruptResult = { type: "GetTime", value: Date.now() }
+            const result: InterruptResult = { type: "GetTime", value: Date.now() }
             currentInterpreter?.wasm_answer_interrupt(result)
             break
         }
         case "Terminate": {
-            currentInterpreter?.wasm_answer_interrupt({type: "Terminate"})
+            currentInterpreter?.wasm_answer_interrupt({ type: "Terminate" })
             break
         }
         default: {
@@ -136,9 +139,9 @@ function handleInterrupt(interrupt: Interrupt) {
 
 
 run.addEventListener('click', async () => {
-    while (!currentInterpreter.wasm_has_terminated()){
+    while (!currentInterpreter.wasm_has_terminated()) {
         let status = currentInterpreter.wasm_run()
-        if(status == 1){
+        if (status == 1) {
             let interrupt = currentInterpreter.wasm_get_current_interrupt()
             handleInterrupt(interrupt)
         }
@@ -153,18 +156,18 @@ step.addEventListener("click", () => {
     if (currentInterpreter) {
         let a = currentInterpreter.wasm_step()
         let status = currentInterpreter.wasm_get_status()
-        if (currentInterpreter.wasm_has_terminated()){
+        if (currentInterpreter.wasm_has_terminated()) {
             disableExecution(true)
         }
         const instruction = a[0]
 
-        if(instruction){
+        if (instruction) {
             showCurrent(instruction.parsed_line)
         }
         const cpu = currentInterpreter.wasm_get_cpu_snapshot()
         updateRegisters([...cpu.wasm_get_d_regs_value(), ...cpu.wasm_get_a_regs_value()])
         updateMemoryTable()
-        if(status == 1){
+        if (status == 1) {
             let interrupt = currentInterpreter.wasm_get_current_interrupt()
             handleInterrupt(interrupt)
             const cpu = currentInterpreter.wasm_get_cpu_snapshot()
@@ -179,13 +182,13 @@ function showCurrent(ins: any) {
 }
 
 
-function updateMemoryTable(){
-    if(!currentInterpreter) return
-    const data = currentInterpreter.wasm_read_memory_bytes(Number(memAddress.value), 16*16)
+function updateMemoryTable() {
+    if (!currentInterpreter) return
+    const data = currentInterpreter.wasm_read_memory_bytes(Number(memAddress.value), 16 * 16)
     data.forEach((byte, i) => {
         const cell = memory.children[i] as HTMLSpanElement
         const value = byte.toString(16).toUpperCase().padStart(2, "0")
-        if(cell.innerText.toUpperCase() !== value){
+        if (cell.innerText.toUpperCase() !== value) {
             cell.innerText = value
         }
     })
@@ -195,15 +198,15 @@ memAddress.addEventListener("change", () => {
     updateMemoryTable()
 })
 memBefore.addEventListener("click", () => {
-    memAddress.value = (Number(memAddress.value) - 16*16).toString()
+    memAddress.value = (Number(memAddress.value) - 16 * 16).toString()
     updateMemoryTable()
 })
 memAfter.addEventListener("click", () => {
-    memAddress.value = (Number(memAddress.value) + 16*16).toString()
+    memAddress.value = (Number(memAddress.value) + 16 * 16).toString()
     updateMemoryTable()
 })
 
-function createMemoryTable(pageSize: number){
+function createMemoryTable(pageSize: number) {
     const elements = new Array(pageSize).fill(0).map((_, i) => {
         const el = document.createElement('span')
         el.innerText = "FF"
@@ -234,4 +237,4 @@ function createRegisters() {
 }
 createRegisters()
 disableButtons(true)
-createMemoryTable(16*16)
+createMemoryTable(16 * 16)
