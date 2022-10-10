@@ -12,9 +12,14 @@ const memBefore = document.getElementById("mem-before") as HTMLDivElement
 const memAfter = document.getElementById("mem-after") as HTMLDivElement
 const memAddress = document.getElementById("mem-address") as HTMLInputElement
 const memory = document.getElementById("memory") as HTMLDivElement
-code.value = localStorage.getItem("s68k_code") ?? ""
+code.value = localStorage.getItem("s68k_code") ?? 
+    `ORG $1000
+
+START:
+    `
 let currentProgram: S68k | null = null
 let currentInterpreter: Interpreter | null = null
+
 
 compile.addEventListener("click", () => {
     const text = code.value
