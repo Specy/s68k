@@ -201,7 +201,6 @@ impl Memory {
 pub struct Register {
     data: u32,
 }
-
 impl Register {
     pub fn new() -> Self {
         Self { data: 0 }
@@ -280,6 +279,7 @@ impl Cpu {
     pub fn wasm_get_d_regs_value(&self) -> Vec<u32> {
         self.d_reg.iter().map(|reg| reg.get_long()).collect()
     }
+
     pub fn wasm_get_a_regs_value(&self) -> Vec<u32> {
         self.a_reg.iter().map(|reg| reg.get_long()).collect()
     }
@@ -1040,16 +1040,16 @@ impl Interpreter {
             None => JsValue::NULL,
         }
     }
-    pub fn wasm_step(&mut self) -> JsValue {
+    pub fn wasm_step(&mut self) -> Result<JsValue, JsValue> {
         match self.step() {
-            Ok(line) => serde_wasm_bindgen::to_value(&line).unwrap(),
-            Err(e) => serde_wasm_bindgen::to_value(&e).unwrap(),
+            Ok(line) => Ok(serde_wasm_bindgen::to_value(&line).unwrap()),
+            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
     }
-    pub fn wasm_run(&mut self) -> InterpreterStatus {
+    pub fn wasm_run(&mut self) -> Result<InterpreterStatus, String> {
         match self.run() {
-            Ok(status) => status,
-            Err(e) => panic!("Runtime error {:?}", e),
+            Ok(status) => Ok(status),
+            Err(e) => Err(format!("Runtime error {:?}", e)),
         }
     }
     pub fn wasm_get_status(&self) -> InterpreterStatus {
@@ -1084,6 +1084,12 @@ impl Interpreter {
     pub fn wasm_answer_interrupt(&mut self, value: JsValue) {
         let value: InterruptResult = serde_wasm_bindgen::from_value(value).unwrap();
         self.answer_interrupt(value).unwrap();
+    }
+    pub fn wasm_get_current_line_index(&self) -> usize {
+        match self.get_instruction_at(self.pc) {
+            Some(ins) => ins.parsed_line.line_index,
+            None => 0,   
+        }
     }
 }
 

@@ -9,6 +9,7 @@ mod pre_interpreter;
 mod semantic_checker;
 mod utils;
 mod math;
+mod ts_types;
 use crate::{
     lexer::{Lexer, ParsedLine},
     semantic_checker::{SemanticChecker, SemanticError},

@@ -23,6 +23,7 @@ export function __wbg_interpreter_free(a: number): void;
 export function interpreter_wasm_read_memory_bytes(a: number, b: number, c: number, d: number): void;
 export function interpreter_wasm_get_cpu_snapshot(a: number): number;
 export function interpreter_wasm_get_pc(a: number): number;
+export function interpreter_wasm_get_sp(a: number): number;
 export function interpreter_wasm_get_instruction_at(a: number, b: number): number;
 export function interpreter_wasm_step(a: number): number;
 export function interpreter_wasm_run(a: number): number;

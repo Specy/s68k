@@ -35,6 +35,29 @@ export enum Condition {
   GreaterThan,
   LessThanOrEqual,
 }
+
+export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
+{ type: "DisplayStringWithoutCRLF", value: string } |
+{ type: "ReadKeyboardString" } |
+{ type: "DisplayNumber", value: number } |
+{ type: "ReadNumber" } |
+{ type: "ReadChar" } |
+{ type: "GetTime" } |
+{ type: "Terminate" }
+
+
+
+export type InterruptResult = { type: "DisplayStringWithCRLF" } |
+{ type: "DisplayStringWithoutCRLF" } |
+{ type: "ReadKeyboardString", value: string } |
+{ type: "DisplayNumber" } |
+{ type: "ReadNumber", value: number } |
+{ type: "ReadChar", value: string } |
+{ type: "GetTime", value: number } |
+{ type: "Terminate" }
+
+
+
 /**
 */
 export class Cpu {
@@ -96,6 +119,10 @@ export class Interpreter {
 * @returns {number}
 */
   wasm_get_pc(): number;
+/**
+* @returns {number}
+*/
+  wasm_get_sp(): number;
 /**
 * @param {number} address
 * @returns {any}

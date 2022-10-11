@@ -425,6 +425,13 @@ export class Interpreter {
         return ret >>> 0;
     }
     /**
+    * @returns {number}
+    */
+    wasm_get_sp() {
+        const ret = wasm.interpreter_wasm_get_sp(this.ptr);
+        return ret >>> 0;
+    }
+    /**
     * @param {number} address
     * @returns {any}
     */
