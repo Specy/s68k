@@ -154,6 +154,7 @@ pub enum Interrupt{
     DisplayNumber(u32),
     ReadNumber,
     ReadChar,
+    DisplayChar(char),
     GetTime,
     Terminate,
 }
@@ -166,6 +167,7 @@ pub enum InterruptResult{
     DisplayNumber,
     ReadNumber(i32),
     ReadChar(char),
+    DisplayChar,
     GetTime(u32),
     Terminate,
 }

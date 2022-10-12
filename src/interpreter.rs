@@ -81,53 +81,54 @@ impl MemoryCell {
 #[wasm_bindgen]
 pub struct Memory {
     data: Vec<u8>,
-    pub sp: usize,
 }
 impl Memory {
     pub fn new(size: usize) -> Self {
         Self {
             data: vec![255; size],
-            sp: size,
         }
     }
 
-    pub fn push(&mut self, data: &MemoryCell) {
+    pub fn push(&mut self, data: &MemoryCell,mut sp: usize) -> usize {
         match data {
             MemoryCell::Byte(byte) => {
-                self.sp -= 1;
-                self.write_byte(self.sp, *byte)
+                sp -= 1;
+                self.write_byte(sp, *byte)
             }
             MemoryCell::Word(word) => {
-                self.sp -= 2;
-                self.write_word(self.sp, *word)
+                sp -= 2;
+                self.write_word(sp, *word)
             }
             MemoryCell::Long(long) => {
-                self.sp -= 4;
-                self.write_long(self.sp, *long)
+                sp -= 4;
+                self.write_long(sp, *long)
             }
         }
+        sp
     }
-    pub fn pop_empty_long(&mut self) {
-        self.sp += 4;
+    pub fn pop_empty_long(&self, mut sp: usize) -> usize {
+        sp += 4;
+        sp
     }
-    pub fn pop(&mut self, size: Size) -> MemoryCell {
-        match size {
+    pub fn pop(&mut self, size: Size,mut sp: usize) -> (MemoryCell, usize) {
+        let result = match size {
             Size::Byte => {
-                let byte = self.read_byte(self.sp);
-                self.sp += 1;
+                let byte = self.read_byte(sp);
+                
                 MemoryCell::Byte(byte)
             }
             Size::Word => {
-                let word = self.read_word(self.sp);
-                self.sp += 2;
+                let word = self.read_word(sp);
+                sp += 2;
                 MemoryCell::Word(word)
             }
             Size::Long => {
-                let long = self.read_long(self.sp);
-                self.sp += 4;
+                let long = self.read_long(sp);
+                sp += 4;
                 MemoryCell::Long(long)
             }
-        }
+        };
+        (result, sp)
     }
     pub fn read_long(&self, address: usize) -> u32 {
         u32::from_be_bytes(self.data[address..address + 4].try_into().unwrap())
@@ -324,6 +325,7 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new(pre_interpreted_program: PreInterpreter, memory_size: usize) -> Self {
+        let sp = memory_size >> 1;
         let mut interpreter = Self {
             memory: Memory::new(memory_size),
             cpu: Cpu::new(),
@@ -333,7 +335,7 @@ impl Interpreter {
             current_interrupt: None,
             status: InterpreterStatus::Running,
         };
-        interpreter.cpu.a_reg[7].store_long((memory_size >> 1) as u32);
+        interpreter.cpu.a_reg[7].store_long(sp as u32);
         match interpreter.prepare_memory(&pre_interpreted_program.get_labels_map()) {
             Ok(_) => interpreter,
             Err(e) => panic!("Error preparing memory: {:?}", e),
@@ -424,7 +426,8 @@ impl Interpreter {
         match interrupt_result {
             InterruptResult::DisplayNumber
             | InterruptResult::DisplayStringWithCRLF
-            | InterruptResult::DisplayStringWithoutCRLF => {}
+            | InterruptResult::DisplayStringWithoutCRLF
+            | InterruptResult::DisplayChar => {}
             InterruptResult::ReadKeyboardString(str) => {
                 if str.len() > 80 {
                     //TODO should i error or truncate?
@@ -460,6 +463,12 @@ impl Interpreter {
     }
     fn increment_pc(&mut self, amount: usize) {
         self.pc += amount;
+    }
+    pub fn get_sp(&self) -> usize {
+        self.cpu.a_reg[7].get_long() as usize
+    }
+    pub fn set_sp(&mut self, sp: usize) {
+        self.cpu.a_reg[7].store_long(sp as u32);
     }
     pub fn get_instruction_at(&self, address: usize) -> Option<&InstructionLine> {
         self.program.get(&address)
@@ -539,7 +548,8 @@ impl Interpreter {
                 self.pc = *address as usize;
             }
             Instruction::BSR(address) => {
-                self.memory.push(&MemoryCell::Long(self.pc as u32));
+                let new_sp = self.memory.push(&MemoryCell::Long(self.pc as u32), self.get_sp());
+                self.set_sp(new_sp);
                 self.pc = *address as usize;
             }
             Instruction::JMP(op) => {
@@ -548,7 +558,7 @@ impl Interpreter {
             }
             Instruction::JSR(source) => {
                 let addr = self.get_operand_value(source, &Size::Long)?;
-                self.memory.push(&MemoryCell::Long(self.pc as u32));
+                self.memory.push(&MemoryCell::Long(self.pc as u32), self.get_sp());
                 self.pc = addr as usize;
             }
             Instruction::BCHG(bit_source, dest) => {
@@ -759,8 +769,9 @@ impl Interpreter {
                 }
             }
             Instruction::RTS => {
-                let return_address = self.memory.pop(Size::Long).get_long();
-                self.pc = return_address as usize;
+                let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp());
+                self.set_sp(new_sp);
+                self.pc = value.get_long() as usize;
             }
             Instruction::TRAP(value) => match value {
                 15 => {
@@ -842,7 +853,10 @@ impl Interpreter {
             }
             4 => Ok(Interrupt::ReadNumber),
             5 => Ok(Interrupt::ReadChar),
-            6 => Ok(Interrupt::GetTime),
+            6 => {
+                let value = self.cpu.d_reg[1].get_byte();
+                Ok(Interrupt::DisplayChar(value as char))
+            },
             7 => Ok(Interrupt::Terminate),
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
         }
@@ -1029,10 +1043,10 @@ impl Interpreter {
         self.cpu
     }
     pub fn wasm_get_pc(&self) -> usize {
-        self.pc
+        self.get_pc()
     }
     pub fn wasm_get_sp(&self) -> usize {
-        self.memory.sp
+        self.get_sp()
     }
     pub fn wasm_get_instruction_at(&self, address: usize) -> JsValue {
         match self.get_instruction_at(address) {
@@ -1061,13 +1075,18 @@ impl Interpreter {
     pub fn wasm_get_condition_value(&self, cond: Condition) -> bool {
         self.get_condition_value(&cond)
     }
-    pub fn wasm_get_register_value(&self, reg: JsValue, size: Size) -> u32 {
-        let reg: RegisterOperand = serde_wasm_bindgen::from_value(reg).unwrap();
-        self.get_register_value(&reg, &size)
+    pub fn wasm_get_register_value(&self, reg: JsValue, size: Size) -> Result<u32,String> {
+        match serde_wasm_bindgen::from_value(reg.clone()){
+            Ok(reg) => Ok(self.get_register_value(&reg, &size)),
+            Err(e) => Err(format!("Cannot get register, invalid register {:?}, {}",reg, e)),
+        }
     }
-    pub fn wasm_set_register_value(&mut self, reg: JsValue, value: u32, size: Size) {
-        let reg: RegisterOperand = serde_wasm_bindgen::from_value(reg).unwrap();
-        self.set_register_value(&reg, value, &size)
+    pub fn wasm_set_register_value(&mut self, reg: JsValue, value: u32, size: Size) -> Result<(), String>{
+        match serde_wasm_bindgen::from_value(reg.clone()){
+            Ok(parsed) => self.set_register_value(&parsed, value, &size),
+            Err(e) => return Err(format!("Cannot set register, invalid register {:?}, {}", reg, e))
+        }
+        Ok(())
     }
     pub fn wasm_has_reached_bottom(&self) -> bool {
         self.has_reached_bottom()
@@ -1075,15 +1094,25 @@ impl Interpreter {
     pub fn wasm_has_terminated(&self) -> bool {
         self.has_terminated()
     }
-    pub fn wasm_get_current_interrupt(&self) -> JsValue {
+    pub fn wasm_get_current_interrupt(&self) -> Result<JsValue, String> {
         match &self.get_current_interrupt(){
-            Ok(interrupt) => serde_wasm_bindgen::to_value(interrupt).unwrap(),
-            Err(_) => JsValue::NULL,
+            Ok(interrupt) => {
+                match serde_wasm_bindgen::to_value(interrupt){
+                    Ok(value) => Ok(value),
+                    Err(e) => Err(format!("Error converting interrupt to js value {:?}", e))
+                }
+            },
+            Err(_) => Ok(JsValue::NULL),
         }
     }
-    pub fn wasm_answer_interrupt(&mut self, value: JsValue) {
-        let value: InterruptResult = serde_wasm_bindgen::from_value(value).unwrap();
-        self.answer_interrupt(value).unwrap();
+    pub fn wasm_answer_interrupt(&mut self, value: JsValue) -> Result<(), String> {
+        match serde_wasm_bindgen::from_value(value.clone()) {
+            Ok(answer) => self.answer_interrupt(answer).unwrap(),
+            Err(e) => {
+                return Err(format!("Invalid interrupt answer: {:?}, {}",value, e));
+            }
+        }
+        Ok(())
     }
     pub fn wasm_get_current_line_index(&self) -> usize {
         match self.get_instruction_at(self.pc) {

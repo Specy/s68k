@@ -28,13 +28,13 @@ fn main() {
 
     while !interpreter.has_terminated() {
         let status = interpreter.run().unwrap();
-        println!("Interpreter paused with status: {:?}", status);
+        //println!("Interpreter paused with status: {:?}", status);
         match status {
             InterpreterStatus::Interrupt => {
                 let interrupt = interpreter.get_current_interrupt().unwrap();
                 match interrupt {
                     Interrupt::DisplayNumber(number) => {
-                        println!("{}", number);
+                        print!("{}", number);
                         interpreter
                             .answer_interrupt(InterruptResult::DisplayNumber)
                             .unwrap();
@@ -54,6 +54,12 @@ fn main() {
                     Interrupt::GetTime => {
                         interpreter
                             .answer_interrupt(InterruptResult::GetTime(0))
+                            .unwrap();
+                    }
+                    Interrupt::DisplayChar(char) => {
+                        print!("{}", char);
+                        interpreter
+                            .answer_interrupt(InterruptResult::DisplayChar)
                             .unwrap();
                     }
                     Interrupt::ReadChar => {

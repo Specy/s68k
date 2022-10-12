@@ -43,7 +43,8 @@ export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
 { type: "ReadNumber" } |
 { type: "ReadChar" } |
 { type: "GetTime" } |
-{ type: "Terminate" }
+{ type: "Terminate" } | 
+{ type: "DisplayChar", value: string }
 
 
 
@@ -54,8 +55,8 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "ReadNumber", value: number } |
 { type: "ReadChar", value: string } |
 { type: "GetTime", value: number } |
+{ type: "DisplayChar" } | 
 { type: "Terminate" }
-
 
 
 /**
@@ -178,6 +179,10 @@ export class Interpreter {
 * @param {any} value
 */
   wasm_answer_interrupt(value: any): void;
+/**
+* @returns {number}
+*/
+  wasm_get_current_line_index(): number;
 }
 /**
 */
@@ -189,9 +194,6 @@ export class Memory {
 * @returns {Uint8Array}
 */
   wasm_read_bytes(address: number, size: number): Uint8Array;
-/**
-*/
-  sp: number;
 }
 /**
 */

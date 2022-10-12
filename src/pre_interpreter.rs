@@ -531,11 +531,11 @@ fn parse_labels_and_addresses(lines: &[ParsedLine]) -> (HashMap<String, Label>, 
                             .value
                             .parse::<usize>()
                             .expect(format!("Invalid number at line {}", line.line_index).as_str());
-                        last_address += bytes * directive.size.clone() as usize;
+                        last_address += bytes * directive.size.to_bytes() as usize;
                     }
                     "dc" => {
                         let args = directive.args.len();
-                        last_address += args * directive.size.clone() as usize;
+                        last_address += args * directive.size.to_bytes() as usize;
                     }
                     _ => {}
                 }
@@ -548,6 +548,7 @@ fn parse_labels_and_addresses(lines: &[ParsedLine]) -> (HashMap<String, Label>, 
         }
         //this aligns the address to the next 4 byte boundary, it works by incrementing the address by 3 then
         //masking the first 2 bits to 0
+        //TODO why align to every 4 instead of 2?
         last_address = (last_address + 3) & !3;
     }
     (labels, line_addresses)

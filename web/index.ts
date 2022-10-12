@@ -1,4 +1,4 @@
-import { S68k, Interpreter, SemanticError } from "../pkg/s68k"
+import { S68k, Interpreter, SemanticError , Interrupt, InterruptResult} from "../pkg/s68k"
 const compile = document.getElementById("compile-button")
 const run = document.getElementById("run-button") as HTMLButtonElement
 const step = document.getElementById("step-button") as HTMLButtonElement
@@ -19,7 +19,7 @@ START:
     `
 let currentProgram: S68k | null = null
 let currentInterpreter: Interpreter | null = null
-
+const MEMORY_SIZE = 0XFFFFFF
 
 compile.addEventListener("click", () => {
     const text = code.value
@@ -43,7 +43,7 @@ compile.addEventListener("click", () => {
     disableButtons(true)
     if(!er.length){
         const preProcess = currentProgram.wasm_pre_process()
-        currentInterpreter = currentProgram.wasm_create_interpreter(preProcess, Math.pow(2, 16))
+        currentInterpreter = currentProgram.wasm_create_interpreter(preProcess, MEMORY_SIZE)
         disableButtons(false)
     }
 })
@@ -68,24 +68,6 @@ clear.addEventListener("click", () => {
     stdOut.innerText = ""
     updateMemoryTable()
 })
-
-type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
-{ type: "DisplayStringWithoutCRLF", value: string } |
-{ type: "ReadKeyboardString" } |
-{ type: "DisplayNumber", value: number } |
-{ type: "ReadNumber" } |
-{ type: "ReadChar" } |
-{ type: "GetTime" } |
-{ type: "Terminate" }
-
-type InterruptResult = { type: "DisplayStringWithCRLF" } |
-{ type: "DisplayStringWithoutCRLF" } |
-{ type: "ReadKeyboardString", value: string } |
-{ type: "DisplayNumber" } |
-{ type: "ReadNumber", value: number } |
-{ type: "ReadChar", value: string } |
-{ type: "GetTime", value: number } |
-{ type: "Terminate" }
 
 
 function handleInterrupt(interrupt: Interrupt) {
@@ -121,6 +103,12 @@ function handleInterrupt(interrupt: Interrupt) {
             currentInterpreter?.wasm_answer_interrupt(result)
             break
         }
+        case "DisplayChar":{
+            console.log(interrupt.value)
+            stdOut.innerText += interrupt.value
+            currentInterpreter?.wasm_answer_interrupt({ type: "DisplayChar" })
+            break
+        }
         case "ReadChar": {
             const input = prompt("Enter a char")
             const result: InterruptResult = { type: "ReadChar", value: input ?? "" }
@@ -144,41 +132,52 @@ function handleInterrupt(interrupt: Interrupt) {
 
 
 run.addEventListener('click', async () => {
-    while (!currentInterpreter.wasm_has_terminated()) {
-        let status = currentInterpreter.wasm_run()
-        if (status == 1) {
-            let interrupt = currentInterpreter.wasm_get_current_interrupt()
-            handleInterrupt(interrupt)
-        }
-        const cpu = currentInterpreter.wasm_get_cpu_snapshot()
-        updateRegisters([...cpu.wasm_get_d_regs_value(), ...cpu.wasm_get_a_regs_value()])
-    }
-
-    disableExecution(true)
-})
-
-step.addEventListener("click", () => {
-    if (currentInterpreter) {
-        let a = currentInterpreter.wasm_step()
-        let status = currentInterpreter.wasm_get_status()
-        if (currentInterpreter.wasm_has_terminated()) {
-            disableExecution(true)
-        }
-        const instruction = a[0]
-
-        if (instruction) {
-            showCurrent(instruction.parsed_line)
-        }
-        const cpu = currentInterpreter.wasm_get_cpu_snapshot()
-        updateRegisters([...cpu.wasm_get_d_regs_value(), ...cpu.wasm_get_a_regs_value()])
-        updateMemoryTable()
-        if (status == 1) {
-            let interrupt = currentInterpreter.wasm_get_current_interrupt()
-            handleInterrupt(interrupt)
+    try{
+        while (!currentInterpreter.wasm_has_terminated()) {
+            let status = currentInterpreter.wasm_run()
+            if (status == 1) {
+                let interrupt = currentInterpreter.wasm_get_current_interrupt()
+                handleInterrupt(interrupt)
+            }
             const cpu = currentInterpreter.wasm_get_cpu_snapshot()
             updateRegisters([...cpu.wasm_get_d_regs_value(), ...cpu.wasm_get_a_regs_value()])
         }
+    
+        disableExecution(true)
+    }catch(e){
+        console.error(e)   
+        alert("Error during execution, check console for more info")
     }
+})
+
+step.addEventListener("click", () => {
+    try{
+        if (currentInterpreter) {
+            let a = currentInterpreter.wasm_step()
+            let status = currentInterpreter.wasm_get_status()
+            if (currentInterpreter.wasm_has_terminated()) {
+                disableExecution(true)
+            }
+            const instruction = a[0]
+    
+            if (instruction) {
+                showCurrent(instruction.parsed_line)
+            }
+            const cpu = currentInterpreter.wasm_get_cpu_snapshot()
+            updateRegisters([...cpu.wasm_get_d_regs_value(), ...cpu.wasm_get_a_regs_value()])
+            updateMemoryTable()
+            if (status == 1) {
+                let interrupt = currentInterpreter.wasm_get_current_interrupt()
+                handleInterrupt(interrupt)
+                const cpu = currentInterpreter.wasm_get_cpu_snapshot()
+                updateRegisters([...cpu.wasm_get_d_regs_value(), ...cpu.wasm_get_a_regs_value()])
+            }
+        }
+    }catch(e){
+        console.error(e)
+        alert("Error during execution, check console for more info")
+    }
+
 })
 
 
@@ -190,6 +189,8 @@ function showCurrent(ins: any) {
 function updateMemoryTable() {
     if (!currentInterpreter) return
     const data = currentInterpreter.wasm_read_memory_bytes(Number(memAddress.value), 16 * 16)
+    const sp = currentInterpreter.wasm_get_sp() - Number(memAddress.value)
+    console.log(sp)
     data.forEach((byte, i) => {
         const cell = memory.children[i] as HTMLSpanElement
         const value = byte.toString(16).toUpperCase().padStart(2, "0")
@@ -197,9 +198,13 @@ function updateMemoryTable() {
             cell.innerText = value
         }
     })
+    for (const child of memory.children) {
+        child.classList.remove("sp")
+    }
+    memory.children[sp]?.classList.add("sp")
 }
 
-memAddress.addEventListener("change", () => {
+memAddress.addEventListener("input", () => {
     updateMemoryTable()
 })
 memBefore.addEventListener("click", () => {
