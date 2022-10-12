@@ -858,6 +858,7 @@ impl Interpreter {
                 Ok(Interrupt::DisplayChar(value as char))
             },
             7 => Ok(Interrupt::Terminate),
+            8 => Ok(Interrupt::GetTime),
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
         }
     }

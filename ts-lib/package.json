@@ -1,0 +1,19 @@
+{
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "typings": "dist/index.d.ts",
+  "scripts": {
+    "build": "rollup -c",
+    "build-wasm": "cd .. && wasm-pack build --out-dir ts-lib/src/pkg"
+  },
+  "devDependencies": {
+    "esbuild": "^0.15.10",
+    "rollup": "^2.79.1",
+    "rollup-plugin-dts": "^4.2.3",
+    "rollup-plugin-esbuild": "^4.10.1"
+  },
+  "dependencies": {
+    "@rollup/plugin-typescript": "^9.0.1",
+    "tslib": "^2.4.0"
+  }
+}
