@@ -29,6 +29,11 @@ export default [
     ],
   }),
   bundle({
+    input: '/pkg/s68k.d.ts',
+    output: [{ file: 'dist/s68k.d.ts', format: 'es' }],
+    plugins: [dts()],
+  }),
+  bundle({
     plugins: [dts()],
     output: {
       file: `${name}.d.ts`,
