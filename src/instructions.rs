@@ -26,6 +26,7 @@ impl Size {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
 pub enum RegisterOperand {
     Address(u8),
     Data(u8),
@@ -53,7 +54,6 @@ for the Conditions and inspiration
  */
 #[wasm_bindgen]
 #[derive(Copy, Clone, Debug, Serialize)]
-#[serde(tag = "type", content = "value")]
 pub enum Condition {
     True,
     False,

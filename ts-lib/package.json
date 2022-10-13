@@ -3,7 +3,7 @@
     "module": "dist/index.mjs",
     "typings": "dist/index.d.ts",
     "scripts": {
-        "build": "rollup -c",
+        "build": "npm run build-wasm && rollup -c",
         "build-wasm": "cd .. && wasm-pack build --out-dir ts-lib/src/pkg"
     },
     "devDependencies": {

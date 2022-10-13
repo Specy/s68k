@@ -26,3 +26,30 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "DisplayChar" } | 
 { type: "Terminate" }
 "#;
+
+#[wasm_bindgen(typescript_custom_section)]
+pub const IRegisterOperand: &'static str = r#"
+export type RegisterOperand = { type: "Address", value: number } |
+{type: "Data", value: number}
+"#;
+
+#[wasm_bindgen(typescript_custom_section)]
+pub const IParsedLine: &'static str = r#"
+export type ParsedLine = {
+    parsed: any //TODO add instruction types
+    line: String
+    line_index: number
+}
+"#;
+#[wasm_bindgen(typescript_custom_section)]
+pub const IInstructionLine: &'static str = r#"
+export type InstructionLine = {
+    instruction: any //TODO add instruction types
+    address: number
+    parsed_line: ParsedLine
+}
+"#;
+#[wasm_bindgen(typescript_custom_section)]
+pub const IStep: &'static str = r#"
+export type Step = [instruction: InstructionLine, status: InterpreterStatus]
+"#;
