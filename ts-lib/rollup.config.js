@@ -1,43 +1,24 @@
 import dts from 'rollup-plugin-dts'
 import typescript from '@rollup/plugin-typescript';
 import { wasm } from '@rollup/plugin-wasm';
-
+import glob from 'glob';
 import esbuild from 'rollup-plugin-esbuild'
-
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 const name = require('./package.json').main.replace(/\.js$/, '')
 
-const bundle = config => ({
-  ...config,
-  input: 'src/index.ts',
-  external: id => !/^[./]/.test(id),
-})
+
 
 export default [
-  bundle({
+  {
     plugins: [esbuild(), typescript(), wasm()],
+    input: "src/index.ts",
     output: [
       {
-        file: `${name}.js`,
-        format: 'cjs',
-        sourcemap: true,
-      },
-      {
-        file: `${name}.mjs`,
         format: 'es',
+        dir:"dist",
         sourcemap: true,
       },
     ],
-  }),
-  bundle({
-    input: '/pkg/s68k.d.ts',
-    output: [{ file: 'dist/s68k.d.ts', format: 'es' }],
-    plugins: [dts()],
-  }),
-  bundle({
-    plugins: [dts()],
-    output: {
-      file: `${name}.d.ts`,
-      format: 'es',
-    },
-  }),
+  },
 ]

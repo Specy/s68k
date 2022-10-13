@@ -1115,6 +1115,7 @@ impl Interpreter {
         }
         Ok(())
     }
+    
     pub fn wasm_get_current_line_index(&self) -> usize {
         match self.get_instruction_at(self.pc) {
             Some(ins) => ins.parsed_line.line_index,
