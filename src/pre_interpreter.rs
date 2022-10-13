@@ -228,11 +228,17 @@ impl PreInterpreter {
                 "neg" => Instruction::NEG(op, self.get_size(size, Size::Word)),
                 "ext" => Instruction::EXT(
                     self.extract_register(op).unwrap(),
-                    self.get_size(size, Size::Word),
-                    match size {
-                        LexedSize::Byte => Size::Word,
-                        LexedSize::Word => Size::Long,
-                        _ => panic!("Invalid size"),
+                    //from
+                    match self.get_size(size, Size::Word){
+                        Size::Word => Size::Byte,
+                        Size::Long => Size::Word,
+                        s => panic!("Invalid size {:?}",s)
+                    },
+                    //to
+                    match self.get_size(size, Size::Word) {
+                        Size::Word => Size::Word,
+                        Size::Long => Size::Long,
+                        s => panic!("Invalid size {:?}",s),
                     },
                 ),
                 "extb" => {
