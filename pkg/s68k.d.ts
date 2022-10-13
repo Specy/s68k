@@ -59,6 +59,31 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "Terminate" }
 
 
+
+export type RegisterOperand = { type: "Address", value: number } |
+{type: "Data", value: number}
+
+
+
+export type ParsedLine = {
+    parsed: any //TODO add instruction types
+    line: String
+    line_index: number
+}
+
+
+
+export type InstructionLine = {
+    instruction: any //TODO add instruction types
+    address: number
+    parsed_line: ParsedLine
+}
+
+
+
+export type Step = [instruction: InstructionLine, status: InterpreterStatus]
+
+
 /**
 */
 export class Cpu {

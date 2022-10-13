@@ -919,11 +919,6 @@ export function __wbindgen_is_object(arg0) {
     return ret;
 };
 
-export function __wbindgen_is_string(arg0) {
-    const ret = typeof(getObject(arg0)) === 'string';
-    return ret;
-};
-
 export function __wbg_new_abda76e883ba8a5f() {
     const ret = new Error();
     return addHeapObject(ret);
@@ -1055,6 +1050,11 @@ export function __wbg_call_97ae9d8645dc388b() { return handleError(function (arg
 export function __wbg_new_0b9bfdd97583284e() {
     const ret = new Object();
     return addHeapObject(ret);
+};
+
+export function __wbindgen_is_string(arg0) {
+    const ret = typeof(getObject(arg0)) === 'string';
+    return ret;
 };
 
 export function __wbg_length_f2ab5db52e68a619(arg0) {

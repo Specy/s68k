@@ -53,7 +53,7 @@ Firstly make sure you have rust installed, [you can download it here](https://ww
 
 # How to build WASM binary
 The interpreter was made for WASM in mind, to build it you need [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) installed.
-Once installed you can build the project by running `wasm-pack build --out-dir ts-lib/pkg` in the root folder of the project. This will create a `pkg` folder with the compiled code.
+Once installed you can build the project by running `npm run build-wasm` in the `ts-lib` folder of the project. This will create a `pkg` folder in the ts-lib one with the compiled code.
 
 # How to test WASM binary
-Inside of the `web` folder there is a very basic website with the library imported from the `pkg` folder, created after the wasm build. You can test the package by running `npm install` to install dependencies and then `npm run start` to start the server. The website will be available at `http://localhost:3000`
+Inside of the `web` folder there is a very basic website with the library imported from the `pkg` folder **WARNING** not the ts-lib one, but in the root foler, to build it you need to run `wasm-pack build` in the root. You can test the package by running `npm install` to install dependencies and then `npm run start` to start the server. The website will be available at `http://localhost:3000`

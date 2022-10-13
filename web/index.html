@@ -34,10 +34,12 @@
 		::-webkit-scrollbar {
 			width: 0.5rem;
 		}
-		.sp{
+
+		.sp {
 			background-color: #2274A5;
 			border-radius: 0.2rem;
 		}
+
 		.code {
 			display: flex;
 			flex-direction: column;
@@ -99,11 +101,18 @@
 			flex-direction: column;
 			justify-content: space-around;
 			gap: 0.4rem;
+			font-family: monospace;
+			font-size: 1rem;
 			width: 10rem;
 			padding: 0.8rem;
 			color: #F5F5F5;
 			background-color: #1e2a35;
 			border-radius: 0.5rem;
+		}
+
+		.column {
+			display: flex;
+			flex-direction: column;
 		}
 
 		button:disabled {
@@ -118,6 +127,10 @@
 
 		.register {
 			width: 100%;
+			display: flex;
+			gap: 0.4rem;
+			justify-content: space-between;
+			align-items: center;
 			height: 1rem;
 		}
 
@@ -133,18 +146,52 @@
 
 		#memory {
 			display: grid;
-			grid-template-columns: repeat(16, 1fr);
-			grid-template-rows: repeat(16, 1fr);
+			font-family: monospace;
+			font-size: 1rem;
+			grid-template-columns: min-content;
+			grid-template-rows: min-content;
+			grid-template-areas:
+				"b a a a a"
+				"b c c c c"
+				"b c c c c"
+				"b c c c c"
+				"b c c c c";
 			width: 40rem;
+			background-color: #2f4457;
 			height: 100%;
 			margin-top: 0.5rem;
-			background-color: #1e2a35;
-			padding: 0.5rem;
 			color: #F5F5F5;
 			border-radius: 0.5rem;
+			overflow: hidden;
 		}
 
-		#memory span {
+		#memory-numbers {
+			grid-area: c;
+			display: grid;
+			background-color: #1e2a35;
+			border-top-left-radius: 0.2rem;
+			grid-template-columns: repeat(16, 1fr);
+			grid-template-rows: repeat(16, 1fr);
+		}
+
+		#memory-offsets {
+			display: flex;
+			grid-area: a;
+			padding: 0.5rem 0;
+
+			justify-content: space-around;
+		}
+
+		#memory-addresses {
+			padding: 0 0.5rem;
+			display: flex;
+			flex-direction: column;
+			justify-content: space-around;
+			grid-area: b;
+		}
+
+		#memory-numbers span {
+
 			display: flex;
 			align-items: center;
 			justify-content: center;
@@ -159,7 +206,7 @@
 <body>
 	<div class="row" style="flex:1; min-height: 90vh;">
 		<div class="code">
-			<textarea id="code-text">
+			<textarea id="code-text" spellcheck="false">
 			</textarea>
 			<div style="display:flex; gap: 0.4rem; align-items: center; margin-top: 0.4rem;">
 				<button id="compile-button">
@@ -188,19 +235,24 @@
 		<div style="display: flex; flex-direction:column">
 			<div class="row" style="width:100%">
 				<button id="mem-before" style="padding: 0.8rem 1rem">
-					< </button>
-						<input value="4096" id="mem-address" />
-						<button id="mem-after" style="padding: 0.8rem 1rem">
-							>
-						</button>
+					&lt;
+				</button>
+				<input value="4096" id="mem-address" />
+				<button id="mem-after" style="padding: 0.8rem 1rem">
+					&gt;
+				</button>
 			</div>
 			<div id="memory">
+				<div id="memory-offsets"></div>
+				<div id="memory-addresses"></div>
+				<div id="memory-numbers">
 
+				</div>
 			</div>
 		</div>
 	</div>
-	<div id="error-wrapper">
 
+	<div id="error-wrapper">
 	</div>
 	<script src="./bootstrap.js"></script>
 </body>

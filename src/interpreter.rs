@@ -325,7 +325,7 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new(pre_interpreted_program: PreInterpreter, memory_size: usize) -> Self {
-        let sp = memory_size >> 1;
+        let sp = memory_size >> 4;
         let mut interpreter = Self {
             memory: Memory::new(memory_size),
             cpu: Cpu::new(),

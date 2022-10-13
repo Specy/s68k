@@ -11,7 +11,9 @@ const stdOut = document.getElementById("std-out") as HTMLDivElement
 const memBefore = document.getElementById("mem-before") as HTMLDivElement
 const memAfter = document.getElementById("mem-after") as HTMLDivElement
 const memAddress = document.getElementById("mem-address") as HTMLInputElement
-const memory = document.getElementById("memory") as HTMLDivElement
+const memoryNumbers = document.getElementById("memory-numbers") as HTMLDivElement
+const memoryOffsets = document.getElementById("memory-offsets") as HTMLDivElement
+const memoryAddresses = document.getElementById("memory-addresses") as HTMLDivElement
 code.value = localStorage.getItem("s68k_code") ?? 
     `ORG $1000
 
@@ -20,7 +22,7 @@ START:
 let currentProgram: S68k | null = null
 let currentInterpreter: Interpreter | null = null
 const MEMORY_SIZE = 0XFFFFFF
-
+const PAGE_SIZE = 16 * 16
 compile.addEventListener("click", () => {
     const text = code.value
     currentProgram = new S68k(text)
@@ -59,6 +61,14 @@ function disableExecution(value: boolean) {
     run.disabled = value
     step.disabled = value
 }
+code.addEventListener("keydown", (e) => {
+    if(e.code === "Tab"){
+        e.preventDefault()
+        const start = code.selectionStart
+        code.value = code.value.substring(0, start) + "\t" + code.value.substring(start, code.value.length)
+        code.selectionStart = code.selectionEnd = start + 1
+    }
+})
 clear.addEventListener("click", () => {
     currentProgram = null
     currentInterpreter = null
@@ -187,24 +197,36 @@ function showCurrent(ins: any) {
 
 
 function updateMemoryTable() {
+    const squareSize = Math.sqrt(PAGE_SIZE)
+    
+    const currentAddress = Number(memAddress.value)
+    const clampedSize = currentAddress - (currentAddress % PAGE_SIZE)
+    new Array(squareSize).fill(0).map((_, i) => {
+        const address = clampedSize + (i) * squareSize
+        const el = memoryAddresses.children[i + 1] as HTMLSpanElement
+        el.innerText = address.toString(16).toUpperCase().padStart(4, "0")
+    })
+    memAddress.value = clampedSize.toString()
     if (!currentInterpreter) return
-    const data = currentInterpreter.wasm_read_memory_bytes(Number(memAddress.value), 16 * 16)
-    const sp = currentInterpreter.wasm_get_sp() - Number(memAddress.value)
-    console.log(sp)
+
+    const data = currentInterpreter.wasm_read_memory_bytes(clampedSize, 16 * 16)
+    const sp = currentInterpreter.wasm_get_sp() - clampedSize
     data.forEach((byte, i) => {
-        const cell = memory.children[i] as HTMLSpanElement
+        const cell = memoryNumbers.children[i] as HTMLSpanElement
         const value = byte.toString(16).toUpperCase().padStart(2, "0")
         if (cell.innerText.toUpperCase() !== value) {
             cell.innerText = value
         }
     })
-    for (const child of memory.children) {
+    
+    for (const child of memoryNumbers.children) {
         child.classList.remove("sp")
     }
-    memory.children[sp]?.classList.add("sp")
+
+    memoryNumbers.children[sp]?.classList.add("sp")
 }
 
-memAddress.addEventListener("input", () => {
+memAddress.addEventListener("change", () => {
     updateMemoryTable()
 })
 memBefore.addEventListener("click", () => {
@@ -216,20 +238,46 @@ memAfter.addEventListener("click", () => {
     updateMemoryTable()
 })
 
+
 function createMemoryTable(pageSize: number) {
+    const squareSize = Math.sqrt(pageSize)
     const elements = new Array(pageSize).fill(0).map((_, i) => {
         const el = document.createElement('span')
         el.innerText = "FF"
         return el
     })
-    memory.innerHTML = ""
-    memory.append(...elements)
+    memoryOffsets.innerHTML = ""
+    const offsets = new Array(squareSize).fill(0).map((_, i) => {
+        const el = document.createElement('span')
+        el.innerText = i.toString(16).toUpperCase().padStart(2, "0")
+        return el
+    })
+    memoryAddresses.innerHTML = "<span style='opacity:0;'>.</span>"
+
+    const addresses = new Array(squareSize).fill(0).map((_, i) => {
+        const el = document.createElement('span')
+        const currentAddress = Number(memAddress.value)
+        const address = currentAddress + (i) * squareSize
+        el.innerText = address.toString(16).toUpperCase().padStart(2, "0")
+        return el
+    })
+    memoryAddresses.append(...addresses)
+    memoryOffsets.append(...offsets)
+    memoryNumbers.innerHTML = ""
+    memoryNumbers.append(...elements)
 }
 
 function updateRegisters(values: number[]) {
     const spans = registersWrapper.querySelectorAll("span")
     spans.forEach((s, i) => {
-        s.innerText = `${values[i]}`
+        s.innerHTML = `
+        <div class='column'>
+            <div>
+                ${values[i].toString(16).toUpperCase().padStart(8, "0")}
+            </div> 
+            <div>${values[i]}</div>
+        </div>
+`
     })
 }
 const regs = [...new Array(8).fill(0).map((_, i) => `D${i}`), ...new Array(8).fill(0).map((_, i) => `A${i}`)]
@@ -238,7 +286,7 @@ function createRegisters() {
     registersWrapper.append(...regs.map((r) => {
         const el = document.createElement("div")
         el.className = "register"
-        el.innerText = `${r}: `
+        el.innerText = `${r} `
         const value = document.createElement("span")
         value.innerText = "0"
         el.append(value)
@@ -247,4 +295,4 @@ function createRegisters() {
 }
 createRegisters()
 disableButtons(true)
-createMemoryTable(16 * 16)
+createMemoryTable(PAGE_SIZE)
