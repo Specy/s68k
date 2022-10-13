@@ -25,6 +25,9 @@ const MEMORY_SIZE = 0XFFFFFF
 const PAGE_SIZE = 16 * 16
 compile.addEventListener("click", () => {
     const text = code.value
+    try{
+
+
     currentProgram = new S68k(text)
     const errors = currentProgram.wasm_semantic_check()
     localStorage.setItem("s68k_code", text)
@@ -48,6 +51,10 @@ compile.addEventListener("click", () => {
         currentInterpreter = currentProgram.wasm_create_interpreter(preProcess, MEMORY_SIZE)
         disableButtons(false)
     }
+}catch(e){
+    console.error(e)
+    alert("There was an error compiling the program, check the console for more info")   
+}
 })
 
 

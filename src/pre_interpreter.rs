@@ -257,6 +257,7 @@ impl PreInterpreter {
                 | "smi" | "spl" | "svc" | "svs" | "sf" | "st" => {
                     Instruction::Scc(op, name.parse().unwrap())
                 }
+                "swap" => Instruction::SWAP(self.extract_register(op).unwrap()),
                 //not sure if the default is word
                 "not" => Instruction::NOT(op, self.get_size(size, Size::Word)),
                 "jsr" => Instruction::JSR(op),
