@@ -973,7 +973,9 @@ impl Interpreter {
         if value == 0 {
             flags |= Flags::Zero;
         }
-        flags |= Flags::Extend;
+        if self.cpu.ccr.contains(Flags::Extend){
+            flags |= Flags::Extend;
+        }
         self.cpu.ccr = flags;
     }
     fn set_bit_test_flags(&mut self, value: u32, bitnum: u32, size: &Size) -> u32 {
@@ -996,7 +998,9 @@ impl Interpreter {
         if overflow {
             flags |= Flags::Overflow;
         }
-        flags |= Flags::Extend;
+        if self.cpu.ccr.contains(Flags::Extend){
+            flags |= Flags::Extend;
+        }
         self.cpu.ccr = flags;
     }
 

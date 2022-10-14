@@ -2,7 +2,7 @@
 use crate::constants::{COMMENT_1, DIRECTIVES, EQU, OPERAND_SEPARATOR, COMMENT_2};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LexedRegisterType {
     Address,
@@ -148,9 +148,9 @@ impl AsmRegex {
             .collect::<HashMap<String, bool>>();
         AsmRegex {
             directives_map: directives_hash_map,
-            register: Regex::new(r"^((d|a)\d|sp)$").unwrap(),
+            register: Regex::new(r"(?i)^((d|a)\d|sp)$").unwrap(),
             immediate: Regex::new(r"^\#\S+$").unwrap(),
-            indirect: Regex::new(r"^\S*\(((d|a)\d|sp)\)$").unwrap(),
+            indirect: Regex::new(r"(?i)^\S*\(((d|a)\d|sp)\)$").unwrap(),
             indirect_displacement: Regex::new(r"^((.+,)+.+)$").unwrap(),
             post_indirect: Regex::new(r"^\(\S+\)\+$").unwrap(),
             pre_indirect: Regex::new(r"^-\(\S+\)$").unwrap(),
@@ -179,9 +179,9 @@ impl AsmRegex {
             [first] => (first.to_string(), LexedSize::Unspecified),
             [first, size] => {
                 let size = match size {
-                    "b" => LexedSize::Byte,
-                    "w" => LexedSize::Word,
-                    "l" => LexedSize::Long,
+                    "b" | "B" => LexedSize::Byte,
+                    "w" | "W" => LexedSize::Word,
+                    "l" | "L" => LexedSize::Long,
                     _ => LexedSize::Unknown,
                 };
                 (first.to_string(), size)
@@ -322,14 +322,14 @@ impl AsmRegex {
             _ if self.label_line.is_match(line) => LineKind::Label,
             _ if args.iter().any(|a| self.directives_map.contains_key(a)) => LineKind::Directive,
             [_, _, ..] => {
-                let (instruction, size) = self.split_at_size(&args[0]);
+                let (instruction, size) = self.split_at_size(&args[0].to_lowercase());
                 LineKind::Instruction {
                     size,
                     name: instruction,
                 }
             }
             [_] => {
-                let (instruction, size) = self.split_at_size(&args[0]);
+                let (instruction, size) = self.split_at_size(&args[0].to_lowercase());
                 LineKind::Instruction {
                     size,
                     name: instruction,
@@ -403,7 +403,6 @@ impl Lexer {
                     _ => line.to_string(),
                 }
             })
-            .map(|s| s.to_lowercase())
             .collect::<Vec<String>>()
     }
     pub fn parse_operands(&self, operands: Vec<String>) -> Vec<LexedOperand> {
@@ -418,10 +417,11 @@ impl Lexer {
         match self.regex.get_operand_kind(&operand) {
             OperandKind::Immediate => LexedOperand::Immediate(operand),
             OperandKind::Register => {
+                let operand = operand.to_lowercase();
                 let register_type = match operand.chars().nth(0).unwrap() {
                     'd' => LexedRegisterType::Data,
                     'a' => LexedRegisterType::Address,
-                    's' => LexedRegisterType::SP,
+                    's' => LexedRegisterType::SP, //TODO this might fail
                     _ => panic!("Invalid register type '{}'", operand),
                 };
                 LexedOperand::Register(register_type, operand)
@@ -493,7 +493,7 @@ impl Lexer {
                         match &args[..] {
                             [first, ..] => {
                                 let (directive_name, size) =
-                                    self.regex.split_at_size(&first.value.to_string());
+                                    self.regex.split_at_size(&first.value.to_string().to_lowercase());
                                 let label_directive = LabelDirective {
                                     name: directive_name,
                                     size,
@@ -507,12 +507,19 @@ impl Lexer {
                             _ => LexedLine::Label { name },
                         }
                     }
-                    LineKind::Directive => LexedLine::Directive {
-                        args: args
-                            .iter()
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
-                            .collect(),
+                    LineKind::Directive => {
+                        let mut parsed_args: Vec<String> = args
+                        .iter()
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .collect();
+                        //lowercase the first arg
+                        let first = parsed_args.get(0).unwrap().to_lowercase();
+                        parsed_args[0] = first;
+
+                        LexedLine::Directive {
+                            args: parsed_args
+                        }
                     },
                     LineKind::Empty => LexedLine::Empty,
                 };
