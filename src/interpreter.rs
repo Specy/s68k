@@ -537,16 +537,16 @@ impl Interpreter {
             }
             Instruction::LSd(amount_source, dest, direction, size) => {
                 let amount = self.get_operand_value(amount_source, size)? % 64;
-                let mut pair = (self.get_operand_value(dest, size)?, false);
+                let (mut value,mut msb) = (self.get_operand_value(dest, size)?, false);
                 for _ in 0..amount {
-                    pair = shift(direction, pair.0, size, false);
+                    (value, msb) = shift(direction, value, size, false);
                 }
-                self.store_operand_value(dest, pair.0, size)?;
-                self.set_logic_flags(pair.0, size);
+                self.store_operand_value(dest, value, size)?;
+                self.set_logic_flags(value, size);
                 self.set_flag(Flags::Overflow, false);
                 if amount != 0 {
-                    self.set_flag(Flags::Extend, pair.1);
-                    self.set_flag(Flags::Carry, pair.1);
+                    self.set_flag(Flags::Extend, msb);
+                    self.set_flag(Flags::Carry, msb);
                 } else {
                     self.set_flag(Flags::Carry, false);
                 }
@@ -600,10 +600,10 @@ impl Interpreter {
                 let amount_value = self.get_operand_value(amount, size)? % 64;
                 let dest_value = self.get_operand_value(dest, size)?;
                 let mut has_overflowed = false;
-                let (mut value, mut has_carry) = (dest_value, false);
+                let (mut value, mut msb) = (dest_value, false);
                 let mut previous_msb = get_sign(value, size);
                 for _ in 0..amount_value {
-                    (value, has_carry) = shift(direction, value, size, true);
+                    (value, msb) = shift(direction, value, size, true);
                     if get_sign(value, size) != previous_msb {
                         has_overflowed = true;
                     }
@@ -612,10 +612,10 @@ impl Interpreter {
                 self.store_operand_value(dest, value, size)?;
 
                 let carry = match direction {
-                    ShiftDirection::Left => has_carry,
+                    ShiftDirection::Left => msb,
                     ShiftDirection::Right => {
                         if amount_value < size.to_bits() as u32 {
-                            has_carry
+                            msb
                         } else {
                             false
                         }
@@ -784,7 +784,7 @@ impl Interpreter {
             Instruction::TRAP(value) => match value {
                 15 => {
                     let task = self.cpu.d_reg[0].get_byte();
-                    let interrupt = self.get_interrupt(task)?;
+                    let interrupt = self.get_trap(task)?;
                     self.current_interrupt = Some(interrupt);
                     self.set_status(InterpreterStatus::Interrupt);
                 }
@@ -834,7 +834,7 @@ impl Interpreter {
         }
     }
 
-    fn get_interrupt(&mut self, value: u8) -> RuntimeResult<Interrupt> {
+    fn get_trap(&mut self, value: u8) -> RuntimeResult<Interrupt> {
         match value {
             0 | 1 => {
                 let address = self.cpu.a_reg[1].get_long();
@@ -973,8 +973,8 @@ impl Interpreter {
         if value == 0 {
             flags |= Flags::Zero;
         }
-        self.cpu.ccr.set(Flags::Carry, false);
-        self.cpu.ccr |= flags;
+        flags |= Flags::Extend;
+        self.cpu.ccr = flags;
     }
     fn set_bit_test_flags(&mut self, value: u32, bitnum: u32, size: &Size) -> u32 {
         let mask = 0x1 << (bitnum % size.to_bits() as u32);
@@ -996,8 +996,8 @@ impl Interpreter {
         if overflow {
             flags |= Flags::Overflow;
         }
-        self.cpu.ccr.set(Flags::Carry, false);
-        self.cpu.ccr |= flags;
+        flags |= Flags::Extend;
+        self.cpu.ccr = flags;
     }
 
     pub fn get_condition_value(&self, cond: &Condition) -> bool {
