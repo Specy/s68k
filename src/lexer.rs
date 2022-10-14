@@ -301,13 +301,13 @@ impl AsmRegex {
             },
         }
     }
-    pub fn split_at_spaces(&self, line: &str) -> Vec<String> {
-        line.split(' ')
+    pub fn split_at_whitespace(&self, line: &str) -> Vec<String> {
+        line.replace("\t", " ").trim().split(' ')
             .map(|x| x.to_string())
             .collect::<Vec<String>>()
     }
     pub fn split_at_comment<'a>(&self, string: &'a str) -> Vec<&'a str> {
-       self.comment.split(&string).collect()
+        self.comment.split(&string).collect()
     }
     pub fn get_line_kind(&self, line: &String) -> LineKind {
         let line = line.trim();
@@ -364,7 +364,7 @@ impl Lexer {
         let mut equ_map_indexes: HashMap<usize, bool> = HashMap::new();
         lines
             .iter()
-            .map(|line| self.regex.split_at_spaces(line))
+            .map(|line| self.regex.split_at_whitespace(line))
             .enumerate()
             .for_each(|(index, args)| {
                 if args.len() >= 3 && args[1].eq(EQU) {
@@ -468,7 +468,7 @@ impl Lexer {
             .map(|(i, line)| {
                 let line = line.trim();
                 let kind = self.regex.get_line_kind(&line.to_string().to_lowercase());
-                let args = self.regex.split_at_spaces(line);
+                let args = self.regex.split_at_whitespace(line);
                 let parsed_line = match kind {
                     LineKind::Instruction { size, name } => {
                         let operands = self

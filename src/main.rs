@@ -10,7 +10,7 @@ fn main() {
     let s68k = S68k::new(example_code);
     println!("\n---------LEXED---------\n");
     for line in s68k.get_lexed_lines() {
-        //println!("{:#?}", line);
+        println!("{:#?}", line);
     }
     let errors = s68k.semantic_check();
     if errors.len() > 0 {
@@ -19,6 +19,7 @@ fn main() {
     for error in errors {
         println!("{}", error.get_message());
     }
+    return;
     println!("\n----COMPILED-PROGRAM----\n");
     let compiled_program = s68k.compile().unwrap();
     //pre_interpreter.debug_print();
