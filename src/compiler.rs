@@ -491,8 +491,8 @@ impl Compiler {
                 }
                 ['#', ..] => match self.labels.get(&num[1..]) {
                     Some(label) => Ok(Operand::Immediate((label.address as i32) as u32)),
-                    None => match num[1..].parse() {
-                        Ok(value) => Ok(Operand::Immediate(value)),
+                    None => match i32::from_str_radix(&num[1..], 10) {
+                        Ok(value) => Ok(Operand::Immediate(value as u32)),
                         Err(_) => Err(CompilationError::ParseError(format!(
                             "Invalid immediate number: {}",
                             &num
