@@ -1,11 +1,11 @@
 use interpreter::{Interpreter};
-use pre_interpreter::PreInterpreter;
+use compiler::Compiler;
 use wasm_bindgen::prelude::*;
 mod constants;
 pub mod instructions;
 pub mod interpreter;
 mod lexer;
-mod pre_interpreter;
+mod compiler;
 mod semantic_checker;
 mod utils;
 mod math;
@@ -33,15 +33,15 @@ impl S68k {
         let semantic_checker = SemanticChecker::new(&self.lines);
         semantic_checker.get_errors()
     }
-    pub fn pre_process(&self) -> PreInterpreter {
-        PreInterpreter::new(&self.lines)
+    pub fn compile(&self) -> Result<Compiler, String> {
+        Compiler::new(&self.lines)
     }
     pub fn get_lexed_lines(&self) -> Vec<ParsedLine> {
         self.lines.clone()
     }
     pub fn create_interpreter(
         &self,
-        pre_processed_program: PreInterpreter,
+        pre_processed_program: Compiler,
         memory_size: usize,
     ) -> Interpreter {
         Interpreter::new(pre_processed_program, memory_size)
@@ -66,15 +66,15 @@ impl S68k {
             Err(e) => Err(JsValue::from_str(&e.to_string())),
         }
     }
-    pub fn wasm_pre_process(&self) -> PreInterpreter{
-        self.pre_process()
+    pub fn wasm_compile(&self) -> Result<Compiler, String>{
+        self.compile()
     }
     pub fn wasm_semantic_check(&self) -> WasmSemanticErrors {
         WasmSemanticErrors::new(self.semantic_check())
     }
     pub fn wasm_create_interpreter(
         &self,
-        pre_processed_program: PreInterpreter,
+        pre_processed_program: Compiler,
         memory_size: usize,
     ) -> Interpreter {
         self.create_interpreter(pre_processed_program, memory_size)

@@ -9,14 +9,13 @@ use crate::{
         ShiftDirection, Sign, Size,
     },
     math::*,
-    pre_interpreter::{Directive, InstructionLine, Label, PreInterpreter},
+    compiler::{Directive, InstructionLine, Label, Compiler},
 };
 use bitflags::bitflags;
 use core::panic;
 use serde::Serialize;
 use std::{collections::HashMap, hash::Hash};
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
-
 
 bitflags! {
     #[wasm_bindgen]
@@ -324,7 +323,7 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    pub fn new(pre_interpreted_program: PreInterpreter, memory_size: usize) -> Self {
+    pub fn new(pre_interpreted_program: Compiler, memory_size: usize) -> Self {
         let sp = memory_size >> 4;
         let mut interpreter = Self {
             memory: Memory::new(memory_size),
@@ -376,6 +375,15 @@ impl Interpreter {
             }
             _ => self.status = status,
         }
+    }
+    pub fn get_flags_as_array(&self) -> Vec<u8> {
+        let bits = self.cpu.ccr.bits();
+        let mut flags = Vec::new();
+        //TODO there are 5 flags for now, if i add more remember to change this
+        for i in 0..5 {
+            flags.push((bits & (1 << i) != 0) as u8);   
+        }
+        flags
     }
     pub fn has_terminated(&self) -> bool {
         return self.status == InterpreterStatus::Terminated
@@ -1072,6 +1080,12 @@ impl Interpreter {
     }
     pub fn wasm_get_flag(&self, flag: Flags) -> bool {
         self.get_flag(flag)
+    }
+    pub fn wasm_get_flags_as_number(&self) -> u16 {
+        self.cpu.ccr.bits()
+    }
+    pub fn wasm_get_flags_as_array(&self) -> Vec<u8> {
+        self.get_flags_as_array()
     }
     pub fn wasm_get_condition_value(&self, cond: Condition) -> bool {
         self.get_condition_value(&cond)

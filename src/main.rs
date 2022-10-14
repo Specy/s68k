@@ -19,12 +19,12 @@ fn main() {
     for error in errors {
         println!("{}", error.get_message());
     }
-    println!("\n----PRE-INTERPRETER----\n");
-    let pre_interpreter = s68k.pre_process();
+    println!("\n----COMPILED-PROGRAM----\n");
+    let compiled_program = s68k.compile().unwrap();
     //pre_interpreter.debug_print();
 
     //16 mb of memory
-    let mut interpreter = s68k.create_interpreter(pre_interpreter, 0xFFFFFF);
+    let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF);
 
     while !interpreter.has_terminated() {
         let status = interpreter.run().unwrap();

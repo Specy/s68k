@@ -244,6 +244,29 @@ export const Size = Object.freeze({ Byte:0,"0":"Byte",Word:1,"1":"Word",Long:2,"
 export const Condition = Object.freeze({ True:0,"0":"True",False:1,"1":"False",High:2,"2":"High",LowOrSame:3,"3":"LowOrSame",CarryClear:4,"4":"CarryClear",CarrySet:5,"5":"CarrySet",NotEqual:6,"6":"NotEqual",Equal:7,"7":"Equal",OverflowClear:8,"8":"OverflowClear",OverflowSet:9,"9":"OverflowSet",Plus:10,"10":"Plus",Minus:11,"11":"Minus",GreaterThanOrEqual:12,"12":"GreaterThanOrEqual",LessThan:13,"13":"LessThan",GreaterThan:14,"14":"GreaterThan",LessThanOrEqual:15,"15":"LessThanOrEqual", });
 /**
 */
+export class Compiler {
+
+    static __wrap(ptr) {
+        const obj = Object.create(Compiler.prototype);
+        obj.ptr = ptr;
+
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.ptr;
+        this.ptr = 0;
+
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_compiler_free(ptr);
+    }
+}
+/**
+*/
 export class Cpu {
 
     static __wrap(ptr) {
@@ -494,6 +517,29 @@ export class Interpreter {
         return ret !== 0;
     }
     /**
+    * @returns {number}
+    */
+    wasm_get_flags_as_number() {
+        const ret = wasm.interpreter_wasm_get_flags_as_number(this.ptr);
+        return ret;
+    }
+    /**
+    * @returns {Uint8Array}
+    */
+    wasm_get_flags_as_array() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.interpreter_wasm_get_flags_as_array(retptr, this.ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v0 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 1);
+            return v0;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
     * @param {number} cond
     * @returns {boolean}
     */
@@ -631,29 +677,6 @@ export class Memory {
 }
 /**
 */
-export class PreInterpreter {
-
-    static __wrap(ptr) {
-        const obj = Object.create(PreInterpreter.prototype);
-        obj.ptr = ptr;
-
-        return obj;
-    }
-
-    __destroy_into_raw() {
-        const ptr = this.ptr;
-        this.ptr = 0;
-
-        return ptr;
-    }
-
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_preinterpreter_free(ptr);
-    }
-}
-/**
-*/
 export class Register {
 
     static __wrap(ptr) {
@@ -746,11 +769,22 @@ export class S68k {
         }
     }
     /**
-    * @returns {PreInterpreter}
+    * @returns {Compiler}
     */
-    wasm_pre_process() {
-        const ret = wasm.s68k_wasm_pre_process(this.ptr);
-        return PreInterpreter.__wrap(ret);
+    wasm_compile() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.s68k_wasm_compile(retptr, this.ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var r2 = getInt32Memory0()[retptr / 4 + 2];
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return Compiler.__wrap(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
     }
     /**
     * @returns {WasmSemanticErrors}
@@ -760,12 +794,12 @@ export class S68k {
         return WasmSemanticErrors.__wrap(ret);
     }
     /**
-    * @param {PreInterpreter} pre_processed_program
+    * @param {Compiler} pre_processed_program
     * @param {number} memory_size
     * @returns {Interpreter}
     */
     wasm_create_interpreter(pre_processed_program, memory_size) {
-        _assertClass(pre_processed_program, PreInterpreter);
+        _assertClass(pre_processed_program, Compiler);
         var ptr0 = pre_processed_program.ptr;
         pre_processed_program.ptr = 0;
         const ret = wasm.s68k_wasm_create_interpreter(this.ptr, ptr0, memory_size);
@@ -881,14 +915,14 @@ export function __wbindgen_object_clone_ref(arg0) {
     return addHeapObject(ret);
 };
 
-export function __wbindgen_string_new(arg0, arg1) {
-    const ret = getStringFromWasm0(arg0, arg1);
-    return addHeapObject(ret);
-};
-
 export function __wbindgen_is_bigint(arg0) {
     const ret = typeof(getObject(arg0)) === 'bigint';
     return ret;
+};
+
+export function __wbindgen_string_new(arg0, arg1) {
+    const ret = getStringFromWasm0(arg0, arg1);
+    return addHeapObject(ret);
 };
 
 export function __wbindgen_boolean_get(arg0) {

@@ -86,6 +86,11 @@ export type Step = [instruction: InstructionLine, status: InterpreterStatus]
 
 /**
 */
+export class Compiler {
+  free(): void;
+}
+/**
+*/
 export class Cpu {
   free(): void;
 /**
@@ -172,6 +177,14 @@ export class Interpreter {
 */
   wasm_get_flag(flag: Flags): boolean;
 /**
+* @returns {number}
+*/
+  wasm_get_flags_as_number(): number;
+/**
+* @returns {Uint8Array}
+*/
+  wasm_get_flags_as_array(): Uint8Array;
+/**
 * @param {number} cond
 * @returns {boolean}
 */
@@ -222,11 +235,6 @@ export class Memory {
 }
 /**
 */
-export class PreInterpreter {
-  free(): void;
-}
-/**
-*/
 export class Register {
   free(): void;
 /**
@@ -255,19 +263,19 @@ export class S68k {
 */
   wasm_get_lexed_lines(): any;
 /**
-* @returns {PreInterpreter}
+* @returns {Compiler}
 */
-  wasm_pre_process(): PreInterpreter;
+  wasm_compile(): Compiler;
 /**
 * @returns {WasmSemanticErrors}
 */
   wasm_semantic_check(): WasmSemanticErrors;
 /**
-* @param {PreInterpreter} pre_processed_program
+* @param {Compiler} pre_processed_program
 * @param {number} memory_size
 * @returns {Interpreter}
 */
-  wasm_create_interpreter(pre_processed_program: PreInterpreter, memory_size: number): Interpreter;
+  wasm_create_interpreter(pre_processed_program: Compiler, memory_size: number): Interpreter;
 }
 /**
 */
