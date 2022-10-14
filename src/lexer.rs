@@ -302,6 +302,7 @@ impl AsmRegex {
         }
     }
     pub fn split_at_whitespace(&self, line: &str) -> Vec<String> {
+        //TODO maybe use regex?
         line.replace("\t", " ").trim().split(' ')
             .map(|x| x.to_string())
             .collect::<Vec<String>>()
