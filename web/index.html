@@ -39,19 +39,37 @@
 			background-color: #2274A5;
 			border-radius: 0.2rem;
 		}
-
+		.selected-line{
+			background-color: #2f546a;
+		}
+		.error-line{
+			background-color: rgb(210, 69, 69);
+		}
 		.code {
 			display: flex;
 			flex-direction: column;
 			flex: 1;
 		}
 
+		.code-floating-wrapper {
+			display: flex;
+			flex: 1;
+			border: none;
+			border-radius: 0.4rem;
+			position: relative;
+			overflow: hidden;
+			background-color: #F5F5F5;
+		}
+		#code{
+			width: 100%;
+			height: 100%;
+			position: absolute;
+		}
 		.code textarea {
 			flex: 1;
 			resize: none;
 		}
 
-		.code textarea,
 		button {
 			width: 100%;
 			padding: 0.4rem;
@@ -110,7 +128,8 @@
 			background-color: #1e2a35;
 			border-radius: 0.5rem;
 		}
-		#sr{
+
+		#sr {
 			display: grid;
 			grid-template-columns: repeat(5, 1fr);
 			grid-template-rows: repeat(1, 1fr);
@@ -122,11 +141,13 @@
 
 			gap: 0.4rem;
 		}
-		#sr span{
+
+		#sr span {
 			display: flex;
 			justify-content: center;
 			align-items: center;
 		}
+
 		.column {
 			display: flex;
 			flex-direction: column;
@@ -224,8 +245,11 @@
 <body>
 	<div class="row" style="flex:1; min-height: 90vh;">
 		<div class="code">
-			<textarea id="code-text" spellcheck="false">
-			</textarea>
+			<div class="code-floating-wrapper">
+				<div id="code">
+
+				</div>
+			</div>
 			<div style="display:flex; gap: 0.4rem; align-items: center; margin-top: 0.4rem;">
 				<button id="compile-button">
 					Compile

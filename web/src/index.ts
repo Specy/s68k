@@ -1,9 +1,8 @@
-import { S68k, Interpreter, SemanticError, Interrupt, InterruptResult } from "../pkg/s68k"
+import { S68k, Interpreter, SemanticError, Interrupt, InterruptResult } from "../../pkg/s68k"
 const compile = document.getElementById("compile-button")
 const run = document.getElementById("run-button") as HTMLButtonElement
 const step = document.getElementById("step-button") as HTMLButtonElement
 const clear = document.getElementById("clear-button") as HTMLButtonElement
-const code = document.getElementById("code-text") as HTMLInputElement
 const errorWrapper = document.getElementById("error-wrapper")
 const registersWrapper = document.getElementById("registers")
 const currentInstruction = document.getElementById("current-instruction")
@@ -15,17 +14,29 @@ const memoryNumbers = document.getElementById("memory-numbers") as HTMLDivElemen
 const memoryOffsets = document.getElementById("memory-offsets") as HTMLDivElement
 const memoryAddresses = document.getElementById("memory-addresses") as HTMLDivElement
 const sr = document.getElementById("sr") as HTMLDivElement
-code.value = localStorage.getItem("s68k_code") ??
-    `ORG $1000
+import * as monaco from 'monaco-editor';
+import { baseTheme } from "./editorTheme.js"
+import { M68KLanguage } from "./m68k-monaco"
+//@ts-ignore
+monaco.editor.defineTheme('custom-theme', baseTheme)
+//@ts-ignore
+monaco.languages.setMonarchTokensProvider('m68k', M68KLanguage)
+monaco.languages.register({ id: 'm68k' })
+const editor = monaco.editor.create(document.getElementById('code'), {
+    theme: "custom-theme",
+    value: localStorage.getItem("s68k_code") ??
+        `ORG $1000
 
 START:
-    `
+    `,
+    language: 'm68k'
+});
 let currentProgram: S68k | null = null
 let currentInterpreter: Interpreter | null = null
 const MEMORY_SIZE = 0XFFFFFF
 const PAGE_SIZE = 16 * 16
 compile.addEventListener("click", () => {
-    const text = code.value
+    const text = editor.getValue()
     try {
         currentProgram = new S68k(text)
         const errors = currentProgram.wasm_semantic_check()
@@ -34,11 +45,7 @@ compile.addEventListener("click", () => {
         const len = errors.get_length()
         const er = new Array(len).fill(0).map((_, i) => errors.get_error_at_index(i))
         er.forEach(error => {
-            const errorEl = document.createElement("div")
-            errorEl.className = "error"
-            errorEl.innerText = error.wasm_get_message()
-            console.log(error.wasm_get_line())
-            errorWrapper.appendChild(errorEl)
+            appendError(error.wasm_get_message())
         })
         updateRegisters(Array(regs.length).fill(0))
         updateMemoryTable()
@@ -51,11 +58,7 @@ compile.addEventListener("click", () => {
                 currentInterpreter = currentProgram.wasm_create_interpreter(compiledProgram, MEMORY_SIZE)
                 disableButtons(false)
             } catch (e) {
-                console.log(e)
-                const errorEl = document.createElement("div")
-                errorEl.className = "error"
-                errorEl.innerText = e
-                errorWrapper.append(errorEl)
+                appendError(e)
             }
 
         }
@@ -64,7 +67,12 @@ compile.addEventListener("click", () => {
         alert("There was an error compiling the program, check the console for more info")
     }
 })
-
+function appendError(error: string){
+    const errorEl = document.createElement("div")
+    errorEl.className = "error"
+    errorEl.innerText = error
+    errorWrapper.append(errorEl)
+}
 
 function disableButtons(value: boolean) {
     run.disabled = value
@@ -76,22 +84,16 @@ function disableExecution(value: boolean) {
     run.disabled = value
     step.disabled = value
 }
-code.addEventListener("keydown", (e) => {
-    if (e.code === "Tab") {
-        e.preventDefault()
-        const start = code.selectionStart
-        code.value = code.value.substring(0, start) + "\t" + code.value.substring(start, code.value.length)
-        code.selectionStart = code.selectionEnd = start + 1
-    }
-})
 clear.addEventListener("click", () => {
     currentProgram = null
     currentInterpreter = null
     updateRegisters(Array(regs.length).fill(0))
     disableButtons(true)
     currentInstruction.innerText = ""
+    errorWrapper.innerHTML = ""
     stdOut.innerText = ""
     updateMemoryTable()
+    selectLine(-1, false)
     updateCr()
 })
 
@@ -174,10 +176,12 @@ run.addEventListener('click', async () => {
         disableExecution(true)
     } catch (e) {
         console.error(e)
-        alert("Error during execution, check console for more info")
+        disableExecution(true)
+        appendError(e)
     }
 })
 
+let lastLine = -1
 step.addEventListener("click", () => {
     try {
         if (currentInterpreter) {
@@ -187,10 +191,11 @@ step.addEventListener("click", () => {
                 disableExecution(true)
             }
             const instruction = a[0]
-
+            lastLine = currentInterpreter.wasm_get_current_line_index()
             if (instruction) {
                 showCurrent(instruction.parsed_line)
             }
+            selectLine(currentInterpreter.wasm_get_current_line_index(), false)
             const cpu = currentInterpreter.wasm_get_cpu_snapshot()
             updateRegisters([...cpu.wasm_get_d_regs_value(), ...cpu.wasm_get_a_regs_value()])
             updateMemoryTable()
@@ -204,7 +209,8 @@ step.addEventListener("click", () => {
         }
     } catch (e) {
         console.error(e)
-        alert("Error during execution, check console for more info")
+        disableExecution(true)
+        appendError(e)
     }
 
 })
@@ -216,7 +222,7 @@ function showCurrent(ins: any) {
 
 function updateCr() {
     const bits = currentInterpreter?.wasm_get_flags_as_array() ?? new Array(5).fill(0)
-    bits.forEach((b,i) => {
+    bits.forEach((b, i) => {
         sr.children[5 + i].innerHTML = b.toString()
     })
 
@@ -318,6 +324,29 @@ function createRegisters() {
         return el
     }))
 }
+let decorations: any[] = []
+function selectLine(line: number, hasError: boolean) {
+    decorations = editor.deltaDecorations(
+        decorations,
+        line > 0
+            ? [
+                    {
+                        range: new monaco.Range(line, 0, line, 0),
+                        options: {
+                            className: hasError ? 'error-line' : 'selected-line',
+                            inlineClassName: 'selected-line-text',
+                            isWholeLine: true,
+                        
+                        }
+                    }
+              ]
+            : []
+    )
+    editor.revealLineInCenter(line)
+}
+
+
+
 createRegisters()
 disableButtons(true)
 createMemoryTable(PAGE_SIZE)

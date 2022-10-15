@@ -1,1 +1,1 @@
-import("./index.ts").catch(console.error);
+import("./src/index.ts").catch(console.error);
