@@ -1,22 +1,31 @@
-import dts from 'rollup-plugin-dts'
 import typescript from '@rollup/plugin-typescript';
 import { wasm } from '@rollup/plugin-wasm';
-import glob from 'glob';
+import copy from 'rollup-plugin-copy'
 import esbuild from 'rollup-plugin-esbuild'
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-const name = require('./package.json').main.replace(/\.js$/, '')
-
 
 
 export default [
   {
-    plugins: [esbuild(), typescript(), wasm()],
+    plugins: [
+      copy({
+        targets: [{
+          src: 'src/**/*.d.ts',
+          dest: 'dist/',
+        }, {
+          src: '../README.md',
+          dest: ['dist/', './'],
+        }],
+        flatten: false
+      }),
+      typescript(),
+      esbuild(),
+      wasm(),
+    ],
     input: "src/index.ts",
     output: [
       {
         format: 'es',
-        dir:"dist",
+        dir: "dist",
         sourcemap: true,
       },
     ],

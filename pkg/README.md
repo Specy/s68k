@@ -42,7 +42,9 @@ equ, org, dc, ds, dcb
 - Add more directives
 - Add END directive
 - Add tests
-- Refactor the LabelDirective 
+- Add breakpoints 
+- Remove LabelDirective, split the Label and Directive, this will also let instructions be in the same line as the label
+
 
 ## Known bugs
 1. Argument splitting is not the best, for example `move.l #',', d1` will split the arguments at the comma #','
