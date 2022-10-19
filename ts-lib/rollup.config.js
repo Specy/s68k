@@ -3,19 +3,24 @@ import { wasm } from '@rollup/plugin-wasm';
 import copy from 'rollup-plugin-copy'
 import esbuild from 'rollup-plugin-esbuild'
 
-
 export default [
   {
     plugins: [
       copy({
         targets: [{
           src: 'src/**/*.d.ts',
-          dest: 'dist/',
+          dest: 'dist/web',
         }, {
           src: '../README.md',
-          dest: ['dist/', './'],
+          dest: ['dist/web', './'],
         }],
         flatten: false
+      }),
+      copy({
+        targets: [{
+          src: 'src/**/*.wasm',
+          dest: "dist/web",
+        },]
       }),
       typescript(),
       esbuild(),
@@ -25,7 +30,7 @@ export default [
     output: [
       {
         format: 'es',
-        dir: "dist",
+        dir: "dist/web",
         sourcemap: true,
       },
     ],

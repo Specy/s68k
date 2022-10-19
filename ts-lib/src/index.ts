@@ -1,9 +1,12 @@
-import { Flags, S68k as RawS68k, SemanticError as RawSemanticError, Interpreter as RawInterpreter, Compiler as RawCompiler, InterruptResult, Step, Condition, Cpu as RawCpu, Interrupt, InstructionLine, InterpreterStatus, RegisterOperand, Size, Register as RawRegister } from './pkg/s68k'
+import init, { Flags, S68k as RawS68k, SemanticError as RawSemanticError, Interpreter as RawInterpreter, Compiler as RawCompiler, InterruptResult, Step, Condition, Cpu as RawCpu, Interrupt, InstructionLine, InterpreterStatus, RegisterOperand, Size, Register as RawRegister } from './pkg/s68k'
 
-type CompilationResult = { errors: SemanticError[] } | { interpreter: Interpreter }
+type CompilationResult = { ok: false, errors: SemanticError[] } | { ok: true, interpreter: Interpreter }
 
-export { RawS68k, RawInterpreter, RawSemanticError, RawCompiler, RawCpu, RawRegister }
+export { RawS68k, RawInterpreter, RawSemanticError, RawCompiler, RawCpu, RawRegister, Interrupt, InterruptResult, InterpreterStatus, Size, Condition, Step }
 
+
+
+export default init
 export enum RegisterType {
     Data,
     Address,
@@ -50,7 +53,7 @@ class Cpu {
 type InterruptHandler = (interrupt: Interrupt) => Promise<InterruptResult> | void
 
 
-class Interpreter {
+export class Interpreter {
     private interpreter: RawInterpreter
     constructor(interpreter: RawInterpreter) {
         this.interpreter = interpreter
@@ -155,17 +158,16 @@ class CompiledProgram{
 
 export class S68k {
     private _s68k: RawS68k
-
-    constructor(code: string) {
+    constructor(code: string){
         this._s68k = new RawS68k(code)
     }
 
     static compile(code: string, memorySize: number): CompilationResult {
         const s68k = new S68k(code)
         const errors = s68k.semanticCheck()
-        if (errors.length > 0) return { errors }
+        if (errors.length > 0) return { errors, ok: false }
         const interpreter = s68k.createInterpreter(memorySize)
-        return { interpreter }
+        return { interpreter, ok: true }
     }
 
     static semanticCheck(code: string): SemanticError[] {
