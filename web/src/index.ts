@@ -181,17 +181,16 @@ run.addEventListener('click', async () => {
     }
 })
 
-let lastLine = -1
 step.addEventListener("click", () => {
     try {
         if (currentInterpreter) {
             let a = currentInterpreter.wasm_step()
+            console.log(a)
             let status = currentInterpreter.wasm_get_status()
             if (currentInterpreter.wasm_has_terminated()) {
                 disableExecution(true)
             }
             const instruction = a[0]
-            lastLine = currentInterpreter.wasm_get_current_line_index()
             if (instruction) {
                 showCurrent(instruction.parsed_line)
             }

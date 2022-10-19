@@ -9,7 +9,7 @@
     ],
     "declaration": true,
     "esModuleInterop": true,
-    "outDir": "dist/web",
+    "outDir": "dist",
     "rootDir": "./src",
   }
 }

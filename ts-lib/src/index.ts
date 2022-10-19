@@ -1,17 +1,15 @@
-import init, { Flags, S68k as RawS68k, SemanticError as RawSemanticError, Interpreter as RawInterpreter, Compiler as RawCompiler, InterruptResult, Step, Condition, Cpu as RawCpu, Interrupt, InstructionLine, InterpreterStatus, RegisterOperand, Size, Register as RawRegister } from './pkg/s68k'
+import { Flags, S68k as RawS68k, SemanticError as RawSemanticError, Interpreter as RawInterpreter, Compiler as RawCompiler, InterruptResult, Step, Condition, Cpu as RawCpu, Interrupt, InstructionLine, InterpreterStatus, RegisterOperand, Size, Register as RawRegister } from './pkg/s68k'
 
 type CompilationResult = { ok: false, errors: SemanticError[] } | { ok: true, interpreter: Interpreter }
 
 export { RawS68k, RawInterpreter, RawSemanticError, RawCompiler, RawCpu, RawRegister, Interrupt, InterruptResult, InterpreterStatus, Size, Condition, Step }
 
 
-
-export default init
 export enum RegisterType {
     Data,
     Address,
 }
-class Register {
+export class Register {
     private register: RawRegister
     constructor(register: RawRegister) {
         this.register = register
@@ -27,7 +25,7 @@ class Register {
     }
 }
 
-class Cpu {
+export class Cpu {
     cpu: RawCpu
     constructor(cpu: RawCpu) {
         this.cpu = cpu
@@ -50,7 +48,7 @@ class Cpu {
     }
 }
 
-type InterruptHandler = (interrupt: Interrupt) => Promise<InterruptResult> | void
+export type InterruptHandler = (interrupt: Interrupt) => Promise<InterruptResult> | void
 
 
 export class Interpreter {
@@ -134,7 +132,7 @@ export class Interpreter {
         return status
     }
 }
-class SemanticError {
+export class SemanticError {
     error: RawSemanticError
     constructor(error: RawSemanticError) {
         this.error = error
@@ -146,7 +144,7 @@ class SemanticError {
         return this.error.wasm_get_line()
     }
 }
-class CompiledProgram{
+export class CompiledProgram{
     private program: RawCompiler
     constructor(compiler: RawCompiler) {
         this.program = compiler
