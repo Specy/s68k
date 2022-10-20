@@ -51,6 +51,7 @@ pub enum LexedOperand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+
 pub enum LexedLine {
     Label {
         name: String,

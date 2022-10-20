@@ -31,6 +31,12 @@ impl SemanticError {
     pub fn wasm_get_line(&self) -> JsValue {
         serde_wasm_bindgen::to_value(&self.line).unwrap()
     }
+    pub fn wasm_get_line_index(&self) -> usize {
+        self.line.line_index
+    }
+    pub fn wasm_get_error(&self) -> String {
+        self.error.clone()
+    }
 }
 
 bitflags! {

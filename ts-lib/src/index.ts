@@ -140,8 +140,14 @@ export class SemanticError {
     getMessage() {
         return this.error.wasm_get_message()
     }
-    getLineIndex() {
+    getLineIndex(): number {
+        return this.error.wasm_get_line_index()
+    }
+    getLine(){
         return this.error.wasm_get_line()
+    }
+    getError(): string{
+        return this.error.wasm_get_error()
     }
 }
 export class CompiledProgram{
