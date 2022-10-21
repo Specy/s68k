@@ -19,20 +19,38 @@ impl SemanticError {
     pub fn new(line: ParsedLine, error: String) -> Self {
         Self { line, error }
     }
+    pub fn get_line(&self) -> &ParsedLine {
+        &self.line
+    }
+    pub fn get_line_index(&self) -> usize {
+        self.line.line_index
+    }
     pub fn get_message(&self) -> String {
         format!("Error on line {}: {}", self.line.line_index + 1, self.error)
     }
+    pub fn get_message_with_line(&self) -> String {
+        format!(
+            "Error on line {}, \"{}\": {}",
+            self.line.line_index + 1,
+            self.line.line,
+            self.error
+        )
+    }
 }
+
 #[wasm_bindgen]
 impl SemanticError {
     pub fn wasm_get_message(&self) -> String {
-        format!("Error on line {}: {}", self.line.line_index + 1, self.error)
+        self.get_message()
     }
     pub fn wasm_get_line(&self) -> JsValue {
         serde_wasm_bindgen::to_value(&self.line).unwrap()
     }
+    pub fn wasm_get_message_with_line(&self) -> String {
+        self.get_message_with_line()
+    }
     pub fn wasm_get_line_index(&self) -> usize {
-        self.line.line_index
+        self.get_line_index()
     }
     pub fn wasm_get_error(&self) -> String {
         self.error.clone()
@@ -140,7 +158,7 @@ impl SemanticChecker {
                     if self.labels.contains_key(name) {
                         self.errors.push(SemanticError::new(
                             line.clone(),
-                            format!("Label {} already exists", name),
+                            format!("Label \"{}\" already exists", name),
                         ));
                     } else {
                         self.labels.insert(name.to_string(), name.to_string());
@@ -280,7 +298,7 @@ impl SemanticChecker {
                                 if value != 15 {
                                     self.errors.push(SemanticError::new(
                                         line.clone(),
-                                        format!("Only implemented TRAP is 15 for IO {}", value),
+                                        format!("Only implemented TRAP is 15 for IO, received \"{}\"", value),
                                     ));
                                 }
                             }
@@ -384,7 +402,7 @@ impl SemanticChecker {
                                     Ok(_) => {}
                                     Err(_) => self.errors.push(SemanticError::new(
                                         line.clone(),
-                                        format!("Invalid argument \"{}\"for directive dc at position: {}",arg.value, i + 1),
+                                        format!("Invalid argument \"{}\" for directive dc at position {}",arg.value, i + 1),
                                     )),
                                 }
                             }
@@ -562,8 +580,8 @@ impl SemanticChecker {
                     self.errors.push(SemanticError::new(
                         line.clone(),
                         format!(
-                            "Incorrect {} operand addressing mode at: \"{}\", received \"{}\", expected \"{}\"",
-                            arg_position_name, line.line, mode.get_name(), rule.get_valid_addressing_modes()
+                            "Incorrect {} operand addressing mode, received \"{}\", expected \"{}\"",
+                            arg_position_name, mode.get_name(), rule.get_valid_addressing_modes()
                         ),
                     ));
                 }
@@ -572,7 +590,7 @@ impl SemanticChecker {
                 let error = e.to_string();
                 self.errors.push(SemanticError::new(
                     line.clone(),
-                    format!("{} at line: \"{}\"", error, line.line),
+                    error,
                 ));
             }
         }
@@ -585,8 +603,7 @@ impl SemanticChecker {
                         self.errors.push(SemanticError::new(
                             line.clone(),
                             format!(
-                                "Invalid size at: \"{}\", instruction is not sized",
-                                line.line
+                                "Invalid size, instruction is not sized"
                             ),
                         ))
                     }
@@ -596,8 +613,7 @@ impl SemanticChecker {
                         self.errors.push(SemanticError::new(
                             line.clone(),
                             format!(
-                                "Invalid size at: \"{}\", instruction must be long or word",
-                                line.line
+                                "Invalid size, instruction must be long or word"
                             ),
                         ));
                     }
@@ -606,7 +622,7 @@ impl SemanticChecker {
                     if *size == LexedSize::Unknown {
                         self.errors.push(SemanticError::new(
                             line.clone(),
-                            format!("Unknown size at: \"{}\"", line.line),
+                            format!("Unknown size, expected any of \"b\", \"w\", \"l\""),
                         ))
                     }
                 }
@@ -701,11 +717,11 @@ impl SemanticChecker {
         let chars = num.chars().collect::<Vec<char>>();
         //TODO could probabl get the radix from the number, then do a single check
         match chars[..] {
-            ['#', '0', 'b'] => match i64::from_str_radix(&num[3..], 2) {
+            ['#', '0', 'b',..] => match i64::from_str_radix(&num[3..], 2) {
                 Ok(n) => Ok(n),
                 Err(_) => Err("Invalid binary number"),
             },
-            ['#', '0', 'o'] => match i64::from_str_radix(&num[3..], 8) {
+            ['#', '0', 'o',..] => match i64::from_str_radix(&num[3..], 8) {
                 Ok(n) => Ok(n),
                 Err(_) => Err("Invalid octal number"),
             },

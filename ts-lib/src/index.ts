@@ -143,6 +143,9 @@ export class SemanticError {
     getLineIndex(): number {
         return this.error.wasm_get_line_index()
     }
+    getMessageWithLine(){
+        return this.error.wasm_get_message_with_line()
+    }
     getLine(){
         return this.error.wasm_get_line()
     }
