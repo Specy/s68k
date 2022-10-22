@@ -149,10 +149,10 @@ impl Compiler {
                                     };
                                     self.instructions.push(instuction_line);
                                 }
-                                Err(e) => return Err(format!("{}; at line", e.get_message()).to_string())
+                                Err(e) => return Err(format!("{}; at line {}", e.get_message(), line.line_index).to_string())
                             }
                         }
-                        Err(e) => return Err(format!("{}; at line", e.get_message()).to_string()),
+                        Err(e) => return Err(format!("{}; at line {}", e.get_message(), line.line_index).to_string()),
                     }
                 }
                 _ => {}
