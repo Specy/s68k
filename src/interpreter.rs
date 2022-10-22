@@ -4,12 +4,12 @@
 */
 
 use crate::{
+    compiler::{Compiler, Directive, InstructionLine, Label},
     instructions::{
         Condition, Instruction, Interrupt, InterruptResult, Operand, RegisterOperand,
         ShiftDirection, Sign, Size,
     },
     math::*,
-    compiler::{Directive, InstructionLine, Label, Compiler},
 };
 use bitflags::bitflags;
 use core::panic;
@@ -88,7 +88,7 @@ impl Memory {
         }
     }
 
-    pub fn push(&mut self, data: &MemoryCell,mut sp: usize) -> usize {
+    pub fn push(&mut self, data: &MemoryCell, mut sp: usize) -> usize {
         match data {
             MemoryCell::Byte(byte) => {
                 sp -= 1;
@@ -109,11 +109,11 @@ impl Memory {
         sp += 4;
         sp
     }
-    pub fn pop(&mut self, size: Size,mut sp: usize) -> (MemoryCell, usize) {
+    pub fn pop(&mut self, size: Size, mut sp: usize) -> (MemoryCell, usize) {
         let result = match size {
             Size::Byte => {
                 let byte = self.read_byte(sp);
-                
+
                 MemoryCell::Byte(byte)
             }
             Size::Word => {
@@ -381,7 +381,7 @@ impl Interpreter {
         let mut flags = Vec::new();
         //TODO there are 5 flags for now, if i add more remember to change this
         for i in 0..5 {
-            flags.push((bits & (1 << i) != 0) as u8);   
+            flags.push((bits & (1 << i) != 0) as u8);
         }
         flags
     }
@@ -537,7 +537,7 @@ impl Interpreter {
             }
             Instruction::LSd(amount_source, dest, direction, size) => {
                 let amount = self.get_operand_value(amount_source, size)? % 64;
-                let (mut value,mut msb) = (self.get_operand_value(dest, size)?, false);
+                let (mut value, mut msb) = (self.get_operand_value(dest, size)?, false);
                 for _ in 0..amount {
                     (value, msb) = shift(direction, value, size, false);
                 }
@@ -556,7 +556,9 @@ impl Interpreter {
                 self.pc = *address as usize;
             }
             Instruction::BSR(address) => {
-                let new_sp = self.memory.push(&MemoryCell::Long(self.pc as u32), self.get_sp());
+                let new_sp = self
+                    .memory
+                    .push(&MemoryCell::Long(self.pc as u32), self.get_sp());
                 self.set_sp(new_sp);
                 self.pc = *address as usize;
             }
@@ -566,7 +568,8 @@ impl Interpreter {
             }
             Instruction::JSR(source) => {
                 let addr = self.get_operand_value(source, &Size::Long)?;
-                self.memory.push(&MemoryCell::Long(self.pc as u32), self.get_sp());
+                self.memory
+                    .push(&MemoryCell::Long(self.pc as u32), self.get_sp());
                 self.pc = addr as usize;
             }
             Instruction::BCHG(bit_source, dest) => {
@@ -864,7 +867,7 @@ impl Interpreter {
             6 => {
                 let value = self.cpu.d_reg[1].get_byte();
                 Ok(Interrupt::DisplayChar(value as char))
-            },
+            }
             7 => Ok(Interrupt::Terminate),
             8 => Ok(Interrupt::GetTime),
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
@@ -973,7 +976,7 @@ impl Interpreter {
         if value == 0 {
             flags |= Flags::Zero;
         }
-        if self.cpu.ccr.contains(Flags::Extend){
+        if self.cpu.ccr.contains(Flags::Extend) {
             flags |= Flags::Extend;
         }
         self.cpu.ccr = flags;
@@ -998,7 +1001,7 @@ impl Interpreter {
         if overflow {
             flags |= Flags::Overflow;
         }
-        if self.cpu.ccr.contains(Flags::Extend){
+        if self.cpu.ccr.contains(Flags::Extend) {
             flags |= Flags::Extend;
         }
         self.cpu.ccr = flags;
@@ -1042,7 +1045,6 @@ impl Interpreter {
         }
     }
 }
-
 
 #[wasm_bindgen]
 impl Interpreter {
@@ -1094,16 +1096,29 @@ impl Interpreter {
     pub fn wasm_get_condition_value(&self, cond: Condition) -> bool {
         self.get_condition_value(&cond)
     }
-    pub fn wasm_get_register_value(&self, reg: JsValue, size: Size) -> Result<u32,String> {
-        match serde_wasm_bindgen::from_value(reg.clone()){
+    pub fn wasm_get_register_value(&self, reg: JsValue, size: Size) -> Result<u32, String> {
+        match serde_wasm_bindgen::from_value(reg.clone()) {
             Ok(reg) => Ok(self.get_register_value(&reg, &size)),
-            Err(e) => Err(format!("Cannot get register, invalid register {:?}, {}",reg, e)),
+            Err(e) => Err(format!(
+                "Cannot get register, invalid register {:?}, {}",
+                reg, e
+            )),
         }
     }
-    pub fn wasm_set_register_value(&mut self, reg: JsValue, value: u32, size: Size) -> Result<(), String>{
-        match serde_wasm_bindgen::from_value(reg.clone()){
+    pub fn wasm_set_register_value(
+        &mut self,
+        reg: JsValue,
+        value: u32,
+        size: Size,
+    ) -> Result<(), String> {
+        match serde_wasm_bindgen::from_value(reg.clone()) {
             Ok(parsed) => self.set_register_value(&parsed, value, &size),
-            Err(e) => return Err(format!("Cannot set register, invalid register {:?}, {}", reg, e))
+            Err(e) => {
+                return Err(format!(
+                    "Cannot set register, invalid register {:?}, {}",
+                    reg, e
+                ))
+            }
         }
         Ok(())
     }
@@ -1114,12 +1129,10 @@ impl Interpreter {
         self.has_terminated()
     }
     pub fn wasm_get_current_interrupt(&self) -> Result<JsValue, String> {
-        match &self.get_current_interrupt(){
-            Ok(interrupt) => {
-                match serde_wasm_bindgen::to_value(interrupt){
-                    Ok(value) => Ok(value),
-                    Err(e) => Err(format!("Error converting interrupt to js value {:?}", e))
-                }
+        match &self.get_current_interrupt() {
+            Ok(interrupt) => match serde_wasm_bindgen::to_value(interrupt) {
+                Ok(value) => Ok(value),
+                Err(e) => Err(format!("Error converting interrupt to js value {:?}", e)),
             },
             Err(_) => Ok(JsValue::NULL),
         }
@@ -1128,18 +1141,16 @@ impl Interpreter {
         match serde_wasm_bindgen::from_value(value.clone()) {
             Ok(answer) => self.answer_interrupt(answer).unwrap(),
             Err(e) => {
-                return Err(format!("Invalid interrupt answer: {:?}, {}",value, e));
+                return Err(format!("Invalid interrupt answer: {:?}, {}", value, e));
             }
         }
         Ok(())
     }
-    
+
     pub fn wasm_get_current_line_index(&self) -> usize {
         match self.get_instruction_at(self.pc) {
             Some(ins) => ins.parsed_line.line_index,
-            None => 0,   
+            None => 0,
         }
     }
 }
-
-

@@ -86,7 +86,7 @@ bitflags! {
         const ONLY_D_REG_OR_INDIRECT_OR_ADDRESS = !(AdrMode::D_REG.bits | AdrMode::INDIRECT.bits | AdrMode::ADDRESS.bits);
         const ONLY_ADDRESS_OR_LABEL = !(AdrMode::ADDRESS.bits | AdrMode::LABEL.bits);
         const ONLY_IMMEDIATE = !AdrMode::IMMEDIATE.bits;
-        const ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE = !(AdrMode::INDIRECT.bits | AdrMode::INDIRECT_DISPLACEMENT.bits  |  AdrMode::ADDRESS.bits | AdrMode::ADDRESS.bits | AdrMode::LABEL.bits);
+        const ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE = !(AdrMode::INDIRECT.bits | AdrMode::INDIRECT_DISPLACEMENT.bits  |  AdrMode::ADDRESS.bits  | AdrMode::LABEL.bits);
     }
 }
 //TODO refactor this

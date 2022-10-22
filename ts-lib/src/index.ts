@@ -162,7 +162,7 @@ export class CompiledProgram{
         return this.program
     }
 }
-
+export type LexedLine = any
 export class S68k {
     private _s68k: RawS68k
     constructor(code: string){
@@ -181,7 +181,13 @@ export class S68k {
         let s68k = new S68k(code)
         return s68k.semanticCheck()
     }
-
+    static lex(code: string): LexedLine[] {
+        let s68k = new S68k(code)
+        return s68k.getLexedLines()
+    }
+    getLexedLines(): LexedLine[] {
+        return this._s68k.wasm_get_lexed_lines()
+    }
     semanticCheck(): SemanticError[] {
         const errorWrapper = this._s68k.wasm_semantic_check()
         const errors: SemanticError[] = []
