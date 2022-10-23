@@ -1,15 +1,16 @@
 {
     "type": "module",
     "name": "s68k",
-    "version": "1.1.6",
+    "version": "1.2.2",
     "main": "dist/index.js",
     "module": "dist/index.js",
     "typings": "dist/index.d.ts",
     "repository": "https://github.com/Specy/s68k",
     "scripts": {
-        "ci-build": "npm i -g wasm-pack && npm run build-wasm && npm run build",
+        "ci-build": "npm i -g wasm-pack && npm run build-all",
+        "build-all": "npm run build-wasm && npm run build-lib",
         "build-wasm": "cd .. && wasm-pack build --out-dir ts-lib/src/pkg --out-name s68k",
-        "build": "node build.js"
+        "build-lib": "node build.js"
     },
     "devDependencies": {
         "typescript": "^4.8.4"

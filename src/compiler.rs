@@ -464,14 +464,14 @@ impl Compiler {
                 Ok(Operand::PreIndirect(parsed_operand))
             }
             LexedOperand::Immediate(num) => match num.chars().collect::<Vec<char>>()[..] {
-                ['#', '0', 'b'] => match i32::from_str_radix(&num[3..], 2) {
+                ['#', '%'] => match i32::from_str_radix(&num[2..], 2) {
                     Ok(value) => Ok(Operand::Immediate(value as u32)),
                     Err(_) => Err(CompilationError::ParseError(format!(
                         "Invalid binary number: {}",
                         &num
                     ))),
                 },
-                ['#', '0', 'o'] => match i32::from_str_radix(&num[3..], 8) {
+                ['#', '@'] => match i32::from_str_radix(&num[2..], 8) {
                     Ok(value) => Ok(Operand::Immediate(value as u32)),
                     Err(_) => Err(CompilationError::ParseError(format!(
                         "Invalid octal number: {}",

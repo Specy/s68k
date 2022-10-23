@@ -717,11 +717,11 @@ impl SemanticChecker {
         let chars = num.chars().collect::<Vec<char>>();
         //TODO could probabl get the radix from the number, then do a single check
         match chars[..] {
-            ['#', '0', 'b',..] => match i64::from_str_radix(&num[3..], 2) {
+            ['#', '%',..] => match i64::from_str_radix(&num[2..], 2) {
                 Ok(n) => Ok(n),
                 Err(_) => Err("Invalid binary number"),
             },
-            ['#', '0', 'o',..] => match i64::from_str_radix(&num[3..], 8) {
+            ['#', '@',..] => match i64::from_str_radix(&num[2..], 8) {
                 Ok(n) => Ok(n),
                 Err(_) => Err("Invalid octal number"),
             },

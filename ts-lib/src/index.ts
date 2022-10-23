@@ -1,14 +1,12 @@
-import { Flags, S68k as RawS68k, SemanticError as RawSemanticError, Interpreter as RawInterpreter, Compiler as RawCompiler, InterruptResult, Step, Condition, Cpu as RawCpu, Interrupt, InstructionLine, InterpreterStatus, RegisterOperand, Size, Register as RawRegister } from './pkg/s68k'
+import { Flags, S68k as RawS68k, SemanticError as RawSemanticError, Interpreter as RawInterpreter, Compiler as RawCompiler, InterruptResult, Step, Condition, Cpu as RawCpu, Interrupt, InstructionLine, InterpreterStatus, RegisterOperand, Size, Register as RawRegister, ParsedLine, LexedLine, LabelDirective, ArgSeparated, LexedOperand, LexedRegisterType } from './pkg/s68k'
 
-type CompilationResult = { ok: false, errors: SemanticError[] } | { ok: true, interpreter: Interpreter }
-
-export { RawS68k, RawInterpreter, RawSemanticError, RawCompiler, RawCpu, RawRegister, Interrupt, InterruptResult, InterpreterStatus, Size, Condition, Step }
-
+export type CompilationResult = { ok: false, errors: SemanticError[] } | { ok: true, interpreter: Interpreter }
 
 export enum RegisterType {
     Data,
     Address,
 }
+
 export class Register {
     private register: RawRegister
     constructor(register: RawRegister) {
@@ -143,29 +141,29 @@ export class SemanticError {
     getLineIndex(): number {
         return this.error.wasm_get_line_index()
     }
-    getMessageWithLine(){
+    getMessageWithLine() {
         return this.error.wasm_get_message_with_line()
     }
-    getLine(){
+    getLine(): ParsedLine {
         return this.error.wasm_get_line()
     }
-    getError(): string{
+    getError(): string {
         return this.error.wasm_get_error()
     }
 }
-export class CompiledProgram{
+export class CompiledProgram {
     private program: RawCompiler
     constructor(compiler: RawCompiler) {
         this.program = compiler
     }
-    getCompiledProgram(): RawCompiler{
+    getCompiledProgram(): RawCompiler {
         return this.program
     }
 }
-export type LexedLine = any
+
 export class S68k {
     private _s68k: RawS68k
-    constructor(code: string){
+    constructor(code: string) {
         this._s68k = new RawS68k(code)
     }
 
@@ -181,17 +179,20 @@ export class S68k {
         let s68k = new S68k(code)
         return s68k.semanticCheck()
     }
-    static lex(code: string): LexedLine[] {
+    static lex(code: string): ParsedLine[] {
         let s68k = new S68k(code)
         return s68k.getLexedLines()
     }
-    getLexedLines(): LexedLine[] {
+    static lexOne(code: string): ParsedLine {
+        return S68k.lex(code)[0]
+    }
+    getLexedLines(): ParsedLine[] {
         return this._s68k.wasm_get_lexed_lines()
     }
     semanticCheck(): SemanticError[] {
         const errorWrapper = this._s68k.wasm_semantic_check()
         const errors: SemanticError[] = []
-        for (let i = 0 ;i < errorWrapper.get_length(); i++) {
+        for (let i = 0; i < errorWrapper.get_length(); i++) {
             errors.push(new SemanticError(errorWrapper.get_error_at_index(i)))
         }
         return errors
@@ -206,3 +207,6 @@ export class S68k {
         return new Interpreter(this._s68k.wasm_create_interpreter(this.compile().getCompiledProgram(), memorySize))
     }
 }
+
+
+export { RawS68k, RawInterpreter, RawSemanticError, RawCompiler, RawCpu, RawRegister, Interrupt, InterruptResult, InterpreterStatus, Size, Condition, Step, ParsedLine, LexedLine, LabelDirective, ArgSeparated, LexedOperand, LexedRegisterType, RegisterOperand, InstructionLine }

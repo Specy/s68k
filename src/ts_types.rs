@@ -34,14 +34,6 @@ export type RegisterOperand = { type: "Address", value: number } |
 "#;
 
 #[wasm_bindgen(typescript_custom_section)]
-pub const IParsedLine: &'static str = r#"
-export type ParsedLine = {
-    parsed: any //TODO add instruction types
-    line: String
-    line_index: number
-}
-"#;
-#[wasm_bindgen(typescript_custom_section)]
 pub const IInstructionLine: &'static str = r#"
 export type InstructionLine = {
     instruction: any //TODO add instruction types
@@ -52,4 +44,108 @@ export type InstructionLine = {
 #[wasm_bindgen(typescript_custom_section)]
 pub const IStep: &'static str = r#"
 export type Step = [instruction: InstructionLine, status: InterpreterStatus]
+"#;
+
+#[wasm_bindgen(typescript_custom_section)]
+pub const IParsedLine: &'static str = r#"
+export type ParsedLine = {
+    line: string,
+    line_index: number,
+    parsed: LexedLine
+}"#;
+
+#[wasm_bindgen(typescript_custom_section)]
+pub const ILexedLine: &'static str = r#"
+export type LexedLine = {
+    type: "Instruction"
+    value: {
+        name: string,
+        operands: LexedOperand[],
+        size: "Byte" | "Word" | "Long"
+    }
+} | {
+    type: "Label",
+    value: {
+        name: string
+    }
+} | {
+    type: "Directive",
+    value: {
+        args: string[]
+    }
+} | {
+    type: "LabelDirective",
+    value: {
+        name: string,
+        directive: LabelDirective
+    }
+} | {
+    type: "Empty"
+} | {
+    type: "Comment",
+    value: {
+        content: string
+    }
+}"#;
+
+#[wasm_bindgen(typescript_custom_section)]
+pub const ILabelDirective: &'static str = r#"
+export type LabelDirective = {
+    name: string,
+    size: "Byte" | "Word" | "Long"
+    args: ArgSeparated[]
+}
+"#;
+
+#[wasm_bindgen(typescript_custom_section)]
+pub const IArgSeparated: &'static str = r#"
+export type ArgSeparated = {
+    kind: "Comma" | "Space",
+    value: string
+}
+"#;
+
+#[wasm_bindgen(typescript_custom_section)]
+pub const ILexedOperand: &'static str = r#"
+export type LexedOperand = {
+    type: "Register",
+    value: [type: LexedRegisterType, name: string]
+} | {
+    type: "PreIndirect",
+    value: LexedOperand
+} | {
+    type: "Immediate"
+    value: string
+} | {
+    type: "PostIndirect",
+    value: LexedOperand
+} | {
+    type: "Address",
+    value: string
+} | {
+    type: "Label",
+    value: string
+} | {
+    type: "Other",
+    value: string
+} | {
+    type: "Indirect",
+    value: {
+        offset: String,
+        operand: LexedOperand
+    }
+} | {
+    type: "IndirectWithDisplacement",
+    value: {
+        offset: String,
+        operands: LexedOperand[]
+    }
+}
+"#;
+#[wasm_bindgen(typescript_custom_section)]
+pub const ILexedRegisterType: &'static str = r#"
+export enum LexedRegisterType {
+    LexedData = "Data",
+    LexedAddress = "Address",
+}
 "#;

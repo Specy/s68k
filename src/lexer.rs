@@ -2,14 +2,17 @@
 use crate::constants::{COMMENT_1, DIRECTIVES, EQU, OPERAND_SEPARATOR, COMMENT_2};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use wasm_bindgen::prelude::wasm_bindgen;
+use std::{collections::HashMap};
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[wasm_bindgen]
 pub enum LexedRegisterType {
     Address,
     Data,
     SP,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[wasm_bindgen]
 pub enum LexedSize {
     Byte,
     Word,
@@ -32,6 +35,7 @@ impl LexedSize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
 pub enum LexedOperand {
     Register(LexedRegisterType, String),
     Immediate(String),
@@ -51,7 +55,7 @@ pub enum LexedOperand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-
+#[serde(tag = "type", content = "value")]
 pub enum LexedLine {
     Label {
         name: String,
@@ -74,6 +78,7 @@ pub enum LexedLine {
     Empty,
 }
 #[derive(Debug)]
+#[wasm_bindgen]
 pub enum OperandKind {
     Register,
     Immediate,
@@ -86,6 +91,7 @@ pub enum OperandKind {
 }
 
 #[derive(Debug, Clone)]
+
 pub enum LineKind {
     Label,
     Directive,
