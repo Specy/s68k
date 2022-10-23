@@ -61,10 +61,10 @@ bitflags! {
     struct AdrMode: usize {
         const D_REG = 1<<0;
         const A_REG = 1<<1;
-        const INDIRECT = 1<<9;
+        const INDIRECT_MAYBE_DISPLACEMENT = 1<<9;
         const INDIRECT_POST_INCREMENT = 1<<3;
         const INDIRECT_PRE_DECREMENT = 1<<4;
-        const INDIRECT_DISPLACEMENT = 1<<5;
+        const INDIRECT_BASE_DISPLACEMENT = 1<<5;
         const IMMEDIATE = 1<<6;
         const LABEL = 1<<7;
         const ADDRESS = 1<<8;
@@ -76,17 +76,17 @@ bitflags! {
         const NO_IMMEDIATE = AdrMode::IMMEDIATE.bits;
         const NO_LABEL = AdrMode::LABEL.bits;
         const NO_ADDRESS = AdrMode::ADDRESS.bits;
-        const NO_INDIRECT = AdrMode::INDIRECT.bits;
+        const NO_INDIRECT = AdrMode::INDIRECT_MAYBE_DISPLACEMENT.bits;
 
         const ONLY_REG = !(AdrMode::D_REG.bits | AdrMode::A_REG.bits);
         const ONLY_A_REG = !AdrMode::A_REG.bits;
         const ONLY_D_REG = !AdrMode::D_REG.bits;
-        const ONLY_INDIRECT = !AdrMode::INDIRECT.bits;
-        const ONLY_D_REG_OR_INDIRECT = !(AdrMode::D_REG.bits | AdrMode::INDIRECT.bits);
-        const ONLY_D_REG_OR_INDIRECT_OR_ADDRESS = !(AdrMode::D_REG.bits | AdrMode::INDIRECT.bits | AdrMode::ADDRESS.bits);
+        const ONLY_INDIRECT = !AdrMode::INDIRECT_MAYBE_DISPLACEMENT.bits;
+        const ONLY_D_REG_OR_INDIRECT = !(AdrMode::D_REG.bits | AdrMode::INDIRECT_MAYBE_DISPLACEMENT.bits);
+        const ONLY_D_REG_OR_INDIRECT_OR_ADDRESS = !(AdrMode::D_REG.bits | AdrMode::INDIRECT_MAYBE_DISPLACEMENT.bits | AdrMode::ADDRESS.bits);
         const ONLY_ADDRESS_OR_LABEL = !(AdrMode::ADDRESS.bits | AdrMode::LABEL.bits);
         const ONLY_IMMEDIATE = !AdrMode::IMMEDIATE.bits;
-        const ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE = !(AdrMode::INDIRECT.bits | AdrMode::INDIRECT_DISPLACEMENT.bits  |  AdrMode::ADDRESS.bits  | AdrMode::LABEL.bits);
+        const ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE = !(AdrMode::INDIRECT_MAYBE_DISPLACEMENT.bits | AdrMode::INDIRECT_BASE_DISPLACEMENT.bits  |  AdrMode::ADDRESS.bits  | AdrMode::LABEL.bits);
     }
 }
 //TODO refactor this
@@ -95,10 +95,10 @@ impl AdrMode {
         match *self {
             AdrMode::D_REG => "Dn",
             AdrMode::A_REG => "An",
-            AdrMode::INDIRECT => "(An)",
+            AdrMode::INDIRECT_MAYBE_DISPLACEMENT => "(An)",
             AdrMode::INDIRECT_POST_INCREMENT => "(An)+",
             AdrMode::INDIRECT_PRE_DECREMENT => "-(An)",
-            AdrMode::INDIRECT_DISPLACEMENT => "(Dn, An)",
+            AdrMode::INDIRECT_BASE_DISPLACEMENT => "(An, Dn)",
             AdrMode::IMMEDIATE => "Im",
             AdrMode::LABEL => "<LABEL>",
             AdrMode::ADDRESS => "Ea",
@@ -660,7 +660,7 @@ impl SemanticChecker {
                 }
                 _ => Err("Invalid pre indirect value, only An or SP registers allowed"),
             },
-            LexedOperand::Indirect {
+            LexedOperand::IndirectOrDisplacement {
                 operand, offset, ..
             } => {
                 if offset != "" {
@@ -674,28 +674,30 @@ impl SemanticChecker {
                     }
                 }
                 match operand.as_ref() {
-                    LexedOperand::Register(LexedRegisterType::Address, _) => Ok(AdrMode::INDIRECT),
-                    LexedOperand::Register(LexedRegisterType::SP, _) => Ok(AdrMode::INDIRECT),
+                    LexedOperand::Register(LexedRegisterType::Address, _) => Ok(AdrMode::INDIRECT_MAYBE_DISPLACEMENT),
+                    LexedOperand::Register(LexedRegisterType::SP, _) => Ok(AdrMode::INDIRECT_MAYBE_DISPLACEMENT),
                     _ => Err("Invalid indirect value, only address registers allowed"),
                 }
             }
-            LexedOperand::IndirectWithDisplacement {
+            LexedOperand::IndirectBaseDisplacement {
                 operands, offset, ..
             } => {
-                match offset.parse::<i64>() {
-                    Ok(num) => {
-                        if num > 1 << 7 || num < -(1 << 7) {
-                            return Err("Invalid offset, must be between -128 and 128");
+                if offset != "" {
+                    match offset.parse::<i64>() {
+                        Ok(num) => {
+                            if num > 1 << 7 || num < -(1 << 7) {
+                                return Err("Invalid offset, must be between -128 and 128");
+                            }
                         }
+                        Err(_) => return Err("Offset is not a valid decimal number"),
                     }
-                    Err(_) => return Err("Offset is not a valid decimal number"),
                 }
                 match operands[..] {
                     [LexedOperand::Register(LexedRegisterType::Address, _), LexedOperand::Register(_, _)] => {
-                        Ok(AdrMode::INDIRECT_DISPLACEMENT)
+                        Ok(AdrMode::INDIRECT_BASE_DISPLACEMENT)
                     }
                     _ => Err(
-                        "Invalid indirect with displacement value, only \"(An, Dn/An)\" allowed",
+                        "Invalid operands for base indirect with displacement, only \"(An, Dn/An)\" allowed",
                     ),
                 }
             }

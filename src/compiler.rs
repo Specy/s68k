@@ -2,9 +2,11 @@ use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
-    instructions::{Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size},
+    instructions::{
+        DisplacementOperands, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
+    },
     lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
-    utils::parse_char_or_num,
+    utils::parse_char_or_num, math::sign_extend_to_long,
 };
 use std::collections::HashMap;
 use std::fmt;
@@ -149,10 +151,20 @@ impl Compiler {
                                     };
                                     self.instructions.push(instuction_line);
                                 }
-                                Err(e) => return Err(format!("{}; at line {}", e.get_message(), line.line_index).to_string())
+                                Err(e) => {
+                                    return Err(format!(
+                                        "{}; at line {}",
+                                        e.get_message(),
+                                        line.line_index
+                                    )
+                                    .to_string())
+                                }
                             }
                         }
-                        Err(e) => return Err(format!("{}; at line {}", e.get_message(), line.line_index).to_string()),
+                        Err(e) => {
+                            return Err(format!("{}; at line {}", e.get_message(), line.line_index)
+                                .to_string())
+                        }
                     }
                 }
                 _ => {}
@@ -232,7 +244,12 @@ impl Compiler {
                 "bset" => Instruction::BSET(op1, op2),
                 "bclr" => Instruction::BCLR(op1, op2),
                 "bchg" => Instruction::BCHG(op1, op2),
-                _ => return Err(CompilationError::Raw(format!("Unknown instruction {}", name))),
+                _ => {
+                    return Err(CompilationError::Raw(format!(
+                        "Unknown instruction {}",
+                        name
+                    )))
+                }
             };
             Ok(parsed)
         } else if operands.len() == 1 {
@@ -312,13 +329,23 @@ impl Compiler {
                     }
                     Instruction::TRAP(value as u8)
                 }
-                _ => return Err(CompilationError::Raw(format!("Unknown instruction {}", name))),
+                _ => {
+                    return Err(CompilationError::Raw(format!(
+                        "Unknown instruction {}",
+                        name
+                    )))
+                }
             };
             Ok(result)
         } else if operands.len() == 0 {
             let result = match name.as_str() {
                 "rts" => Instruction::RTS,
-                _ => return Err(CompilationError::Raw(format!("Unknown instruction {}", name))),
+                _ => {
+                    return Err(CompilationError::Raw(format!(
+                        "Unknown instruction {}",
+                        name
+                    )))
+                }
             };
             Ok(result)
         } else {
@@ -402,14 +429,14 @@ impl Compiler {
                     label
                 ))),
             },
-            LexedOperand::Indirect { offset, operand } => {
+            LexedOperand::IndirectOrDisplacement { offset, operand } => {
                 let parsed_operand = self.parse_operand(operand, line)?;
                 let parsed_operand = self.extract_register(parsed_operand)?;
                 let offset = if offset.trim() == "" {
                     0
                 } else {
                     match offset.parse() {
-                        Ok(offset) => offset,
+                        Ok(offset) => sign_extend_to_long(offset, &Size::Word),
                         Err(_) => {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid offset: {}",
@@ -418,13 +445,12 @@ impl Compiler {
                         }
                     }
                 };
-                Ok(Operand::Indirect {
+                Ok(Operand::IndirectOrDisplacement {
                     offset,
                     operand: parsed_operand,
                 })
             }
-            LexedOperand::IndirectWithDisplacement { offset, operands } => {
-                //TODO not sure how the indirect with displacement works
+            LexedOperand::IndirectBaseDisplacement { offset, operands } => {
                 let parsed_operands = operands
                     .iter()
                     .map(|x| {
@@ -436,7 +462,7 @@ impl Compiler {
                     0
                 } else {
                     match offset.parse() {
-                        Ok(offset) => offset,
+                        Ok(offset) => sign_extend_to_long(offset, &Size::Byte),
                         Err(_) => {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid offset: {}",
@@ -446,10 +472,20 @@ impl Compiler {
                     }
                 };
                 match parsed_operands {
-                    Ok(parsed_operands) => Ok(Operand::IndirectWithDisplacement {
-                        offset,
-                        operands: parsed_operands,
-                    }),
+                    Ok(registers_operands) => match &registers_operands[..] {
+                        [RegisterOperand::Address(_), RegisterOperand::Address(_) | RegisterOperand::Data(_)] => {
+                            Ok(Operand::IndirectBaseDisplacement {
+                                offset,
+                                operands: DisplacementOperands {
+                                    base: registers_operands[0].clone(),
+                                    index: registers_operands[1].clone(),
+                                },
+                            })
+                        }
+                        _ => Err(CompilationError::InvalidAddressingMode(
+                            "Invalid displacement addressing mode".to_string(),
+                        )),
+                    },
                     Err(e) => Err(e),
                 }
             }
@@ -512,19 +548,15 @@ impl Compiler {
     }
 }
 
-fn parse_label_directive(
-    directive: &LabelDirective,
-) -> CompilationResult<Directive> {
+fn parse_label_directive(directive: &LabelDirective) -> CompilationResult<Directive> {
     let parsed_args = directive
         .args
         .iter()
-        .map(|x| {
-            match  parse_char_or_num(&x.value){
-                Ok(value) => Ok(value as u32),
-                Err(_) => Err(CompilationError::ParseError(format!(
-                    "Invalid numerical directive argument"
-                ))),
-            }
+        .map(|x| match parse_char_or_num(&x.value) {
+            Ok(value) => Ok(value as u32),
+            Err(_) => Err(CompilationError::ParseError(format!(
+                "Invalid numerical directive argument"
+            ))),
         })
         .collect::<CompilationResult<Vec<u32>>>()?;
     match directive.name.as_str() {
@@ -620,16 +652,26 @@ fn parse_labels_and_addresses(
             LexedLine::Directive { args, .. } => {
                 if args[0] == "org" {
                     let hex = args[1].trim_start_matches("$");
-                    let parsed = match usize::from_str_radix(hex, 16){
+                    let parsed = match usize::from_str_radix(hex, 16) {
                         Ok(value) => value,
-                        Err(_) => return Err(format!("Invalid hex ORG address: {}; at line {}", args[1], line.line_index)),
+                        Err(_) => {
+                            return Err(format!(
+                                "Invalid hex ORG address: {}; at line {}",
+                                args[1], line.line_index
+                            ))
+                        }
                     };
                     if parsed < last_address {
                         return Err(format!("The address of the ORG directive ({}) must be greater than the previous address ({}); at line {}",parsed, last_address, line.line_index));
                     }
-                    last_address = match usize::from_str_radix(hex, 16){
+                    last_address = match usize::from_str_radix(hex, 16) {
                         Ok(value) => value,
-                        Err(_) => return Err(format!("Invalid hex value: {}; at line {}", hex, line.line_index)),
+                        Err(_) => {
+                            return Err(format!(
+                                "Invalid hex value: {}; at line {}",
+                                hex, line.line_index
+                            ))
+                        }
                     };
                     //align at 2 bytes intervals
                     //TODO should i align here?
@@ -661,9 +703,15 @@ fn parse_labels_and_addresses(
                             },
                         );
                     }
-                    Err(e) => return Err(format!("Error parsing directive: \"{}\"; at line:{}", e.get_message(), line.line_index)),
+                    Err(e) => {
+                        return Err(format!(
+                            "Error parsing directive: \"{}\"; at line:{}",
+                            e.get_message(),
+                            line.line_index
+                        ))
+                    }
                 };
-                
+
                 match directive.name.as_str() {
                     "dcb" | "ds" => {
                         let bytes = directive.args[0].value.parse::<usize>();

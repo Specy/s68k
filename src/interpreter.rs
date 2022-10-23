@@ -878,7 +878,7 @@ impl Interpreter {
             Operand::Immediate(v) => Ok(*v),
             Operand::Register(op) => Ok(self.get_register_value(&op, size)),
             Operand::Address(address) => Ok(self.memory.read_size(*address, size)),
-            Operand::Indirect { offset, operand } => {
+            Operand::IndirectOrDisplacement { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
                 Ok(self.memory.read_size(address as usize, size))
@@ -893,8 +893,13 @@ impl Interpreter {
                 self.set_register_value(&op, address as u32 + size.to_bytes() as u32, &Size::Long);
                 Ok(self.memory.read_size(address, size))
             }
-            Operand::IndirectWithDisplacement { offset, operands } => {
-                Err(RuntimeError::Unimplemented)
+            Operand::IndirectBaseDisplacement { offset, operands } => {
+                //TODO not sure if this is how it should work
+                let base_value = self.get_register_value(&operands.base, &Size::Long) as i32;
+                let index_value = self.get_register_value(&operands.index, &Size::Long) as i32;
+
+                let final_address = base_value + offset + index_value;
+                Ok(self.memory.read_size(final_address as usize, size))
             }
         }
     }
@@ -905,7 +910,7 @@ impl Interpreter {
             )),
             Operand::Register(op) => Ok(self.set_register_value(&op, value, size)),
             Operand::Address(address) => Ok(self.memory.write_size(*address, size, value)),
-            Operand::Indirect { offset, operand } => {
+            Operand::IndirectOrDisplacement { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
                 Ok(self.memory.write_size(address as usize, size, value))
@@ -922,8 +927,12 @@ impl Interpreter {
                 self.set_register_value(&op, address as u32 + size.to_bytes() as u32, &Size::Long);
                 Ok(self.memory.write_size(address, size, value))
             }
-            Operand::IndirectWithDisplacement { offset, operands } => {
-                Err(RuntimeError::Unimplemented)
+            Operand::IndirectBaseDisplacement { offset, operands } => {
+                let base_value = self.get_register_value(&operands.base, &Size::Long) as i32;
+                let index_value = self.get_register_value(&operands.index, &Size::Long) as i32;
+
+                let final_address = base_value + offset + index_value;
+                Ok(self.memory.write_size(final_address as usize, size, value))
             }
         }
     }

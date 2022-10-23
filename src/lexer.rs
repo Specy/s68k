@@ -39,11 +39,11 @@ impl LexedSize {
 pub enum LexedOperand {
     Register(LexedRegisterType, String),
     Immediate(String),
-    Indirect {
+    IndirectOrDisplacement {
         offset: String,
         operand: Box<LexedOperand>,
     },
-    IndirectWithDisplacement {
+    IndirectBaseDisplacement {
         offset: String,
         operands: Vec<LexedOperand>,
     },
@@ -442,11 +442,11 @@ impl Lexer {
                         let offset = displacement.trim().to_string();
                         let operands = self.parse_operands(args);
                         match &operands[..] {
-                            [operand] => LexedOperand::Indirect {
+                            [operand] => LexedOperand::IndirectOrDisplacement {
                                 offset,
                                 operand: Box::new(operand.clone()),
                             },
-                            [_, ..] => LexedOperand::IndirectWithDisplacement { offset, operands },
+                            [_, ..] => LexedOperand::IndirectBaseDisplacement { offset, operands },
                             _ => panic!("Invalid indirect operand '{}'", operand),
                         }
                     }

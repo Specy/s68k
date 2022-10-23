@@ -31,18 +31,23 @@ pub enum RegisterOperand {
     Address(u8),
     Data(u8),
 }
-
+#[derive(Debug, Clone, Serialize)]
+pub struct DisplacementOperands{
+   pub base: RegisterOperand,
+   pub index: RegisterOperand,
+    //scale: u8,
+}
 #[derive(Debug, Clone, Serialize)]
 pub enum Operand {
     Register(RegisterOperand),
     Immediate(u32),
-    Indirect {
+    IndirectOrDisplacement {
         offset: i32,
         operand: RegisterOperand,
     },
-    IndirectWithDisplacement {
+    IndirectBaseDisplacement {
         offset: i32,
-        operands: Vec<RegisterOperand>,
+        operands: DisplacementOperands
     },
     PostIndirect(RegisterOperand),
     PreIndirect(RegisterOperand),

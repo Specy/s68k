@@ -129,13 +129,13 @@ export type LexedOperand = {
     type: "Other",
     value: string
 } | {
-    type: "Indirect",
+    type: "IndirectOrDisplacement",
     value: {
         offset: String,
         operand: LexedOperand
     }
 } | {
-    type: "IndirectWithDisplacement",
+    type: "IndirectBaseDisplacement",
     value: {
         offset: String,
         operands: LexedOperand[]
