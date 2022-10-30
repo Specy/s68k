@@ -4,7 +4,7 @@
 */
 
 use crate::{
-    compiler::{Compiler, Directive, InstructionLine, Label},
+    compiler::{Compiler, Directive, InstructionLine},
     instructions::{
         Condition, Instruction, Interrupt, InterruptResult, Operand, RegisterOperand,
         ShiftDirection, Sign, Size,
@@ -325,7 +325,7 @@ pub struct Interpreter {
 impl Interpreter {
     pub fn new(compiled_program: Compiler, memory_size: usize) -> Self {
         let sp = memory_size >> 4;
-        let start =  compiled_program.get_start_address();
+        let start = compiled_program.get_start_address();
         let end = compiled_program.get_final_instruction_address();
         let program = compiled_program.get_instructions_map();
         let length = program.len();
@@ -336,7 +336,11 @@ impl Interpreter {
             final_instruction_address: end,
             program,
             current_interrupt: None,
-            status: if start <= end && length > 0 { InterpreterStatus::Running } else { InterpreterStatus::Terminated },
+            status: if start <= end && length > 0 {
+                InterpreterStatus::Running
+            } else {
+                InterpreterStatus::Terminated
+            },
         };
         interpreter.cpu.a_reg[7].store_long(sp as u32);
         match interpreter.prepare_memory(&compiled_program.get_directives()) {

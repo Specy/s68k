@@ -300,7 +300,12 @@ impl AsmRegex {
                         last_separator = c;
                     }
                 }
-                COMMENT_1 | COMMENT_2 => break,
+                COMMENT_1 | COMMENT_2 => {
+                    if last_char == ' ' {
+                        break;
+                    }
+                    current_arg.push(c);
+                }, //if it reaches the end where there is a comment
                 ' ' => {
                     if last_char == ',' || ignore_space {
                         continue;
@@ -455,7 +460,6 @@ impl Lexer {
     pub fn parse_operands(&self, operands: Vec<String>) -> Vec<LexedOperand> {
         operands
             .iter()
-            .take_while(|o| !o.contains(COMMENT_1) && !o.contains(COMMENT_2))
             .map(|o| self.parse_operand(o))
             .collect()
     }
@@ -552,18 +556,18 @@ impl Lexer {
             }),
             LineKind::Label { name, inner } => match &inner {
                 Some(inn) => {
-                    let mut inner = match self.lex_line(inn) {
+                    let mut parsed_inner = match self.lex_line(inn) {
                         LexLineResult::Line(l) => vec![l],
                         LexLineResult::Multiple(l) => l,
                     };
-                    inner.insert(0, LexedLine::Label { name });
-                    LexLineResult::Multiple(inner)
+                    parsed_inner.insert(0, LexedLine::Label { name });
+                    LexLineResult::Multiple(parsed_inner)
                 }
                 None => LexLineResult::Line(LexedLine::Label { name }),
             },
             LineKind::Directive => {
                 let mut parsed_args: Vec<String> =
-                    self.regex.split_into_separated_args(line, false);
+                    self.regex.split_into_separated_args(&line.replace("\t", " "), false);
                 //lowercase the first arg
                 let first = parsed_args.get(0).unwrap().to_lowercase();
                 parsed_args[0] = first;

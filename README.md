@@ -45,7 +45,7 @@ equ, org, dc, ds, dcb
 
 
 ## Known bugs
-No known bugs
+The expressions for immediate and absolute values don't follow mathematical order, and they are executed from right to left. Example 10\*5+2 will be treated as 10\*(5+2) and not (10*5)+2
 # How to run rust
 Firstly make sure you have rust installed, [you can download it here](https://www.rust-lang.org/tools/install), once done, clone the repository on your machine and run `cargo run` in the root folder of the project. This will run the interpreter with the code inside of `code-to-run.asm` file.
 

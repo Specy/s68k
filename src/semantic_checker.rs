@@ -2,7 +2,7 @@
 
 use crate::{
     lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
-    utils::{num_to_signed_base},
+    utils::{num_to_signed_base, parse_absolute_expression},
 };
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
@@ -133,10 +133,16 @@ pub enum SizeRules {
     AnySize,
     OnlyLongOrWord,
 }
+
 pub struct SemanticChecker {
-    labels: HashMap<String, String>,
+    labels: HashMap<String, Label>,
     errors: Vec<SemanticError>,
     lines: Vec<ParsedLine>,
+}
+#[derive(Debug)]
+pub struct Label {
+    pub name: String,
+    pub address: usize,
 }
 impl SemanticChecker {
     pub fn new(lines: &[ParsedLine]) -> SemanticChecker {
@@ -160,7 +166,13 @@ impl SemanticChecker {
                             format!("Label \"{}\" already exists", name),
                         ));
                     } else {
-                        self.labels.insert(name.to_string(), name.to_string());
+                        self.labels.insert(
+                            name.to_string(),
+                            Label {
+                                name: name.to_string(),
+                                address: 1 << 31 as usize, //placeholder value
+                            },
+                        );
                     }
                 }
                 _ => {}
@@ -371,7 +383,7 @@ impl SemanticChecker {
                 "dc" => {
                     self.verify_size(SizeRules::AnySize, line);
                     match &args[..] {
-                        [_,..] => {
+                        [_, ..] => {
                             for (i, arg) in args[1..].iter().enumerate() {
                                 match self.get_absolute_value(&arg) {
                                     Ok(_) => {}
@@ -381,7 +393,7 @@ impl SemanticChecker {
                                     )),
                                 }
                             }
-                        },
+                        }
                         _ => self.errors.push(SemanticError::new(
                             line.clone(),
                             format!("No arguments for directive dc"),
@@ -419,13 +431,13 @@ impl SemanticChecker {
                 "dcb" => {
                     self.verify_size(SizeRules::AnySize, line);
                     match &args[..] {
-                        [_] | [_,_] => {
+                        [_] | [_, _] => {
                             self.errors.push(SemanticError::new(
                                 line.clone(),
                                 format!("Too few arguments for label directive: \"{}\", expected 2, got {}", "ds", args.len()),
                             ));
                         }
-                        [_,first, second] => {
+                        [_, first, second] => {
                             match self.get_absolute_value(first) {
                                 Ok(_) => {}
                                 Err(_) => {
@@ -506,9 +518,13 @@ impl SemanticChecker {
     ) {
         let size_value = match size {
             //TODO do i really have to use i64?
-            LexedSize::Byte | LexedSize::Word | LexedSize::Long => size.to_bits_word_default() as i64,
+            LexedSize::Byte | LexedSize::Word | LexedSize::Long => {
+                size.to_bits_word_default() as i64
+            }
             LexedSize::Unspecified => match default {
-                LexedSize::Byte | LexedSize::Word | LexedSize::Long => default.to_bits_word_default() as i64,
+                LexedSize::Byte | LexedSize::Word | LexedSize::Long => {
+                    default.to_bits_word_default() as i64
+                }
                 _ => panic!("Invalid default size"),
             },
             _ => 0,
@@ -618,35 +634,39 @@ impl SemanticChecker {
             _ => panic!("Line is not an instruction or directive"),
         }
     }
-    fn get_addressing_mode(&mut self, operand: &LexedOperand) -> Result<AdrMode, &str> {
+    fn get_addressing_mode(&mut self, operand: &LexedOperand) -> Result<AdrMode, String> {
         match operand {
             LexedOperand::Register(reg_type, reg_name) => match reg_type {
                 LexedRegisterType::Data => match reg_name[1..].parse::<i8>() {
                     Ok(reg) if reg >= 0 && reg < 8 => Ok(AdrMode::D_REG),
-                    _ => Err("Invalid data register"),
+                    _ => Err(format!("Invalid data register")),
                 },
                 LexedRegisterType::Address => match reg_name[1..].parse::<i8>() {
                     Ok(reg) if reg >= 0 && reg < 8 => Ok(AdrMode::A_REG),
-                    _ => Err("Invalid address register"),
+                    _ => Err(format!("Invalid address register")),
                 },
                 LexedRegisterType::SP => Ok(AdrMode::A_REG),
             },
 
             LexedOperand::Immediate(num) => match self.get_immediate_value(num) {
                 Ok(_) => Ok(AdrMode::IMMEDIATE),
-                Err(e) => Err(e),
+                Err(e) => Err(format!("Invalid immediate: {}", e)),
             },
             LexedOperand::PostIndirect(boxed_arg) => match boxed_arg.as_ref() {
                 LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => {
                     Ok(AdrMode::INDIRECT_POST_INCREMENT)
                 }
-                _ => Err("Invalid post indirect value, only address or SP registers allowed"),
+                _ => Err(format!(
+                    "Invalid post indirect value, only address or SP registers allowed"
+                )),
             },
             LexedOperand::PreIndirect(boxed_arg) => match boxed_arg.as_ref() {
                 LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => {
                     Ok(AdrMode::INDIRECT_PRE_DECREMENT)
                 }
-                _ => Err("Invalid pre indirect value, only An or SP registers allowed"),
+                _ => Err(format!(
+                    "Invalid pre indirect value, only An or SP registers allowed"
+                )),
             },
             LexedOperand::IndirectOrDisplacement {
                 operand, offset, ..
@@ -655,10 +675,12 @@ impl SemanticChecker {
                     match offset.parse::<i64>() {
                         Ok(num) => {
                             if num > 1 << 15 || num < -(1 << 15) {
-                                return Err("Invalid offset, must be between -32768 and 32768");
+                                return Err(format!(
+                                    "Invalid offset, must be between -32768 and 32768"
+                                ));
                             }
                         }
-                        Err(_) => return Err("Offset is not a valid decimal number"),
+                        Err(_) => return Err(format!("Offset is not a valid decimal number")),
                     }
                 }
                 match operand.as_ref() {
@@ -668,7 +690,9 @@ impl SemanticChecker {
                     LexedOperand::Register(LexedRegisterType::SP, _) => {
                         Ok(AdrMode::INDIRECT_MAYBE_DISPLACEMENT)
                     }
-                    _ => Err("Invalid indirect value, only address registers allowed"),
+                    _ => Err(format!(
+                        "Invalid indirect value, only address registers allowed"
+                    )),
                 }
             }
             LexedOperand::IndirectBaseDisplacement {
@@ -678,10 +702,12 @@ impl SemanticChecker {
                     match offset.parse::<i64>() {
                         Ok(num) => {
                             if num > 1 << 7 || num < -(1 << 7) {
-                                return Err("Invalid offset, must be between -128 and 128");
+                                return Err(format!(
+                                    "Invalid offset, must be between -128 and 128"
+                                ));
                             }
                         }
-                        Err(_) => return Err("Offset is not a valid decimal number"),
+                        Err(_) => return Err(format!("Offset is not a valid decimal number")),
                     }
                 }
                 match operands[..] {
@@ -689,7 +715,7 @@ impl SemanticChecker {
                         Ok(AdrMode::INDIRECT_BASE_DISPLACEMENT)
                     }
                     _ => Err(
-                        "Invalid operands for base indirect with displacement, only \"(An, Dn/An)\" allowed",
+                        format!("Invalid operands for base indirect with displacement, only \"(An, Dn/An)\" allowed"),
                     ),
                 }
             }
@@ -697,48 +723,23 @@ impl SemanticChecker {
                 if self.labels.contains_key(name) {
                     Ok(AdrMode::LABEL)
                 } else {
-                    Err("Label does not exist")
+                    Err(format!("Label does not exist"))
                 }
             }
             LexedOperand::Absolute(data) => match self.get_absolute_value(data) {
                 Ok(_) => Ok(AdrMode::ADDRESS),
-                //TODO add error that it's an absolute
-                Err(e) => Err(e),
+                Err(e) => Err(format!("Invalid absolute: {}", e)),
             },
-            LexedOperand::Other(_) => Err("Unknown operand"),
+            LexedOperand::Other(_) => Err(format!("Unknown operand")),
         }
     }
-    fn get_immediate_value(&self, num: &str) -> Result<i64, &str> {
-        self.get_absolute_value(&num[1..])  
+    fn get_immediate_value(&self, num: &str) -> Result<i64, String> {
+        self.get_absolute_value(&num[1..])
     }
-    fn get_absolute_value(&self, num: &str) -> Result<i64, &str> {
-        let chars = num.chars().collect::<Vec<char>>();
-        //TODO could probabl get the radix from the number, then do a single check
-        match chars[..] {
-            ['%', ..] => match i64::from_str_radix(&num[1..], 2) {
-                Ok(n) => Ok(n),
-                Err(_) => Err("Invalid binary number"),
-            },
-            ['@', ..] => match i64::from_str_radix(&num[1..], 8) {
-                Ok(n) => Ok(n),
-                Err(_) => Err("Invalid octal number"),
-            },
-            ['$', ..] => match i64::from_str_radix(&num[1..], 16) {
-                Ok(n) => Ok(n),
-                Err(_) => Err("Invalid hex number"),
-            },
-            ['\'', c, '\''] => Ok(c as i64),
-            [..] => {
-                //TODO not sure if this should be checked here
-                if self.labels.contains_key(num) {
-                    Ok(1i64 << 31)
-                } else {
-                    match i64::from_str_radix(num, 10) {
-                        Ok(n) => Ok(n),
-                        Err(_) => Err("Invalid decimal number"),
-                    }
-                }
-            }
+    fn get_absolute_value(&self, num: &str) -> Result<i64, String> {
+        match parse_absolute_expression(num, &self.labels) {
+            Ok(num) => Ok(num as i64),
+            Err(e) => Err(e),
         }
     }
 }
