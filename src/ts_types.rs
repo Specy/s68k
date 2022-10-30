@@ -74,36 +74,27 @@ export type LexedLine = {
         args: string[]
     }
 } | {
-    type: "LabelDirective",
-    value: {
-        name: string,
-        directive: LabelDirective
-    }
-} | {
     type: "Empty"
 } | {
     type: "Comment",
     value: {
         content: string
     }
-}"#;
+} | {
+    type: "Unknown",
+    value: {
+        content: string
+    }
+}
+"#;
 
 #[wasm_bindgen(typescript_custom_section)]
 pub const ILabelDirective: &'static str = r#"
-export type LabelDirective = {
-    name: string,
-    size: "Byte" | "Word" | "Long"
-    args: ArgSeparated[]
+export type Label = {
+    name: string
 }
 "#;
 
-#[wasm_bindgen(typescript_custom_section)]
-pub const IArgSeparated: &'static str = r#"
-export type ArgSeparated = {
-    kind: "Comma" | "Space",
-    value: string
-}
-"#;
 
 #[wasm_bindgen(typescript_custom_section)]
 pub const ILexedOperand: &'static str = r#"
@@ -120,7 +111,7 @@ export type LexedOperand = {
     type: "PostIndirect",
     value: LexedOperand
 } | {
-    type: "Address",
+    type: "Absolute",
     value: string
 } | {
     type: "Label",

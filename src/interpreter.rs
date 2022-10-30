@@ -323,34 +323,38 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    pub fn new(pre_interpreted_program: Compiler, memory_size: usize) -> Self {
+    pub fn new(compiled_program: Compiler, memory_size: usize) -> Self {
         let sp = memory_size >> 4;
+        let start =  compiled_program.get_start_address();
+        let end = compiled_program.get_final_instruction_address();
+        let program = compiled_program.get_instructions_map();
+        let length = program.len();
         let mut interpreter = Self {
             memory: Memory::new(memory_size),
             cpu: Cpu::new(),
-            pc: pre_interpreted_program.get_start_address(),
-            final_instruction_address: pre_interpreted_program.get_final_instruction_address(),
-            program: pre_interpreted_program.get_instructions_map(),
+            pc: start,
+            final_instruction_address: end,
+            program,
             current_interrupt: None,
-            status: InterpreterStatus::Running,
+            status: if start <= end && length > 0 { InterpreterStatus::Running } else { InterpreterStatus::Terminated },
         };
         interpreter.cpu.a_reg[7].store_long(sp as u32);
-        match interpreter.prepare_memory(&pre_interpreted_program.get_labels_map()) {
+        match interpreter.prepare_memory(&compiled_program.get_directives()) {
             Ok(_) => interpreter,
             Err(e) => panic!("Error preparing memory: {:?}", e),
         }
     }
 
     //TODO could make this an external function and pass the memory in
-    fn prepare_memory(&mut self, labels: &HashMap<String, Label>) -> RuntimeResult<()> {
-        for (_, label) in labels {
-            match &label.directive {
-                Some(directive) => match directive {
-                    Directive::DC { data } | Directive::DS { data } | Directive::DCB { data } => {
-                        self.memory.write_bytes(label.address, &data)?;
-                    }
-                },
-                _ => {}
+    fn prepare_memory(&mut self, directives: &Vec<Directive>) -> RuntimeResult<()> {
+        for directive in directives {
+            match &directive {
+                Directive::DC { data, address }
+                | Directive::DS { data, address }
+                | Directive::DCB { data, address } => {
+                    self.memory.write_bytes(*address, &data)?;
+                }
+                Directive::Other => {}
             };
         }
         Ok(())
@@ -877,7 +881,7 @@ impl Interpreter {
         match op {
             Operand::Immediate(v) => Ok(*v),
             Operand::Register(op) => Ok(self.get_register_value(&op, size)),
-            Operand::Address(address) => Ok(self.memory.read_size(*address, size)),
+            Operand::Absolute(address) => Ok(self.memory.read_size(*address, size)),
             Operand::IndirectOrDisplacement { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
@@ -909,7 +913,7 @@ impl Interpreter {
                 "Attempted to store to immediate value".to_string(),
             )),
             Operand::Register(op) => Ok(self.set_register_value(&op, value, size)),
-            Operand::Address(address) => Ok(self.memory.write_size(*address, size, value)),
+            Operand::Absolute(address) => Ok(self.memory.write_size(*address, size, value)),
             Operand::IndirectOrDisplacement { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;

@@ -1,9 +1,11 @@
 //CHECK COMMENT REMOVAL
-use crate::constants::{COMMENT_1, DIRECTIVES, EQU, OPERAND_SEPARATOR, COMMENT_2};
+//TODO refactor grammar
+use crate::constants::{COMMENT_1, COMMENT_2, EQU};
+use bitflags::bitflags;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use wasm_bindgen::prelude::wasm_bindgen;
-use std::{collections::HashMap};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[wasm_bindgen]
 pub enum LexedRegisterType {
@@ -21,16 +23,23 @@ pub enum LexedSize {
     Unknown,
 }
 impl LexedSize {
-    pub fn to_bytes(&self) -> u8 {
+    pub fn to_bytes(&self, default: LexedSize) -> u8 {
         match self {
             LexedSize::Byte => 1,
             LexedSize::Word => 2,
             LexedSize::Long => 4,
+            LexedSize::Unspecified => default.to_bytes(LexedSize::Unknown),
             _ => 0,
         }
     }
-    pub fn to_bits(&self) -> u8 {
-        self.to_bytes() * 8
+    pub fn to_bytes_word_default(&self) -> u8 {
+        self.to_bytes(LexedSize::Word)
+    }
+    pub fn to_bits(&self, default: LexedSize) -> u8 {
+        self.to_bytes(default) * 8
+    }
+    pub fn to_bits_word_default(&self) -> u8 {
+        self.to_bits(LexedSize::Word)
     }
 }
 
@@ -49,7 +58,7 @@ pub enum LexedOperand {
     },
     PostIndirect(Box<LexedOperand>),
     PreIndirect(Box<LexedOperand>),
-    Address(String),
+    Absolute(String),
     Label(String),
     Other(String),
 }
@@ -60,11 +69,9 @@ pub enum LexedLine {
     Label {
         name: String,
     },
-    LabelDirective {
-        name: String,
-        directive: LabelDirective,
-    },
     Directive {
+        name: String,
+        size: LexedSize,
         args: Vec<String>,
     },
     Instruction {
@@ -76,6 +83,9 @@ pub enum LexedLine {
         content: String,
     },
     Empty,
+    Unknown {
+        content: String,
+    },
 }
 #[derive(Debug)]
 #[wasm_bindgen]
@@ -86,18 +96,18 @@ pub enum OperandKind {
     IndirectDisplacement,
     PostIndirect,
     PreIndirect,
-    Label,
-    Address,
+    Absolute,
 }
 
 #[derive(Debug, Clone)]
 
 pub enum LineKind {
-    Label,
+    Label { name: String, inner: Option<String> },
     Directive,
     Instruction { size: LexedSize, name: String },
     Comment,
     Empty,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,64 +129,122 @@ should be the same thing.
 
 At the same time, the directive should have dc/ds/dcb/etc and not just org
 */
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LabelDirective {
-    pub name: String,
-    pub size: LexedSize,
-    pub args: Vec<ArgSeparated>,
+
+enum Grammar {
+    Directive,
+    Register,
+    Indirect,
+    IndirectDisplacement,
+    PostIndirect,
+    PreIndirect,
+    Immediate,
+    Comment,
+    CommentLine,
+    Label,
+    LabelInclusive,
+    Operand,
+    OperandArg,
+    Absolute,
 }
+
+bitflags! {
+    struct GrammarOptions:u32{
+        const NONE = 0;
+        const IS_LINE = 1;
+        const IGNORE_CASE = 2;
+    }
+}
+enum LexLineResult {
+    Line(LexedLine),
+    Multiple(Vec<LexedLine>),
+}
+impl Grammar {
+    fn get_regex(&self) -> String {
+        match &self {
+            Grammar::Directive => r"(.+\s+equ.+\w+)|((org|dc|dcb|ds)\s*.*)".to_string(),
+            Grammar::Register => r"d\d|a\d|sp".to_string(),
+            Grammar::Indirect => format!(r"\w*\(({})\)", Grammar::Register.get_regex()),
+            Grammar::IndirectDisplacement => r"\w*\((.+,)+.+\)".to_string(),
+            Grammar::PostIndirect => r"\(\w+\)\+".to_string(), //TODO should i include registers in here or leave it?
+            Grammar::PreIndirect => r"-\(\w+\)".to_string(),
+            Grammar::Immediate => r"#\S+".to_string(), //TODO could #add absolute here but it wouldn't change the end result
+            Grammar::Comment => r"\s+((;|\*).*)|^(;.*|\*.*)".to_string(),
+            Grammar::CommentLine => r"^((;|\*).*)$".to_string(),
+            Grammar::Label => r"\w+:$".to_string(),
+            Grammar::LabelInclusive => r"\w+:.*".to_string(),
+            Grammar::Absolute => r"((%|@|$|)\w+)|('.')|(\d+)".to_string(), //TODO this does not include labels
+            Grammar::OperandArg => r"(\w*\((?:.+,)+.+\)\w*)|(\w+)|(#\S+)".to_string(),
+            Grammar::Operand => format!(
+                r"(({})|({})|({})|({})|({})|({})|({}))",
+                Grammar::Register.get_regex(),
+                Grammar::Indirect.get_regex(),
+                Grammar::IndirectDisplacement.get_regex(),
+                Grammar::PostIndirect.get_regex(),
+                Grammar::PreIndirect.get_regex(),
+                Grammar::Immediate.get_regex(),
+                Grammar::Absolute.get_regex()
+            ),
+        }
+    }
+    fn get_opt(&self, options: GrammarOptions) -> String {
+        let mut regex = self.get_regex();
+        if options.contains(GrammarOptions::IS_LINE) {
+            regex = format!(r"^{}$", regex);
+        }
+        if options.contains(GrammarOptions::IGNORE_CASE) {
+            regex = format!(r"(?i){}", regex);
+        }
+        regex
+    }
+}
+/*
+
+indirect_displacement
+*/
+
 struct AsmRegex {
-    directives_map: HashMap<String, bool>,
     register: Regex,
     immediate: Regex,
     indirect: Regex,
     indirect_displacement: Regex,
     post_indirect: Regex,
-    address: Regex,
+    absolute: Regex,
     pre_indirect: Regex,
     label_line: Regex,
+    directive: Regex,
+    operand_arg: Regex,
     comment_line: Regex,
     comment: Regex,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ArgSeparated {
-    pub kind: SeparatorKind,
-    pub value: String,
-}
 impl AsmRegex {
     pub fn new() -> Self {
-        let directives = DIRECTIVES
-            .iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<String>>();
-        let directives_hash_map = directives
-            .iter()
-            .map(|x| (x.to_string(), true))
-            .collect::<HashMap<String, bool>>();
         AsmRegex {
-            directives_map: directives_hash_map,
-            register: Regex::new(r"(?i)^((d|a)\d|sp)$").unwrap(),
-            immediate: Regex::new(r"^\#\S+$").unwrap(),
-            indirect: Regex::new(r"(?i)^\S*\(((d|a)\d|sp)\)$").unwrap(),
-            indirect_displacement: Regex::new(r"^((.+,)+.+)$").unwrap(),
-            post_indirect: Regex::new(r"^\(\S+\)\+$").unwrap(),
-            pre_indirect: Regex::new(r"^-\(\S+\)$").unwrap(),
-            address: Regex::new(r"^\$\S+$").unwrap(),
+            register: Regex::new(&Grammar::Register.get_opt(GrammarOptions::IGNORE_CASE)).unwrap(),
+            immediate: Regex::new(&Grammar::Immediate.get_regex()).unwrap(),
+            indirect: Regex::new(&Grammar::Indirect.get_opt(GrammarOptions::IGNORE_CASE)).unwrap(),
+            indirect_displacement: Regex::new(&Grammar::IndirectDisplacement.get_regex()).unwrap(),
+            post_indirect: Regex::new(&Grammar::PostIndirect.get_regex()).unwrap(),
+            pre_indirect: Regex::new(&Grammar::PreIndirect.get_regex()).unwrap(),
+            absolute: Regex::new(&Grammar::Absolute.get_regex()).unwrap(),
             label_line: Regex::new(r"^\S+:.*").unwrap(),
-            comment_line: Regex::new(r"^(;|\*).*").unwrap(),
-            comment: Regex::new(r"(;|\*).*").unwrap(),
+            directive: Regex::new(&Grammar::Directive.get_opt(GrammarOptions::IGNORE_CASE))
+                .unwrap(),
+            operand_arg: Regex::new(&Grammar::OperandArg.get_regex()).unwrap(),
+            comment_line: Regex::new(&Grammar::CommentLine.get_regex()).unwrap(),
+            comment: Regex::new(&Grammar::Comment.get_regex()).unwrap(),
         }
     }
     pub fn get_operand_kind(&self, operand: &String) -> OperandKind {
         match operand {
-            _ if self.register.is_match(operand) => OperandKind::Register,
+            //TODO order is important
+            _ if self.indirect_displacement.is_match(operand) => OperandKind::IndirectDisplacement,
             _ if self.post_indirect.is_match(operand) => OperandKind::PostIndirect,
             _ if self.pre_indirect.is_match(operand) => OperandKind::PreIndirect,
-            _ if self.immediate.is_match(operand) => OperandKind::Immediate,
             _ if self.indirect.is_match(operand) => OperandKind::Indirect,
-            _ if self.indirect_displacement.is_match(operand) => OperandKind::IndirectDisplacement,
-            _ if self.address.is_match(operand) => OperandKind::Address,
-            _ => OperandKind::Label,
+            _ if self.register.is_match(operand) => OperandKind::Register,
+            _ if self.immediate.is_match(operand) => OperandKind::Immediate,
+            //_ if self.absolute.is_match(operand) => OperandKind::Absolute,
+            _ => OperandKind::Absolute,
         }
     }
     pub fn split_at_size(&self, data: &String) -> (String, LexedSize) {
@@ -196,45 +264,12 @@ impl AsmRegex {
             _ => (data, LexedSize::Unspecified),
         }
     }
-    pub fn split_into_operand_args(&self, line: &str) -> Vec<String> {
-        //split at line except if in parenthesis
-        let mut args = vec![];
-        let mut current_arg = String::new();
-        //TODO maybe make it handle multiple parenthesis, shouldn't be needed for now
-        let mut in_parenthesis = false;
-        if line.len() == 0 {
-            return args;
-        }
-        for c in line.chars() {
-            match c {
-                '(' => {
-                    in_parenthesis = true;
-                    current_arg.push(c);
-                }
-                ')' => {
-                    in_parenthesis = false;
-                    current_arg.push(c);
-                }
-                OPERAND_SEPARATOR => {
-                    if in_parenthesis {
-                        current_arg.push(c);
-                    } else {
-                        args.push(current_arg.trim().to_string());
-                        current_arg = String::new();
-                    }
-                }
-                COMMENT_1 | COMMENT_2 => break,
-                _ => current_arg.push(c),
-            }
-        }
-        args.push(current_arg.trim().to_string());
-        args
-    }
-    pub fn split_into_separated_args(&self, line: &str) -> Vec<ArgSeparated> {
+    pub fn split_into_separated_args(&self, line: &str, ignore_space: bool) -> Vec<String> {
         let mut args = vec![];
         let mut current_arg = String::new();
         //TODO maybe count how many paranthesis it's in
         let mut in_parenthesis = false;
+        let mut in_quotes = false;
         let mut last_char = ' ';
         let mut last_separator = ' ';
         if line.len() == 0 {
@@ -243,41 +278,41 @@ impl AsmRegex {
         //TODO fix this, it doesn't work correctly but works in the context of the language
         for c in line.chars() {
             match c {
-                '(' => {
+                '(' if !in_quotes => {
                     in_parenthesis = true;
                     current_arg.push(c);
                 }
-                ')' => {
+                ')' if !in_quotes => {
                     in_parenthesis = false;
                     current_arg.push(c);
                 }
+                '\'' if !in_parenthesis => {
+                    in_quotes = !in_quotes;
+                    current_arg.push(c);
+                }
                 ',' => {
-                    if in_parenthesis {
+                    if in_parenthesis || in_quotes {
+                        //ignore if in parenthesis or in quotes
                         current_arg.push(c);
                     } else {
-                        args.push(ArgSeparated {
-                            kind: SeparatorKind::Comma,
-                            value: current_arg.trim().to_string(),
-                        });
+                        args.push(current_arg.trim().to_string());
                         current_arg = String::new();
                         last_separator = c;
                     }
                 }
                 COMMENT_1 | COMMENT_2 => break,
                 ' ' => {
-                    if last_char == ',' {
+                    if last_char == ',' || ignore_space {
                         continue;
                     }
-                    if in_parenthesis {
+                    if in_parenthesis || in_quotes {
+                        //ignore if in parenthesis or if it's a char
                         current_arg.push(c);
                     } else {
                         if current_arg == "" {
                             continue;
                         }
-                        args.push(ArgSeparated {
-                            kind: SeparatorKind::Space,
-                            value: current_arg.trim().to_string(),
-                        });
+                        args.push(current_arg.trim().to_string());
                         current_arg = String::new();
                         last_separator = c;
                     }
@@ -291,26 +326,17 @@ impl AsmRegex {
         match current_arg.trim() {
             "" => args,
             _ => match last_separator {
-                ',' => {
-                    args.push(ArgSeparated {
-                        kind: SeparatorKind::Comma,
-                        value: current_arg.trim().to_string(),
-                    });
-                    args
-                }
                 _ => {
-                    args.push(ArgSeparated {
-                        kind: SeparatorKind::Space,
-                        value: current_arg.trim().to_string(),
-                    });
+                    args.push(current_arg.trim().to_string());
                     args
                 }
             },
         }
     }
     pub fn split_at_whitespace(&self, line: &str) -> Vec<String> {
-        //TODO maybe use regex?
-        line.replace("\t", " ").trim().split(' ')
+        line.replace("\t", " ")
+            .trim()
+            .split(' ')
             .map(|x| x.to_string())
             .collect::<Vec<String>>()
     }
@@ -326,8 +352,22 @@ impl AsmRegex {
         match args[..] {
             [] => LineKind::Empty,
             _ if self.comment_line.is_match(line) => LineKind::Comment,
-            _ if self.label_line.is_match(line) => LineKind::Label,
-            _ if args.iter().any(|a| self.directives_map.contains_key(a)) => LineKind::Directive,
+            _ if self.label_line.is_match(line) => {
+                let split = line.splitn(2, ':');
+                match split.collect::<Vec<&str>>()[..] {
+                    [name, inclusive] => LineKind::Label {
+                        name: name.to_string(),
+                        inner: Some(inclusive.to_string()),
+                    },
+                    [name] => LineKind::Label {
+                        name: name.to_string(),
+                        inner: None,
+                    },
+                    _ => LineKind::Unknown,
+                }
+            }
+            _ if self.directive.is_match(line) => LineKind::Directive,
+            //TODO why this distinction?
             [_, _, ..] => {
                 let (instruction, size) = self.split_at_size(&args[0].to_lowercase());
                 LineKind::Instruction {
@@ -341,7 +381,7 @@ impl AsmRegex {
                     size,
                     name: instruction,
                 }
-            },
+            }
         }
     }
 }
@@ -438,7 +478,7 @@ impl Lexer {
                 match split[..] {
                     [displacement, args] => {
                         let args = args.replace(")", "");
-                        let args = self.regex.split_into_operand_args(args.as_str());
+                        let args = self.regex.split_into_separated_args(args.as_str(), true);
                         let offset = displacement.trim().to_string();
                         let operands = self.parse_operands(args);
                         match &operands[..] {
@@ -453,7 +493,7 @@ impl Lexer {
                     _ => LexedOperand::Other(operand),
                 }
             }
-            OperandKind::Address => LexedOperand::Address(operand),
+            OperandKind::Absolute => LexedOperand::Absolute(operand),
             OperandKind::PostIndirect => {
                 let parsed_operand = operand.replace("(", "").replace(")+", "");
                 let arg = self.parse_operand(&parsed_operand);
@@ -464,79 +504,94 @@ impl Lexer {
                 let arg = self.parse_operand(&parsed_operand);
                 LexedOperand::PreIndirect(Box::new(arg))
             }
-            OperandKind::Label => LexedOperand::Label(operand),
         }
     }
-    pub fn lex(&mut self, code: &String) {
+    pub fn lex(&mut self, code: &String) -> &Vec<ParsedLine> {
         let lines = code.lines().map(String::from).collect::<Vec<String>>();
         let lines = self.apply_equ(lines);
-        self.lines = lines
-            .iter()
-            .enumerate()
-            .map(|(i, line)| {
-                let line = line.trim();
-                let kind = self.regex.get_line_kind(&line.to_string().to_lowercase());
-                let args = self.regex.split_at_whitespace(line);
-                let parsed_line = match kind {
-                    LineKind::Instruction { size, name } => {
-                        let operands = self
-                            .regex
-                            .split_into_operand_args(args[1..].join(" ").as_str());
-                        let operands = self.parse_operands(operands);
-                        LexedLine::Instruction {
-                            name,
-                            size,
-                            operands,
-                        }
-                    }
-                    LineKind::Comment => LexedLine::Comment {
-                        content: line.to_string(),
-                    },
-                    LineKind::Label => {
-                        let name = args.get(0).unwrap().replace(":", "").to_string();
-                        let args = self
-                            .regex
-                            .split_into_separated_args(args[1..].join(" ").as_str());
-                        match &args[..] {
-                            [first, ..] => {
-                                let (directive_name, size) =
-                                    self.regex.split_at_size(&first.value.to_string().to_lowercase());
-                                let label_directive = LabelDirective {
-                                    name: directive_name,
-                                    size,
-                                    args: args[1..].to_vec(),
-                                };
-                                LexedLine::LabelDirective {
-                                    name,
-                                    directive: label_directive,
-                                }
-                            }
-                            _ => LexedLine::Label { name },
-                        }
-                    }
-                    LineKind::Directive => {
-                        let mut parsed_args: Vec<String> = args
-                        .iter()
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                        .collect();
-                        //lowercase the first arg
-                        let first = parsed_args.get(0).unwrap().to_lowercase();
-                        parsed_args[0] = first;
-
-                        LexedLine::Directive {
-                            args: parsed_args
-                        }
-                    },
-                    LineKind::Empty => LexedLine::Empty,
-                };
-                ParsedLine {
+        let mut parsed = vec![];
+        for (i, line) in lines.iter().enumerate() {
+            match self.lex_line(line) {
+                LexLineResult::Line(parsed_line) => parsed.push(ParsedLine {
                     parsed: parsed_line,
                     line: line.to_string(),
                     line_index: i,
+                }),
+                LexLineResult::Multiple(parsed_lines) => {
+                    for parsed_line in parsed_lines {
+                        parsed.push(ParsedLine {
+                            parsed: parsed_line,
+                            line: line.to_string(),
+                            line_index: i,
+                        })
+                    }
                 }
-            })
-            .collect();
+            }
+        }
+        self.lines = parsed;
+        &self.lines
+    }
+    fn lex_line(&mut self, line: &String) -> LexLineResult {
+        let line = line.trim();
+        let kind = self.regex.get_line_kind(&line.to_string().to_lowercase());
+        let args = self.regex.split_at_whitespace(line);
+        match kind {
+            LineKind::Instruction { size, name } => {
+                let operands = self
+                    .regex
+                    .split_into_separated_args(args[1..].join(" ").as_str(), true);
+                let operands = self.parse_operands(operands);
+                LexLineResult::Line(LexedLine::Instruction {
+                    name,
+                    size,
+                    operands,
+                })
+            }
+            LineKind::Comment => LexLineResult::Line(LexedLine::Comment {
+                content: line.to_string(),
+            }),
+            LineKind::Label { name, inner } => match &inner {
+                Some(inn) => {
+                    let mut inner = match self.lex_line(inn) {
+                        LexLineResult::Line(l) => vec![l],
+                        LexLineResult::Multiple(l) => l,
+                    };
+                    inner.insert(0, LexedLine::Label { name });
+                    LexLineResult::Multiple(inner)
+                }
+                None => LexLineResult::Line(LexedLine::Label { name }),
+            },
+            LineKind::Directive => {
+                let mut parsed_args: Vec<String> =
+                    self.regex.split_into_separated_args(line, false);
+                //lowercase the first arg
+                let first = parsed_args.get(0).unwrap().to_lowercase();
+                parsed_args[0] = first;
+                let line = match &parsed_args[..] {
+                    [_, equ, ..] if equ.to_lowercase() == "equ" => LexedLine::Directive {
+                        name: equ.to_lowercase(),
+                        size: LexedSize::Unspecified,
+                        args: parsed_args,
+                    },
+                    [first, ..] => {
+                        let (name, size) = self.regex.split_at_size(&first.to_lowercase());
+                        LexedLine::Directive {
+                            name,
+                            size,
+                            args: parsed_args,
+                        }
+                    }
+                    _ => LexedLine::Unknown {
+                        content: line.to_string(),
+                    },
+                };
+                LexLineResult::Line(line)
+            }
+            LineKind::Unknown => LexLineResult::Line(LexedLine::Unknown {
+                content: line.to_string(),
+            }),
+            LineKind::Empty => LexLineResult::Line(LexedLine::Empty),
+        }
     }
     pub fn get_lines(&self) -> Vec<ParsedLine> {
         self.lines.clone()

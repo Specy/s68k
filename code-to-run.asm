@@ -1,2 +1,1 @@
-move.w #'a', d0
-move.w #'A', d1
+move.w #10, d0

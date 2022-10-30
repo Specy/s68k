@@ -51,7 +51,7 @@ pub enum Operand {
     },
     PostIndirect(RegisterOperand),
     PreIndirect(RegisterOperand),
-    Address(usize),
+    Absolute(usize),
 }
 /*
 Thanks to:  https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/instructions.rs

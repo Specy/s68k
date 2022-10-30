@@ -1,4 +1,4 @@
-import { Flags, S68k as RawS68k, SemanticError as RawSemanticError, Interpreter as RawInterpreter, Compiler as RawCompiler, InterruptResult, Step, Condition, Cpu as RawCpu, Interrupt, InstructionLine, InterpreterStatus, RegisterOperand, Size, Register as RawRegister, ParsedLine, LexedLine, LabelDirective, ArgSeparated, LexedOperand, LexedRegisterType } from './pkg/s68k'
+import { Flags, S68k as RawS68k, SemanticError as RawSemanticError, Interpreter as RawInterpreter, Compiler as RawCompiler, InterruptResult, Step, Condition, Cpu as RawCpu, Interrupt, InstructionLine, InterpreterStatus, RegisterOperand, Size, Register as RawRegister, ParsedLine, LexedLine, LexedOperand, LexedRegisterType } from './pkg/s68k'
 
 export type CompilationResult = { ok: false, errors: SemanticError[] } | { ok: true, interpreter: Interpreter }
 
@@ -209,4 +209,4 @@ export class S68k {
 }
 
 
-export { RawS68k, RawInterpreter, RawSemanticError, RawCompiler, RawCpu, RawRegister, Interrupt, InterruptResult, InterpreterStatus, Size, Condition, Step, ParsedLine, LexedLine, LabelDirective, ArgSeparated, LexedOperand, LexedRegisterType, RegisterOperand, InstructionLine }
+export { RawS68k, RawInterpreter, RawSemanticError, RawCompiler, RawCpu, RawRegister, Interrupt, InterruptResult, InterpreterStatus, Size, Condition, Step, ParsedLine, LexedLine, LexedOperand, LexedRegisterType, RegisterOperand, InstructionLine }

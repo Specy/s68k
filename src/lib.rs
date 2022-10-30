@@ -36,8 +36,8 @@ impl S68k {
     pub fn compile(&self) -> Result<Compiler, String> {
         Compiler::new(&self.lines)
     }
-    pub fn get_lexed_lines(&self) -> Vec<ParsedLine> {
-        self.lines.clone()
+    pub fn get_lexed_lines(&self) -> &Vec<ParsedLine> {
+        &self.lines
     }
     pub fn create_interpreter(
         &self,

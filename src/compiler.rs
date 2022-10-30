@@ -5,20 +5,20 @@ use crate::{
     instructions::{
         DisplacementOperands, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
     },
-    lexer::{LabelDirective, LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
-    utils::parse_char_or_num, math::sign_extend_to_long,
+    lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
+    math::sign_extend_to_long,
 };
 use std::collections::HashMap;
 use std::fmt;
 #[derive(Debug)]
 pub enum Directive {
-    DC { data: Vec<u8> },
-    DS { data: Vec<u8> },
-    DCB { data: Vec<u8> },
+    DC { data: Vec<u8>, address:usize },
+    DS { data: Vec<u8>, address:usize },
+    DCB { data: Vec<u8>, address:usize },
+    Other,
 }
 #[derive(Debug)]
 pub struct Label {
-    pub directive: Option<Directive>,
     pub name: String,
     pub address: usize,
 }
@@ -26,6 +26,7 @@ pub struct Label {
 pub struct Compiler {
     labels: HashMap<String, Label>,
     line_addresses: Vec<usize>,
+    directives: Vec<Directive>,
     instructions: Vec<InstructionLine>,
     start_address: usize,
     final_instrucion_address: usize,
@@ -65,10 +66,10 @@ impl fmt::Debug for InstructionLine {
 }
 impl Compiler {
     pub fn new(lines: &[ParsedLine]) -> Result<Compiler, String> {
-        let (labels, line_addresses) = parse_labels_and_addresses(lines)?;
         let mut pre_interpreter = Compiler {
-            labels,
-            line_addresses,
+            labels: HashMap::new(),
+            line_addresses: Vec::new(),
+            directives: Vec::new(),
             instructions: Vec::new(),
             start_address: 0,
             final_instrucion_address: 0,
@@ -110,10 +111,13 @@ impl Compiler {
     pub fn get_labels_map(&self) -> &HashMap<String, Label> {
         &self.labels
     }
+    pub fn get_directives(&self) -> &Vec<Directive> {
+        &self.directives
+    }
     fn load(&mut self, lines: &[ParsedLine]) -> Result<(), String> {
+        self.parse_labels_and_addresses(lines)?; //has side effect, place before the parsing
         self.parse_instruction_lines(lines)?;
-        let start = self.labels.get("start");
-        self.start_address = match start {
+        self.start_address = match self.labels.get("start") {
             Some(label) => label.address,
             None => match self.instructions.first() {
                 Some(instruction) => instruction.address,
@@ -386,7 +390,7 @@ impl Compiler {
     }
     fn extract_address(&self, operand: &Operand) -> CompilationResult<u32> {
         match operand {
-            Operand::Address(addr) => Ok(*addr as u32),
+            Operand::Absolute(addr) => Ok(*addr as u32),
             _ => Err(CompilationError::InvalidAddressingMode(
                 "Operand is not an address".to_string(),
             )),
@@ -415,15 +419,15 @@ impl Compiler {
                 },
                 LexedRegisterType::SP => Ok(Operand::Register(RegisterOperand::Address(7))),
             },
-            LexedOperand::Address(address) => match usize::from_str_radix(&address[1..], 16) {
-                Ok(address) => Ok(Operand::Address(address)),
+            LexedOperand::Absolute(value) => match self.parse_absolute(value) {
+                Ok(absolute) => Ok(Operand::Absolute(absolute as usize)),
                 Err(_) => Err(CompilationError::ParseError(format!(
-                    "Invalid address: {}",
-                    address
+                    "Invalid absolute: {}",
+                    value
                 ))),
             },
             LexedOperand::Label(label) => match self.labels.get(label) {
-                Some(label) => Ok(Operand::Address(label.address)),
+                Some(label) => Ok(Operand::Absolute(label.address)),
                 None => Err(CompilationError::ParseError(format!(
                     "Label \"{}\" not found",
                     label
@@ -499,45 +503,11 @@ impl Compiler {
                 let parsed_operand = self.extract_register(parsed_operand)?;
                 Ok(Operand::PreIndirect(parsed_operand))
             }
-            LexedOperand::Immediate(num) => match num.chars().collect::<Vec<char>>()[..] {
-                ['#', '%'] => match i32::from_str_radix(&num[2..], 2) {
-                    Ok(value) => Ok(Operand::Immediate(value as u32)),
-                    Err(_) => Err(CompilationError::ParseError(format!(
-                        "Invalid binary number: {}",
-                        &num
-                    ))),
-                },
-                ['#', '@'] => match i32::from_str_radix(&num[2..], 8) {
-                    Ok(value) => Ok(Operand::Immediate(value as u32)),
-                    Err(_) => Err(CompilationError::ParseError(format!(
-                        "Invalid octal number: {}",
-                        &num
-                    ))),
-                },
-                ['#', '$', ..] => match i32::from_str_radix(&num[2..], 16) {
-                    Ok(value) => Ok(Operand::Immediate(value as u32)),
-                    Err(_) => Err(CompilationError::ParseError(format!(
-                        "Invalid hex number: {}",
-                        &num
-                    ))),
-                },
-                ['#', '\'', c, '\''] => {
-                    let value = c as u32;
-                    Ok(Operand::Immediate(value))
-                }
-                ['#', ..] => match self.labels.get(&num[1..]) {
-                    Some(label) => Ok(Operand::Immediate((label.address as i32) as u32)),
-                    None => match i32::from_str_radix(&num[1..], 10) {
-                        Ok(value) => Ok(Operand::Immediate(value as u32)),
-                        Err(_) => Err(CompilationError::ParseError(format!(
-                            "Invalid immediate number: {}",
-                            &num
-                        ))),
-                    },
-                },
-                _ => Err(CompilationError::ParseError(format!(
-                    "Invalid immediate number: {}",
-                    &num
+            LexedOperand::Immediate(num) => match self.parse_immediate(num) {
+                Ok(absolute) => Ok(Operand::Immediate(absolute)),
+                Err(e) => Err(CompilationError::ParseError(format!(
+                    "Invalid immediate: {}",
+                    e.get_message()
                 ))),
             },
             _ => Err(CompilationError::ParseError(format!(
@@ -546,204 +516,261 @@ impl Compiler {
             ))),
         }
     }
-}
 
-fn parse_label_directive(directive: &LabelDirective) -> CompilationResult<Directive> {
-    let parsed_args = directive
-        .args
-        .iter()
-        .map(|x| match parse_char_or_num(&x.value) {
-            Ok(value) => Ok(value as u32),
-            Err(_) => Err(CompilationError::ParseError(format!(
-                "Invalid numerical directive argument"
-            ))),
-        })
-        .collect::<CompilationResult<Vec<u32>>>()?;
-    match directive.name.as_str() {
-        "dc" => Ok(Directive::DC {
-            data: match &directive.size {
-                LexedSize::Byte => parsed_args.iter().map(|x| *x as u8).collect(),
-                LexedSize::Word => parsed_args
-                    .iter()
-                    .flat_map(|x| (*x as u16).to_be_bytes())
-                    .collect(),
-                LexedSize::Long => parsed_args
-                    .iter()
-                    .flat_map(|x| (*x as u32).to_be_bytes())
-                    .collect(),
-                _ => {
-                    return Err(CompilationError::Raw(
-                        "Invalid or missing size for DC directive".to_string(),
-                    ))
-                }
-            },
-        }),
-        "ds" => {
-            if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified {
-                return Err(CompilationError::Raw(
-                    "Invalid or missing size for DS directive".to_string(),
-                ));
-            }
-            match parsed_args[..] {
-                [amount] => {
-                    let data = vec![0; amount as usize * directive.size.clone() as usize / 8];
-                    Ok(Directive::DS { data })
-                }
-                _ => Err(CompilationError::Raw(
-                    "Invalid number of arguments for DS directive".to_string(),
-                )),
-            }
-        }
-        "dcb" => {
-            let data = match directive.size {
-                LexedSize::Long => match parsed_args[..] {
-                    [size, default] => vec![default as u32; size as usize]
-                        .iter()
-                        .flat_map(|x| (*x as u32).to_be_bytes())
-                        .collect(),
-                    _ => {
-                        return Err(CompilationError::Raw(
-                            "Invalid number of arguments for DCB directive".to_string(),
-                        ))
-                    }
-                },
-                LexedSize::Word => match parsed_args[..] {
-                    [size, default] => vec![default as u16; size as usize]
-                        .iter()
-                        .flat_map(|x| (*x as u16).to_be_bytes())
-                        .collect(),
-                    _ => {
-                        return Err(CompilationError::Raw(
-                            "Invalid number of arguments for DCB directive".to_string(),
-                        ))
-                    }
-                },
-                LexedSize::Byte => match parsed_args[..] {
-                    [size, default] => vec![default as u8; size as usize],
-                    _ => {
-                        return Err(CompilationError::Raw(
-                            "Invalid number of arguments for DCB directive".to_string(),
-                        ))
-                    }
-                },
-                _ => {
-                    return Err(CompilationError::Raw(
-                        "Invalid or missing size for DCB directive".to_string(),
-                    ))
-                }
-            };
-            Ok(Directive::DCB { data })
-        }
-        _ => Err(CompilationError::Raw(format!(
-            "Invalid directive: {}",
-            directive.name
-        ))),
+    fn parse_immediate(&self, num: &str) -> CompilationResult<u32> {
+        self.parse_absolute(&num[1..])
     }
-}
-fn parse_labels_and_addresses(
-    lines: &[ParsedLine],
-) -> Result<(HashMap<String, Label>, Vec<usize>), String> {
-    let mut last_address = 4096; //same as ORG $1000
-    let mut labels = HashMap::new();
-    let mut line_addresses: Vec<usize> = Vec::new();
-    for line in lines.iter() {
-        line_addresses.push(last_address);
-        match &line.parsed {
-            LexedLine::Directive { args, .. } => {
-                if args[0] == "org" {
-                    let hex = args[1].trim_start_matches("$");
-                    let parsed = match usize::from_str_radix(hex, 16) {
-                        Ok(value) => value,
-                        Err(_) => {
-                            return Err(format!(
-                                "Invalid hex ORG address: {}; at line {}",
-                                args[1], line.line_index
+
+    fn parse_absolute(&self, num: &str) -> CompilationResult<u32> {
+        match num.chars().collect::<Vec<char>>()[..] {
+            ['%',..] => match i32::from_str_radix(&num[1..], 2) {
+                Ok(value) => Ok(value as u32),
+                Err(_) => Err(CompilationError::ParseError(format!(
+                    "Invalid binary number: {}",
+                    &num
+                ))),
+            },
+            ['@',..] => match i32::from_str_radix(&num[1..], 8) {
+                Ok(value) => Ok(value as u32),
+                Err(_) => Err(CompilationError::ParseError(format!(
+                    "Invalid octal number: {}",
+                    &num
+                ))),
+            },
+            ['$', ..] => match i32::from_str_radix(&num[1..], 16) {
+                Ok(value) => Ok(value as u32),
+                Err(_) => Err(CompilationError::ParseError(format!(
+                    "Invalid hex number: {}",
+                    &num
+                ))),
+            },
+            ['\'', c, '\''] => {
+                let value = c as u32;
+                Ok(value)
+            }
+            [..] => match self.labels.get(num) {
+                Some(label) => Ok((label.address as i32) as u32),
+                None => match i32::from_str_radix(num, 10) {
+                    Ok(value) => Ok(value as u32),
+                    Err(_) => Err(CompilationError::ParseError(format!(
+                        "Invalid label number: {}",
+                        &num
+                    ))),
+                },
+            },
+        }
+    }
+    fn parse_absolutes(&self, nums: &[String]) -> CompilationResult<Vec<u32>> {
+        nums.iter()
+            .map(|x| self.parse_absolute(x))
+            .collect::<CompilationResult<Vec<u32>>>()
+    }
+    fn parse_directive(
+        &self,
+        name: &String,
+        size: &LexedSize,
+        args: &Vec<String>,
+        address: usize,
+    ) -> CompilationResult<Directive> {
+
+        match name.as_str() {
+            "dc" => {
+                let parsed_args = self.parse_absolutes(&args[1..])?;
+                Ok(Directive::DC {
+                    address,
+                    data: match size {
+                        LexedSize::Byte => parsed_args.iter().map(|x| *x as u8).collect(),
+                        //TODO is word default?
+                        LexedSize::Word | LexedSize::Unspecified => parsed_args
+                            .iter()
+                            .flat_map(|x| (*x as u16).to_be_bytes())
+                            .collect(),
+                        LexedSize::Long => parsed_args
+                            .iter()
+                            .flat_map(|x| (*x as u32).to_be_bytes())
+                            .collect(),
+                        _ => {
+                            return Err(CompilationError::Raw(
+                                "Invalid size for DC directive".to_string(),
                             ))
                         }
-                    };
-                    if parsed < last_address {
-                        return Err(format!("The address of the ORG directive ({}) must be greater than the previous address ({}); at line {}",parsed, last_address, line.line_index));
+                    },
+                })
+            },
+            "ds" => {
+                let parsed_args = self.parse_absolutes(&args[1..])?;
+                if *size == LexedSize::Unknown {
+                    return Err(CompilationError::Raw(
+                        "Invalid size for DS directive".to_string(),
+                    ));
+                }
+
+                match parsed_args[..] {
+                    [amount] => {
+                        let data = vec![0; amount as usize * size.to_bytes_word_default() as usize / 8];
+                        Ok(Directive::DS { data, address })
                     }
-                    last_address = match usize::from_str_radix(hex, 16) {
-                        Ok(value) => value,
-                        Err(_) => {
-                            return Err(format!(
-                                "Invalid hex value: {}; at line {}",
-                                hex, line.line_index
-                            ))
-                        }
-                    };
-                    //align at 2 bytes intervals
-                    //TODO should i align here?
-                    if last_address % 2 != 0 {
-                        last_address += 1;
-                    }
+                    _ => Err(CompilationError::Raw(
+                        "Invalid number of arguments for DS directive".to_string(),
+                    )),
                 }
             }
-            LexedLine::Label { name, .. } => {
-                let name = name.to_string();
-                labels.insert(
-                    name.clone(),
-                    Label {
-                        name,
-                        directive: None,
-                        address: last_address,
+            "dcb" => {
+                let parsed_args = self.parse_absolutes(&args[1..])?;
+                let data = match size {
+                    LexedSize::Long => match parsed_args[..] {
+                        [size, default] => vec![default as u32; size as usize]
+                            .iter()
+                            .flat_map(|x| (*x as u32).to_be_bytes())
+                            .collect(),
+                        _ => {
+                            return Err(CompilationError::Raw(
+                                "Invalid number of arguments for DCB directive".to_string(),
+                            ))
+                        }
                     },
-                );
-            }
-            LexedLine::LabelDirective { name, directive } => {
-                match parse_label_directive(directive) {
-                    Ok(parsed_directive) => {
-                        labels.insert(
-                            name.clone(),
-                            Label {
-                                name: name.clone(),
-                                directive: Some(parsed_directive),
-                                address: last_address,
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        return Err(format!(
-                            "Error parsing directive: \"{}\"; at line:{}",
-                            e.get_message(),
-                            line.line_index
+                    //TODO is word default?
+                    LexedSize::Word | LexedSize::Unspecified => match parsed_args[..] {
+                        [size, default] => vec![default as u16; size as usize]
+                            .iter()
+                            .flat_map(|x| (*x as u16).to_be_bytes())
+                            .collect(),
+                        _ => {
+                            return Err(CompilationError::Raw(
+                                "Invalid number of arguments for DCB directive".to_string(),
+                            ))
+                        }
+                    },
+                    LexedSize::Byte => match parsed_args[..] {
+                        [size, default] => vec![default as u8; size as usize],
+                        _ => {
+                            return Err(CompilationError::Raw(
+                                "Invalid number of arguments for DCB directive".to_string(),
+                            ))
+                        }
+                    },
+                    _ => {
+                        return Err(CompilationError::Raw(
+                            "Invalid size for DCB directive".to_string(),
                         ))
                     }
                 };
-
-                match directive.name.as_str() {
-                    "dcb" | "ds" => {
-                        let bytes = directive.args[0].value.parse::<usize>();
-                        match bytes {
-                            Ok(bytes) => {
-                                last_address += bytes * directive.size.to_bytes() as usize;
-                            }
+                Ok(Directive::DCB { data, address })
+            }
+            _ => Ok(Directive::Other)
+        }
+    }
+    fn get_next_address(&self, line: &ParsedLine, last_address: usize) -> Result<usize, String> {
+        let mut next_address = last_address;
+        match &line.parsed {
+            LexedLine::Directive { args, name, size } => {
+                match name.as_str() {
+                    "org" => {
+                        let parsed = match self.parse_absolute(&args[1]) {
+                            Ok(value) => value as usize,
                             Err(_) => {
                                 return Err(format!(
-                                    "Invalid number of bytes for DS directive at line {}",
-                                    line.line_index
-                                ));
+                                    "Invalid hex ORG address: {}; at line {}",
+                                    args[1], line.line_index
+                                ))
                             }
+                        };
+                        if parsed < last_address {
+                            return Err(format!("The address of the ORG directive ({}) must be greater than the previous address ({}); at line {}",parsed, last_address, line.line_index));
+                        }
+                        next_address = parsed;
+                        //align at 2 bytes intervals
+                        //TODO should i align here?
+                        if next_address % 2 != 0 {
+                            next_address = next_address + 1;
                         }
                     }
+                    "dcb" | "ds" => match self.parse_absolute(&args[1]) {
+                        Ok(bytes) => {
+                            next_address = last_address + (bytes * size.to_bytes_word_default() as u32) as usize;
+                        }
+                        Err(_) => {
+                            return Err(format!(
+                                "Invalid number of bytes for DS directive at line {}",
+                                line.line_index
+                            ));
+                        }
+                    },
                     "dc" => {
-                        let args = directive.args.len();
-                        last_address += args * directive.size.to_bytes() as usize;
+                        let args = args.len() - 1; //-1 because there is also the name of the directive as arg
+                        next_address = last_address + args * size.to_bytes_word_default() as usize;
                     }
                     _ => {}
                 }
             }
             LexedLine::Instruction { .. } => {
                 //align at 2 bytes intervals
-                if last_address % 2 != 0 {
-                    last_address += 1;
+                if next_address % 2 != 0 {
+                    next_address += 1;
                 }
-                last_address += 4;
+                next_address += 4;
             }
 
             _ => {}
         }
+        Ok(next_address)
     }
-    Ok((labels, line_addresses))
+    fn parse_labels_and_addresses(
+        &mut self,
+        lines: &[ParsedLine],
+    ) -> Result<(), String> {
+        let mut last_address = 4096; //same as ORG $1000
+        let mut labels: HashMap<String, Label> = HashMap::new();
+        let mut directives: Vec<Directive> = Vec::new();
+        let mut line_addresses: Vec<usize> = Vec::new();
+        for line in lines.iter() {
+            line_addresses.push(last_address);
+            match &line.parsed {
+                LexedLine::Label { name } => {
+                    if labels.contains_key(name) {
+                        return Err(format!(
+                            "Label {} already defined at line {}",
+                            name, line.line_index
+                        ));
+                    }
+                    labels.insert(
+                        name.clone(),
+                        Label {
+                            address: last_address,
+                            name: name.clone(),
+                        },
+                    );
+                }
+                _ => {}
+            }
+            match self.get_next_address(line, last_address){
+                Ok(address) => {
+                    last_address = address;
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+            }
+        }
+        self.labels = labels;
+        self.line_addresses = line_addresses;
+        //TODO i could merge this inthe previous loop but it would now allow for labels to be defined after the directive
+        for (i,line) in lines.iter().enumerate() {
+            match &line.parsed {
+                LexedLine::Directive { name, size, args } => {
+                    match self.parse_directive(name, size, args, self.line_addresses[i]) {
+                        Ok(directive) => {
+                            directives.push(directive);
+                        }
+                        Err(e) => {
+                            return Err(format!("Error parsing directive at line {}: {}", line.line_index, e.get_message()));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.directives = directives;
+        Ok(())
+    }
 }

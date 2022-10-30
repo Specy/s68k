@@ -42,14 +42,10 @@ equ, org, dc, ds, dcb
 - Add more directives
 - Add END directive
 - Add tests
-- Add breakpoints 
-- Remove LabelDirective, split the Label and Directive, this will also let instructions be in the same line as the label
 
 
 ## Known bugs
-1. Argument splitting is not the best, for example `move.l #',', d1` will split the arguments at the comma #','
-2. comment splitting is not the best, for example `move.l #';', d1 ; this is a comment` will split the line at the #';'
-
+No known bugs
 # How to run rust
 Firstly make sure you have rust installed, [you can download it here](https://www.rust-lang.org/tools/install), once done, clone the repository on your machine and run `cargo run` in the root folder of the project. This will run the interpreter with the code inside of `code-to-run.asm` file.
 

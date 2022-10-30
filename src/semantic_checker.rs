@@ -1,9 +1,8 @@
 //TODO some instructions might accept indirect and also displacement, check that
 
 use crate::{
-    constants::EQU,
     lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
-    utils::{num_to_signed_base, parse_char_or_num},
+    utils::{num_to_signed_base},
 };
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
@@ -154,7 +153,7 @@ impl SemanticChecker {
         self.lines = lines.iter().map(|x| x.clone()).collect();
         for line in lines.iter() {
             match &line.parsed {
-                LexedLine::Label { name, .. } | LexedLine::LabelDirective { name, .. } => {
+                LexedLine::Label { name } => {
                     if self.labels.contains_key(name) {
                         self.errors.push(SemanticError::new(
                             line.clone(),
@@ -168,26 +167,26 @@ impl SemanticChecker {
             }
         }
         for line in lines.iter() {
-            match &line.parsed {
-                LexedLine::Empty | LexedLine::Comment { .. } => {}
-
-                LexedLine::LabelDirective { .. } | LexedLine::Label { .. } => {
-                    self.verify_label(line);
-                }
-                LexedLine::Directive { .. } => {
-                    self.verify_directive(line);
-                }
-                LexedLine::Instruction { .. } => {
-                    self.check_instruction(line);
-                }
-                _ => self.errors.push(SemanticError::new(
-                    line.clone(),
-                    format!("Unknown line: \"{}\"", line.line),
-                )),
-            }
+            self.check_one(line);
         }
     }
+    pub fn check_one(&mut self, line: &ParsedLine) {
+        match &line.parsed {
+            LexedLine::Empty | LexedLine::Comment { .. } => {}
 
+            LexedLine::Label { .. } => {}
+            LexedLine::Directive { .. } => {
+                self.verify_directive(line);
+            }
+            LexedLine::Instruction { .. } => {
+                self.check_instruction(line);
+            }
+            _ => self.errors.push(SemanticError::new(
+                line.clone(),
+                format!("Unknown line: \"{}\"", line.line),
+            )),
+        }
+    }
     pub fn get_errors(&self) -> Vec<SemanticError> {
         self.errors.clone()
     }
@@ -203,30 +202,30 @@ impl SemanticChecker {
                 match name {
                     "move" | "add" | "sub" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE, line);
-                        self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size(SizeRules::AnySize, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "adda" | "suba" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::ONLY_A_REG, line);
-                        self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size(SizeRules::AnySize, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
 
                     "divs" | "divu" | "muls" | "mulu" => {
                         self.verify_two_args(operands, Rules::NO_A_REG, Rules::ONLY_D_REG, line);
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_size(SizeRules::NoSize, line);
                     }
                     "swap" => {
                         self.verify_one_arg(operands, Rules::ONLY_D_REG, line);
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_size(SizeRules::NoSize, line);
                     }
                     "clr" => {
                         self.verify_one_arg(operands, Rules::ONLY_D_REG_OR_INDIRECT, line);
-                        self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size(SizeRules::AnySize, line);
                     }
                     "exg" => {
                         self.verify_two_args(operands, Rules::ONLY_REG, Rules::ONLY_REG, line);
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_size(SizeRules::NoSize, line);
                     }
                     "neg" => {
                         self.verify_one_arg(
@@ -234,35 +233,35 @@ impl SemanticChecker {
                             Rules::ONLY_D_REG_OR_INDIRECT_OR_ADDRESS,
                             line,
                         );
-                        self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size(SizeRules::AnySize, line);
                     }
                     "ext" => {
                         self.verify_one_arg(operands, Rules::ONLY_D_REG, line);
-                        self.verify_instruction_size(SizeRules::OnlyLongOrWord, line);
+                        self.verify_size(SizeRules::OnlyLongOrWord, line);
                     }
                     "tst" => {
                         self.verify_one_arg(operands, Rules::NO_IMMEDIATE, line);
-                        self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size(SizeRules::AnySize, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "cmp" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE, line);
-                        self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size(SizeRules::AnySize, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi"
                     | "bhs" | "bsr" | "bra" => {
                         self.verify_one_arg(operands, Rules::ONLY_ADDRESS_OR_LABEL, line);
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_size(SizeRules::NoSize, line);
                     }
                     "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt"
                     | "shi" | "smi" | "spl" | "svc" | "svs" | "sf" | "st" => {
                         self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_size(SizeRules::NoSize, line);
                     }
                     "not" => {
                         self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
-                        self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size(SizeRules::AnySize, line);
                     }
                     "or" | "and" | "eor" => {
                         self.verify_two_args(
@@ -271,7 +270,7 @@ impl SemanticChecker {
                             Rules::NO_IMMEDIATE | Rules::NO_A_REG,
                             line,
                         );
-                        self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size(SizeRules::AnySize, line);
                     }
                     "jmp" => {
                         self.verify_one_arg(
@@ -279,7 +278,7 @@ impl SemanticChecker {
                             Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE,
                             line,
                         );
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_size(SizeRules::NoSize, line);
                     }
                     "jsr" => {
                         self.verify_one_arg(
@@ -287,18 +286,21 @@ impl SemanticChecker {
                             Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE,
                             line,
                         );
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_size(SizeRules::NoSize, line);
                     }
                     "trap" => {
                         self.verify_one_arg(operands, Rules::ONLY_IMMEDIATE, line);
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_size(SizeRules::NoSize, line);
                         match &operands[..] {
                             [LexedOperand::Immediate(value)] => {
                                 let value = self.get_immediate_value(value).unwrap();
                                 if value != 15 {
                                     self.errors.push(SemanticError::new(
                                         line.clone(),
-                                        format!("Only implemented TRAP is 15 for IO, received \"{}\"", value),
+                                        format!(
+                                            "Only implemented TRAP is 15 for IO, received \"{}\"",
+                                            value
+                                        ),
                                     ));
                                 }
                             }
@@ -306,7 +308,7 @@ impl SemanticChecker {
                         }
                     }
                     "rts" => {
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_size(SizeRules::NoSize, line);
                         if operands.len() != 0 {
                             self.errors.push(SemanticError::new(
                                 line.clone(),
@@ -322,7 +324,7 @@ impl SemanticChecker {
                             line,
                         );
                         self.verify_value_bounds_if_immediate(operands, 0, line, 0, 8);
-                        self.verify_instruction_size(SizeRules::AnySize, line);
+                        self.verify_size(SizeRules::AnySize, line);
                     }
                     "btst" | "bclr" | "bchg" | "bset" => {
                         self.verify_two_args(
@@ -331,7 +333,7 @@ impl SemanticChecker {
                             Rules::NO_IMMEDIATE | Rules::NO_A_REG,
                             line,
                         );
-                        self.verify_instruction_size(SizeRules::NoSize, line);
+                        self.verify_size(SizeRules::NoSize, line);
                     }
 
                     _ => self.errors.push(SemanticError::new(
@@ -349,8 +351,8 @@ impl SemanticChecker {
 
     fn verify_directive(&mut self, line: &ParsedLine) {
         match &line.parsed {
-            LexedLine::Directive { args } => match &args[..] {
-                [_, _, ..] if args[1] == EQU => {
+            LexedLine::Directive { args, name, size } => match name.as_str() {
+                "equ" => {
                     if args.len() != 3 {
                         self.errors.push(SemanticError::new(
                             line.clone(),
@@ -358,12 +360,101 @@ impl SemanticChecker {
                         ));
                     }
                 }
-                [_, ..] if args[0] == "org" => {
+                "org" => {
                     if args.len() != 2 {
                         self.errors.push(SemanticError::new(
                             line.clone(),
                             format!("Invalid number of arguments for directive org"),
                         ));
+                    }
+                }
+                "dc" => {
+                    self.verify_size(SizeRules::AnySize, line);
+                    match &args[..] {
+                        [_,..] => {
+                            for (i, arg) in args[1..].iter().enumerate() {
+                                match self.get_absolute_value(&arg) {
+                                    Ok(_) => {}
+                                    Err(_) => self.errors.push(SemanticError::new(
+                                        line.clone(),
+                                        format!("Invalid argument \"{}\" for directive dc at position {}",arg, i + 1),
+                                    )),
+                                }
+                            }
+                        },
+                        _ => self.errors.push(SemanticError::new(
+                            line.clone(),
+                            format!("No arguments for directive dc"),
+                        )),
+                    }
+                }
+                "ds" => {
+                    self.verify_size(SizeRules::AnySize, line);
+                    match &args[..] {
+                            [_] => self.errors.push(SemanticError::new(
+                                line.clone(),
+                                format!(
+                                    "Missing arguments for directive: \"{}\", expected 1, got {}",
+                                    "ds",
+                                    args.len()
+                                ),
+                            )),
+                            [_,arg] => match self.get_absolute_value(&arg){
+                                Ok(_) => {}
+                                Err(_) => self.errors.push(SemanticError::new(
+                                    line.clone(),
+                                    format!("Invalid argument for directive: \"{}\"", "ds"),
+                                )),
+                            },
+                            _ => self.errors.push(SemanticError::new(
+                                line.clone(),
+                                format!(
+                                    "Too many arguments for label directive: \"{}\", expected 1, got {}",
+                                    "ds",
+                                    args.len()
+                                ),
+                            )),
+                        }
+                }
+                "dcb" => {
+                    self.verify_size(SizeRules::AnySize, line);
+                    match &args[..] {
+                        [_] | [_,_] => {
+                            self.errors.push(SemanticError::new(
+                                line.clone(),
+                                format!("Too few arguments for label directive: \"{}\", expected 2, got {}", "ds", args.len()),
+                            ));
+                        }
+                        [_,first, second] => {
+                            match self.get_absolute_value(first) {
+                                Ok(_) => {}
+                                Err(_) => {
+                                    self.errors.push(SemanticError::new(
+                                        line.clone(),
+                                        format!("Invalid length argument for dcb directive"),
+                                    ));
+                                }
+                            }
+                            match self.get_absolute_value(second) {
+                                Ok(_) => {}
+                                Err(_) => {
+                                    self.errors.push(SemanticError::new(
+                                        line.clone(),
+                                        format!("Invalid default value argument for dcb directive"),
+                                    ));
+                                }
+                            }
+                        }
+                        _ => {
+                            self.errors.push(SemanticError::new(
+                                line.clone(),
+                                format!(
+                                    "Too many arguments for directive: \"{}\", expected 2, got {}",
+                                    "dcb",
+                                    args.len()
+                                ),
+                            ));
+                        }
                     }
                 }
                 _ => {
@@ -374,102 +465,6 @@ impl SemanticChecker {
                 }
             },
             _ => panic!("Line is not a directive"),
-        }
-    }
-    fn verify_label(&mut self, line: &ParsedLine) {
-        match &line.parsed {
-            LexedLine::LabelDirective { directive, name } => {
-                if directive.size == LexedSize::Unknown || directive.size == LexedSize::Unspecified
-                {
-                    self.errors.push(SemanticError::new(
-                        line.clone(),
-                        format!(
-                            "Unknown or unspecified size for label directive: \"{}\"",
-                            name
-                        ),
-                    ));
-                }
-                match directive.name.as_str() {
-                    //TODO check if numbers of declaration fit the size
-                    "dc" => match &directive.args[..] {
-                        [] => self.errors.push(SemanticError::new(
-                            line.clone(),
-                            format!("No arguments for directive dc"),
-                        )),
-                        [..] => {
-                            for (i, arg) in directive.args.iter().enumerate() {
-                                match parse_char_or_num(&arg.value) {
-                                    Ok(_) => {}
-                                    Err(_) => self.errors.push(SemanticError::new(
-                                        line.clone(),
-                                        format!("Invalid argument \"{}\" for directive dc at position {}",arg.value, i + 1),
-                                    )),
-                                }
-                            }
-                        }
-                    },
-                    "ds" => match &directive.args[..] {
-                        [] => self.errors.push(SemanticError::new(
-                            line.clone(),
-                            format!("Missing arguments for label directive: \"{}\", expected 1, got {}", name, directive.args.len()),
-                        )),
-                        [arg] => match arg.value.parse::<u32>() {
-                            Ok(_) => {}
-                            Err(_) => self.errors.push(SemanticError::new(
-                                line.clone(),
-                                format!("Invalid argument for label directive: \"{}\"", name),
-                            )),
-                        },
-                        _ => self.errors.push(SemanticError::new(
-                            line.clone(),
-                            format!("Too many arguments for label directive: \"{}\", expected 1, got {}", name, directive.args.len()),
-                        )),
-                    },
-                    "dcb" => match &directive.args[..] {
-                        [] | [_] => {
-                            self.errors.push(SemanticError::new(
-                                line.clone(),
-                                format!("Too few arguments for label directive: \"{}\", expected 2, got {}", name, directive.args.len()),
-                            ));
-                        }
-                        [first, second] => {
-                            match first.value.parse::<u32>() {
-                                Ok(_) => {}
-                                Err(_) => {
-                                    self.errors.push(SemanticError::new(
-                                        line.clone(),
-                                        format!("Invalid length argument for dcb label directive: \"{}\"", name),
-                                    ));
-                                }
-                            }
-                            match parse_char_or_num(&second.value) {
-                                Ok(_) => {}
-                                Err(_) => {
-                                    self.errors.push(SemanticError::new(
-                                        line.clone(),
-                                        format!("Invalid default value argument for dcb label directive: \"{}\"", name),
-                                    ));
-                                }
-                            }
-                        }
-                        _ => {
-                            self.errors.push(SemanticError::new(
-                                line.clone(),
-                                format!("Too many arguments for label directive: \"{}\", expected 2, got {}", name, directive.args.len()),
-                            ));
-                        }
-                    },
-                    _ => self.errors.push(SemanticError::new(
-                        line.clone(),
-                        format!(
-                            "Unknown label directive: \"{}\" at label: \"{}\" ",
-                            directive.name, name
-                        ),
-                    )),
-                }
-            }
-            LexedLine::Label { .. } => {}
-            _ => panic!("Line is not a label"),
         }
     }
     fn verify_two_args(
@@ -511,9 +506,9 @@ impl SemanticChecker {
     ) {
         let size_value = match size {
             //TODO do i really have to use i64?
-            LexedSize::Byte | LexedSize::Word | LexedSize::Long => size.to_bits() as i64,
+            LexedSize::Byte | LexedSize::Word | LexedSize::Long => size.to_bits_word_default() as i64,
             LexedSize::Unspecified => match default {
-                LexedSize::Byte | LexedSize::Word | LexedSize::Long => default.to_bits() as i64,
+                LexedSize::Byte | LexedSize::Word | LexedSize::Long => default.to_bits_word_default() as i64,
                 _ => panic!("Invalid default size"),
             },
             _ => 0,
@@ -588,23 +583,18 @@ impl SemanticChecker {
             }
             Err(e) => {
                 let error = e.to_string();
-                self.errors.push(SemanticError::new(
-                    line.clone(),
-                    error,
-                ));
+                self.errors.push(SemanticError::new(line.clone(), error));
             }
         }
     }
-    fn verify_instruction_size(&mut self, rule: SizeRules, line: &ParsedLine) {
+    fn verify_size(&mut self, rule: SizeRules, line: &ParsedLine) {
         match &line.parsed {
-            LexedLine::Instruction { size, .. } => match rule {
+            LexedLine::Instruction { size, .. } | LexedLine::Directive { size, .. } => match rule {
                 SizeRules::NoSize => {
                     if *size != LexedSize::Unspecified || *size == LexedSize::Unknown {
                         self.errors.push(SemanticError::new(
                             line.clone(),
-                            format!(
-                                "Invalid size, instruction is not sized"
-                            ),
+                            format!("Invalid size, instruction is not sized"),
                         ))
                     }
                 }
@@ -612,9 +602,7 @@ impl SemanticChecker {
                     if *size != LexedSize::Long && *size != LexedSize::Word {
                         self.errors.push(SemanticError::new(
                             line.clone(),
-                            format!(
-                                "Invalid size, instruction must be long or word"
-                            ),
+                            format!("Invalid size, instruction must be long or word"),
                         ));
                     }
                 }
@@ -627,7 +615,7 @@ impl SemanticChecker {
                     }
                 }
             },
-            _ => panic!("Line is not an instruction"),
+            _ => panic!("Line is not an instruction or directive"),
         }
     }
     fn get_addressing_mode(&mut self, operand: &LexedOperand) -> Result<AdrMode, &str> {
@@ -674,8 +662,12 @@ impl SemanticChecker {
                     }
                 }
                 match operand.as_ref() {
-                    LexedOperand::Register(LexedRegisterType::Address, _) => Ok(AdrMode::INDIRECT_MAYBE_DISPLACEMENT),
-                    LexedOperand::Register(LexedRegisterType::SP, _) => Ok(AdrMode::INDIRECT_MAYBE_DISPLACEMENT),
+                    LexedOperand::Register(LexedRegisterType::Address, _) => {
+                        Ok(AdrMode::INDIRECT_MAYBE_DISPLACEMENT)
+                    }
+                    LexedOperand::Register(LexedRegisterType::SP, _) => {
+                        Ok(AdrMode::INDIRECT_MAYBE_DISPLACEMENT)
+                    }
                     _ => Err("Invalid indirect value, only address registers allowed"),
                 }
             }
@@ -708,43 +700,45 @@ impl SemanticChecker {
                     Err("Label does not exist")
                 }
             }
-            LexedOperand::Address(data) => match i64::from_str_radix(&data[1..], 16) {
+            LexedOperand::Absolute(data) => match self.get_absolute_value(data) {
                 Ok(_) => Ok(AdrMode::ADDRESS),
-                Err(_) => Err("Invalid hex address"),
+                //TODO add error that it's an absolute
+                Err(e) => Err(e),
             },
             LexedOperand::Other(_) => Err("Unknown operand"),
         }
     }
     fn get_immediate_value(&self, num: &str) -> Result<i64, &str> {
+        self.get_absolute_value(&num[1..])  
+    }
+    fn get_absolute_value(&self, num: &str) -> Result<i64, &str> {
         let chars = num.chars().collect::<Vec<char>>();
         //TODO could probabl get the radix from the number, then do a single check
         match chars[..] {
-            ['#', '%',..] => match i64::from_str_radix(&num[2..], 2) {
+            ['%', ..] => match i64::from_str_radix(&num[1..], 2) {
                 Ok(n) => Ok(n),
                 Err(_) => Err("Invalid binary number"),
             },
-            ['#', '@',..] => match i64::from_str_radix(&num[2..], 8) {
+            ['@', ..] => match i64::from_str_radix(&num[1..], 8) {
                 Ok(n) => Ok(n),
                 Err(_) => Err("Invalid octal number"),
             },
-            ['#', '$', ..] => match i64::from_str_radix(&num[2..], 16) {
+            ['$', ..] => match i64::from_str_radix(&num[1..], 16) {
                 Ok(n) => Ok(n),
                 Err(_) => Err("Invalid hex number"),
             },
-            ['#', '\'', c, '\''] => Ok(c as i64),
-            ['#', ..] => {
+            ['\'', c, '\''] => Ok(c as i64),
+            [..] => {
                 //TODO not sure if this should be checked here
-                let label = &num[1..];
-                if self.labels.contains_key(label) {
+                if self.labels.contains_key(num) {
                     Ok(1i64 << 31)
                 } else {
-                    match i64::from_str_radix(&num[1..], 10) {
+                    match i64::from_str_radix(num, 10) {
                         Ok(n) => Ok(n),
                         Err(_) => Err("Invalid decimal number"),
                     }
                 }
             }
-            _ => Err("Invalid immediate value"),
         }
     }
 }
