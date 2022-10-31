@@ -26,7 +26,7 @@ impl S68k {
         lexer.lex(&code);
         S68k {
             code,
-            lines: lexer.get_lines(),
+            lines: lexer.get_lines().clone(),
         }
     }
     pub fn semantic_check(&self) -> Vec<SemanticError> {
@@ -38,6 +38,9 @@ impl S68k {
     }
     pub fn get_lexed_lines(&self) -> &Vec<ParsedLine> {
         &self.lines
+    }
+    pub fn get_code(&self) -> &String {
+        &self.code
     }
     pub fn create_interpreter(
         &self,
@@ -57,7 +60,7 @@ impl S68k {
         lexer.lex(&code);
         S68k {
             code,
-            lines: lexer.get_lines(),
+            lines: lexer.get_lines().clone(),
         }
     }
     pub fn wasm_get_lexed_lines(&self) -> Result<JsValue, JsValue> {
@@ -68,6 +71,9 @@ impl S68k {
     }
     pub fn wasm_compile(&self) -> Result<Compiler, String>{
         self.compile()
+    }
+    pub fn wasm_get_code(&self) -> String {
+        self.get_code().clone()
     }
     pub fn wasm_semantic_check(&self) -> WasmSemanticErrors {
         WasmSemanticErrors::new(self.semantic_check())

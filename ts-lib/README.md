@@ -42,14 +42,10 @@ equ, org, dc, ds, dcb
 - Add more directives
 - Add END directive
 - Add tests
-- Add breakpoints 
-- Remove LabelDirective, split the Label and Directive, this will also let instructions be in the same line as the label
 
 
 ## Known bugs
-1. Argument splitting is not the best, for example `move.l #',', d1` will split the arguments at the comma #','
-2. comment splitting is not the best, for example `move.l #';', d1 ; this is a comment` will split the line at the #';'
-
+1. The expressions for immediate and absolute values don't follow mathematical order, and they are executed from right to left. Example 10\*5+2 will be treated as 10\*(5+2) and not (10*5)+2
 # How to run rust
 Firstly make sure you have rust installed, [you can download it here](https://www.rust-lang.org/tools/install), once done, clone the repository on your machine and run `cargo run` in the root folder of the project. This will run the interpreter with the code inside of `code-to-run.asm` file.
 
@@ -59,4 +55,3 @@ Once installed you can build the project by running `npm run build-wasm` in the 
 
 # How to try the WASM binary locally
 Inside of the `web` folder there is a very basic website with the library imported from the `pkg` folder **WARNING** not the ts-lib one, but in the root foler, to build it you need to run `wasm-pack build` in the root. You can test the package by running `npm install` to install dependencies and then `npm run start` to start the server. The website will be available at `http://localhost:3000`
-

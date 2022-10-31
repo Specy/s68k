@@ -267,7 +267,6 @@ impl AsmRegex {
     pub fn split_into_separated_args(&self, line: &str, ignore_space: bool) -> Vec<String> {
         let mut args = vec![];
         let mut current_arg = String::new();
-        //TODO maybe count how many paranthesis it's in
         let mut in_parenthesis = false;
         let mut in_quotes = false;
         let mut last_char = ' ';
@@ -275,7 +274,6 @@ impl AsmRegex {
         if line.len() == 0 {
             return args;
         }
-        //TODO fix this, it doesn't work correctly but works in the context of the language
         for c in line.chars() {
             match c {
                 '(' if !in_quotes => {
@@ -373,14 +371,7 @@ impl AsmRegex {
             }
             _ if self.directive.is_match(line) => LineKind::Directive,
             //TODO why this distinction?
-            [_, _, ..] => {
-                let (instruction, size) = self.split_at_size(&args[0].to_lowercase());
-                LineKind::Instruction {
-                    size,
-                    name: instruction,
-                }
-            }
-            [_] => {
+            [_, _, ..] | [_] => {
                 let (instruction, size) = self.split_at_size(&args[0].to_lowercase());
                 LineKind::Instruction {
                     size,
@@ -394,6 +385,11 @@ impl AsmRegex {
 pub struct EquValue {
     pub name: String,
     pub replacement: String,
+}
+impl EquValue {
+    pub fn new(name: String, replacement: String) -> EquValue {
+        EquValue { name, replacement }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedLine {
@@ -420,11 +416,11 @@ impl Lexer {
             .map(|line| self.regex.split_at_whitespace(line))
             .enumerate()
             .for_each(|(index, args)| {
-                if args.len() >= 3 && args[1].eq(EQU) {
-                    equs.push(EquValue {
-                        name: args[0].to_string(),
-                        replacement: args[2].to_string(),
-                    });
+                if args.len() >= 3 && args[1] == EQU {
+                    equs.push(EquValue::new(
+                        args[0].to_string(),
+                        args[2].to_string(),
+                    ));
                     equ_map_indexes.insert(index, true);
                 }
             });
@@ -537,7 +533,7 @@ impl Lexer {
     }
     fn lex_line(&mut self, line: &String) -> LexLineResult {
         let line = line.trim();
-        let kind = self.regex.get_line_kind(&line.to_string().to_lowercase());
+        let kind = self.regex.get_line_kind(&line.to_string());
         let args = self.regex.split_at_whitespace(line);
         match kind {
             LineKind::Instruction { size, name } => {
@@ -597,7 +593,7 @@ impl Lexer {
             LineKind::Empty => LexLineResult::Line(LexedLine::Empty),
         }
     }
-    pub fn get_lines(&self) -> Vec<ParsedLine> {
-        self.lines.clone()
+    pub fn get_lines(&self) -> &Vec<ParsedLine> {
+        &self.lines
     }
 }

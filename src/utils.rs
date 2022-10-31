@@ -67,7 +67,7 @@ pub fn parse_absolute(str: &str, labels: &HashMap<String, Label>) -> Result<u32,
             Some(label) => Ok((label.address as i32) as u32),
             None => match i32::from_str_radix(str, 10) {
                 Ok(value) => Ok(value as u32),
-                Err(_) => Err(format!("Invalid decimal number: {}", str)),
+                Err(_) => Err(format!("Invalid decimal number or non existing label: {}", str)),
             },
         },
     }
