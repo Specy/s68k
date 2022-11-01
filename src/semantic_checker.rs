@@ -348,7 +348,6 @@ impl SemanticChecker {
                         );
                         self.verify_size(SizeRules::NoSize, line);
                         self.verify_value_bounds_if_immediate(operands, 0, line, 0, 0xFF);
-
                     }
 
                     _ => self.errors.push(SemanticError::new(
@@ -388,12 +387,17 @@ impl SemanticChecker {
                     match &args[..] {
                         [_, ..] => {
                             for (i, arg) in args[1..].iter().enumerate() {
-                                match self.get_absolute_value(&arg) {
-                                    Ok(_) => {}
-                                    Err(_) => self.errors.push(SemanticError::new(
-                                        line.clone(),
-                                        format!("Invalid argument \"{}\" for directive dc at position {}",arg, i + 1),
-                                    )),
+                                match arg{
+                                    _ if arg.starts_with('\'') && arg.ends_with('\'') => {}
+                                    _ => {
+                                        match self.get_absolute_value(&arg) {
+                                            Ok(_) => {}
+                                            Err(_) => self.errors.push(SemanticError::new(
+                                                line.clone(),
+                                                format!("Invalid argument \"{}\" for directive dc at position {}",arg, i + 1),
+                                            )),
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -450,14 +454,22 @@ impl SemanticChecker {
                                     ));
                                 }
                             }
-                            match self.get_absolute_value(second) {
-                                Ok(_) => {}
+                            let el = match self.get_absolute_value(second) {
+                                Ok(v) => {v}
                                 Err(_) => {
                                     self.errors.push(SemanticError::new(
                                         line.clone(),
                                         format!("Invalid default value argument for dcb directive"),
                                     ));
+                                    return ()
                                 }
+                            };
+                            let max = 1 << size.to_bits_word_default();
+                            if el > max {
+                                self.errors.push(SemanticError::new(
+                                    line.clone(),
+                                    format!("Value exceedes the limit of the specified size{}", max),
+                                ));
                             }
                         }
                         _ => {

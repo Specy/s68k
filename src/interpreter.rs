@@ -848,6 +848,7 @@ impl Interpreter {
     fn get_trap(&mut self, value: u8) -> RuntimeResult<Interrupt> {
         match value {
             0 | 1 => {
+                //TODO not sure if this is correct or if it should read untill 0x00
                 let address = self.cpu.a_reg[1].get_long();
                 let length = self.cpu.d_reg[1].get_word() as i32;
                 if length > 255 || length < 0 {

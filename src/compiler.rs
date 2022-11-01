@@ -542,7 +542,7 @@ impl Compiler {
 
                 for arg in args[1..].iter() {
                     match arg {
-                        _ if arg.starts_with('\'') => {
+                        _ if arg.starts_with('\'') && arg.ends_with('\'') => {
                             let string_bytes = parse_string_into_padded_bytes(
                                 &arg[1..arg.len() - 1],
                                 size.to_bytes_word_default() as usize,
@@ -685,7 +685,7 @@ impl Compiler {
                         next_address = last_address;
                         for arg in args[1..].iter() {
                             match arg {
-                                _ if arg.starts_with('\'') => {
+                                _ if arg.starts_with('\'') && arg.ends_with('\'') => {
                                     next_address += parse_string_into_padded_bytes(
                                         &arg[1..arg.len() - 1],
                                         size.to_bytes_word_default() as usize,
