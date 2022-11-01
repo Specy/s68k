@@ -226,6 +226,7 @@ impl SemanticChecker {
                     "divs" | "divu" | "muls" | "mulu" => {
                         self.verify_two_args(operands, Rules::NO_A_REG, Rules::ONLY_D_REG, line);
                         self.verify_size(SizeRules::NoSize, line);
+                        self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "swap" => {
                         self.verify_one_arg(operands, Rules::ONLY_D_REG, line);
@@ -346,6 +347,8 @@ impl SemanticChecker {
                             line,
                         );
                         self.verify_size(SizeRules::NoSize, line);
+                        self.verify_value_bounds_if_immediate(operands, 0, line, 0, 0xFF);
+
                     }
 
                     _ => self.errors.push(SemanticError::new(

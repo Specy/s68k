@@ -8,10 +8,10 @@ use crate::{
     lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     math::sign_extend_to_long,
     semantic_checker::Label,
-    utils::parse_absolute_expression,
+    utils::{parse_absolute_expression, parse_string_into_padded_bytes},
 };
-use std::collections::HashMap;
 use std::fmt;
+use std::{collections::HashMap, vec};
 #[derive(Debug)]
 pub enum Directive {
     DC { data: Vec<u8>, address: usize },
@@ -538,46 +538,53 @@ impl Compiler {
     ) -> CompilationResult<Directive> {
         match name.as_str() {
             "dc" => {
-                let parsed_args = self.parse_absolutes(&args[1..])?;
-                Ok(Directive::DC {
-                    address,
-                    data: match size {
-                        LexedSize::Byte => parsed_args.iter().map(|x| *x as u8).collect(),
-                        //TODO is word default?
-                        LexedSize::Word | LexedSize::Unspecified => parsed_args
-                            .iter()
-                            .flat_map(|x| (*x as u16).to_be_bytes())
-                            .collect(),
-                        LexedSize::Long => parsed_args
-                            .iter()
-                            .flat_map(|x| (*x as u32).to_be_bytes())
-                            .collect(),
-                        _ => {
-                            return Err(CompilationError::Raw(
-                                "Invalid size for DC directive".to_string(),
-                            ))
+                let mut data: Vec<u8> = vec![];
+
+                for arg in args[1..].iter() {
+                    match arg {
+                        _ if arg.starts_with('\'') => {
+                            let string_bytes = parse_string_into_padded_bytes(
+                                &arg[1..arg.len() - 1],
+                                size.to_bytes_word_default() as usize,
+                            );
+                            data.extend_from_slice(&string_bytes);
                         }
-                    },
-                })
+                        _ => {
+                            let num = self.parse_absolute(arg)?;
+                            match size {
+                                LexedSize::Byte => data.push(num as u8),
+                                //TODO is word default?
+                                LexedSize::Word | LexedSize::Unspecified => {
+                                    data.extend_from_slice(&(num as u16).to_be_bytes())
+                                }
+                                LexedSize::Long => {
+                                    data.extend_from_slice(&(num as u32).to_be_bytes())
+                                }
+                                _ => {
+                                    return Err(CompilationError::Raw(
+                                        "Invalid size for DC directive".to_string(),
+                                    ))
+                                }
+                            };
+                        }
+                    }
+                }
+                Ok(Directive::DC { data, address })
             }
             "ds" => {
-                let parsed_args = self.parse_absolutes(&args[1..])?;
                 if *size == LexedSize::Unknown {
                     return Err(CompilationError::Raw(
                         "Invalid size for DS directive".to_string(),
                     ));
                 }
-
-                match parsed_args[..] {
-                    [amount] => {
-                        let data =
-                            vec![0; amount as usize * size.to_bytes_word_default() as usize / 8];
-                        Ok(Directive::DS { data, address })
-                    }
-                    _ => Err(CompilationError::Raw(
+                if args.len() != 2 {
+                    return Err(CompilationError::Raw(
                         "Invalid number of arguments for DS directive".to_string(),
-                    )),
+                    ));
                 }
+                let amount = self.parse_absolute(&args[1])?;
+                let data = vec![0; amount as usize * size.to_bytes_word_default() as usize / 8];
+                Ok(Directive::DS { data, address })
             }
             "dcb" => {
                 let parsed_args = self.parse_absolutes(&args[1..])?;
@@ -649,7 +656,7 @@ impl Compiler {
                             next_address = next_address + 1;
                         }
                     }
-                    "dcb" | "ds" => match self.parse_absolute(&args[1]) {
+                    "ds" => match self.parse_absolute(&args[1]) {
                         Ok(bytes) => {
                             next_address = last_address
                                 + (bytes * size.to_bytes_word_default() as u32) as usize;
@@ -661,9 +668,36 @@ impl Compiler {
                             ));
                         }
                     },
+                    "dcb" => match self.parse_absolute(&args[1]) {
+                        Ok(bytes) => {
+                            next_address = last_address
+                                + (bytes * size.to_bytes_word_default() as u32) as usize;
+                        }
+                        Err(_) => {
+                            return Err(format!(
+                                "Invalid number of bytes for dcb directive at line {}",
+                                line.line_index
+                            ));
+                        }
+                    },
+
                     "dc" => {
-                        let args = args.len() - 1; //-1 because there is also the name of the directive as arg
-                        next_address = last_address + args * size.to_bytes_word_default() as usize;
+                        next_address = last_address;
+                        for arg in args[1..].iter() {
+                            match arg {
+                                _ if arg.starts_with('\'') => {
+                                    next_address += parse_string_into_padded_bytes(
+                                        &arg[1..arg.len() - 1],
+                                        size.to_bytes_word_default() as usize,
+                                    )
+                                    .len();
+                                }
+                                _ => {
+                                    next_address =
+                                        next_address + size.to_bytes_word_default() as usize;
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }
