@@ -46,6 +46,7 @@ equ, org, dc, ds, dcb
 
 ## Known bugs
 1. The expressions for immediate and absolute values don't follow mathematical order, and they are executed from right to left. Example 10\*5+2 will be treated as 10\*(5+2) and not (10*5)+2
+2. Not really a bug but a decision to make, characters are treated as UTF-8, so encoding and decoding might problematic for some front ends, alternative would be to allow only extended ASCII characters 0-255.
 # How to run rust
 Firstly make sure you have rust installed, [you can download it here](https://www.rust-lang.org/tools/install), once done, clone the repository on your machine and run `cargo run` in the root folder of the project. This will run the interpreter with the code inside of `code-to-run.asm` file.
 

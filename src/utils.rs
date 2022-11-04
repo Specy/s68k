@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use lazy_static::lazy_static;
 use regex::Regex;
 
-use crate::{instructions::Size, semantic_checker::Label};
+use crate::semantic_checker::Label;
 
 pub fn num_to_signed_base(num: i64, base: i64) -> Result<i64, &'static str> {
     let bound = 1i64 << base - 1;
@@ -18,7 +18,7 @@ pub fn num_to_signed_base(num: i64, base: i64) -> Result<i64, &'static str> {
 }
 lazy_static! {
     static ref ARITHMETICAL_REGEX: Regex =
-        Regex::new(r"((?:[%@$]*\w+)|(?:'\S*'))([\+\-\*/])?(\S+)?").unwrap();
+        Regex::new(r"((?:[%@$]*\w+)|(?:'\S*'))((?:\*\*)|[\+\-\*/\^%\|\&\^])?(\S+)?").unwrap();
 }
 pub fn parse_absolute_expression(
     str: &str,
@@ -38,6 +38,12 @@ pub fn parse_absolute_expression(
                     "-" => l - r,
                     "*" => l * r,
                     "/" => l / r,
+                    "**" => l.pow(r as u32),
+                    "%" => l % r,
+                    "&" => l & r,
+                    //🚗
+                    "|" => l | r,
+                    "^" => l ^ r,
                     _ => return Err(format!("Invalid operator: {}", op)),
                 } as u32);
             }
@@ -51,6 +57,7 @@ pub fn parse_absolute_expression(
 }
 
 pub fn parse_string_into_padded_bytes(str: &str, chunk_size: usize) -> Vec<u8> {
+    //TODO to decide if i should use utf-8 or ascii
     let mut bytes = str.as_bytes().to_vec();
     //fill space if not a modulo of chunk_size
     let padding = chunk_size - bytes.len() % chunk_size;
