@@ -1,6 +1,6 @@
 # s68k
 A rust interpreter for m68k with semantic checker.
-It compiles to WASM to be used with javascript and node.js
+It compiles to WASM to be used with javascript and node.js, [available on npm](https://www.npmjs.com/package/s68k)
 
 ## Purpose
 The purpose of this interpreter is to help people learn the basics of assembly, in this case m68k, by providing useful errors and hints like a modern language, in the hope to help understand the addressing modes and learn the different instructions/directives.
