@@ -162,9 +162,9 @@ impl Grammar {
     fn get_regex(&self) -> String {
         match &self {
             Grammar::Directive => r"(.+\s+equ.+\w+)|((org|dc|dcb|ds)\s*.*)".to_string(),
-            Grammar::Register => r"d\d|a\d|sp".to_string(),
-            Grammar::Indirect => format!(r"\w*\(({})\)", Grammar::Register.get_regex()),
-            Grammar::IndirectDisplacement => r"\w*\((.+,)+.+\)".to_string(),
+            Grammar::Register => r"(d\d|a\d|sp)".to_string(),
+            Grammar::Indirect => format!(r"([^\r\n\t\f\v,])*\({}\)", Grammar::Register.get_regex()),
+            Grammar::IndirectDisplacement => r"([^\r\n\t\f\v,])*\((.+,)+.+\)".to_string(),
             Grammar::PostIndirect => r"\(\w+\)\+".to_string(), //TODO should i include registers in here or leave it?
             Grammar::PreIndirect => r"-\(\w+\)".to_string(),
             Grammar::Immediate => r"#\S+".to_string(), //TODO could #add absolute here but it wouldn't change the end result
@@ -188,12 +188,13 @@ impl Grammar {
     }
     fn get_opt(&self, options: GrammarOptions) -> String {
         let mut regex = self.get_regex();
-        if options.contains(GrammarOptions::IS_LINE) {
-            regex = format!(r"^{}$", regex);
-        }
         if options.contains(GrammarOptions::IGNORE_CASE) {
             regex = format!(r"(?i){}", regex);
         }
+        if options.contains(GrammarOptions::IS_LINE) {
+            regex = format!(r"^{}$", regex);
+        }
+
         regex
     }
 }
@@ -203,13 +204,12 @@ indirect_displacement
 */
 
 struct AsmRegex {
-    register: Regex,
-    immediate: Regex,
-    indirect: Regex,
-    indirect_displacement: Regex,
-    post_indirect: Regex,
-    absolute: Regex,
-    pre_indirect: Regex,
+    register_only: Regex,
+    immediate_only: Regex,
+    indirect_only: Regex,
+    indirect_displacement_only: Regex,
+    post_indirect_only: Regex,
+    pre_indirect_only: Regex,
     label_line: Regex,
     directive: Regex,
     operand_arg: Regex,
@@ -218,14 +218,14 @@ struct AsmRegex {
 }
 impl AsmRegex {
     pub fn new() -> Self {
+        println!("{}", &Grammar::Register.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE));
         AsmRegex {
-            register: Regex::new(&Grammar::Register.get_opt(GrammarOptions::IGNORE_CASE)).unwrap(),
-            immediate: Regex::new(&Grammar::Immediate.get_regex()).unwrap(),
-            indirect: Regex::new(&Grammar::Indirect.get_opt(GrammarOptions::IGNORE_CASE)).unwrap(),
-            indirect_displacement: Regex::new(&Grammar::IndirectDisplacement.get_regex()).unwrap(),
-            post_indirect: Regex::new(&Grammar::PostIndirect.get_regex()).unwrap(),
-            pre_indirect: Regex::new(&Grammar::PreIndirect.get_regex()).unwrap(),
-            absolute: Regex::new(&Grammar::Absolute.get_regex()).unwrap(),
+            register_only: Regex::new(&Grammar::Register.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
+            immediate_only: Regex::new(&Grammar::Immediate.get_opt(GrammarOptions::IS_LINE)).unwrap(),
+            indirect_only: Regex::new(&Grammar::Indirect.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
+            indirect_displacement_only: Regex::new(&Grammar::IndirectDisplacement.get_opt(GrammarOptions::IS_LINE)).unwrap(),
+            post_indirect_only: Regex::new(&Grammar::PostIndirect.get_opt(GrammarOptions::IS_LINE)).unwrap(),
+            pre_indirect_only: Regex::new(&Grammar::PreIndirect.get_opt(GrammarOptions::IS_LINE)).unwrap(),
             label_line: Regex::new(r"^\S+:.*").unwrap(),
             directive: Regex::new(&Grammar::Directive.get_opt(GrammarOptions::IGNORE_CASE))
                 .unwrap(),
@@ -235,17 +235,19 @@ impl AsmRegex {
         }
     }
     pub fn get_operand_kind(&self, operand: &String) -> OperandKind {
-        match operand {
+        let kind = match operand {
             //TODO order is important
-            _ if self.indirect_displacement.is_match(operand) => OperandKind::IndirectDisplacement,
-            _ if self.post_indirect.is_match(operand) => OperandKind::PostIndirect,
-            _ if self.pre_indirect.is_match(operand) => OperandKind::PreIndirect,
-            _ if self.indirect.is_match(operand) => OperandKind::Indirect,
-            _ if self.register.is_match(operand) => OperandKind::Register,
-            _ if self.immediate.is_match(operand) => OperandKind::Immediate,
+            _ if self.indirect_displacement_only.is_match(operand) => OperandKind::IndirectDisplacement,
+            _ if self.post_indirect_only.is_match(operand) => OperandKind::PostIndirect,
+            _ if self.pre_indirect_only.is_match(operand) => OperandKind::PreIndirect,
+            _ if self.indirect_only.is_match(operand) => OperandKind::Indirect,
+            _ if self.register_only.is_match(operand) => OperandKind::Register,
+            _ if self.immediate_only.is_match(operand) => OperandKind::Immediate,
             //_ if self.absolute.is_match(operand) => OperandKind::Absolute,
             _ => OperandKind::Absolute,
-        }
+        };
+        println!("{}: {:?}", operand, kind);
+        kind
     }
     pub fn split_at_size(&self, data: &String) -> (String, LexedSize) {
         let data = data.to_string();

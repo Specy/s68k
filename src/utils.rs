@@ -16,14 +16,15 @@ pub fn num_to_signed_base(num: i64, base: i64) -> Result<i64, &'static str> {
         Ok(num)
     }
 }
+pub const VALID_ARITHMETICAL_REGEX: &str =  r"((?:[%@$]*\w+)|(?:'\S*'))((?:\*\*)|[\+\-\*/\^%\|\&\^])?(\S+)?";
 lazy_static! {
     static ref ARITHMETICAL_REGEX: Regex =
-        Regex::new(r"((?:[%@$]*\w+)|(?:'\S*'))((?:\*\*)|[\+\-\*/\^%\|\&\^])?(\S+)?").unwrap();
+        Regex::new(VALID_ARITHMETICAL_REGEX).unwrap();
 }
 pub fn parse_absolute_expression(
     str: &str,
     labels: &HashMap<String, Label>,
-) -> Result<u32, String> {
+) -> Result<i64, String> {
     match ARITHMETICAL_REGEX.captures(str) {
         Some(groups) => {
             let l = groups.get(1);
@@ -45,14 +46,17 @@ pub fn parse_absolute_expression(
                     "|" => l | r,
                     "^" => l ^ r,
                     _ => return Err(format!("Invalid operator: {}", op)),
-                } as u32);
+                } as i64);
             }
             if l.is_some() && op.is_none() && r.is_none() {
-                return Ok(parse_absolute(str, labels)?);
+                return Ok(parse_absolute(str, labels)? as i64);
             }
             Err(format!("Invalid expression: {}", str))
         }
-        None => parse_absolute(str, labels),
+        None => {
+            let value = parse_absolute(str, labels)?;
+            Ok(value as i64)
+        },
     }
 }
 

@@ -687,7 +687,7 @@ impl SemanticChecker {
                 operand, offset, ..
             } => {
                 if offset != "" {
-                    match offset.parse::<i64>() {
+                    match parse_absolute_expression(offset, &self.labels) {
                         Ok(num) => {
                             if num > 1 << 15 || num < -(1 << 15) {
                                 return Err(format!(

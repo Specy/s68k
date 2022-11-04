@@ -436,8 +436,8 @@ impl Compiler {
                 let offset = if offset.trim() == "" {
                     0
                 } else {
-                    match offset.parse() {
-                        Ok(offset) => sign_extend_to_long(offset, &Size::Word),
+                    match parse_absolute_expression(offset, &self.labels) {
+                        Ok(offset) => sign_extend_to_long(offset as u32, &Size::Word),
                         Err(_) => {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid offset: {}",
@@ -520,7 +520,7 @@ impl Compiler {
 
     fn parse_absolute(&self, num: &str) -> CompilationResult<u32> {
         match parse_absolute_expression(num, &self.labels) {
-            Ok(absolute) => Ok(absolute),
+            Ok(absolute) => Ok(absolute as u32),
             Err(e) => Err(CompilationError::ParseError(e)),
         }
     }
