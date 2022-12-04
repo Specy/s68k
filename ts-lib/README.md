@@ -1,6 +1,6 @@
 # s68k
 A rust interpreter for m68k with semantic checker.
-It compiles to WASM to be used with javascript and node.js
+It compiles to WASM to be used with javascript and node.js, [available on npm](https://www.npmjs.com/package/s68k)
 
 ## Purpose
 The purpose of this interpreter is to help people learn the basics of assembly, in this case m68k, by providing useful errors and hints like a modern language, in the hope to help understand the addressing modes and learn the different instructions/directives.
@@ -45,7 +45,8 @@ equ, org, dc, ds, dcb
 
 
 ## Known bugs
-1. The expressions for immediate and absolute values don't follow mathematical order, and they are executed from right to left. Example 10\*5+2 will be treated as 10\*(5+2) and not (10*5)+2
+1. Not really a bug but a decision to make, characters are treated as UTF-8, so encoding and decoding might problematic for some front ends, alternative would be to allow only extended ASCII characters 0-255.
+
 # How to run rust
 Firstly make sure you have rust installed, [you can download it here](https://www.rust-lang.org/tools/install), once done, clone the repository on your machine and run `cargo run` in the root folder of the project. This will run the interpreter with the code inside of `code-to-run.asm` file.
 
@@ -55,3 +56,4 @@ Once installed you can build the project by running `npm run build-wasm` in the 
 
 # How to try the WASM binary locally
 Inside of the `web` folder there is a very basic website with the library imported from the `pkg` folder **WARNING** not the ts-lib one, but in the root foler, to build it you need to run `wasm-pack build` in the root. You can test the package by running `npm install` to install dependencies and then `npm run start` to start the server. The website will be available at `http://localhost:3000`
+

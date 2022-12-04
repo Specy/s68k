@@ -59,7 +59,7 @@ for the Conditions and inspiration
  */
 #[wasm_bindgen]
 #[derive(Copy, Clone, Debug, Serialize)]
-pub enum Condition {
+pub enum Condition{
     True,
     False,
     High,
