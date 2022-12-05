@@ -497,7 +497,6 @@ impl Interpreter {
     }
     fn execute_instruction(&mut self, instruction_line: &InstructionLine) -> RuntimeResult<()> {
         let ins = &instruction_line.instruction;
-        //println!("PC {:#X} - {:?}", self.pc, instruction_line);
         match ins {
             Instruction::MOVE(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size)?;

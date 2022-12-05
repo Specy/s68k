@@ -306,15 +306,19 @@ impl SemanticChecker {
                         self.verify_size(SizeRules::NoSize, line);
                         match &operands[..] {
                             [LexedOperand::Immediate(value)] => {
-                                let value = self.get_immediate_value(value).unwrap();
-                                if value != 15 {
-                                    self.errors.push(SemanticError::new(
-                                        line.clone(),
-                                        format!(
-                                            "Only implemented TRAP is 15 for IO, received \"{}\"",
-                                            value
-                                        ),
-                                    ));
+                                match self.get_immediate_value(value) {
+                                    Ok(value) => {
+                                        if value != 15 {
+                                            self.errors.push(SemanticError::new(
+                                                line.clone(),
+                                                format!(
+                                                    "Only implemented TRAP is 15 for IO, received \"{}\"",
+                                                    value
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                    Err(e) => self.errors.push(SemanticError::new(line.clone(), e)),
                                 }
                             }
                             _ => {}
@@ -455,20 +459,23 @@ impl SemanticChecker {
                                 }
                             }
                             let el = match self.get_absolute_value(second) {
-                                Ok(v) => {v}
+                                Ok(v) => v,
                                 Err(_) => {
                                     self.errors.push(SemanticError::new(
                                         line.clone(),
                                         format!("Invalid default value argument for dcb directive"),
                                     ));
-                                    return ()
+                                    return ();
                                 }
                             };
                             let max = 1 << size.to_bits_word_default();
                             if el > max {
                                 self.errors.push(SemanticError::new(
                                     line.clone(),
-                                    format!("Value exceedes the limit of the specified size{}", max),
+                                    format!(
+                                        "Value exceedes the limit of the specified size{}",
+                                        max
+                                    ),
                                 ));
                             }
                         }

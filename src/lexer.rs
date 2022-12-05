@@ -218,7 +218,6 @@ struct AsmRegex {
 }
 impl AsmRegex {
     pub fn new() -> Self {
-        println!("{}", &Grammar::Register.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE));
         AsmRegex {
             register_only: Regex::new(&Grammar::Register.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
             immediate_only: Regex::new(&Grammar::Immediate.get_opt(GrammarOptions::IS_LINE)).unwrap(),
@@ -246,7 +245,6 @@ impl AsmRegex {
             //_ if self.absolute.is_match(operand) => OperandKind::Absolute,
             _ => OperandKind::Absolute,
         };
-        println!("{}: {:?}", operand, kind);
         kind
     }
     pub fn split_at_size(&self, data: &String) -> (String, LexedSize) {
@@ -467,7 +465,7 @@ impl Lexer {
             OperandKind::Immediate => LexedOperand::Immediate(operand),
             OperandKind::Register => {
                 let operand = operand.to_lowercase();
-                let register_type = match operand.chars().nth(0).unwrap() {
+                let register_type = match operand.chars().nth(0).expect("Missing register") {
                     'd' => LexedRegisterType::Data,
                     'a' => LexedRegisterType::Address,
                     's' => LexedRegisterType::SP, //TODO this might fail
@@ -567,7 +565,7 @@ impl Lexer {
                 let mut parsed_args: Vec<String> =
                     self.regex.split_into_separated_args(&line.replace("\t", " "), false);
                 //lowercase the first arg
-                let first = parsed_args.get(0).unwrap().to_lowercase();
+                let first = parsed_args.get(0).expect("Missing first argument").to_lowercase();
                 parsed_args[0] = first;
                 let line = match &parsed_args[..] {
                     [_, equ, ..] if equ.to_lowercase() == "equ" => LexedLine::Directive {

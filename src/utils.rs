@@ -132,7 +132,7 @@ fn calculate_rpn(tokens: &Vec<ArithmeticalToken>) -> Result<i64, String> {
     if tokens.len() == 0 {
         return Err(format!("Invalid number of arguments for expression, it must not be empty"))
     }
-    let mut stack = vec![0i64, 0];
+    let mut stack = Vec::new();
     for token in tokens.iter() {
         match token {
             ArithmeticalToken::Number(num) => stack.push(*num),
