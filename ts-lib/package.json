@@ -1,7 +1,8 @@
 {
     "type": "module",
     "name": "s68k",
-    "version": "2.1.5",
+    "description": "A 68000 emulator written in Rust and compiled to WebAssembly for teaching purposes.",
+    "version": "2.1.6",
     "main": "dist/index.js",
     "module": "dist/index.js",
     "typings": "dist/index.d.ts",

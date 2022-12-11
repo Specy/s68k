@@ -154,6 +154,15 @@ fn calculate_rpn(tokens: &Vec<ArithmeticalToken>) -> Result<i64, String> {
                         };
                         stack.push(result)
                     }
+                    //to handle the cases like #-1, does not work with 10 - -1 
+                    (Some(unary), None) => {
+                        let result = match op {
+                            ArithmeticalOperandToken::Add => unary,
+                            ArithmeticalOperandToken::Sub => -unary,
+                            _ => return Err(format!("Invalid operand \"{:?}\"", op)),
+                        };
+                        stack.push(result)
+                    }
                     _ => return Err(format!("Invalid number of arguments for expression \"{:?}\"", op))
                 }
             }

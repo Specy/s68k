@@ -1,2 +1,2 @@
 
-move.l #%, d0
+move.w #-1, d0
