@@ -1,4 +1,4 @@
-use interpreter::{Interpreter};
+use interpreter::{Interpreter, InterpreterOptions};
 use compiler::Compiler;
 use wasm_bindgen::prelude::*;
 mod constants;
@@ -46,8 +46,9 @@ impl S68k {
         &self,
         pre_processed_program: Compiler,
         memory_size: usize,
+        options: Option<InterpreterOptions>,
     ) -> Interpreter {
-        Interpreter::new(pre_processed_program, memory_size)
+        Interpreter::new(pre_processed_program, memory_size, options)
     }
 }
 
@@ -64,26 +65,32 @@ impl S68k {
         }
     }
     pub fn wasm_get_lexed_lines(&self) -> Result<JsValue, JsValue> {
+        console_error_panic_hook::set_once();
         match serde_wasm_bindgen::to_value(&self.get_lexed_lines()) {
             Ok(v) => Ok(v),
             Err(e) => Err(JsValue::from_str(&e.to_string())),
         }
     }
     pub fn wasm_compile(&self) -> Result<Compiler, String>{
+        console_error_panic_hook::set_once();
         self.compile()
     }
     pub fn wasm_get_code(&self) -> String {
+        console_error_panic_hook::set_once();
         self.get_code().clone()
     }
     pub fn wasm_semantic_check(&self) -> WasmSemanticErrors {
+        console_error_panic_hook::set_once();
         WasmSemanticErrors::new(self.semantic_check())
     }
     pub fn wasm_create_interpreter(
         &self,
         pre_processed_program: Compiler,
         memory_size: usize,
+        interpreter_options: InterpreterOptions,
     ) -> Interpreter {
-        self.create_interpreter(pre_processed_program, memory_size)
+        console_error_panic_hook::set_once();
+        self.create_interpreter(pre_processed_program, memory_size, Some(interpreter_options))
     }
 }
 

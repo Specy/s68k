@@ -14,11 +14,15 @@ use crate::{
 use bitflags::bitflags;
 use core::panic;
 use serde::Serialize;
-use std::{collections::HashMap, hash::Hash};
+use std::{
+    collections::{HashMap, LinkedList},
+    hash::Hash,
+};
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
 bitflags! {
     #[wasm_bindgen]
+    #[derive(Serialize)]
     pub struct Flags: u16 {
         const Carry    = 1<<1;
         const Overflow = 1<<2;
@@ -113,7 +117,6 @@ impl Memory {
         let result = match size {
             Size::Byte => {
                 let byte = self.read_byte(sp);
-
                 MemoryCell::Byte(byte)
             }
             Size::Word => {
@@ -312,29 +315,112 @@ pub enum InterpreterStatus {
 }
 
 #[wasm_bindgen]
+pub struct InterpreterOptions {
+    pub keep_history: bool,
+    pub history_size: usize,
+}
+impl InterpreterOptions {
+    pub fn new() -> Self {
+        Self {
+            keep_history: false,
+            history_size: 100,
+        }
+    }
+}
+impl Default for InterpreterOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+#[wasm_bindgen]
 pub struct Interpreter {
     memory: Memory,
     cpu: Cpu,
     pc: usize,
     program: HashMap<usize, InstructionLine>,
+    history: LinkedList<ExecutionStep>,
+    keep_history: bool,
+    history_size: usize,
     final_instruction_address: usize,
     current_interrupt: Option<Interrupt>,
     status: InterpreterStatus,
 }
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", content = "value")]
+pub enum MutationOperation {
+    WriteRegister {
+        register: RegisterOperand,
+        old: u32,
+        size: Size,
+    },
+    WriteMemory {
+        address: usize,
+        old: u32,
+        size: Size,
+    },
+    WriteMemoryBytes {
+        address: usize,
+        old: Box<Vec<u8>>,
+    },
+}
+#[derive(Serialize)]
+pub struct ExecutionStep {
+    mutations: Vec<MutationOperation>,
+    pc: usize,
+    ccr: Flags,
+}
+impl ExecutionStep {
+    pub fn new(pc: usize, ccr: Flags) -> Self {
+        Self {
+            mutations: vec![],
+            pc,
+            ccr,
+        }
+    }
+    pub fn add_mutation(&mut self, mutation: MutationOperation) {
+        self.mutations.push(mutation);
+    }
+    pub fn set_pc(&mut self, pc: usize) {
+        self.pc = pc;
+    }
+    pub fn set_ccr(&mut self, ccr: Flags) {
+        self.ccr = ccr;
+    }
+    pub fn get_mutations(&self) -> &Vec<MutationOperation> {
+        &self.mutations
+    }
+    pub fn get_pc(&self) -> usize {
+        self.pc
+    }
+    pub fn get_ccr(&self) -> Flags {
+        self.ccr
+    }
+}
 
 impl Interpreter {
-    pub fn new(compiled_program: Compiler, memory_size: usize) -> Self {
+    pub fn new(
+        compiled_program: Compiler,
+        memory_size: usize,
+        options: Option<InterpreterOptions>,
+    ) -> Self {
         let sp = memory_size >> 4;
         let start = compiled_program.get_start_address();
         let end = compiled_program.get_final_instruction_address();
         let program = compiled_program.get_instructions_map();
         let length = program.len();
+        let options = options.unwrap_or(InterpreterOptions {
+            keep_history: false,
+            history_size: 1000,
+        });
         let mut interpreter = Self {
             memory: Memory::new(memory_size),
             cpu: Cpu::new(),
             pc: start,
             final_instruction_address: end,
             program,
+            keep_history: options.keep_history,
+            history_size: options.history_size,
+            history: LinkedList::new(),
             current_interrupt: None,
             status: if start <= end && length > 0 {
                 InterpreterStatus::Running
@@ -343,6 +429,7 @@ impl Interpreter {
             },
         };
         interpreter.cpu.a_reg[7].store_long(sp as u32);
+        interpreter.history.push_back(ExecutionStep::new(start, interpreter.cpu.ccr));
         match interpreter.prepare_memory(&compiled_program.get_directives()) {
             Ok(_) => interpreter,
             Err(e) => panic!("Error preparing memory: {:?}", e),
@@ -376,6 +463,12 @@ impl Interpreter {
     pub fn get_status(&self) -> &InterpreterStatus {
         &self.status
     }
+    pub fn get_previous_mutations(&self) -> Option<&Vec<MutationOperation>> {
+        match self.history.back() {
+            Some(step) => Some(step.get_mutations()),
+            None => None,
+        }
+    }
     fn set_status(&mut self, status: InterpreterStatus) {
         match self.status {
             InterpreterStatus::Terminated | InterpreterStatus::TerminatedWithException => {
@@ -400,7 +493,15 @@ impl Interpreter {
     pub fn has_reached_bottom(&self) -> bool {
         self.pc > self.final_instruction_address
     }
+
+
     pub fn step(&mut self) -> RuntimeResult<(InstructionLine, InterpreterStatus)> {
+        if self.keep_history {
+            self.history.push_back(ExecutionStep::new(self.pc, self.cpu.ccr));
+            if self.history.len() > self.history_size {
+                self.history.pop_front();
+            }
+        }
         match self.get_instruction_at(self.pc) {
             _ if self.status == InterpreterStatus::Terminated
                 || self.status == InterpreterStatus::TerminatedWithException =>
@@ -438,6 +539,36 @@ impl Interpreter {
             }
         }
     }
+    pub fn undo(&mut self) -> RuntimeResult<ExecutionStep> {
+        match self.history.pop_back() {
+            Some(step) => {
+                self.pc = step.get_pc();
+                self.cpu.ccr = step.get_ccr();
+                for mutation in step.get_mutations() {
+                    match mutation {
+                        MutationOperation::WriteRegister { register, old, size } => {
+                            match register {
+                                RegisterOperand::Address(reg) => {
+                                    self.cpu.a_reg[*reg as usize].store_long(*old)
+                                }
+                                RegisterOperand::Data(reg) => {
+                                    self.cpu.d_reg[*reg as usize].store_long(*old)
+                                }
+                            }
+                        }
+                        MutationOperation::WriteMemory { address, old, size } => {
+                            self.memory.write_size(*address, size, *old);
+                        }
+                        MutationOperation::WriteMemoryBytes { address, old } => {
+                            self.memory.write_bytes(*address, &old)?;
+                        }
+                    }
+                }
+                Ok(step)
+            }
+            None => Err(RuntimeError::Raw("No more steps to undo".to_string())),
+        }
+    }
     pub fn answer_interrupt(&mut self, interrupt_result: InterruptResult) -> RuntimeResult<()> {
         match interrupt_result {
             InterruptResult::DisplayNumber
@@ -452,17 +583,21 @@ impl Interpreter {
                     ));
                 }
                 let address = self.cpu.a_reg[0].get_long() as usize;
-                self.memory.write_bytes(address, str.as_bytes())?;
-                self.cpu.d_reg[1].store_word(str.len() as u16);
+                self.set_memory_bytes(address, str.as_bytes())?;
+                self.set_register_value(&RegisterOperand::Data(1), str.len() as u32, &Size::Word);
+                //self.cpu.d_reg[1].store_word(str.len() as u16);
             }
             InterruptResult::ReadNumber(num) => {
-                self.cpu.d_reg[1].store_long(num as u32);
+                self.set_register_value(&RegisterOperand::Data(1), num as u32, &Size::Long);
+                //self.cpu.d_reg[1].store_long(num as u32);
             }
             InterruptResult::ReadChar(char) => {
-                self.cpu.d_reg[1].store_byte(char as u8);
+                self.set_register_value(&RegisterOperand::Data(1), char as u8 as u32, &Size::Byte);
+                //self.cpu.d_reg[1].store_byte(char as u8);
             }
             InterruptResult::GetTime(time) => {
-                self.cpu.d_reg[1].store_long(time);
+                self.set_register_value(&RegisterOperand::Data(1), time, &Size::Long);
+                //self.cpu.d_reg[1].store_long(time);
             }
             InterruptResult::Terminate => {
                 self.set_status(InterpreterStatus::Terminated);
@@ -484,7 +619,7 @@ impl Interpreter {
         self.cpu.a_reg[7].get_long() as usize
     }
     pub fn set_sp(&mut self, sp: usize) {
-        self.cpu.a_reg[7].store_long(sp as u32);
+        self.set_register_value(&RegisterOperand::Address(7), sp as u32, &Size::Long);
     }
     pub fn get_instruction_at(&self, address: usize) -> Option<&InstructionLine> {
         self.program.get(&address)
@@ -831,19 +966,72 @@ impl Interpreter {
         let ccr = self.cpu.ccr.get_status();
         println!("{}", ccr);
     }
+
     pub fn get_register_value(&self, register: &RegisterOperand, size: &Size) -> u32 {
         match register {
             RegisterOperand::Address(num) => self.cpu.a_reg[*num as usize].get_size(size),
             RegisterOperand::Data(num) => self.cpu.d_reg[*num as usize].get_size(size),
         }
     }
+
     pub fn set_register_value(&mut self, register: &RegisterOperand, value: u32, size: &Size) {
-        match register {
-            RegisterOperand::Address(num) => self.cpu.a_reg[*num as usize].store_size(size, value),
-            RegisterOperand::Data(num) => self.cpu.d_reg[*num as usize].store_size(size, value),
+        let old_value = match register {
+            RegisterOperand::Address(num) => {
+                //TODO i could probably make this a bit more efficient by not having to do the get_size even if the history is not being kept
+                let old_value = self.cpu.a_reg[*num as usize].get_long();
+                self.cpu.a_reg[*num as usize].store_size(size, value);
+                old_value
+            }
+            RegisterOperand::Data(num) => {
+                let old_value = self.cpu.d_reg[*num as usize].get_long();
+                self.cpu.d_reg[*num as usize].store_size(size, value);
+                old_value
+            }
+        };
+        if self.keep_history {
+            self.add_mutation_to_history(MutationOperation::WriteRegister {
+                register: register.clone(),
+                old: old_value,
+                size: size.clone(),
+            });
         }
     }
 
+    pub fn set_memory_value(&mut self, address: usize, size: &Size, value: u32) {
+        let old_value = self.memory.read_size(address, size);
+        if self.keep_history {
+            self.add_mutation_to_history(MutationOperation::WriteMemory {
+                address,
+                old: old_value,
+                size: size.clone(),
+            });
+        }
+        self.memory.write_size(address, size, value);
+    }
+
+    pub fn set_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
+        if self.keep_history {
+            let old_bytes = self.memory.read_bytes(address, bytes.len())?;
+            self.add_mutation_to_history(MutationOperation::WriteMemoryBytes {
+                address,
+                old: Box::new(old_bytes.to_vec()),
+            });
+        }
+        self.memory.write_bytes(address, bytes)
+    }
+
+    pub fn add_mutation_to_history(&mut self, operation: MutationOperation) {
+        self.history
+            .back_mut()
+            .expect("No history to add mutation to")
+            .add_mutation(operation);
+    }
+    pub fn get_last_step(&self) -> Option<&ExecutionStep> {
+        self.history.back()
+    }
+    pub fn get_next_instruction(&self) -> Option<&InstructionLine> {
+        self.get_instruction_at(self.pc) 
+    }
     fn get_trap(&mut self, value: u8) -> RuntimeResult<Interrupt> {
         match value {
             0 | 1 => {
@@ -917,30 +1105,30 @@ impl Interpreter {
                 "Attempted to store to immediate value".to_string(),
             )),
             Operand::Register(op) => Ok(self.set_register_value(&op, value, size)),
-            Operand::Absolute(address) => Ok(self.memory.write_size(*address, size, value)),
+            Operand::Absolute(address) => Ok(self.set_memory_value(*address, size, value)),
             Operand::IndirectOrDisplacement { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
-                Ok(self.memory.write_size(address as usize, size, value))
+                Ok(self.set_memory_value(address as usize, size, value))
             }
             Operand::PreIndirect(op) => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&op, &Size::Long) as usize - size.to_bytes();
                 self.set_register_value(&op, address as u32, &Size::Long);
-                Ok(self.memory.write_size(address, size, value))
+                Ok(self.set_memory_value(address, size, value))
             }
             Operand::PostIndirect(op) => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&op, &Size::Long) as usize;
                 self.set_register_value(&op, address as u32 + size.to_bytes() as u32, &Size::Long);
-                Ok(self.memory.write_size(address, size, value))
+                Ok(self.set_memory_value(address, size, value))
             }
             Operand::IndirectBaseDisplacement { offset, operands } => {
                 let base_value = self.get_register_value(&operands.base, &Size::Long) as i32;
                 let index_value = self.get_register_value(&operands.index, &Size::Long) as i32;
 
                 let final_address = base_value + offset + index_value;
-                Ok(self.memory.write_size(final_address as usize, size, value))
+                Ok(self.set_memory_value(final_address as usize, size, value))
             }
         }
     }
@@ -1098,6 +1286,21 @@ impl Interpreter {
             Err(e) => Err(format!("Runtime error {:?}", e)),
         }
     }
+    pub fn wasm_get_next_instruction(&self) -> JsValue {
+        match self.get_next_instruction() {
+            Some(ins) => serde_wasm_bindgen::to_value(ins).unwrap(),
+            None => JsValue::NULL,
+        }
+    }
+    pub fn wasm_get_previous_mutations(&self) -> Vec<JsValue> {
+            match self.get_previous_mutations() {
+                Some(mutations) => mutations
+                    .iter()
+                    .map(|m| serde_wasm_bindgen::to_value(m).unwrap())
+                    .collect(),
+                None => vec![],
+            }
+    }
     pub fn wasm_get_status(&self) -> InterpreterStatus {
         *self.get_status()
     }
@@ -1106,6 +1309,18 @@ impl Interpreter {
     }
     pub fn wasm_get_flags_as_number(&self) -> u16 {
         self.cpu.ccr.bits()
+    }
+    pub fn wasm_undo(&mut self) -> Result<JsValue, JsValue>{
+        match self.undo() {
+            Ok(step) => Ok(serde_wasm_bindgen::to_value(&step).unwrap()),
+            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
+        }
+    }
+    pub fn wasm_get_last_step(&self) -> JsValue {
+        match self.get_last_step() {
+            Some(step) => serde_wasm_bindgen::to_value(step).unwrap(),
+            None => JsValue::NULL,
+        }
     }
     pub fn wasm_get_flags_as_array(&self) -> Vec<u8> {
         self.get_flags_as_array()

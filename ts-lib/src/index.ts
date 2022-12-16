@@ -1,4 +1,26 @@
-import { Flags, S68k as RawS68k, SemanticError as RawSemanticError, Interpreter as RawInterpreter, Compiler as RawCompiler, InterruptResult, Step, Condition, Cpu as RawCpu, Interrupt, InstructionLine, InterpreterStatus, RegisterOperand, Size, Register as RawRegister, ParsedLine, LexedLine, LexedOperand, LexedRegisterType } from './pkg/s68k'
+import { Flags, 
+    S68k as RawS68k, 
+    SemanticError as RawSemanticError, 
+    Interpreter as RawInterpreter, 
+    Compiler as RawCompiler, 
+    InterruptResult, 
+    Step, 
+    Condition, 
+    Cpu as RawCpu, 
+    Interrupt, 
+    InstructionLine, 
+    InterpreterStatus, 
+    RegisterOperand, 
+    Size, 
+    Register as RawRegister, 
+    ParsedLine, 
+    LexedLine, 
+    LexedOperand, 
+    LexedRegisterType, 
+    InterpreterOptions, 
+    ExecutionStep,
+    MutationOperation
+} from './pkg/s68k'
 
 export type CompilationResult = { ok: false, errors: SemanticError[] } | { ok: true, interpreter: Interpreter }
 
@@ -61,6 +83,12 @@ export class Interpreter {
     step(): Step {
         return this.interpreter.wasm_step()
     }
+    undo(): ExecutionStep {
+        return this.interpreter.wasm_undo()
+    }
+    getPreviousMutations(){
+        return this.interpreter.wasm_get_previous_mutations() as MutationOperation[]
+    }
     async stepWithInterruptHandler(onInterrupt: InterruptHandler): Promise<Step> {
         const step = this.interpreter.wasm_step() as Step
         const [_, status] = step
@@ -111,6 +139,9 @@ export class Interpreter {
     }
     setRegisterValue(register: RegisterOperand, value: number, size = Size.Long) {
         this.interpreter.wasm_set_register_value(register, value, size)
+    }
+    getNextInstruction(): InstructionLine | null {
+        return this.interpreter.wasm_get_next_instruction() as InstructionLine | null
     }
     hasTerminated(): boolean {
         return this.interpreter.wasm_has_terminated()
@@ -167,11 +198,12 @@ export class S68k {
         this._s68k = new RawS68k(code)
     }
 
-    static compile(code: string, memorySize: number): CompilationResult {
+    static compile(code: string, memorySize: number, options?: InterpreterOptions): CompilationResult {
         const s68k = new S68k(code)
         const errors = s68k.semanticCheck()
         if (errors.length > 0) return { errors, ok: false }
-        const interpreter = s68k.createInterpreter(memorySize)
+        options = options ?? new InterpreterOptions()
+        const interpreter = s68k.createInterpreter(memorySize, options)
         return { interpreter, ok: true }
     }
 
@@ -200,13 +232,33 @@ export class S68k {
     compile(): CompiledProgram {
         return new CompiledProgram(this._s68k.wasm_compile())
     }
-    createInterpreter(memorySize: number = 0xFFFFFF, program?: CompiledProgram): Interpreter {
+    createInterpreter(memorySize: number = 0xFFFFFF, options: InterpreterOptions , program?: CompiledProgram): Interpreter {
         if (program) {
-            return new Interpreter(this._s68k.wasm_create_interpreter(program.getCompiledProgram(), memorySize))
+            return new Interpreter(this._s68k.wasm_create_interpreter(program.getCompiledProgram(), memorySize, options))
         }
-        return new Interpreter(this._s68k.wasm_create_interpreter(this.compile().getCompiledProgram(), memorySize))
+        return new Interpreter(this._s68k.wasm_create_interpreter(this.compile().getCompiledProgram(), memorySize, options))
     }
 }
 
-
-export { RawS68k, RawInterpreter, RawSemanticError, RawCompiler, RawCpu, RawRegister, Interrupt, InterruptResult, InterpreterStatus, Size, Condition, Step, ParsedLine, LexedLine, LexedOperand, LexedRegisterType, RegisterOperand, InstructionLine }
+export { 
+    RawS68k, 
+    RawInterpreter, 
+    RawSemanticError, 
+    RawCompiler, 
+    RawCpu, 
+    RawRegister, 
+    Interrupt, 
+    InterruptResult, 
+    InterpreterStatus, 
+    Size, 
+    Condition, 
+    Step, 
+    ParsedLine, 
+    LexedLine, 
+    LexedOperand, 
+    LexedRegisterType, 
+    RegisterOperand, 
+    InstructionLine, 
+    ExecutionStep,
+    MutationOperation
+}

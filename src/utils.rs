@@ -18,7 +18,7 @@ pub fn num_to_signed_base(num: i64, base: i64) -> Result<i64, &'static str> {
 }
 pub const VALID_ARITHMETICAL_REGEX: &str =
     r"((?:[%@$]*\w+)|(?:'\S*'))((?:\*\*)|[\+\-\*/\^%\|\&\^])?(\S+)?";
-pub const VALID_ARITHMETICAL_TOKENS: &str = r"((?:\*\*|[+\-*\&^()|])|(?:[%@$]?\w*)|(?:'\w*'))";
+pub const VALID_ARITHMETICAL_TOKENS: &str = r"(('\w*')|(\*\*|[+\-*\&^()|])|([%@$]?\w*)|)";
 lazy_static! {
     static ref ARITHMETICAL_REGEX: Regex = Regex::new(VALID_ARITHMETICAL_REGEX).unwrap();
     static ref ARITHMETICAL_TOKEN_REGEX: Regex = Regex::new(VALID_ARITHMETICAL_TOKENS).unwrap();
@@ -173,12 +173,12 @@ fn calculate_rpn(tokens: &Vec<ArithmeticalToken>) -> Result<i64, String> {
         None => Err(format!("Invalid number of arguments for expression"))
     }
 }
+
 pub fn parse_absolute_expression(str: &str, labels: &HashMap<String, Label>) -> Result<i64, String> {
     let tokens: Vec<&str> = ARITHMETICAL_TOKEN_REGEX
         .find_iter(str)
         .map(|m| m.as_str())
         .collect();
-
     let parsed_tokens = tokens
         .iter()
         .map(|t| match t.parse::<ArithmeticalOperandToken>() {
@@ -196,7 +196,8 @@ pub fn parse_absolute_expression(str: &str, labels: &HashMap<String, Label>) -> 
 
 pub fn parse_string_into_padded_bytes(str: &str, chunk_size: usize) -> Vec<u8> {
     //TODO to decide if i should use utf-8 or ascii
-    let mut bytes = str.as_bytes().to_vec();
+    let mut bytes = str.as_bytes().to_vec(); //full utf-8 bytes
+    //let mut bytes = str.chars().map(|c| c as u8).collect::<Vec<u8>>(); //ascii bytes
     //fill space if not a modulo of chunk_size
     let padding = chunk_size - bytes.len() % chunk_size;
     if padding > 0 && padding < chunk_size {

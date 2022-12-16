@@ -95,7 +95,38 @@ export type Label = {
 }
 "#;
 
-
+#[wasm_bindgen(typescript_custom_section)]
+pub const IExecutionStep: &'static str = r#"
+export type ExecutionStep = {
+    mutations: MutationOperation[],
+    pc: number,
+    ccr: Flags
+}
+"#;
+#[wasm_bindgen(typescript_custom_section)]
+pub const IMutationOperation: &'static str = r#"
+export type MutationOperation = {
+    type: "WriteRegister",
+    value: {
+        register: RegisterOperand,
+        old: number,
+        size: Size
+    }
+} | {
+    type: "WriteMemory",
+    value: {
+        address: number,
+        old: number,
+        size: Size
+    }
+} | {
+    type: "WriteMemoryBytes",
+    value: {
+        address: number,
+        old: number[]
+    }
+}
+"#;
 #[wasm_bindgen(typescript_custom_section)]
 pub const ILexedOperand: &'static str = r#"
 export type LexedOperand = {

@@ -1,2 +1,1 @@
-
-move.w #-1, d0
+a: dc.b "hello world è"
