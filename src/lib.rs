@@ -87,9 +87,10 @@ impl S68k {
         &self,
         pre_processed_program: Compiler,
         memory_size: usize,
-        interpreter_options: InterpreterOptions,
+        interpreter_options: JsValue,
     ) -> Interpreter {
         console_error_panic_hook::set_once();
+        let interpreter_options: InterpreterOptions = serde_wasm_bindgen::from_value(interpreter_options).unwrap();
         self.create_interpreter(pre_processed_program, memory_size, Some(interpreter_options))
     }
 }

@@ -94,7 +94,13 @@ export type Label = {
     name: string
 }
 "#;
-
+#[wasm_bindgen(typescript_custom_section)]
+pub const IInterpreterOptions: &'static str = r#"
+export type InterpreterOptions = {
+    keep_history: boolean
+    history_size: number    
+}
+"#;
 #[wasm_bindgen(typescript_custom_section)]
 pub const IExecutionStep: &'static str = r#"
 export type ExecutionStep = {

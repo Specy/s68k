@@ -202,7 +202,10 @@ export class S68k {
         const s68k = new S68k(code)
         const errors = s68k.semanticCheck()
         if (errors.length > 0) return { errors, ok: false }
-        options = options ?? new InterpreterOptions()
+        options = options ?? {
+            history_size: 100,
+            keep_history: true,
+        }
         const interpreter = s68k.createInterpreter(memorySize, options)
         return { interpreter, ok: true }
     }

@@ -13,7 +13,7 @@ use crate::{
 };
 use bitflags::bitflags;
 use core::panic;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::{
     collections::{HashMap, LinkedList},
     hash::Hash,
@@ -313,8 +313,7 @@ pub enum InterpreterStatus {
     Terminated,
     TerminatedWithException,
 }
-
-#[wasm_bindgen]
+#[derive(Serialize, Deserialize)]
 pub struct InterpreterOptions {
     pub keep_history: bool,
     pub history_size: usize,
