@@ -19,7 +19,8 @@ import { Flags,
     LexedRegisterType, 
     InterpreterOptions, 
     ExecutionStep,
-    MutationOperation
+    MutationOperation,
+
 } from './pkg/s68k'
 
 export type CompilationResult = { ok: false, errors: SemanticError[] } | { ok: true, interpreter: Interpreter }
@@ -127,6 +128,9 @@ export class Interpreter {
     }
     getCurrentLineIndex(): number {
         return this.interpreter.wasm_get_current_line_index()
+    }
+    canUndo(): boolean {
+        return this.interpreter.wasm_can_undo()
     }
     getInstructionAt(address: number): InstructionLine | null {
         return this.interpreter.wasm_get_instruction_at(address) as InstructionLine | null
@@ -263,5 +267,6 @@ export {
     RegisterOperand, 
     InstructionLine, 
     ExecutionStep,
-    MutationOperation
+    MutationOperation,
+    InterpreterOptions
 }

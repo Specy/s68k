@@ -185,7 +185,6 @@ step.addEventListener("click", () => {
     try {
         if (currentInterpreter) {
             let a = currentInterpreter.wasm_step()
-            console.log(a)
             let status = currentInterpreter.wasm_get_status()
             if (currentInterpreter.wasm_has_terminated()) {
                 disableExecution(true)

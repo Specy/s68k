@@ -428,7 +428,6 @@ impl Interpreter {
             },
         };
         interpreter.cpu.a_reg[7].store_long(sp as u32);
-        interpreter.history.push_back(ExecutionStep::new(start, interpreter.cpu.ccr));
         match interpreter.prepare_memory(&compiled_program.get_directives()) {
             Ok(_) => interpreter,
             Err(e) => panic!("Error preparing memory: {:?}", e),
@@ -492,7 +491,9 @@ impl Interpreter {
     pub fn has_reached_bottom(&self) -> bool {
         self.pc > self.final_instruction_address
     }
-
+    pub fn can_undo(&self) -> bool {
+        self.history.len() > 0
+    }
 
     pub fn step(&mut self) -> RuntimeResult<(InstructionLine, InterpreterStatus)> {
         if self.keep_history {
@@ -1272,6 +1273,9 @@ impl Interpreter {
             Some(ins) => serde_wasm_bindgen::to_value(ins).unwrap(),
             None => JsValue::NULL,
         }
+    }
+    pub fn wasm_can_undo(&self) -> bool {
+        self.can_undo()
     }
     pub fn wasm_step(&mut self) -> Result<JsValue, JsValue> {
         match self.step() {
