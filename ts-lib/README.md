@@ -48,7 +48,7 @@ equ, org, dc, ds, dcb
 
 ## Known bugs
 1. Not really a bug but a decision to make, characters are treated as UTF-8, so encoding and decoding might problematic for some front ends, alternative would be to allow only extended ASCII characters 0-255.
-
+2. The "lexer" for the arithmetical expression uses a simple regex, if a string has multiple characters in it, it will treat it all as a single string, ex: `#'a'+'b' will be treated as #''a'+'b'' (a single string)`
 # How to run rust
 Firstly make sure you have rust installed, [you can download it here](https://www.rust-lang.org/tools/install), once done, clone the repository on your machine and run `cargo run` in the root folder of the project. This will run the interpreter with the code inside of `code-to-run.asm` file.
 
