@@ -1,5 +1,4 @@
-//CHECK COMMENT REMOVAL
-//TODO refactor grammar
+//TODO remake everything with an actual lexer
 use crate::constants::{COMMENT_1, COMMENT_2, EQU};
 use bitflags::bitflags;
 use regex::Regex;
@@ -161,7 +160,7 @@ enum LexLineResult {
 impl Grammar {
     fn get_regex(&self) -> String {
         match &self {
-            Grammar::Directive => r"(.+\s+equ.+\w+)|((org|dc|dcb|ds)\s*.*)".to_string(),
+            Grammar::Directive => r"(.+\s+equ\s+.+)|((org|dc|dcb|ds)\s*.*)".to_string(),
             Grammar::Register => r"(d\d|a\d|sp)".to_string(),
             Grammar::Indirect => format!(r"([^\r\n\t\f\v,])*\({}\)", Grammar::Register.get_regex()),
             Grammar::IndirectDisplacement => r"([^\r\n\t\f\v,])*\((.+,)+.+\)".to_string(),
@@ -341,6 +340,7 @@ impl AsmRegex {
             .trim()
             .split(' ')
             .map(|x| x.to_string())
+            .filter(|x| !x.is_empty())
             .collect::<Vec<String>>()
     }
     pub fn split_at_comment<'a>(&self, string: &'a str) -> Vec<&'a str> {
@@ -382,6 +382,7 @@ impl AsmRegex {
     }
 }
 
+#[derive(Debug)]
 pub struct EquValue {
     pub name: String,
     pub replacement: String,
@@ -419,7 +420,7 @@ impl Lexer {
                 if args.len() >= 3 && args[1] == EQU {
                     equs.push(EquValue::new(
                         args[0].to_string(),
-                        args[2].to_string(),
+                        args[2..].join(" ")
                     ));
                     equ_map_indexes.insert(index, true);
                 }
