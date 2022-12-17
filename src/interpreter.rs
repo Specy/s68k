@@ -544,7 +544,8 @@ impl Interpreter {
             Some(step) => {
                 self.pc = step.get_pc();
                 self.cpu.ccr = step.get_ccr();
-                for mutation in step.get_mutations() {
+                //doing from right to left because mutations are added from left to right
+                for mutation in step.get_mutations().iter().rev() {
                     match mutation {
                         MutationOperation::WriteRegister { register, old, size } => {
                             match register {
@@ -664,15 +665,15 @@ impl Interpreter {
                 self.set_register_value(dest, result, &Size::Long);
             }
             Instruction::MULx(source, dest, sign) => {
-                let src_val = self.get_operand_value(source, &Size::Word)?;
-                let dest_val =
+                let source_value = self.get_operand_value(source, &Size::Word)?;
+                let dest_value =
                     get_value_sized(self.get_register_value(dest, &Size::Long), &Size::Word);
                 let result = match sign {
                     Sign::Signed => {
-                        ((((dest_val as u16) as i16) as i64) * (((src_val as u16) as i16) as i64))
+                        ((((dest_value as u16) as i16) as i64) * (((source_value as u16) as i16) as i64))
                             as u64
                     }
-                    Sign::Unsigned => dest_val as u64 * src_val as u64,
+                    Sign::Unsigned => dest_value as u64 * source_value as u64,
                 };
                 self.set_compare_flags(result as u32, &Size::Long, false, false);
                 self.set_register_value(dest, result as u32, &Size::Long);
