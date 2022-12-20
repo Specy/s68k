@@ -84,6 +84,12 @@ export class Interpreter {
     step(): Step {
         return this.interpreter.wasm_step()
     }
+    stepGetStatus(): InterpreterStatus {
+        return this.interpreter.wasm_step_only_status()
+    }
+    getLastInstruction(): InstructionLine {
+        return this.interpreter.wasm_get_last_instruction()
+    }
     undo(): ExecutionStep {
         return this.interpreter.wasm_undo()
     }

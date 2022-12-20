@@ -340,6 +340,7 @@ pub struct Interpreter {
     history: LinkedList<ExecutionStep>,
     keep_history: bool,
     history_size: usize,
+    last_line_address: usize,
     final_instruction_address: usize,
     current_interrupt: Option<Interrupt>,
     status: InterpreterStatus,
@@ -419,6 +420,7 @@ impl Interpreter {
             program,
             keep_history: options.keep_history,
             history_size: options.history_size,
+            last_line_address: 0,
             history: LinkedList::new(),
             current_interrupt: None,
             status: if start <= end && length > 0 {
@@ -502,6 +504,7 @@ impl Interpreter {
                 self.history.pop_front();
             }
         }
+        self.last_line_address = self.pc;
         match self.get_instruction_at(self.pc) {
             _ if self.status == InterpreterStatus::Terminated
                 || self.status == InterpreterStatus::TerminatedWithException =>
@@ -1280,7 +1283,13 @@ impl Interpreter {
     }
     pub fn wasm_step(&mut self) -> Result<JsValue, JsValue> {
         match self.step() {
-            Ok(line) => Ok(serde_wasm_bindgen::to_value(&line).unwrap()),
+            Ok(step) => Ok(serde_wasm_bindgen::to_value(&step).unwrap()),
+            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
+        }
+    }
+    pub fn wasm_step_only_status(&mut self) -> Result<InterpreterStatus, JsValue>{
+        match self.step(){
+            Ok((_, status)) => Ok(status),
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
     }
@@ -1331,6 +1340,12 @@ impl Interpreter {
     }
     pub fn wasm_get_condition_value(&self, cond: Condition) -> bool {
         self.get_condition_value(&cond)
+    }
+    pub fn wasm_get_last_line_address(&self) -> usize {
+        self.last_line_address
+    }
+    pub fn wasm_get_last_instruction(&self) -> JsValue {
+        self.wasm_get_instruction_at(self.last_line_address)
     }
     pub fn wasm_get_register_value(&self, reg: JsValue, size: Size) -> Result<u32, String> {
         match serde_wasm_bindgen::from_value(reg.clone()) {
