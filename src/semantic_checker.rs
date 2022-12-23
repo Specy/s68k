@@ -272,6 +272,24 @@ impl SemanticChecker {
                         self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
                         self.verify_size(SizeRules::NoSize, line);
                     }
+                    "dbcc" | "dbcs" | "dbeq" | "dbne" | "dbge" | "dbgt" | "dble" | "dbls" | "dblt"
+                    | "dbhi" | "dbmi" | "dbpl" | "dbvc" | "dbvs" | "dbf" | "dbt" | "dbra" => {
+                        self.verify_two_args(
+                            operands,
+                            Rules::ONLY_D_REG,
+                            Rules::ONLY_ADDRESS_OR_LABEL,
+                            line,
+                        );
+                        self.verify_size(SizeRules::NoSize, line);
+                    }
+                    "link" => {
+                        self.verify_two_args(operands, Rules::ONLY_A_REG, Rules::ONLY_IMMEDIATE, line);
+                        self.verify_size(SizeRules::NoSize, line);
+                    }
+                    "unlk" => {
+                        self.verify_one_arg(operands, Rules::ONLY_A_REG, line);
+                        self.verify_size(SizeRules::NoSize, line);
+                    }
                     "not" => {
                         self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
                         self.verify_size(SizeRules::AnySize, line);

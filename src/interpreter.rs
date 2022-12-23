@@ -13,7 +13,7 @@ use crate::{
 };
 use bitflags::bitflags;
 use core::panic;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, LinkedList},
     hash::Hash,
@@ -499,7 +499,8 @@ impl Interpreter {
 
     pub fn step(&mut self) -> RuntimeResult<(InstructionLine, InterpreterStatus)> {
         if self.keep_history {
-            self.history.push_back(ExecutionStep::new(self.pc, self.cpu.ccr));
+            self.history
+                .push_back(ExecutionStep::new(self.pc, self.cpu.ccr));
             if self.history.len() > self.history_size {
                 self.history.pop_front();
             }
@@ -550,16 +551,18 @@ impl Interpreter {
                 //doing from right to left because mutations are added from left to right
                 for mutation in step.get_mutations().iter().rev() {
                     match mutation {
-                        MutationOperation::WriteRegister { register, old, size } => {
-                            match register {
-                                RegisterOperand::Address(reg) => {
-                                    self.cpu.a_reg[*reg as usize].store_long(*old)
-                                }
-                                RegisterOperand::Data(reg) => {
-                                    self.cpu.d_reg[*reg as usize].store_long(*old)
-                                }
+                        MutationOperation::WriteRegister {
+                            register,
+                            old,
+                            size,
+                        } => match register {
+                            RegisterOperand::Address(reg) => {
+                                self.cpu.a_reg[*reg as usize].store_long(*old)
                             }
-                        }
+                            RegisterOperand::Data(reg) => {
+                                self.cpu.d_reg[*reg as usize].store_long(*old)
+                            }
+                        },
                         MutationOperation::WriteMemory { address, old, size } => {
                             self.memory.write_size(*address, size, *old);
                         }
@@ -673,7 +676,8 @@ impl Interpreter {
                     get_value_sized(self.get_register_value(dest, &Size::Long), &Size::Word);
                 let result = match sign {
                     Sign::Signed => {
-                        ((((dest_value as u16) as i16) as i64) * (((source_value as u16) as i16) as i64))
+                        ((((dest_value as u16) as i16) as i64)
+                            * (((source_value as u16) as i16) as i64))
                             as u64
                     }
                     Sign::Unsigned => dest_value as u64 * source_value as u64,
@@ -925,6 +929,37 @@ impl Interpreter {
                     self.store_operand_value(op, 0x00, &Size::Byte)?;
                 }
             }
+            Instruction::DBcc(reg, address, cond) => {
+                if !self.get_condition_value(cond) {
+                    let next = (self.get_register_value(reg, &Size::Word) as i16).wrapping_sub(1);
+                    self.set_register_value(reg, next as u32, &Size::Word);
+                    if next != -1 {
+                        self.set_sp(*address as usize);
+                    }
+                }
+            }
+            Instruction::DBRA(reg, address) => {
+                let next = (self.get_register_value(reg, &Size::Word) as i16).wrapping_sub(1);
+                self.set_register_value(reg, next as u32, &Size::Word);
+                if next != -1 {
+                    self.set_sp(*address as usize);
+                }
+            }
+            Instruction::LINK(reg, offset ) => {
+                let sp = self.get_sp() - 4;
+                self.set_sp(sp);
+                let value = self.get_register_value(reg, &Size::Long);
+                self.set_memory_value(value as usize, &Size::Long, sp as u32);
+                self.set_register_value(reg, sp as u32, &Size::Long);
+                self.set_sp((sp as i32).wrapping_add(*offset as i32) as usize)
+            }
+            Instruction::UNLK(reg) => {
+                let value = self.get_register_value(reg, &Size::Long);
+                let (value, new_sp) = self.memory.pop(Size::Long, value as usize);
+                self.set_register_value(reg, value.get_long(), &Size::Long);
+                self.set_sp(new_sp);
+                
+            }
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp());
                 self.set_sp(new_sp);
@@ -1034,7 +1069,7 @@ impl Interpreter {
         self.history.back()
     }
     pub fn get_next_instruction(&self) -> Option<&InstructionLine> {
-        self.get_instruction_at(self.pc) 
+        self.get_instruction_at(self.pc)
     }
     fn get_trap(&mut self, value: u8) -> RuntimeResult<Interrupt> {
         match value {
@@ -1287,8 +1322,8 @@ impl Interpreter {
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
     }
-    pub fn wasm_step_only_status(&mut self) -> Result<InterpreterStatus, JsValue>{
-        match self.step(){
+    pub fn wasm_step_only_status(&mut self) -> Result<InterpreterStatus, JsValue> {
+        match self.step() {
             Ok((_, status)) => Ok(status),
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
@@ -1306,13 +1341,13 @@ impl Interpreter {
         }
     }
     pub fn wasm_get_previous_mutations(&self) -> Vec<JsValue> {
-            match self.get_previous_mutations() {
-                Some(mutations) => mutations
-                    .iter()
-                    .map(|m| serde_wasm_bindgen::to_value(m).unwrap())
-                    .collect(),
-                None => vec![],
-            }
+        match self.get_previous_mutations() {
+            Some(mutations) => mutations
+                .iter()
+                .map(|m| serde_wasm_bindgen::to_value(m).unwrap())
+                .collect(),
+            None => vec![],
+        }
     }
     pub fn wasm_get_status(&self) -> InterpreterStatus {
         *self.get_status()
@@ -1323,7 +1358,7 @@ impl Interpreter {
     pub fn wasm_get_flags_as_number(&self) -> u16 {
         self.cpu.ccr.bits()
     }
-    pub fn wasm_undo(&mut self) -> Result<JsValue, JsValue>{
+    pub fn wasm_undo(&mut self) -> Result<JsValue, JsValue> {
         match self.undo() {
             Ok(step) => Ok(serde_wasm_bindgen::to_value(&step).unwrap()),
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),

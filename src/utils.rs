@@ -45,7 +45,7 @@ impl FromStr for ArithmeticalOperandToken {
             "-" => Self::Sub,
             "*" => Self::Mul,
             "/" => Self::Div,
-            "%" => Self::Mod,
+            "\\" => Self::Mod,
             "**" => Self::Pow,
             "&" => Self::BitAnd,
             "|" => Self::BitOr,

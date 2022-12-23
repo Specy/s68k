@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
     instructions::{
-        DisplacementOperands, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
+        DisplacementOperands, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size, Condition,
     },
     lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     math::sign_extend_to_long,
@@ -245,6 +245,28 @@ impl Compiler {
                 "bset" => Instruction::BSET(op1, op2),
                 "bclr" => Instruction::BCLR(op1, op2),
                 "bchg" => Instruction::BCHG(op1, op2),
+                "dbcc" | "dbcs" | "dbeq" | "dbne" | "dbge" | "dbgt" | "dble" | "dbls" | "dblt"
+                | "dbhi" | "dbmi" | "dbpl" | "dbvc" | "dbvs" | "dbf" | "dbt" => {
+                    match name[2..].parse() {
+                        Ok(condition) => Instruction::DBcc(
+                            self.extract_register(op1)?,
+                            self.extract_address(&op2)?,
+                            condition,
+                        ),
+                        Err(_) => {
+                            return Err(CompilationError::ParseError(format!(
+                                "Invalid condition code: {}",
+                                name
+                            )))
+                        }
+                    }
+                }
+                "dbra" => Instruction::DBcc(
+                    self.extract_register(op1)?,
+                    self.extract_address(&op2)?,
+                    Condition::False
+                ),
+                "link" => Instruction::LINK(self.extract_register(op1)?, self.extract_immediate(&op2)?),
                 _ => {
                     return Err(CompilationError::Raw(format!(
                         "Unknown instruction {}",
@@ -281,6 +303,7 @@ impl Compiler {
                         }
                     },
                 ),
+                "unlk" => Instruction::UNLK(self.extract_register(op)?),
                 "extb" => Instruction::EXT(self.extract_register(op)?, Size::Byte, Size::Long),
                 "tst" => Instruction::TST(op, self.get_size(size, Size::Word)?),
                 "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs" => {
