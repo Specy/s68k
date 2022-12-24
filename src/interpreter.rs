@@ -706,6 +706,14 @@ impl Interpreter {
                 self.pc = *address as usize;
             }
             Instruction::BSR(address) => {
+                if self.keep_history {
+                    let old_value = self.memory.read_long(self.get_sp());
+                    self.add_mutation_to_history(MutationOperation::WriteMemory {
+                        address: self.get_sp() - 4,
+                        old: old_value,
+                        size: Size::Long,
+                    })
+                }
                 let new_sp = self
                     .memory
                     .push(&MemoryCell::Long(self.pc as u32), self.get_sp());
@@ -718,6 +726,14 @@ impl Interpreter {
             }
             Instruction::JSR(source) => {
                 let addr = self.get_operand_value(source, &Size::Long)?;
+                if self.keep_history {
+                    let old_value = self.memory.read_long(self.get_sp());
+                    self.add_mutation_to_history(MutationOperation::WriteMemory {
+                        address: self.get_sp() - 4,
+                        old: old_value,
+                        size: Size::Long,
+                    })
+                }
                 self.memory
                     .push(&MemoryCell::Long(self.pc as u32), self.get_sp());
                 self.pc = addr as usize;
@@ -934,19 +950,12 @@ impl Interpreter {
                     let next = (self.get_register_value(reg, &Size::Word) as i16).wrapping_sub(1);
                     self.set_register_value(reg, next as u32, &Size::Word);
                     if next != -1 {
-                        self.set_sp(*address as usize);
+                        self.pc = *address as usize;
                     }
                 }
             }
-            Instruction::DBRA(reg, address) => {
-                let next = (self.get_register_value(reg, &Size::Word) as i16).wrapping_sub(1);
-                self.set_register_value(reg, next as u32, &Size::Word);
-                if next != -1 {
-                    self.set_sp(*address as usize);
-                }
-            }
-            Instruction::LINK(reg, offset ) => {
-                let sp = self.get_sp() - 4;
+            Instruction::LINK(reg, offset) => {
+                let sp = self.get_sp() - 4; //TODO convert to push
                 self.set_sp(sp);
                 let value = self.get_register_value(reg, &Size::Long);
                 self.set_memory_value(value as usize, &Size::Long, sp as u32);
@@ -958,7 +967,6 @@ impl Interpreter {
                 let (value, new_sp) = self.memory.pop(Size::Long, value as usize);
                 self.set_register_value(reg, value.get_long(), &Size::Long);
                 self.set_sp(new_sp);
-                
             }
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp());
@@ -1037,8 +1045,8 @@ impl Interpreter {
     }
 
     pub fn set_memory_value(&mut self, address: usize, size: &Size, value: u32) {
-        let old_value = self.memory.read_size(address, size);
         if self.keep_history {
+            let old_value = self.memory.read_size(address, size);
             self.add_mutation_to_history(MutationOperation::WriteMemory {
                 address,
                 old: old_value,

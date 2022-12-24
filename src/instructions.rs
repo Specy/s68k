@@ -132,7 +132,6 @@ pub enum Instruction {
     Bcc(u32, Condition),
     Scc(Operand, Condition),
     DBcc(RegisterOperand, u32, Condition),
-    DBRA(RegisterOperand, u32),
     BRA(u32), //could use offset instead of address
     LINK(RegisterOperand, u32),
     UNLK(RegisterOperand),
