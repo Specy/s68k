@@ -6,7 +6,8 @@ use s68k::{
 };
 use core::panic;
 use std::fs;
-
+use std::env;
+use std::time::Instant;
 enum StepKind {
     Step, 
     Undo, 
@@ -17,16 +18,25 @@ enum StepKind {
 fn main() {
     let example_code = fs::read_to_string("code-to-run.asm").expect("Unable to read file");
     let s68k = S68k::new(example_code);
-    println!("\n---------LEXED---------\n");
-    for line in s68k.get_lexed_lines() {
-        println!("{:#?}", line);
+    let args = env::args().collect::<Vec<String>>();
+    if args.contains(&"--lex".to_string()){
+        println!("\n---------LEXED---------\n");
+        for line in s68k.get_lexed_lines() {
+            println!("{:#?}", line);
+        }
     }
     let errors = s68k.semantic_check();
-    if errors.len() > 0 {
-       // println!("---------ERRORS--------");
+    if !args.contains(&"--no-errors".to_string()){
+        if errors.len() > 0 {
+           println!("\n---------ERRORS--------\n");
+           for error in errors.iter() {
+                println!("{}", error.get_message());
+            }
+        }
     }
-    for error in errors {
-        //println!("{}", error.get_message());
+    if errors.len() > 0 {
+        println!("\n");
+        panic!("Errors found, aborting");
     }
     println!("\n----COMPILED-PROGRAM----\n");
     let compiled_program = s68k.compile().unwrap();
@@ -39,12 +49,20 @@ fn main() {
     //16 mb of memory
     let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF, Some(options));
     //ask user if it wants to run the code (0) or allow to step through it (1)
-    println!("Do you want to run the code (0) or step through it (1)?");
-    let mut execution_mode = Term::stdout().read_line().expect("Unable to read line");
-    while execution_mode != "0" && execution_mode != "1" {
-        println!("Please enter 0 or 1");
-        execution_mode = Term::stdout().read_line().expect("Unable to read line");
-    }
+    let execution_mode = if args.contains(&"--step".to_string()){
+        "1".to_string()
+    } else if args.contains(&"--run".to_string()){
+        "0".to_string()
+    } else {
+        println!("Do you want to run the code (0) or step through it (1)?");
+        let mut value = Term::stdout().read_line().expect("Unable to read line");
+        while value != "0" && value != "1" {
+            println!("Please enter 0 or 1");
+            value = Term::stdout().read_line().expect("Unable to read line");
+        }
+        value
+    };
+    let start = Instant::now();
     if execution_mode == "0" {
         while !interpreter.has_terminated() {
             let status = interpreter.run().unwrap();
@@ -66,6 +84,8 @@ fn main() {
             match step_kind {
                 StepKind::Step => {
                     interpreter.step().unwrap();
+                    let ins = interpreter.get_next_instruction();
+                    println!("{:?}", ins);
                 }
                 StepKind::Undo => {
                     interpreter.undo().unwrap();
@@ -90,7 +110,10 @@ fn main() {
             }
         }
     }
-    interpreter.debug_status();
+    if !args.contains(&"--no-debug".to_string()){
+        interpreter.debug_status();
+        println!("\nExecution took: {:?}", start.elapsed());
+    }
 }
 
 

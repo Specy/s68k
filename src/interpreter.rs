@@ -645,20 +645,69 @@ impl Interpreter {
                 self.set_logic_flags(source_value, size);
                 self.store_operand_value(dest, source_value, size)?;
             }
-            Instruction::ADD(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size)?;
-                let dest_value = self.get_operand_value(dest, size)?;
-                let (result, carry) = overflowing_add_sized(dest_value, source_value, size);
-                let overflow = has_add_overflowed(dest_value, source_value, result, size);
-                self.set_compare_flags(result, size, carry, overflow);
-                self.set_flag(Flags::Extend, carry);
-                self.store_operand_value(dest, result, size)?;
+            Instruction::MOVEQ(value, dest) => {
+                let value = sign_extend_to_long(*value as u32, &Size::Byte) as u32;
+                self.set_logic_flags(value, &Size::Long);
+                self.set_register_value(dest, value, &Size::Long);
             }
+
             Instruction::SUB(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size)?;
                 let dest_value = self.get_operand_value(dest, size)?;
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, size);
+                self.set_compare_flags(result, size, carry, overflow);
+                self.set_flag(Flags::Extend, carry);
+                self.store_operand_value(dest, result, size)?;
+            }
+            Instruction::SUBA(source, dest, size) => {
+                let source_value =
+                    sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
+                let dest_value = self.get_register_value(dest, size);
+                let (result, _) = overflowing_sub_sized(dest_value, source_value, &Size::Long);
+                self.set_register_value(dest, result, &Size::Long);
+            }
+            Instruction::SUBQ(value, dest, size) => {
+                match dest {
+                    Operand::Register(RegisterOperand::Address(reg)) => {
+                        //if the destination is an address register, it is always treated as long and doesn't set the flags
+                        match size {
+                            Size::Byte => {
+                                return Err(RuntimeError::Raw(
+                                    "SUBQ.B not allowed on address register".to_string(),
+                                ));
+                            }
+                            Size::Word | Size::Long => {
+                                let dest_value = self.get_register_value(
+                                    &RegisterOperand::Address(*reg),
+                                    &Size::Long,
+                                );
+                                let (result, _) =
+                                    overflowing_sub_sized(dest_value, *value as u32, &Size::Long);
+                                self.set_register_value(
+                                    &RegisterOperand::Address(*reg),
+                                    result,
+                                    &Size::Long,
+                                );
+                            }
+                        }
+                    }
+                    _ => {
+                        let source_value = *value as u32;
+                        let dest_value = self.get_operand_value(dest, size)?;
+                        let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
+                        let overflow = has_sub_overflowed(dest_value, source_value, result, size);
+                        self.set_compare_flags(result, size, carry, overflow);
+                        self.set_flag(Flags::Extend, carry);
+                        self.store_operand_value(dest, result, size)?;
+                    }
+                }
+            }
+            Instruction::ADD(source, dest, size) => {
+                let source_value = self.get_operand_value(source, size)?;
+                let dest_value = self.get_operand_value(dest, size)?;
+                let (result, carry) = overflowing_add_sized(dest_value, source_value, size);
+                let overflow = has_add_overflowed(dest_value, source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
                 self.set_flag(Flags::Extend, carry);
                 self.store_operand_value(dest, result, size)?;
@@ -670,6 +719,43 @@ impl Interpreter {
                 let (result, _) = overflowing_add_sized(dest_value, source_value, &Size::Long);
                 self.set_register_value(dest, result, &Size::Long);
             }
+            Instruction::ADDQ(value, dest, size) => {
+                match dest {
+                    Operand::Register(RegisterOperand::Address(reg)) => {
+                        //if the destination is an address register, it is always treated as long and doesn't set the flags
+                        match size {
+                            Size::Byte => {
+                                return Err(RuntimeError::Raw(
+                                    "ADDQ.B not allowed on address register".to_string(),
+                                ));
+                            }
+                            Size::Word | Size::Long => {
+                                let dest_value = self.get_register_value(
+                                    &RegisterOperand::Address(*reg),
+                                    &Size::Long,
+                                );
+                                let (result, _) =
+                                    overflowing_add_sized(dest_value, *value as u32, &Size::Long);
+                                self.set_register_value(
+                                    &RegisterOperand::Address(*reg),
+                                    result,
+                                    &Size::Long,
+                                );
+                            }
+                        }
+                    }
+                    _ => {
+                        let source_value = *value as u32;
+                        let dest_value = self.get_operand_value(dest, size)?;
+                        let (result, carry) = overflowing_add_sized(dest_value, source_value, size);
+                        let overflow = has_add_overflowed(dest_value, source_value, result, size);
+                        self.set_compare_flags(result, size, carry, overflow);
+                        self.set_flag(Flags::Extend, carry);
+                        self.store_operand_value(dest, result, size)?;
+                    }
+                }
+            }
+
             Instruction::MULx(source, dest, sign) => {
                 let source_value = self.get_operand_value(source, &Size::Word)?;
                 let dest_value =
@@ -721,11 +807,15 @@ impl Interpreter {
                 self.pc = *address as usize;
             }
             Instruction::JMP(op) => {
-                let addr = self.get_operand_value(op, &Size::Long)?;
+                let addr = self.get_operand_address(op)?;
                 self.pc = addr as usize;
             }
-            Instruction::JSR(source) => {
-                let addr = self.get_operand_value(source, &Size::Long)?;
+            Instruction::LEA(source, dest) => {
+                let addr = self.get_operand_address(source)?;
+                self.set_register_value(dest, addr as u32, &Size::Long);
+            }
+            Instruction::PEA(source) => {
+                let addr = self.get_operand_address(source)?;
                 if self.keep_history {
                     let old_value = self.memory.read_long(self.get_sp());
                     self.add_mutation_to_history(MutationOperation::WriteMemory {
@@ -734,8 +824,25 @@ impl Interpreter {
                         size: Size::Long,
                     })
                 }
-                self.memory
+                let new_sp = self.memory
+                    .push(&MemoryCell::Long(addr as u32), self.get_sp());
+                self.set_sp(new_sp);
+
+            }
+            Instruction::JSR(source) => {
+                let addr = self.get_operand_address(source)?;
+                if self.keep_history {
+                    let old_value = self.memory.read_long(self.get_sp());
+                    self.add_mutation_to_history(MutationOperation::WriteMemory {
+                        address: self.get_sp() - 4,
+                        old: old_value,
+                        size: Size::Long,
+                    })
+                }
+                let new_sp = self
+                    .memory
                     .push(&MemoryCell::Long(self.pc as u32), self.get_sp());
+                self.set_sp(new_sp);
                 self.pc = addr as usize;
             }
             Instruction::BCHG(bit_source, dest) => {
@@ -811,13 +918,7 @@ impl Interpreter {
                     self.set_flag(Flags::Carry, true);
                 }
             }
-            Instruction::SUBA(source, dest, size) => {
-                let source_value =
-                    sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
-                let dest_value = self.get_register_value(dest, size);
-                let (result, _) = overflowing_sub_sized(dest_value, source_value, &Size::Long);
-                self.set_register_value(dest, result, &Size::Long);
-            }
+
             Instruction::AND(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size)?;
                 let dest_value = self.get_operand_value(dest, size)?;
@@ -1144,6 +1245,30 @@ impl Interpreter {
                 let final_address = base_value + offset + index_value;
                 Ok(self.memory.read_size(final_address as usize, size))
             }
+        }
+    }
+    fn get_operand_address(&mut self, op: &Operand) -> RuntimeResult<u32> {
+        match op {
+            Operand::PreIndirect(op) | Operand::PostIndirect(op) => {
+                Ok(self.get_register_value(&op, &Size::Long))
+            }
+            Operand::IndirectOrDisplacement { offset, operand } => {
+                //TODO not sure if this works fine with full 32bits
+                let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
+                Ok(address as u32)
+            }
+            Operand::IndirectBaseDisplacement { offset, operands } => {
+                //TODO not sure if this is how it should work
+                let base_value = self.get_register_value(&operands.base, &Size::Long) as i32;
+                let index_value = self.get_register_value(&operands.index, &Size::Long) as i32;
+                let final_address = base_value + offset + index_value;
+                Ok(final_address as u32)
+            }
+            Operand::Absolute(address) => Ok(*address as u32),
+
+            _ => Err(RuntimeError::IncorrectAddressingMode(
+                "Attempted to get address of non address addressing mode".to_string(),
+            )),
         }
     }
     fn store_operand_value(&mut self, op: &Operand, value: u32, size: &Size) -> RuntimeResult<()> {

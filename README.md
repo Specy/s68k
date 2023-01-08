@@ -30,12 +30,12 @@ The interpreter is split into individual modules that can be used standalone for
 ## Supported instructions
 | Type                   |  Instructions                                                                    |
 |------------------------|----------------------------------------------------------------------------------|
-| Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu                                     |
+| Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu, addq, subq                         |
 | Comparison             | tst, cmp                                                                         |
 | Branching and jumping  | beq, bne, blt, ble, bgt, bge, blo, bls, bhi, bhs, bsr, bra, jsr, rts, dbcc, dbcs, dbeq, dbne, dbge, dbgt, dble, dbls, dblt, dbhi, dbmi, dbpl, dbvc, dbvs, dbf, dbt, dbra                                  |
 | Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st     |
 | Bitwise                | not, or, and, eor, lsl, lsr, asr, asl, rol, ror, btst, bclr, bchg, bset          |
-| Other                  | clr, exg, neg, ext, swap, move, link, unl                                        |
+| Other                  | clr, exg, neg, ext, swap, move, link, unl, lea, pea, moveq                       |
 | Interrupt              | trap #15, with implemented interrupts from 0 to 7                                |
 
 ## Supported directives

@@ -123,6 +123,9 @@ impl Rules {
             Rules::ONLY_D_REG_OR_INDIRECT => "Dn/(An)",
             Rules::ONLY_D_REG_OR_INDIRECT_OR_ADDRESS => "Dn/(An)/Ea",
             Rules::ONLY_ADDRESS_OR_LABEL => "Ea/<LABEL>",
+            Rules::ONLY_IMMEDIATE => "Im",
+            Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE => "(An)/Ea/<LABEL>",
+            
             _ => "UNKNOWN",
         }
         .to_string()
@@ -302,6 +305,36 @@ impl SemanticChecker {
                             line,
                         );
                         self.verify_size(SizeRules::AnySize, line);
+                    }
+                    "lea" => {
+                        self.verify_two_args(operands, Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE ,Rules::ONLY_A_REG, line);
+                        self.verify_size(SizeRules::NoSize, line);
+                    }
+                    "pea" => {
+                        self.verify_one_arg(operands, Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE, line);
+                        self.verify_size(SizeRules::NoSize, line);
+                    }
+                    "addq" | "subq" => {
+                        //.b not allowed for address registers
+                        self.verify_two_args(operands, Rules::ONLY_IMMEDIATE, Rules::NO_IMMEDIATE, line);
+                        self.verify_value_bounds_if_immediate(operands, 0,line, 1, 8);
+                        self.verify_size(SizeRules::AnySize, line);
+                        match operands.get(1) {
+                            Some(LexedOperand::Register(LexedRegisterType::Address, _)) => {
+                                if *size == LexedSize::Byte {
+                                    self.errors.push(SemanticError::new(
+                                        line.clone(),
+                                        format!("Byte size not allowed for address register"),
+                                    ))
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    "moveq" => {
+                        self.verify_two_args(operands, Rules::ONLY_IMMEDIATE, Rules::ONLY_D_REG, line);
+                        self.verify_value_bounds_if_immediate(operands, 0,line, -127, 127);
+                        self.verify_size(SizeRules::NoSize, line);
                     }
                     "jmp" => {
                         self.verify_one_arg(
@@ -545,7 +578,7 @@ impl SemanticChecker {
             }
             _ => self.errors.push(SemanticError::new(
                 line.clone(),
-                format!("Expected one operand, received \"{}\"", args.len()),
+                format!("Expected one operand, received {}", args.len()),
             )),
         }
     }

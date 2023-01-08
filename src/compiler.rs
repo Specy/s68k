@@ -196,6 +196,9 @@ impl Compiler {
                     self.extract_register(op2)?,
                     self.get_size(size, Size::Word)?,
                 ),
+                "subq" => Instruction::SUBQ(self.extract_immediate(&op1)? as u8, op2, self.get_size(size, Size::Word)?),
+                "addq" => Instruction::ADDQ(self.extract_immediate(&op1)? as u8, op2, self.get_size(size, Size::Word)?),
+                "moveq" => Instruction::MOVEQ(self.extract_immediate(&op1)? as u8, self.extract_register(op2)?),
                 "divs" => Instruction::DIVx(op1, self.extract_register(op2)?, Sign::Signed),
                 "divu" => Instruction::DIVx(op1, self.extract_register(op2)?, Sign::Unsigned),
                 "muls" => Instruction::MULx(op1, self.extract_register(op2)?, Sign::Signed),
@@ -235,6 +238,7 @@ impl Compiler {
                     ShiftDirection::Left,
                     self.get_size(size, Size::Word)?,
                 ),
+                "lea" => Instruction::LEA(op1, self.extract_register(op2)?),
                 "ror" => Instruction::ROd(
                     op1,
                     op2,
@@ -280,6 +284,7 @@ impl Compiler {
             let result = match name.as_str() {
                 "clr" => Instruction::CLR(op, self.get_size(size, Size::Word)?),
                 "neg" => Instruction::NEG(op, self.get_size(size, Size::Word)?),
+                "pea" => Instruction::PEA(op),
                 "ext" => Instruction::EXT(
                     self.extract_register(op)?,
                     //from
