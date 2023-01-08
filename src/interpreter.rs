@@ -1324,23 +1324,7 @@ impl Interpreter {
     pub fn run(&mut self) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
         while self.status == InterpreterStatus::Running {
-            match self.step() {
-                Ok(_) => {}
-                Err(e) => match self.get_instruction_at(self.pc) {
-                    Some(ins) => {
-                        return Err(RuntimeError::Raw(format!(
-                            "Runtime error at line:{} {:?}",
-                            ins.parsed_line.line_index, e
-                        )))
-                    }
-                    None => {
-                        return Err(RuntimeError::Raw(format!(
-                            "Unknown Runtime error at PC:{} {:?}",
-                            self.pc, e
-                        )));
-                    }
-                },
-            }
+            self.step()?;
         }
         Ok(self.status)
     }
@@ -1348,23 +1332,7 @@ impl Interpreter {
         let mut limit_counter = limit;
         self.verify_can_run()?;
         while self.status == InterpreterStatus::Running && limit_counter > 0{
-            match self.step() {
-                Ok(_) => {}
-                Err(e) => match self.get_instruction_at(self.pc) {
-                    Some(ins) => {
-                        return Err(RuntimeError::Raw(format!(
-                            "Runtime error at line:{} {:?}",
-                            ins.parsed_line.line_index, e
-                        )))
-                    }
-                    None => {
-                        return Err(RuntimeError::Raw(format!(
-                            "Unknown Runtime error at PC:{} {:?}",
-                            self.pc, e
-                        )));
-                    }
-                },
-            }
+            self.step()?;
             limit_counter -= 1;
         }
         if limit_counter <= 0 {
