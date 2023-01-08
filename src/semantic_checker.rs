@@ -266,7 +266,7 @@ impl SemanticChecker {
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi"
-                    | "bhs" | "bsr" | "bra" => {
+                    | "bhs" | "bsr" | "bra" | "bpl" | "bmi" => {
                         self.verify_one_arg(operands, Rules::ONLY_ADDRESS_OR_LABEL, line);
                         self.verify_size(SizeRules::NoSize, line);
                     }

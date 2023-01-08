@@ -295,8 +295,10 @@ impl Cpu {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(tag = "type", content = "value")]
 pub enum RuntimeError {
     Raw(String),
+    ExecutionLimit(usize),
     OutOfBounds(String),
     DivisionByZero,
     IncorrectAddressingMode(String),
@@ -1304,7 +1306,7 @@ impl Interpreter {
             }
         }
     }
-    pub fn run(&mut self) -> RuntimeResult<InterpreterStatus> {
+    pub fn verify_can_run(&mut self) -> RuntimeResult<()> {
         if self.status == InterpreterStatus::Terminated
             || self.status == InterpreterStatus::TerminatedWithException
         {
@@ -1317,6 +1319,10 @@ impl Interpreter {
                 "Attempted to run emulator with pending interrupt".to_string(),
             ));
         }
+        Ok(())
+    }
+    pub fn run(&mut self) -> RuntimeResult<InterpreterStatus> {
+        self.verify_can_run()?;
         while self.status == InterpreterStatus::Running {
             match self.step() {
                 Ok(_) => {}
@@ -1335,6 +1341,34 @@ impl Interpreter {
                     }
                 },
             }
+        }
+        Ok(self.status)
+    }
+    pub fn run_with_limit(&mut self, limit: usize) -> RuntimeResult<InterpreterStatus> {
+        let mut limit_counter = limit;
+        self.verify_can_run()?;
+        while self.status == InterpreterStatus::Running && limit_counter > 0{
+            match self.step() {
+                Ok(_) => {}
+                Err(e) => match self.get_instruction_at(self.pc) {
+                    Some(ins) => {
+                        return Err(RuntimeError::Raw(format!(
+                            "Runtime error at line:{} {:?}",
+                            ins.parsed_line.line_index, e
+                        )))
+                    }
+                    None => {
+                        return Err(RuntimeError::Raw(format!(
+                            "Unknown Runtime error at PC:{} {:?}",
+                            self.pc, e
+                        )));
+                    }
+                },
+            }
+            limit_counter -= 1;
+        }
+        if limit_counter <= 0 {
+            return Err(RuntimeError::ExecutionLimit(limit));
         }
         Ok(self.status)
     }
@@ -1461,10 +1495,16 @@ impl Interpreter {
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
     }
-    pub fn wasm_run(&mut self) -> Result<InterpreterStatus, String> {
+    pub fn wasm_run(&mut self) -> Result<InterpreterStatus, JsValue> {
         match self.run() {
             Ok(status) => Ok(status),
-            Err(e) => Err(format!("Runtime error {:?}", e)),
+            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
+        }
+    }
+    pub fn wasm_run_with_limit(&mut self, limit: usize) -> Result<InterpreterStatus, JsValue> {
+        match self.run_with_limit(limit) {
+            Ok(status) => Ok(status),
+            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
     }
     pub fn wasm_get_next_instruction(&self) -> JsValue {

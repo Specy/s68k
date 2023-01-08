@@ -311,7 +311,8 @@ impl Compiler {
                 "unlk" => Instruction::UNLK(self.extract_register(op)?),
                 "extb" => Instruction::EXT(self.extract_register(op)?, Size::Byte, Size::Long),
                 "tst" => Instruction::TST(op, self.get_size(size, Size::Word)?),
-                "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs" => {
+                "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs" |
+                "bpl" | "bmi" => {
                     let address = self.extract_address(&op)?;
                     match name[1..].parse() {
                         Ok(condition) => Instruction::Bcc(address, condition),

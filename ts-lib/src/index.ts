@@ -20,6 +20,7 @@ import { Flags,
     InterpreterOptions, 
     ExecutionStep,
     MutationOperation,
+    RuntimeError
 
 } from './pkg/s68k'
 
@@ -162,6 +163,9 @@ export class Interpreter {
     run(): InterpreterStatus {
         return this.interpreter.wasm_run()
     }
+    runWithLimit(limit: number): InterpreterStatus {
+        return this.interpreter.wasm_run_with_limit(limit)
+    }
     async runWithInterruptHandler(onInterrupt: InterruptHandler): Promise<InterpreterStatus> {
         const status = this.interpreter.wasm_run() as InterpreterStatus
         if (status == InterpreterStatus.Interrupt) {
@@ -274,5 +278,6 @@ export {
     InstructionLine, 
     ExecutionStep,
     MutationOperation,
-    InterpreterOptions
+    InterpreterOptions,
+    RuntimeError
 }
