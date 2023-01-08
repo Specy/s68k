@@ -98,101 +98,117 @@ impl Memory {
         }
     }
 
-    pub fn push(&mut self, data: &MemoryCell, mut sp: usize) -> usize {
+    pub fn push(&mut self, data: &MemoryCell, mut sp: usize) -> RuntimeResult<usize> {
         match data {
             MemoryCell::Byte(byte) => {
                 sp -= 1;
-                self.write_byte(sp, *byte)
+                self.write_byte(sp, *byte)?
             }
             MemoryCell::Word(word) => {
                 sp -= 2;
-                self.write_word(sp, *word)
+                self.write_word(sp, *word)?
             }
             MemoryCell::Long(long) => {
                 sp -= 4;
-                self.write_long(sp, *long)
+                self.write_long(sp, *long)?
             }
         }
-        sp
+        Ok(sp)
     }
-    pub fn pop_empty_long(&self, mut sp: usize) -> usize {
+    pub fn pop_empty_long(&self, mut sp: usize) -> RuntimeResult<usize> {
         sp += 4;
-        sp
+        Ok(sp)
     }
-    pub fn pop(&mut self, size: Size, mut sp: usize) -> (MemoryCell, usize) {
+    pub fn pop(&mut self, size: Size, mut sp: usize) -> RuntimeResult<(MemoryCell, usize)> {
         let result = match size {
             Size::Byte => {
-                let byte = self.read_byte(sp);
+                let byte = self.read_byte(sp)?;
                 MemoryCell::Byte(byte)
             }
             Size::Word => {
-                let word = self.read_word(sp);
+                let word = self.read_word(sp)?;
                 sp += 2;
                 MemoryCell::Word(word)
             }
             Size::Long => {
-                let long = self.read_long(sp);
+                let long = self.read_long(sp)?;
                 sp += 4;
                 MemoryCell::Long(long)
             }
         };
-        (result, sp)
+        Ok((result, sp))
     }
-    pub fn read_long(&self, address: usize) -> u32 {
-        u32::from_be_bytes(self.data[address..address + 4].try_into().unwrap())
+    pub fn read_long(&self, address: usize) -> RuntimeResult<u32> {
+        self.verify_address(address, 4)?;
+        Ok(u32::from_be_bytes(self.data[address..address + 4].try_into().unwrap()))
     }
-    pub fn read_word(&self, address: usize) -> u16 {
-        u16::from_be_bytes(self.data[address..address + 2].try_into().unwrap())
+    pub fn read_word(&self, address: usize) -> RuntimeResult<u16> {
+        self.verify_address(address, 2)?;
+        Ok(u16::from_be_bytes(self.data[address..address + 2].try_into().unwrap()))
     }
-    pub fn read_byte(&self, address: usize) -> u8 {
-        self.data[address]
+    pub fn read_byte(&self, address: usize) -> RuntimeResult<u8> {
+        self.verify_address(address, 1)?;
+        Ok(u8::from_be_bytes(self.data[address..address + 1].try_into().unwrap()))
     }
-    pub fn read_size(&self, address: usize, size: &Size) -> u32 {
+    pub fn read_size(&self, address: usize, size: &Size) -> RuntimeResult<u32> {
         match size {
-            Size::Byte => self.read_byte(address) as u32,
-            Size::Word => self.read_word(address) as u32,
-            Size::Long => self.read_long(address),
+            Size::Byte => {
+                let byte = self.read_byte(address)?;
+                Ok(byte as u32)
+            },
+            Size::Word => {
+                let word = self.read_word(address)?;
+                Ok(word as u32)
+            },
+            Size::Long => {
+                let long = self.read_long(address)?;
+                Ok(long)
+            },
         }
     }
-    pub fn write_size(&mut self, address: usize, size: &Size, data: u32) {
+    pub fn write_size(&mut self, address: usize, size: &Size, data: u32) -> RuntimeResult<()>{
         match size {
-            Size::Byte => self.write_byte(address, data as u8),
-            Size::Word => self.write_word(address, data as u16),
-            Size::Long => self.write_long(address, data),
+            Size::Byte => self.write_byte(address, data as u8)?,
+            Size::Word => self.write_word(address, data as u16)?,
+            Size::Long => self.write_long(address, data)?,
+        }
+        Ok(())
+    }
+
+    pub fn verify_address(&self, address: usize, length: usize) -> RuntimeResult<()> {
+        match (address + length) < self.data.len() {
+            true => Ok(()),
+            false => Err(RuntimeError::OutOfBounds(format!(
+                "Memory out of bounds at address: {}, length: {}, maximum: {}",
+                address, 
+                length,
+                self.data.len()
+            ))),
         }
     }
-    pub fn write_long(&mut self, address: usize, value: u32) {
+    pub fn write_long(&mut self, address: usize, value: u32) -> RuntimeResult<()>{
+        self.verify_address(address, 4)?;
         self.data[address..address + 4].copy_from_slice(&value.to_be_bytes());
+        Ok(())
     }
-    pub fn write_word(&mut self, address: usize, value: u16) {
+    pub fn write_word(&mut self, address: usize, value: u16) -> RuntimeResult<()> {
+        self.verify_address(address, 2)?;
         self.data[address..address + 2].copy_from_slice(&value.to_be_bytes());
+        Ok(())
     }
-    pub fn write_byte(&mut self, address: usize, value: u8) {
+    pub fn write_byte(&mut self, address: usize, value: u8) -> RuntimeResult<()>{
+        self.verify_address(address, 1)?;
         self.data[address] = value;
+        Ok(())
     }
     pub fn write_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
-        match (address + bytes.len()) > self.data.len() {
-            true => Err(RuntimeError::OutOfBounds(
-                format!(
-                    "Memory out of bounds, address: {}, size: {}",
-                    address,
-                    bytes.len()
-                )
-                .to_string(),
-            )),
-            false => {
-                self.data[address..address + bytes.len()].copy_from_slice(bytes);
-                Ok(())
-            }
-        }
+        self.verify_address(address, bytes.len())?;
+        self.data[address..address + bytes.len()].copy_from_slice(bytes);
+        Ok(())
     }
-    pub fn read_bytes(&self, address: usize, size: usize) -> RuntimeResult<&[u8]> {
-        match (address + size) > self.data.len() {
-            true => Err(RuntimeError::OutOfBounds(
-                format!("Memory out of bounds, address: {}, size: {}", address, size).to_string(),
-            )),
-            false => Ok(&self.data[address..address + size]),
-        }
+    pub fn read_bytes(&self, address: usize, length: usize) -> RuntimeResult<&[u8]> {
+        self.verify_address(address, length)?;
+        Ok(&self.data[address..address + length])
     }
 }
 #[wasm_bindgen]
@@ -572,7 +588,7 @@ impl Interpreter {
                             }
                         },
                         MutationOperation::WriteMemory { address, old, size } => {
-                            self.memory.write_size(*address, size, *old);
+                            self.memory.write_size(*address, size, *old)?;
                         }
                         MutationOperation::WriteMemoryBytes { address, old } => {
                             self.memory.write_bytes(*address, &old)?;
@@ -801,7 +817,7 @@ impl Interpreter {
             }
             Instruction::BSR(address) => {
                 if self.keep_history {
-                    let old_value = self.memory.read_long(self.get_sp());
+                    let old_value = self.memory.read_long(self.get_sp())?;
                     self.add_mutation_to_history(MutationOperation::WriteMemory {
                         address: self.get_sp() - 4,
                         old: old_value,
@@ -810,7 +826,7 @@ impl Interpreter {
                 }
                 let new_sp = self
                     .memory
-                    .push(&MemoryCell::Long(self.pc as u32), self.get_sp());
+                    .push(&MemoryCell::Long(self.pc as u32), self.get_sp())?;
                 self.set_sp(new_sp);
                 self.pc = *address as usize;
             }
@@ -825,7 +841,7 @@ impl Interpreter {
             Instruction::PEA(source) => {
                 let addr = self.get_operand_address(source)?;
                 if self.keep_history {
-                    let old_value = self.memory.read_long(self.get_sp());
+                    let old_value = self.memory.read_long(self.get_sp())?;
                     self.add_mutation_to_history(MutationOperation::WriteMemory {
                         address: self.get_sp() - 4,
                         old: old_value,
@@ -833,14 +849,14 @@ impl Interpreter {
                     })
                 }
                 let new_sp = self.memory
-                    .push(&MemoryCell::Long(addr as u32), self.get_sp());
+                    .push(&MemoryCell::Long(addr as u32), self.get_sp())?;
                 self.set_sp(new_sp);
 
             }
             Instruction::JSR(source) => {
                 let addr = self.get_operand_address(source)?;
                 if self.keep_history {
-                    let old_value = self.memory.read_long(self.get_sp());
+                    let old_value = self.memory.read_long(self.get_sp())?;
                     self.add_mutation_to_history(MutationOperation::WriteMemory {
                         address: self.get_sp() - 4,
                         old: old_value,
@@ -849,7 +865,7 @@ impl Interpreter {
                 }
                 let new_sp = self
                     .memory
-                    .push(&MemoryCell::Long(self.pc as u32), self.get_sp());
+                    .push(&MemoryCell::Long(self.pc as u32), self.get_sp())?;
                 self.set_sp(new_sp);
                 self.pc = addr as usize;
             }
@@ -1014,7 +1030,7 @@ impl Interpreter {
                     (Size::Byte, Size::Word) => ((((input as u8) as i8) as i16) as u16) as u32,
                     (Size::Word, Size::Long) => (((input as u16) as i16) as i32) as u32,
                     (Size::Byte, Size::Long) => (((input as u8) as i8) as i32) as u32,
-                    _ => panic!("Invalid size for EXT instruction"),
+                    _ => return Err(RuntimeError::Raw(format!("Invalid size for EXT instruction"))),
                 };
                 self.set_register_value(reg, result, &Size::Long);
                 self.set_logic_flags(result, to);
@@ -1066,18 +1082,18 @@ impl Interpreter {
                 let sp = self.get_sp() - 4; //TODO convert to push
                 self.set_sp(sp);
                 let value = self.get_register_value(reg, &Size::Long);
-                self.set_memory_value(value as usize, &Size::Long, sp as u32);
+                self.set_memory_value(value as usize, &Size::Long, sp as u32)?;
                 self.set_register_value(reg, sp as u32, &Size::Long);
                 self.set_sp((sp as i32).wrapping_add(*offset as i32) as usize)
             }
             Instruction::UNLK(reg) => {
                 let value = self.get_register_value(reg, &Size::Long);
-                let (value, new_sp) = self.memory.pop(Size::Long, value as usize);
+                let (value, new_sp) = self.memory.pop(Size::Long, value as usize)?;
                 self.set_register_value(reg, value.get_long(), &Size::Long);
                 self.set_sp(new_sp);
             }
             Instruction::RTS => {
-                let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp());
+                let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
                 self.set_sp(new_sp);
                 self.pc = value.get_long() as usize;
             }
@@ -1152,16 +1168,17 @@ impl Interpreter {
         }
     }
 
-    pub fn set_memory_value(&mut self, address: usize, size: &Size, value: u32) {
+    pub fn set_memory_value(&mut self, address: usize, size: &Size, value: u32) -> RuntimeResult<()> {
         if self.keep_history {
-            let old_value = self.memory.read_size(address, size);
+            let old_value = self.memory.read_size(address, size)?;
             self.add_mutation_to_history(MutationOperation::WriteMemory {
                 address,
                 old: old_value,
                 size: size.clone(),
             });
         }
-        self.memory.write_size(address, size, value);
+        self.memory.write_size(address, size, value)?;
+        Ok(())
     }
 
     pub fn set_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
@@ -1228,21 +1245,23 @@ impl Interpreter {
         match op {
             Operand::Immediate(v) => Ok(*v),
             Operand::Register(op) => Ok(self.get_register_value(&op, size)),
-            Operand::Absolute(address) => Ok(self.memory.read_size(*address, size)),
+            Operand::Absolute(address) => Ok(self.memory.read_size(*address, size)?),
             Operand::IndirectOrDisplacement { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
-                Ok(self.memory.read_size(address as usize, size))
+                Ok(self.memory.read_size(address as usize, size)?)
             }
             Operand::PreIndirect(op) => {
-                let address = self.get_register_value(&op, &Size::Long) as usize - size.to_bytes();
+                let address = self.get_register_value(&op, &Size::Long);
+                let address = (address).wrapping_sub(size.to_bytes() as u32);
                 self.set_register_value(&op, address as u32, &Size::Long);
-                Ok(self.memory.read_size(address, size))
+                Ok(self.memory.read_size(address as usize, size)?)
             }
             Operand::PostIndirect(op) => {
-                let address = self.get_register_value(&op, &Size::Long) as usize;
-                self.set_register_value(&op, address as u32 + size.to_bytes() as u32, &Size::Long);
-                Ok(self.memory.read_size(address, size))
+                let address = self.get_register_value(&op, &Size::Long);
+                let new_address = (address).wrapping_add(size.to_bytes() as u32);
+                self.set_register_value(&op, new_address, &Size::Long);
+                Ok(self.memory.read_size(address as usize, size)?)
             }
             Operand::IndirectBaseDisplacement { offset, operands } => {
                 //TODO not sure if this is how it should work
@@ -1250,7 +1269,7 @@ impl Interpreter {
                 let index_value = self.get_register_value(&operands.index, &Size::Long) as i32;
 
                 let final_address = base_value + offset + index_value;
-                Ok(self.memory.read_size(final_address as usize, size))
+                Ok(self.memory.read_size(final_address as usize, size)?)
             }
         }
     }
@@ -1284,30 +1303,30 @@ impl Interpreter {
                 "Attempted to store to immediate value".to_string(),
             )),
             Operand::Register(op) => Ok(self.set_register_value(&op, value, size)),
-            Operand::Absolute(address) => Ok(self.set_memory_value(*address, size, value)),
+            Operand::Absolute(address) => Ok(self.set_memory_value(*address, size, value)?),
             Operand::IndirectOrDisplacement { offset, operand } => {
                 //TODO not sure if this works fine with full 32bits
                 let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
-                Ok(self.set_memory_value(address as usize, size, value))
+                Ok(self.set_memory_value(address as usize, size, value)?)
             }
             Operand::PreIndirect(op) => {
-                //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(&op, &Size::Long) as usize - size.to_bytes();
+                let address = self.get_register_value(&op, &Size::Long);
+                let address = (address).wrapping_sub(size.to_bytes() as u32);
                 self.set_register_value(&op, address as u32, &Size::Long);
-                Ok(self.set_memory_value(address, size, value))
+                Ok(self.set_memory_value(address as usize, size, value)?)
             }
             Operand::PostIndirect(op) => {
-                //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(&op, &Size::Long) as usize;
-                self.set_register_value(&op, address as u32 + size.to_bytes() as u32, &Size::Long);
-                Ok(self.set_memory_value(address, size, value))
+                let address = self.get_register_value(&op, &Size::Long);
+                let new_address = (address).wrapping_add(size.to_bytes() as u32);
+                self.set_register_value(&op, new_address, &Size::Long);
+                Ok(self.set_memory_value(address as usize, size, value)?)
             }
             Operand::IndirectBaseDisplacement { offset, operands } => {
                 let base_value = self.get_register_value(&operands.base, &Size::Long) as i32;
                 let index_value = self.get_register_value(&operands.index, &Size::Long) as i32;
 
                 let final_address = base_value + offset + index_value;
-                Ok(self.set_memory_value(final_address as usize, size, value))
+                Ok(self.set_memory_value(final_address as usize, size, value)?)
             }
         }
     }
