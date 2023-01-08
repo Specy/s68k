@@ -236,7 +236,7 @@ impl SemanticChecker {
                         self.verify_size(SizeRules::NoSize, line);
                     }
                     "clr" => {
-                        self.verify_one_arg(operands, Rules::ONLY_D_REG_OR_INDIRECT, line);
+                        self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
                         self.verify_size(SizeRules::AnySize, line);
                     }
                     "exg" => {

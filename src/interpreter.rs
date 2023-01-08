@@ -3,6 +3,12 @@
     https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/execute.rs
 */
 
+/*TODO
+    Currently side effects are applied both when reading and storing the result of an operation.
+    Those operations should be run only once, for example when reading to a postincrement register, and then stored 
+    to the same incremented register, 3 increments are applied, when only 1 should be applied.
+    There needs to be added a way to only apply the side effect once, and then store the result to the register.
+*/
 use crate::{
     compiler::{Compiler, Directive, InstructionLine},
     instructions::{
@@ -1036,9 +1042,8 @@ impl Interpreter {
                 }
             }
             Instruction::CLR(dest, size) => {
-                self.get_operand_value(dest, size)?; //apply side effects
                 self.store_operand_value(dest, 0, size)?;
-                self.cpu.ccr.clear();
+                self.cpu.ccr.clear(); //what about extend flag?
                 self.set_flag(Flags::Zero, true);
             }
             Instruction::Scc(op, condition) => {
