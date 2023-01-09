@@ -226,17 +226,17 @@ pub fn parse_string_into_u32_chunks(str: &str, align_left: bool) -> Vec<u32> {
 }
 pub fn parse_absolute(str: &str, labels: &HashMap<String, Label>) -> Result<u32, String> {
     match str.chars().collect::<Vec<char>>()[..] {
-        ['%', ..] => match i32::from_str_radix(&str[1..], 2) {
+        ['%', ..] => match i64::from_str_radix(&str[1..], 2) {
             Ok(n) => Ok(n as u32),
-            Err(_) => Err(format!("Invalid binary number: {}", str)),
+            Err(e) => Err(format!("Invalid binary number: {}, {}", str, e)),
         },
-        ['@', ..] => match i32::from_str_radix(&str[1..], 8) {
+        ['@', ..] => match i64::from_str_radix(&str[1..], 8) {
             Ok(n) => Ok(n as u32),
-            Err(_) => Err(format!("Invalid octal number: {}", str)),
+            Err(e) => Err(format!("Invalid octal number: {}, {}", str, e)),
         },
-        ['$', ..] => match i32::from_str_radix(&str[1..], 16) {
+        ['$', ..] => match i64::from_str_radix(&str[1..], 16) {
             Ok(n) => Ok(n as u32),
-            Err(_) => Err(format!("Invalid hexadecimal number: {}", str)),
+            Err(e) => Err(format!("Invalid hexadecimal number: {}, {}", str, e)),
         },
         ['\'', .., '\''] => {
             //parse characters into list of bytes
@@ -250,12 +250,12 @@ pub fn parse_absolute(str: &str, labels: &HashMap<String, Label>) -> Result<u32,
             Ok(chunks[0])
         }
         [..] => match labels.get(str) {
-            Some(label) => Ok((label.address as i32) as u32),
-            None => match i32::from_str_radix(str, 10) {
+            Some(label) => Ok((label.address as i64) as u32),
+            None => match i64::from_str_radix(str, 10) {
                 Ok(value) => Ok(value as u32),
-                Err(_) => Err(format!(
-                    "Invalid decimal number or non existing label: {}",
-                    str
+                Err(e) => Err(format!(
+                    "Invalid decimal number or non existing label: {}, {}",
+                    str, e
                 )),
             },
         },

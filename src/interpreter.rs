@@ -174,9 +174,9 @@ impl Memory {
         }
         Ok(())
     }
-
     pub fn verify_address(&self, address: usize, length: usize) -> RuntimeResult<()> {
-        match (address + length) < self.data.len() {
+        let end_address = address.wrapping_add(length);
+        match end_address < self.data.len() && end_address > address {
             true => Ok(()),
             false => Err(RuntimeError::OutOfBounds(format!(
                 "Memory out of bounds at address: {}, length: {}, maximum: {}",
