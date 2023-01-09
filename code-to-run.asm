@@ -1,1 +1,1 @@
-move.l #$FFFFFFkF, d0
+add.l (a0)+, (a0)+

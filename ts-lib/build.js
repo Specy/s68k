@@ -11,6 +11,7 @@ async function init(){
     await fs.unlink("./dist/pkg/README.md");
     await fs.unlink("./dist/pkg/.gitignore");
     console.log("Build complete")
+    
 }
 
 init()
