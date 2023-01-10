@@ -123,6 +123,19 @@ pub enum Instruction {
     ADDQ(u8, Operand, Size), 
     MOVEQ(u8, RegisterOperand), 
     SUBQ(u8, Operand, Size),
+
+    
+    ADDI(u32, Operand, Size),
+    SUBI(u32, Operand, Size),
+    ANDI(u32, Operand, Size),
+    ORI(u32, Operand, Size),
+    EORI(u32, Operand, Size),
+    CMPI(u32, Operand, Size),
+    CMPA(Operand, RegisterOperand, Size),
+    CMPM(Operand, Operand, Size),
+    MOVEA(Operand, RegisterOperand, Size),
+
+    //TAS(),
     DIVx(Operand, RegisterOperand, Sign),
     MULx(Operand, RegisterOperand, Sign),
     SWAP(RegisterOperand),
@@ -133,7 +146,7 @@ pub enum Instruction {
     NEG(Operand, Size),
     EXT(RegisterOperand, Size, Size),
     TST(Operand, Size),
-    CMP(Operand, Operand, Size),
+    CMP(Operand, RegisterOperand, Size),
     Bcc(u32, Condition),
     Scc(Operand, Condition),
     DBcc(RegisterOperand, u32, Condition),

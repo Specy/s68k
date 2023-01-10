@@ -3,7 +3,8 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
     instructions::{
-        DisplacementOperands, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size, Condition,
+        Condition, DisplacementOperands, Instruction, Operand, RegisterOperand, ShiftDirection,
+        Sign, Size,
     },
     lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     math::sign_extend_to_long,
@@ -196,18 +197,74 @@ impl Compiler {
                     self.extract_register(op2)?,
                     self.get_size(size, Size::Word)?,
                 ),
-                "subq" => Instruction::SUBQ(self.extract_immediate(&op1)? as u8, op2, self.get_size(size, Size::Word)?),
-                "addq" => Instruction::ADDQ(self.extract_immediate(&op1)? as u8, op2, self.get_size(size, Size::Word)?),
-                "moveq" => Instruction::MOVEQ(self.extract_immediate(&op1)? as u8, self.extract_register(op2)?),
+                "subq" => Instruction::SUBQ(
+                    self.extract_immediate(&op1)? as u8,
+                    op2,
+                    self.get_size(size, Size::Word)?,
+                ),
+                "addq" => Instruction::ADDQ(
+                    self.extract_immediate(&op1)? as u8,
+                    op2,
+                    self.get_size(size, Size::Word)?,
+                ),
+                "moveq" => Instruction::MOVEQ(
+                    self.extract_immediate(&op1)? as u8,
+                    self.extract_register(op2)?,
+                ),
                 "divs" => Instruction::DIVx(op1, self.extract_register(op2)?, Sign::Signed),
                 "divu" => Instruction::DIVx(op1, self.extract_register(op2)?, Sign::Unsigned),
                 "muls" => Instruction::MULx(op1, self.extract_register(op2)?, Sign::Signed),
                 "mulu" => Instruction::MULx(op1, self.extract_register(op2)?, Sign::Unsigned),
                 "exg" => Instruction::EXG(self.extract_register(op1)?, self.extract_register(op2)?),
-                "cmp" => Instruction::CMP(op1, op2, self.get_size(size, Size::Word)?),
+                "cmp" => Instruction::CMP(
+                    op1,
+                    self.extract_register(op2)?,
+                    self.get_size(size, Size::Word)?,
+                ),
                 "or" => Instruction::OR(op1, op2, self.get_size(size, Size::Word)?),
                 "and" => Instruction::AND(op1, op2, self.get_size(size, Size::Word)?),
                 "eor" => Instruction::EOR(op1, op2, self.get_size(size, Size::Word)?),
+                "addi" => Instruction::ADDI(
+                    self.extract_immediate(&op1)?,
+                    op2,
+                    self.get_size(size, Size::Word)?,
+                ),
+                "subi" => Instruction::SUBI(
+                    self.extract_immediate(&op1)?,
+                    op2,
+                    self.get_size(size, Size::Word)?,
+                ),
+                "andi" => Instruction::ANDI(
+                    self.extract_immediate(&op1)?,
+                    op2,
+                    self.get_size(size, Size::Word)?,
+                ),
+                "cmpi" => Instruction::CMPI(
+                    self.extract_immediate(&op1)?,
+                    op2,
+                    self.get_size(size, Size::Word)?,
+                ),
+                "ori" => Instruction::ORI(
+                    self.extract_immediate(&op1)?,
+                    op2,
+                    self.get_size(size, Size::Word)?,
+                ),
+                "eori" => Instruction::EORI(
+                    self.extract_immediate(&op1)?,
+                    op2,
+                    self.get_size(size, Size::Word)?,
+                ),
+                "cmpa" => Instruction::CMPA(
+                    op1,
+                    self.extract_register(op2)?,
+                    self.get_size(size, Size::Word)?,
+                ),
+                "cmpm" => Instruction::CMPM(op1, op2, self.get_size(size, Size::Word)?),
+                "movea" => Instruction::MOVEA(
+                    op1,
+                    self.extract_register(op2)?,
+                    self.get_size(size, Size::Word)?,
+                ),
                 "lsl" => Instruction::LSd(
                     op1,
                     op2,
@@ -268,9 +325,11 @@ impl Compiler {
                 "dbra" => Instruction::DBcc(
                     self.extract_register(op1)?,
                     self.extract_address(&op2)?,
-                    Condition::False
+                    Condition::False,
                 ),
-                "link" => Instruction::LINK(self.extract_register(op1)?, self.extract_immediate(&op2)?),
+                "link" => {
+                    Instruction::LINK(self.extract_register(op1)?, self.extract_immediate(&op2)?)
+                }
                 _ => {
                     return Err(CompilationError::Raw(format!(
                         "Unknown instruction {}",
@@ -311,8 +370,8 @@ impl Compiler {
                 "unlk" => Instruction::UNLK(self.extract_register(op)?),
                 "extb" => Instruction::EXT(self.extract_register(op)?, Size::Byte, Size::Long),
                 "tst" => Instruction::TST(op, self.get_size(size, Size::Word)?),
-                "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs" |
-                "bpl" | "bmi" => {
+                "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs"
+                | "bpl" | "bmi" => {
                     let address = self.extract_address(&op)?;
                     match name[1..].parse() {
                         Ok(condition) => Instruction::Bcc(address, condition),

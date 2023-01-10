@@ -676,6 +676,11 @@ impl Interpreter {
                 self.set_logic_flags(source_value, size);
                 self.store_operand_value(dest, source_value, size, Used::Once)?;
             }
+            Instruction::MOVEA(source, dest, size ) => {
+                let source_value = self.get_operand_value(source, size)?;
+                let source_value = sign_extend_to_long(source_value, size) as u32;
+                self.set_register_value(dest, source_value, size);
+            }
             Instruction::MOVEQ(value, dest) => {
                 let value = sign_extend_to_long(*value as u32, &Size::Byte) as u32;
                 self.set_logic_flags(value, &Size::Long);
@@ -734,6 +739,14 @@ impl Interpreter {
                     }
                 }
             }
+            Instruction::SUBI(source_value, dest, size) => {
+                let dest_value = self.get_operand_value(dest, size)?;
+                let (result, carry) = overflowing_sub_sized(dest_value, *source_value, size);
+                let overflow = has_sub_overflowed(dest_value, *source_value, result, size);
+                self.set_compare_flags(result, size, carry, overflow);
+                self.set_flag(Flags::Extend, carry);
+                self.store_operand_value(dest, result, size, Used::Twice)?;
+            }
             Instruction::ADD(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size)?;
                 let dest_value = self.get_operand_value(dest, size)?;
@@ -749,6 +762,14 @@ impl Interpreter {
                 let dest_value = self.get_register_value(dest, size);
                 let (result, _) = overflowing_add_sized(dest_value, source_value, &Size::Long);
                 self.set_register_value(dest, result, &Size::Long);
+            }
+            Instruction::ADDI(source_value, dest, size) => {
+                let dest_value = self.get_operand_value(dest, size)?;
+                let (result, carry) = overflowing_add_sized(dest_value, *source_value, size);
+                let overflow = has_add_overflowed(dest_value, *source_value, result, size);
+                self.set_compare_flags(result, size, carry, overflow);
+                self.set_flag(Flags::Extend, carry);
+                self.store_operand_value(dest, result, size, Used::Twice)?;
             }
             Instruction::ADDQ(value, dest, size) => {
                 match dest {
@@ -978,6 +999,24 @@ impl Interpreter {
                 self.store_operand_value(op, value, size, Used::Twice)?;
                 self.set_logic_flags(value, size);
             }
+            Instruction::ANDI(source_value, dest, size) => {
+                let dest_value = self.get_operand_value(dest, size)?;
+                let result = get_value_sized(dest_value & source_value, size);
+                self.store_operand_value(dest, result, size, Used::Twice)?;
+                self.set_logic_flags(result, size);
+            }
+            Instruction::ORI(source_value, dest, size) => {
+                let dest_value = self.get_operand_value(dest, size)?;
+                let result = get_value_sized(dest_value | source_value, size);
+                self.store_operand_value(dest, result, size, Used::Twice)?;
+                self.set_logic_flags(result, size);
+            }
+            Instruction::EORI(source_value, dest, size) => {
+                let dest_value = self.get_operand_value(dest, size)?;
+                let result = get_value_sized(dest_value ^ source_value, size);
+                self.store_operand_value(dest, result, size, Used::Twice)?;
+                self.set_logic_flags(result, size);
+            }
             Instruction::NEG(source, size) => {
                 let original = self.get_operand_value(source, size)?;
                 let (result, overflow) = overflowing_sub_signed_sized(0, original, size);
@@ -1053,6 +1092,28 @@ impl Interpreter {
                 self.set_logic_flags(value, size);
             }
             Instruction::CMP(source, dest, size) => {
+                //TODO revise this, should i strict it to only data registers? 
+                let source_value = self.get_operand_value(source, size)?;
+                let dest_value = self.get_register_value(dest, size);
+                let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
+                let overflow = has_sub_overflowed(dest_value, source_value, result, size);
+                self.set_compare_flags(result, size, carry, overflow);
+            }
+            Instruction::CMPA(source, dest, size) => {
+                //TODO not sure about this
+                let source_value = sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
+                let dest_value = self.get_register_value(dest, &Size::Long);
+                let (result, carry) = overflowing_sub_sized(dest_value, source_value, &Size::Long);
+                let overflow = has_sub_overflowed(dest_value, source_value, result, &Size::Long);
+                self.set_compare_flags(result, &Size::Long, carry, overflow);
+            }
+            Instruction::CMPI(source_value, dest, size) => {
+                let dest_value = self.get_operand_value(dest, size)?;
+                let (result, carry) = overflowing_sub_sized(dest_value, *source_value, size);
+                let overflow = has_sub_overflowed(dest_value, *source_value, result, size);
+                self.set_compare_flags(result, size, carry, overflow);
+            }
+            Instruction::CMPM(source,dest , size ) => {
                 let source_value = self.get_operand_value(source, size)?;
                 let dest_value = self.get_operand_value(dest, size)?;
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);

@@ -77,6 +77,7 @@ bitflags! {
         const NO_ADDRESS = AdrMode::ADDRESS.bits;
         const NO_INDIRECT = AdrMode::INDIRECT_MAYBE_DISPLACEMENT.bits;
 
+        const ONLY_POST_INCREMENT = !AdrMode::INDIRECT_POST_INCREMENT.bits;
         const ONLY_REG = !(AdrMode::D_REG.bits | AdrMode::A_REG.bits);
         const ONLY_A_REG = !AdrMode::A_REG.bits;
         const ONLY_D_REG = !AdrMode::D_REG.bits;
@@ -261,7 +262,7 @@ impl SemanticChecker {
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "cmp" => {
-                        self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE, line);
+                        self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE | Rules::ONLY_REG, line);
                         self.verify_size(SizeRules::AnySize, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
@@ -296,6 +297,21 @@ impl SemanticChecker {
                     "not" => {
                         self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
                         self.verify_size(SizeRules::AnySize, line);
+                    }
+                    "addi" | "andi" | "ori" | "eori" | "subi" | "cmpi" => {
+                        self.verify_two_args(operands, Rules::ONLY_IMMEDIATE, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
+                        self.verify_size(SizeRules::AnySize, line);
+                    }
+                    "movea" => {
+                        self.verify_two_args(operands, Rules::NONE, Rules::ONLY_A_REG, line);
+                        self.verify_size(SizeRules::OnlyLongOrWord, line);
+                    }
+                    "cmpa" => {
+                        self.verify_two_args(operands, Rules::NONE, Rules::ONLY_A_REG, line);
+                        self.verify_size(SizeRules::OnlyLongOrWord, line);
+                    }
+                    "cmpm" => {
+                        self.verify_two_args(operands, Rules::ONLY_POST_INCREMENT, Rules::ONLY_POST_INCREMENT, line);
                     }
                     "or" | "and" | "eor" => {
                         self.verify_two_args(
