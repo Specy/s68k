@@ -6,22 +6,20 @@ use std::{
 use serde::{Serialize, Deserialize};
 use wasm_bindgen::{prelude::wasm_bindgen};
 #[wasm_bindgen]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub enum Size {
-    Byte,
-    Word,
-    Long,
+    Byte = 1,
+    Word = 2,
+    Long = 4,
 }
 impl Size {
+    #[inline(always)]
     pub fn to_bytes(&self) -> usize {
-        match self {
-            Size::Byte => 1,
-            Size::Word => 2,
-            Size::Long => 4,
-        }
+        *self as usize
     }
+    #[inline(always)]
     pub fn to_bits(&self) -> usize {
-        self.to_bytes() * 8
+        *self as usize * 8
     }
 }
 
@@ -123,8 +121,6 @@ pub enum Instruction {
     ADDQ(u8, Operand, Size), 
     MOVEQ(u8, RegisterOperand), 
     SUBQ(u8, Operand, Size),
-
-    
     ADDI(u32, Operand, Size),
     SUBI(u32, Operand, Size),
     ANDI(u32, Operand, Size),
@@ -133,9 +129,7 @@ pub enum Instruction {
     CMPI(u32, Operand, Size),
     CMPA(Operand, RegisterOperand, Size),
     CMPM(Operand, Operand, Size),
-    MOVEA(Operand, RegisterOperand, Size),
-
-    //TAS(),
+    MOVEA(Operand, RegisterOperand, Size), //add TAS()
     DIVx(Operand, RegisterOperand, Sign),
     MULx(Operand, RegisterOperand, Sign),
     SWAP(RegisterOperand),

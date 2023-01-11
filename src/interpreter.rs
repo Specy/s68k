@@ -528,7 +528,7 @@ impl Interpreter {
         self.history.len() > 0
     }
 
-    pub fn step(&mut self) -> RuntimeResult<(InstructionLine, InterpreterStatus)> {
+    pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
         if self.keep_history {
             self.history
                 .push_back(ExecutionStep::new(self.pc, self.cpu.ccr));
@@ -550,7 +550,7 @@ impl Interpreter {
             )),
 
             Some(ins) => {
-                let clone = ins.clone();
+                let clone = ins.instruction.clone();
                 //need to find a way to remove this clone
                 self.increment_pc(4);
                 self.execute_instruction(&clone)?;
@@ -559,7 +559,7 @@ impl Interpreter {
                 if self.has_reached_bottom() && *status != InterpreterStatus::Interrupt {
                     self.set_status(InterpreterStatus::Terminated);
                 }
-                Ok((clone, self.status))
+                Ok(self.status)
             }
             None if self.pc < self.final_instruction_address => {
                 self.set_status(InterpreterStatus::TerminatedWithException);
@@ -668,8 +668,7 @@ impl Interpreter {
             None => Err(RuntimeError::Raw("No interrupt pending".to_string())),
         }
     }
-    fn execute_instruction(&mut self, instruction_line: &InstructionLine) -> RuntimeResult<()> {
-        let ins = &instruction_line.instruction;
+    fn execute_instruction(&mut self, ins: &Instruction) -> RuntimeResult<()> {
         match ins {
             Instruction::MOVE(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size)?;
@@ -1555,7 +1554,7 @@ impl Interpreter {
     }
     pub fn wasm_step_only_status(&mut self) -> Result<InterpreterStatus, JsValue> {
         match self.step() {
-            Ok((_, status)) => Ok(status),
+            Ok(status) => Ok(status),
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
     }
