@@ -307,7 +307,7 @@ impl Compiler {
                 "bclr" => Instruction::BCLR(op1, op2),
                 "bchg" => Instruction::BCHG(op1, op2),
                 "dbcc" | "dbcs" | "dbeq" | "dbne" | "dbge" | "dbgt" | "dble" | "dbls" | "dblt"
-                | "dbhi" | "dbmi" | "dbpl" | "dbvc" | "dbvs" | "dbf" | "dbt" => {
+                | "dbhi" | "dbmi" | "dbpl" | "dbvc" | "dbvs" | "dbf" | "dbt" | "dbhs" | "dblo" => {
                     match name[2..].parse() {
                         Ok(condition) => Instruction::DBcc(
                             self.extract_register(op1)?,
@@ -370,8 +370,8 @@ impl Compiler {
                 "unlk" => Instruction::UNLK(self.extract_register(op)?),
                 "extb" => Instruction::EXT(self.extract_register(op)?, Size::Byte, Size::Long),
                 "tst" => Instruction::TST(op, self.get_size(size, Size::Word)?),
-                "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs"
-                | "bpl" | "bmi" => {
+                "bcc" | "bcs" | "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs"
+                | "bpl" | "bmi" | "bvc" | "bvs" => {
                     let address = self.extract_address(&op)?;
                     match name[1..].parse() {
                         Ok(condition) => Instruction::Bcc(address, condition),
@@ -394,7 +394,7 @@ impl Compiler {
                 "jmp" => Instruction::JMP(op),
                 //scc
                 "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt" | "shi"
-                | "smi" | "spl" | "svc" | "svs" | "sf" | "st" => match name[1..].parse() {
+                | "smi" | "spl" | "svc" | "svs" | "sf" | "st" | "shs" | "slo" => match name[1..].parse() {
                     Ok(condition) => Instruction::Scc(op, condition),
                     Err(_) => {
                         return Err(CompilationError::ParseError(format!(

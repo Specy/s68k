@@ -266,18 +266,21 @@ impl SemanticChecker {
                         self.verify_size(SizeRules::AnySize, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
-                    "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi"
-                    | "bhs" | "bsr" | "bra" | "bpl" | "bmi" => {
+                    "bcc" | "bcs" | "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "bls" | "bhi"
+                     | "bpl" | "bmi" | "blo" | "bhs" | "bvc" | "bvs"
+                     //other
+                     | "bsr" | "bra" => {
                         self.verify_one_arg(operands, Rules::ONLY_ADDRESS_OR_LABEL, line);
                         self.verify_size(SizeRules::NoSize, line);
                     }
                     "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt"
-                    | "shi" | "smi" | "spl" | "svc" | "svs" | "sf" | "st" => {
+                    | "shi" | "smi" | "spl" | "svc" | "svs" | "slo" | "shs" | "sf" | "st" => {
                         self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
                         self.verify_size(SizeRules::NoSize, line);
                     }
                     "dbcc" | "dbcs" | "dbeq" | "dbne" | "dbge" | "dbgt" | "dble" | "dbls" | "dblt"
-                    | "dbhi" | "dbmi" | "dbpl" | "dbvc" | "dbvs" | "dbf" | "dbt" | "dbra" => {
+                    | "dbhi" | "dbmi" | "dbpl" | "dbvc" | "dbvs" | "dbf" | "dbt" | "dbhs" | "dblo"
+                    | "dbra" => {
                         self.verify_two_args(
                             operands,
                             Rules::ONLY_D_REG,

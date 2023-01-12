@@ -32,8 +32,8 @@ The interpreter is split into individual modules that can be used standalone for
 |------------------------|----------------------------------------------------------------------------------|
 | Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu, addq, subq, addi, subi             |
 | Comparison             | tst, cmp, cmpi, cmpa, cmpm                                                       |
-| Branching and jumping  | beq, bne, blt, ble, bgt, bge, blo, bls, bhi, bhs, bsr, bra, jsr, rts, dbcc, dbcs, dbeq, dbne, dbge, dbgt, dble, dbls, dblt, dbhi, dbmi, dbpl, dbvc, dbvs, dbf, dbt, dbra                                  |
-| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st     |
+| Branching and jumping  | bcc, bcs, beq, bne, blt, ble, bgt, bge, bls, bhi, bpl, bmi, blo, bhs, bvc, bvs, bsr, bra, jsr, rts, dbcc, dbcs, dbeq, dbne, dbge, dbgt, dble, dbls, dblt, dbhi, dbmi, dbpl, dbvc, dbvs, dbf, dbt, dbhs, dblo dbra                                                                                                        |
+| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st, shs, slo   |
 | Bitwise                | not, or, and, eor, lsl, lsr, asr, asl, rol, ror, btst, bclr, bchg, bset          |
 | Other                  | clr, exg, neg, ext, swap, move, link, unl, lea, pea, moveq, movea                |
 | Interrupt              | trap #15, with implemented interrupts from 0 to 7                                |
