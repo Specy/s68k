@@ -818,9 +818,10 @@ impl Interpreter {
             }
             Instruction::BSR(address) => {
                 if self.keep_history {
-                    let old_value = self.memory.read_long(self.get_sp())?;
+                    let old_address = self.get_sp() - 4; 
+                    let old_value = self.memory.read_long(old_address)?;
                     self.debugger.add_mutation(MutationOperation::WriteMemory {
-                        address: self.get_sp() - 4,
+                        address: old_address,
                         old: old_value,
                         size: Size::Long,
                     });
@@ -834,6 +835,28 @@ impl Interpreter {
                     .push(&MemoryCell::Long(self.pc as u32), self.get_sp())?;
                 self.set_sp(new_sp);
                 self.pc = *address as usize;
+                self.debugger.push_call(self.pc);
+            }
+            Instruction::JSR(source) => {
+                let address = self.get_operand_address(source)?;
+                if self.keep_history {
+                    let old_address = self.get_sp() - 4; 
+                    let old_value = self.memory.read_long(old_address)?;
+                    self.debugger.add_mutation(MutationOperation::WriteMemory {
+                        address: old_address, 
+                        old: old_value,
+                        size: Size::Long,
+                    });
+                    self.debugger.add_mutation(MutationOperation::PushCall {
+                        to: address as usize,
+                        from: self.get_pc() - 4, //pc is incremented before the instruction is executed
+                    });
+                }
+                let new_sp = self
+                    .memory
+                    .push(&MemoryCell::Long(self.pc as u32), self.get_sp())?;
+                self.set_sp(new_sp);
+                self.pc = address as usize;
                 self.debugger.push_call(self.pc);
             }
             Instruction::JMP(op) => {
@@ -859,27 +882,7 @@ impl Interpreter {
                     .push(&MemoryCell::Long(addr as u32), self.get_sp())?;
                 self.set_sp(new_sp);
             }
-            Instruction::JSR(source) => {
-                let address = self.get_operand_address(source)?;
-                if self.keep_history {
-                    let old_value = self.memory.read_long(self.get_sp())?;
-                    self.debugger.add_mutation(MutationOperation::WriteMemory {
-                        address: self.get_sp() - 4, 
-                        old: old_value,
-                        size: Size::Long,
-                    });
-                    self.debugger.add_mutation(MutationOperation::PushCall {
-                        to: address as usize,
-                        from: self.get_pc() - 4, //pc is incremented before the instruction is executed
-                    });
-                }
-                let new_sp = self
-                    .memory
-                    .push(&MemoryCell::Long(self.pc as u32), self.get_sp())?;
-                self.set_sp(new_sp);
-                self.pc = address as usize;
-                self.debugger.push_call(self.pc);
-            }
+
             Instruction::BCHG(bit_source, dest) => {
                 let bit = self.get_operand_value(bit_source, &Size::Byte)?;
                 let mut source_value = self.get_operand_value(dest, &Size::Long)?;
