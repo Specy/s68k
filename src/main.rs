@@ -43,7 +43,7 @@ fn main() {
     //pre_interpreter.debug_print();
 
     let options = InterpreterOptions{
-        keep_history: false,
+        keep_history: true,
         ..Default::default()
     };
     //16 mb of memory

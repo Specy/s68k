@@ -553,7 +553,7 @@ impl Interpreter {
                         }
                         MutationOperation::PopCall { to, from} => {
                             //try to get the address of the function that popped the call
-                            let ins = self.get_instruction_at(*to);
+                            let ins = self.get_instruction_at(*to - 4);
                             let callee_address = match ins {
                                 Some(ins) => match &ins.instruction {
                                     Instruction::BSR(address) => *address as usize,

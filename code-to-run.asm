@@ -1,7 +1,21 @@
-amount equ 5000000
+ORG $1000
+START:
     * Write here your code
-    move.l #amount, d0
-for_start:
+    move.l #-1, d0
+    bsr p1
+    add.l #1, d3
+
+    bra END
+p1:
+    add.l #1, d0
+    bsr p2
     add.l #1, d1
-    sub.l #1, d0
-    bpl for_start
+    rts
+p2:
+    add.l #1, d2
+    rts
+
+
+
+
+END: * Jump here to end the program
