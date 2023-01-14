@@ -38,7 +38,9 @@ pub enum MutationOperation {
 pub struct ExecutionStep {
     mutations: Vec<MutationOperation>,
     pc: usize,
-    ccr: Flags,
+    line: usize,
+    old_ccr: Flags,
+    new_ccr: Flags,
 }
 
 impl ExecutionStep {
@@ -46,7 +48,9 @@ impl ExecutionStep {
         Self {
             mutations: vec![],
             pc,
-            ccr,
+            old_ccr: ccr,
+            new_ccr: ccr,
+            line: 0,
         }
     }
     pub fn add_mutation(&mut self, mutation: MutationOperation) {
@@ -56,7 +60,7 @@ impl ExecutionStep {
         self.pc = pc;
     }
     pub fn set_ccr(&mut self, ccr: Flags) {
-        self.ccr = ccr;
+        self.old_ccr = ccr;
     }
     pub fn get_mutations(&self) -> &Vec<MutationOperation> {
         &self.mutations
@@ -65,7 +69,7 @@ impl ExecutionStep {
         self.pc
     }
     pub fn get_ccr(&self) -> Flags {
-        self.ccr
+        self.old_ccr
     }
 }
 #[wasm_bindgen]
@@ -110,6 +114,18 @@ impl Debugger {
     }
     pub fn get_last_step(&self) -> Option<&ExecutionStep> {
         self.history.back()
+    }
+    pub fn set_new_ccr(&mut self, ccr: Flags) {
+        self.history
+            .back_mut()
+            .expect("No history to set new ccr")
+            .new_ccr = ccr;
+    }
+    pub fn set_line(&mut self, line: usize) {
+        self.history
+            .back_mut()
+            .expect("No history to set new line")
+            .line = line;
     }
     pub fn add_mutation(&mut self, operation: MutationOperation) {
         self.history

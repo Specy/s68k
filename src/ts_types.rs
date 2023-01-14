@@ -118,7 +118,13 @@ pub const IExecutionStep: &'static str = r#"
 export type ExecutionStep = {
     mutations: MutationOperation[],
     pc: number,
-    ccr: Flags
+    old_ccr: {
+        bits: number,
+    },
+    new_ccr: {
+        bits: number,
+    },
+    line: number
 }
 "#;
 #[wasm_bindgen(typescript_custom_section)]

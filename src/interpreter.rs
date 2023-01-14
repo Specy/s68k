@@ -482,7 +482,7 @@ impl Interpreter {
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
         if self.keep_history {
             self.debugger
-                .add_step(ExecutionStep::new(self.pc, self.cpu.ccr))
+                .add_step(ExecutionStep::new(self.pc, self.cpu.ccr));
         }
         self.last_line_address = self.pc;
         match self.get_instruction_at(self.pc) {
@@ -499,6 +499,10 @@ impl Interpreter {
 
             Some(ins) => {
                 let clone = ins.instruction.clone();
+                if self.keep_history {
+                    self.debugger.set_line(ins.parsed_line.line_index);
+
+                }
                 //need to find a way to remove this clone
                 self.increment_pc(4);
                 self.execute_instruction(&clone)?;
@@ -506,6 +510,9 @@ impl Interpreter {
                 //TODO not sure if doing this before or after running the instruction
                 if self.has_reached_bottom() && *status != InterpreterStatus::Interrupt {
                     self.set_status(InterpreterStatus::Terminated);
+                }
+                if self.keep_history {
+                    self.debugger.set_new_ccr(self.cpu.ccr);
                 }
                 Ok(self.status)
             }
