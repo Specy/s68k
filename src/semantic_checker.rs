@@ -2,7 +2,7 @@
 
 use crate::{
     lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
-    utils::{num_to_signed_base, parse_absolute_expression},
+    utils::{num_to_signed_base, parse_absolute_expression}, instructions::Label,
 };
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
@@ -143,11 +143,8 @@ pub struct SemanticChecker {
     errors: Vec<SemanticError>,
     lines: Vec<ParsedLine>,
 }
-#[derive(Debug)]
-pub struct Label {
-    pub name: String,
-    pub address: usize,
-}
+
+
 impl SemanticChecker {
     pub fn new(lines: &[ParsedLine]) -> SemanticChecker {
         let mut syntax_checker = SemanticChecker {
@@ -174,7 +171,8 @@ impl SemanticChecker {
                             name.to_string(),
                             Label {
                                 name: name.to_string(),
-                                address: 1 << 31 as usize, //placeholder value
+                                address: 1 << 31 as usize, //placeholder value,
+                                line: line.line_index
                             },
                         );
                     }

@@ -13,15 +13,15 @@ use crate::{
     compiler::{Compiler, Directive, InstructionLine},
     instructions::{
         Condition, Instruction, Interrupt, InterruptResult, Operand, RegisterOperand,
-        ShiftDirection, Sign, Size,
+        ShiftDirection, Sign, Size, Label,
     },
-    math::*,
+    math::*, debugger::{Debugger, ExecutionStep, MutationOperation},
 };
 use bitflags::bitflags;
 use core::panic;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, LinkedList},
+    collections::HashMap,
     hash::Hash,
 };
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
@@ -368,64 +368,12 @@ pub struct Interpreter {
     cpu: Cpu,
     pc: usize,
     program: HashMap<usize, InstructionLine>,
-    history: LinkedList<ExecutionStep>,
+    debugger: Debugger,
     keep_history: bool,
-    history_size: usize,
     last_line_address: usize,
     final_instruction_address: usize,
     current_interrupt: Option<Interrupt>,
     status: InterpreterStatus,
-}
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", content = "value")]
-pub enum MutationOperation {
-    WriteRegister {
-        register: RegisterOperand,
-        old: u32,
-        size: Size,
-    },
-    WriteMemory {
-        address: usize,
-        old: u32,
-        size: Size,
-    },
-    WriteMemoryBytes {
-        address: usize,
-        old: Box<Vec<u8>>,
-    },
-}
-#[derive(Serialize)]
-pub struct ExecutionStep {
-    mutations: Vec<MutationOperation>,
-    pc: usize,
-    ccr: Flags,
-}
-impl ExecutionStep {
-    pub fn new(pc: usize, ccr: Flags) -> Self {
-        Self {
-            mutations: vec![],
-            pc,
-            ccr,
-        }
-    }
-    pub fn add_mutation(&mut self, mutation: MutationOperation) {
-        self.mutations.push(mutation);
-    }
-    pub fn set_pc(&mut self, pc: usize) {
-        self.pc = pc;
-    }
-    pub fn set_ccr(&mut self, ccr: Flags) {
-        self.ccr = ccr;
-    }
-    pub fn get_mutations(&self) -> &Vec<MutationOperation> {
-        &self.mutations
-    }
-    pub fn get_pc(&self) -> usize {
-        self.pc
-    }
-    pub fn get_ccr(&self) -> Flags {
-        self.ccr
-    }
 }
 
 impl Interpreter {
@@ -441,7 +389,7 @@ impl Interpreter {
         let length = program.len();
         let options = options.unwrap_or(InterpreterOptions {
             keep_history: false,
-            history_size: 1000,
+            history_size: 100,
         });
         let mut interpreter = Self {
             memory: Memory::new(memory_size),
@@ -450,9 +398,8 @@ impl Interpreter {
             final_instruction_address: end,
             program,
             keep_history: options.keep_history,
-            history_size: options.history_size,
             last_line_address: 0,
-            history: LinkedList::new(),
+            debugger: Debugger::new(options.history_size, compiled_program.get_labels_map()),
             current_interrupt: None,
             status: if start <= end && length > 0 {
                 InterpreterStatus::Running
@@ -494,12 +441,6 @@ impl Interpreter {
     pub fn get_status(&self) -> &InterpreterStatus {
         &self.status
     }
-    pub fn get_previous_mutations(&self) -> Option<&Vec<MutationOperation>> {
-        match self.history.back() {
-            Some(step) => Some(step.get_mutations()),
-            None => None,
-        }
-    }
     fn set_status(&mut self, status: InterpreterStatus) {
         match self.status {
             InterpreterStatus::Terminated | InterpreterStatus::TerminatedWithException => {
@@ -524,17 +465,11 @@ impl Interpreter {
     pub fn has_reached_bottom(&self) -> bool {
         self.pc > self.final_instruction_address
     }
-    pub fn can_undo(&self) -> bool {
-        self.history.len() > 0
-    }
+
 
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
         if self.keep_history {
-            self.history
-                .push_back(ExecutionStep::new(self.pc, self.cpu.ccr));
-            if self.history.len() > self.history_size {
-                self.history.pop_front();
-            }
+            self.debugger.add_step(ExecutionStep::new(self.pc, self.cpu.ccr))
         }
         self.last_line_address = self.pc;
         match self.get_instruction_at(self.pc) {
@@ -574,8 +509,11 @@ impl Interpreter {
             }
         }
     }
+    pub fn get_pretty_call_stack(&self) -> Vec<Label> {
+        self.debugger.to_call_stack()
+    }
     pub fn undo(&mut self) -> RuntimeResult<ExecutionStep> {
-        match self.history.pop_back() {
+        match self.debugger.pop_step() {
             Some(step) => {
                 self.pc = step.get_pc();
                 self.cpu.ccr = step.get_ccr();
@@ -845,7 +783,7 @@ impl Interpreter {
             Instruction::BSR(address) => {
                 if self.keep_history {
                     let old_value = self.memory.read_long(self.get_sp())?;
-                    self.add_mutation_to_history(MutationOperation::WriteMemory {
+                    self.debugger.add_mutation(MutationOperation::WriteMemory {
                         address: self.get_sp() - 4,
                         old: old_value,
                         size: Size::Long,
@@ -856,6 +794,7 @@ impl Interpreter {
                     .push(&MemoryCell::Long(self.pc as u32), self.get_sp())?;
                 self.set_sp(new_sp);
                 self.pc = *address as usize;
+                self.debugger.push_call(self.pc);
             }
             Instruction::JMP(op) => {
                 let addr = self.get_operand_address(op)?;
@@ -869,7 +808,7 @@ impl Interpreter {
                 let addr = self.get_operand_address(source)?;
                 if self.keep_history {
                     let old_value = self.memory.read_long(self.get_sp())?;
-                    self.add_mutation_to_history(MutationOperation::WriteMemory {
+                    self.debugger.add_mutation(MutationOperation::WriteMemory {
                         address: self.get_sp() - 4,
                         old: old_value,
                         size: Size::Long,
@@ -881,10 +820,10 @@ impl Interpreter {
 
             }
             Instruction::JSR(source) => {
-                let addr = self.get_operand_address(source)?;
+                let address = self.get_operand_address(source)?;
                 if self.keep_history {
                     let old_value = self.memory.read_long(self.get_sp())?;
-                    self.add_mutation_to_history(MutationOperation::WriteMemory {
+                    self.debugger.add_mutation(MutationOperation::WriteMemory {
                         address: self.get_sp() - 4,
                         old: old_value,
                         size: Size::Long,
@@ -894,7 +833,8 @@ impl Interpreter {
                     .memory
                     .push(&MemoryCell::Long(self.pc as u32), self.get_sp())?;
                 self.set_sp(new_sp);
-                self.pc = addr as usize;
+                self.pc = address as usize;
+                self.debugger.push_call(self.pc);
             }
             Instruction::BCHG(bit_source, dest) => {
                 let bit = self.get_operand_value(bit_source, &Size::Byte)?;
@@ -1163,6 +1103,7 @@ impl Interpreter {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
                 self.set_sp(new_sp);
                 self.pc = value.get_long() as usize;
+                self.debugger.pop_call();
             }
             Instruction::TRAP(value) => match value {
                 15 => {
@@ -1227,7 +1168,7 @@ impl Interpreter {
             }
         };
         if self.keep_history {
-            self.add_mutation_to_history(MutationOperation::WriteRegister {
+            self.debugger.add_mutation(MutationOperation::WriteRegister {
                 register: register.clone(),
                 old: old_value,
                 size: size.clone(),
@@ -1238,7 +1179,7 @@ impl Interpreter {
     pub fn set_memory_value(&mut self, address: usize, size: &Size, value: u32) -> RuntimeResult<()> {
         if self.keep_history {
             let old_value = self.memory.read_size(address, size)?;
-            self.add_mutation_to_history(MutationOperation::WriteMemory {
+            self.debugger.add_mutation(MutationOperation::WriteMemory {
                 address,
                 old: old_value,
                 size: size.clone(),
@@ -1251,22 +1192,12 @@ impl Interpreter {
     pub fn set_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
         if self.keep_history {
             let old_bytes = self.memory.read_bytes(address, bytes.len())?;
-            self.add_mutation_to_history(MutationOperation::WriteMemoryBytes {
+            self.debugger.add_mutation(MutationOperation::WriteMemoryBytes {
                 address,
                 old: Box::new(old_bytes.to_vec()),
             });
         }
         self.memory.write_bytes(address, bytes)
-    }
-
-    pub fn add_mutation_to_history(&mut self, operation: MutationOperation) {
-        self.history
-            .back_mut()
-            .expect("No history to add mutation to")
-            .add_mutation(operation);
-    }
-    pub fn get_last_step(&self) -> Option<&ExecutionStep> {
-        self.history.back()
     }
     pub fn get_next_instruction(&self) -> Option<&InstructionLine> {
         self.get_instruction_at(self.pc)
@@ -1544,7 +1475,7 @@ impl Interpreter {
         }
     }
     pub fn wasm_can_undo(&self) -> bool {
-        self.can_undo()
+        self.debugger.can_undo()
     }
     pub fn wasm_step(&mut self) -> Result<JsValue, JsValue> {
         match self.step() {
@@ -1564,6 +1495,9 @@ impl Interpreter {
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
     }
+    pub fn wasm_get_call_stack(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.get_pretty_call_stack()).unwrap()
+    }
     pub fn wasm_run_with_limit(&mut self, limit: usize) -> Result<InterpreterStatus, JsValue> {
         match self.run_with_limit(limit) {
             Ok(status) => Ok(status),
@@ -1576,14 +1510,14 @@ impl Interpreter {
             None => JsValue::NULL,
         }
     }
-    pub fn wasm_get_previous_mutations(&self) -> Vec<JsValue> {
-        match self.get_previous_mutations() {
-            Some(mutations) => mutations
-                .iter()
-                .map(|m| serde_wasm_bindgen::to_value(m).unwrap())
-                .collect(),
-            None => vec![],
-        }
+    pub fn wasm_get_previous_mutations(&self) -> JsValue {
+        match self.debugger.get_previous_mutations() {
+            Some(m) => serde_wasm_bindgen::to_value(&m).unwrap(),
+            None => return JsValue::NULL,
+        }    
+    }
+    pub fn wasm_get_undo_history(&self, count: usize) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.debugger.get_last_steps(count)).unwrap()
     }
     pub fn wasm_get_status(&self) -> InterpreterStatus {
         *self.get_status()
@@ -1601,7 +1535,7 @@ impl Interpreter {
         }
     }
     pub fn wasm_get_last_step(&self) -> JsValue {
-        match self.get_last_step() {
+        match self.debugger.get_last_step() {
             Some(step) => serde_wasm_bindgen::to_value(step).unwrap(),
             None => JsValue::NULL,
         }

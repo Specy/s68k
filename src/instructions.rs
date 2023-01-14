@@ -55,6 +55,14 @@ pub enum Operand {
 Thanks to:  https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/instructions.rs
 for the Conditions and inspiration
  */
+
+
+ #[derive(Debug, Clone, Serialize)]
+pub struct Label {
+    pub name: String,
+    pub address: usize,
+    pub line: usize,
+}
 #[wasm_bindgen]
 #[derive(Copy, Clone, Debug, Serialize)]
 pub enum Condition{

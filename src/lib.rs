@@ -10,6 +10,7 @@ mod semantic_checker;
 mod utils;
 mod math;
 mod ts_types;
+mod debugger;
 use crate::{
     lexer::{Lexer, ParsedLine},
     semantic_checker::{SemanticChecker, SemanticError},
@@ -19,6 +20,7 @@ use crate::{
 pub struct S68k {
     code: String,
     lines: Vec<ParsedLine>,
+    
 }
 impl S68k {
     pub fn new(code: String) -> S68k {

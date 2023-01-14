@@ -54,6 +54,15 @@ export type InstructionLine = {
 pub const IStep: &'static str = r#"
 export type Step = [instruction: InstructionLine, status: InterpreterStatus]
 "#;
+#[wasm_bindgen(typescript_custom_section)]
+pub const ILabel: &'static str = r#"
+export type Label = {
+    name: string,
+    address: number,
+    line: number
+}
+"#;
+
 
 #[wasm_bindgen(typescript_custom_section)]
 pub const IParsedLine: &'static str = r#"
@@ -97,12 +106,6 @@ export type LexedLine = {
 }
 "#;
 
-#[wasm_bindgen(typescript_custom_section)]
-pub const ILabelDirective: &'static str = r#"
-export type Label = {
-    name: string
-}
-"#;
 #[wasm_bindgen(typescript_custom_section)]
 pub const IInterpreterOptions: &'static str = r#"
 export type InterpreterOptions = {

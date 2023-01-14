@@ -20,7 +20,8 @@ import { Flags,
     InterpreterOptions, 
     ExecutionStep,
     MutationOperation,
-    RuntimeError
+    RuntimeError,
+    Label
 
 } from './pkg/s68k'
 
@@ -95,7 +96,7 @@ export class Interpreter {
         return this.interpreter.wasm_undo()
     }
     getPreviousMutations(){
-        return this.interpreter.wasm_get_previous_mutations() as MutationOperation[]
+        return this.interpreter.wasm_get_previous_mutations() as MutationOperation[] | null
     }
     async stepWithInterruptHandler(onInterrupt: InterruptHandler): Promise<Step> {
         const step = this.interpreter.wasm_step() as Step
@@ -139,6 +140,12 @@ export class Interpreter {
     canUndo(): boolean {
         return this.interpreter.wasm_can_undo()
     }
+    getCallStack(): Label[] {
+        return this.interpreter.wasm_get_call_stack() as Label[]
+    }
+    getUndoHistory(amount: number): ExecutionStep[] {
+        return this.interpreter.wasm_get_undo_history(amount) as ExecutionStep[]
+    }
     getInstructionAt(address: number): InstructionLine | null {
         return this.interpreter.wasm_get_instruction_at(address) as InstructionLine | null
     }
@@ -174,6 +181,7 @@ export class Interpreter {
         }
         return status
     }
+
 }
 export class SemanticError {
     error: RawSemanticError
@@ -279,5 +287,6 @@ export {
     ExecutionStep,
     MutationOperation,
     InterpreterOptions,
-    RuntimeError
+    RuntimeError,
+    Label
 }

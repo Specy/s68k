@@ -4,11 +4,10 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use crate::{
     instructions::{
         Condition, DisplacementOperands, Instruction, Operand, RegisterOperand, ShiftDirection,
-        Sign, Size,
+        Sign, Size, Label,
     },
     lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     math::sign_extend_to_long,
-    semantic_checker::Label,
     utils::{parse_absolute_expression, parse_string_into_padded_bytes},
 };
 use std::fmt;
@@ -822,6 +821,7 @@ impl Compiler {
                         Label {
                             address: last_address,
                             name: name.clone(),
+                            line: line.line_index
                         },
                     );
                 }

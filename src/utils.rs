@@ -3,7 +3,7 @@ use std::{collections::HashMap, str::FromStr};
 use lazy_static::lazy_static;
 use regex::Regex;
 
-use crate::semantic_checker::Label;
+use crate::instructions::Label;
 
 pub fn num_to_signed_base(num: i64, base: i64) -> Result<i64, &'static str> {
     let bound = 1i64 << base - 1;
