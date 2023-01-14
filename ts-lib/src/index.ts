@@ -1,4 +1,5 @@
-import { Flags, 
+import { 
+    Flags, 
     S68k as RawS68k, 
     SemanticError as RawSemanticError, 
     Interpreter as RawInterpreter, 

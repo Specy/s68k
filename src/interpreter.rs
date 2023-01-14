@@ -5,33 +5,30 @@
 
 /*TODO
     Currently side effects are applied both when reading and storing the result of an operation.
-    Those operations should be run only once, for example when reading to a postincrement register, and then stored 
+    Those operations should be run only once, for example when reading to a postincrement register, and then stored
     to the same incremented register, 3 increments are applied, when only 1 should be applied.
     There needs to be added a way to only apply the side effect once, and then store the result to the register.
 */
 use crate::{
     compiler::{Compiler, Directive, InstructionLine},
+    debugger::{Debugger, ExecutionStep, MutationOperation},
     instructions::{
-        Condition, Instruction, Interrupt, InterruptResult, Operand, RegisterOperand,
-        ShiftDirection, Sign, Size, Label,
+        Condition, Instruction, Interrupt, InterruptResult, Label, Operand, RegisterOperand,
+        ShiftDirection, Sign, Size,
     },
-    math::*, debugger::{Debugger, ExecutionStep, MutationOperation},
+    math::*,
 };
 use bitflags::bitflags;
 use core::panic;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    hash::Hash,
-};
+use std::{collections::HashMap, hash::Hash};
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Used{
+enum Used {
     Once,
-    Twice
+    Twice,
 }
-
 
 bitflags! {
     #[wasm_bindgen]
@@ -147,33 +144,39 @@ impl Memory {
     }
     pub fn read_long(&self, address: usize) -> RuntimeResult<u32> {
         self.verify_address(address, 4)?;
-        Ok(u32::from_be_bytes(self.data[address..address + 4].try_into().unwrap()))
+        Ok(u32::from_be_bytes(
+            self.data[address..address + 4].try_into().unwrap(),
+        ))
     }
     pub fn read_word(&self, address: usize) -> RuntimeResult<u16> {
         self.verify_address(address, 2)?;
-        Ok(u16::from_be_bytes(self.data[address..address + 2].try_into().unwrap()))
+        Ok(u16::from_be_bytes(
+            self.data[address..address + 2].try_into().unwrap(),
+        ))
     }
     pub fn read_byte(&self, address: usize) -> RuntimeResult<u8> {
         self.verify_address(address, 1)?;
-        Ok(u8::from_be_bytes(self.data[address..address + 1].try_into().unwrap()))
+        Ok(u8::from_be_bytes(
+            self.data[address..address + 1].try_into().unwrap(),
+        ))
     }
     pub fn read_size(&self, address: usize, size: &Size) -> RuntimeResult<u32> {
         match size {
             Size::Byte => {
                 let byte = self.read_byte(address)?;
                 Ok(byte as u32)
-            },
+            }
             Size::Word => {
                 let word = self.read_word(address)?;
                 Ok(word as u32)
-            },
+            }
             Size::Long => {
                 let long = self.read_long(address)?;
                 Ok(long)
-            },
+            }
         }
     }
-    pub fn write_size(&mut self, address: usize, size: &Size, data: u32) -> RuntimeResult<()>{
+    pub fn write_size(&mut self, address: usize, size: &Size, data: u32) -> RuntimeResult<()> {
         match size {
             Size::Byte => self.write_byte(address, data as u8)?,
             Size::Word => self.write_word(address, data as u16)?,
@@ -187,13 +190,13 @@ impl Memory {
             true => Ok(()),
             false => Err(RuntimeError::OutOfBounds(format!(
                 "Memory out of bounds at address: {}, length: {}, maximum: {}",
-                address, 
+                address,
                 length,
                 self.data.len()
             ))),
         }
     }
-    pub fn write_long(&mut self, address: usize, value: u32) -> RuntimeResult<()>{
+    pub fn write_long(&mut self, address: usize, value: u32) -> RuntimeResult<()> {
         self.verify_address(address, 4)?;
         self.data[address..address + 4].copy_from_slice(&value.to_be_bytes());
         Ok(())
@@ -203,7 +206,7 @@ impl Memory {
         self.data[address..address + 2].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
-    pub fn write_byte(&mut self, address: usize, value: u8) -> RuntimeResult<()>{
+    pub fn write_byte(&mut self, address: usize, value: u8) -> RuntimeResult<()> {
         self.verify_address(address, 1)?;
         self.data[address] = value;
         Ok(())
@@ -429,15 +432,23 @@ impl Interpreter {
         Ok(())
     }
 
+
+    #[inline(always)]
     pub fn get_cpu(&self) -> &Cpu {
         &self.cpu
     }
+
+    #[inline(always)]
     pub fn get_memory(&self) -> &Memory {
         &self.memory
     }
+
+    #[inline(always)]
     pub fn get_pc(&self) -> usize {
         self.pc
     }
+
+    #[inline(always)]
     pub fn get_status(&self) -> &InterpreterStatus {
         &self.status
     }
@@ -462,14 +473,16 @@ impl Interpreter {
         return self.status == InterpreterStatus::Terminated
             || self.status == InterpreterStatus::TerminatedWithException;
     }
+
+    #[inline(always)]
     pub fn has_reached_bottom(&self) -> bool {
         self.pc > self.final_instruction_address
     }
 
-
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
         if self.keep_history {
-            self.debugger.add_step(ExecutionStep::new(self.pc, self.cpu.ccr))
+            self.debugger
+                .add_step(ExecutionStep::new(self.pc, self.cpu.ccr))
         }
         self.last_line_address = self.pc;
         match self.get_instruction_at(self.pc) {
@@ -538,6 +551,24 @@ impl Interpreter {
                         MutationOperation::WriteMemoryBytes { address, old } => {
                             self.memory.write_bytes(*address, &old)?;
                         }
+                        MutationOperation::PopCall { to, from} => {
+                            //try to get the address of the function that popped the call
+                            let ins = self.get_instruction_at(*to);
+                            let callee_address = match ins {
+                                Some(ins) => match &ins.instruction {
+                                    Instruction::BSR(address) => *address as usize,
+                                    Instruction::JSR(operand) => {
+                                        self.get_operand_address(&operand.clone())? as usize
+                                    },
+                                    _ => 0,
+                                }
+                                None => 0,
+                            };
+                            self.debugger.push_call(callee_address);
+                        }
+                        MutationOperation::PushCall { to ,from } => {
+                            self.debugger.pop_call();
+                        }
                     }
                 }
                 Ok(step)
@@ -588,15 +619,20 @@ impl Interpreter {
         };
         Ok(())
     }
+    #[inline(always)]
     fn increment_pc(&mut self, amount: usize) {
         self.pc += amount;
     }
+
+    #[inline(always)]
     pub fn get_sp(&self) -> usize {
         self.cpu.a_reg[7].get_long() as usize
     }
+    #[inline(always)]
     pub fn set_sp(&mut self, sp: usize) {
         self.set_register_value(&RegisterOperand::Address(7), sp as u32, &Size::Long);
     }
+    #[inline(always)]
     pub fn get_instruction_at(&self, address: usize) -> Option<&InstructionLine> {
         self.program.get(&address)
     }
@@ -613,7 +649,7 @@ impl Interpreter {
                 self.set_logic_flags(source_value, size);
                 self.store_operand_value(dest, source_value, size, Used::Once)?;
             }
-            Instruction::MOVEA(source, dest, size ) => {
+            Instruction::MOVEA(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size)?;
                 let source_value = sign_extend_to_long(source_value, size) as u32;
                 self.set_register_value(dest, source_value, size);
@@ -787,7 +823,11 @@ impl Interpreter {
                         address: self.get_sp() - 4,
                         old: old_value,
                         size: Size::Long,
-                    })
+                    });
+                    self.debugger.add_mutation(MutationOperation::PushCall {
+                        to: *address as usize,
+                        from: self.get_pc() - 4, //the pc is incremented before the instruction is executed
+                    });
                 }
                 let new_sp = self
                     .memory
@@ -814,20 +854,24 @@ impl Interpreter {
                         size: Size::Long,
                     })
                 }
-                let new_sp = self.memory
+                let new_sp = self
+                    .memory
                     .push(&MemoryCell::Long(addr as u32), self.get_sp())?;
                 self.set_sp(new_sp);
-
             }
             Instruction::JSR(source) => {
                 let address = self.get_operand_address(source)?;
                 if self.keep_history {
                     let old_value = self.memory.read_long(self.get_sp())?;
                     self.debugger.add_mutation(MutationOperation::WriteMemory {
-                        address: self.get_sp() - 4,
+                        address: self.get_sp() - 4, 
                         old: old_value,
                         size: Size::Long,
-                    })
+                    });
+                    self.debugger.add_mutation(MutationOperation::PushCall {
+                        to: address as usize,
+                        from: self.get_pc() - 4, //pc is incremented before the instruction is executed
+                    });
                 }
                 let new_sp = self
                     .memory
@@ -1015,7 +1059,11 @@ impl Interpreter {
                     (Size::Byte, Size::Word) => ((((input as u8) as i8) as i16) as u16) as u32,
                     (Size::Word, Size::Long) => (((input as u16) as i16) as i32) as u32,
                     (Size::Byte, Size::Long) => (((input as u8) as i8) as i32) as u32,
-                    _ => return Err(RuntimeError::Raw(format!("Invalid size for EXT instruction"))),
+                    _ => {
+                        return Err(RuntimeError::Raw(format!(
+                            "Invalid size for EXT instruction"
+                        )))
+                    }
                 };
                 self.set_register_value(reg, result, &Size::Long);
                 self.set_logic_flags(result, to);
@@ -1031,7 +1079,7 @@ impl Interpreter {
                 self.set_logic_flags(value, size);
             }
             Instruction::CMP(source, dest, size) => {
-                //TODO revise this, should i strict it to only data registers? 
+                //TODO revise this, should i strict it to only data registers?
                 let source_value = self.get_operand_value(source, size)?;
                 let dest_value = self.get_register_value(dest, size);
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
@@ -1040,7 +1088,8 @@ impl Interpreter {
             }
             Instruction::CMPA(source, dest, size) => {
                 //TODO not sure about this
-                let source_value = sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
+                let source_value =
+                    sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
                 let dest_value = self.get_register_value(dest, &Size::Long);
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, &Size::Long);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, &Size::Long);
@@ -1052,7 +1101,7 @@ impl Interpreter {
                 let overflow = has_sub_overflowed(dest_value, *source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
             }
-            Instruction::CMPM(source,dest , size ) => {
+            Instruction::CMPM(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size)?;
                 let dest_value = self.get_operand_value(dest, size)?;
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
@@ -1101,6 +1150,12 @@ impl Interpreter {
             }
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
+                if self.keep_history {
+                    self.debugger.add_mutation(MutationOperation::PopCall{
+                        to: value.get_long() as usize,
+                        from: self.get_pc() - 4, //pc is incremented before execution
+                    })
+                }
                 self.set_sp(new_sp);
                 self.pc = value.get_long() as usize;
                 self.debugger.pop_call();
@@ -1168,15 +1223,21 @@ impl Interpreter {
             }
         };
         if self.keep_history {
-            self.debugger.add_mutation(MutationOperation::WriteRegister {
-                register: register.clone(),
-                old: old_value,
-                size: size.clone(),
-            });
+            self.debugger
+                .add_mutation(MutationOperation::WriteRegister {
+                    register: register.clone(),
+                    old: old_value,
+                    size: size.clone(),
+                });
         }
     }
 
-    pub fn set_memory_value(&mut self, address: usize, size: &Size, value: u32) -> RuntimeResult<()> {
+    pub fn set_memory_value(
+        &mut self,
+        address: usize,
+        size: &Size,
+        value: u32,
+    ) -> RuntimeResult<()> {
         if self.keep_history {
             let old_value = self.memory.read_size(address, size)?;
             self.debugger.add_mutation(MutationOperation::WriteMemory {
@@ -1192,10 +1253,11 @@ impl Interpreter {
     pub fn set_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
         if self.keep_history {
             let old_bytes = self.memory.read_bytes(address, bytes.len())?;
-            self.debugger.add_mutation(MutationOperation::WriteMemoryBytes {
-                address,
-                old: Box::new(old_bytes.to_vec()),
-            });
+            self.debugger
+                .add_mutation(MutationOperation::WriteMemoryBytes {
+                    address,
+                    old: Box::new(old_bytes.to_vec()),
+                });
         }
         self.memory.write_bytes(address, bytes)
     }
@@ -1295,7 +1357,13 @@ impl Interpreter {
             )),
         }
     }
-    fn store_operand_value(&mut self, op: &Operand, value: u32, size: &Size, used: Used) -> RuntimeResult<()> {
+    fn store_operand_value(
+        &mut self,
+        op: &Operand,
+        value: u32,
+        size: &Size,
+        used: Used,
+    ) -> RuntimeResult<()> {
         match op {
             Operand::Immediate(_) => Err(RuntimeError::IncorrectAddressingMode(
                 "Attempted to store to immediate value".to_string(),
@@ -1357,7 +1425,7 @@ impl Interpreter {
     pub fn run_with_limit(&mut self, limit: usize) -> RuntimeResult<InterpreterStatus> {
         let mut limit_counter = limit;
         self.verify_can_run()?;
-        while self.status == InterpreterStatus::Running && limit_counter > 0{
+        while self.status == InterpreterStatus::Running && limit_counter > 0 {
             self.step()?;
             limit_counter -= 1;
         }
@@ -1514,7 +1582,7 @@ impl Interpreter {
         match self.debugger.get_previous_mutations() {
             Some(m) => serde_wasm_bindgen::to_value(&m).unwrap(),
             None => return JsValue::NULL,
-        }    
+        }
     }
     pub fn wasm_get_undo_history(&self, count: usize) -> JsValue {
         serde_wasm_bindgen::to_value(&self.debugger.get_last_steps(count)).unwrap()

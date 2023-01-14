@@ -25,6 +25,14 @@ pub enum MutationOperation {
         address: usize,
         old: Box<Vec<u8>>,
     },
+    PushCall {
+        to: usize,
+        from: usize,
+    },
+    PopCall {
+        to: usize,
+        from: usize,
+    }
 }
 #[derive(Serialize)]
 pub struct ExecutionStep {
