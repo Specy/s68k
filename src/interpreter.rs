@@ -432,7 +432,6 @@ impl Interpreter {
         Ok(())
     }
 
-
     #[inline(always)]
     pub fn get_cpu(&self) -> &Cpu {
         &self.cpu
@@ -501,7 +500,6 @@ impl Interpreter {
                 let clone = ins.instruction.clone();
                 if self.keep_history {
                     self.debugger.set_line(ins.parsed_line.line_index);
-
                 }
                 //need to find a way to remove this clone
                 self.increment_pc(4);
@@ -558,7 +556,7 @@ impl Interpreter {
                         MutationOperation::WriteMemoryBytes { address, old } => {
                             self.memory.write_bytes(*address, &old)?;
                         }
-                        MutationOperation::PopCall { to, from} => {
+                        MutationOperation::PopCall { to, from } => {
                             //try to get the address of the function that popped the call
                             let ins = self.get_instruction_at(*to - 4);
                             let callee_address = match ins {
@@ -566,14 +564,14 @@ impl Interpreter {
                                     Instruction::BSR(address) => *address as usize,
                                     Instruction::JSR(operand) => {
                                         self.get_operand_address(&operand.clone())? as usize
-                                    },
+                                    }
                                     _ => 0,
-                                }
+                                },
                                 None => 0,
                             };
                             self.debugger.push_call(callee_address);
                         }
-                        MutationOperation::PushCall { to ,from } => {
+                        MutationOperation::PushCall { to, from } => {
                             self.debugger.pop_call();
                         }
                     }
@@ -603,15 +601,12 @@ impl Interpreter {
             }
             InterruptResult::ReadNumber(num) => {
                 self.set_register_value(&RegisterOperand::Data(1), num as u32, &Size::Long);
-                //self.cpu.d_reg[1].store_long(num as u32);
             }
             InterruptResult::ReadChar(char) => {
                 self.set_register_value(&RegisterOperand::Data(1), char as u8 as u32, &Size::Byte);
-                //self.cpu.d_reg[1].store_byte(char as u8);
             }
             InterruptResult::GetTime(time) => {
                 self.set_register_value(&RegisterOperand::Data(1), time, &Size::Long);
-                //self.cpu.d_reg[1].store_long(time);
             }
             InterruptResult::Terminate => {
                 self.set_status(InterpreterStatus::Terminated);
@@ -825,7 +820,7 @@ impl Interpreter {
             }
             Instruction::BSR(address) => {
                 if self.keep_history {
-                    let old_address = self.get_sp() - 4; 
+                    let old_address = self.get_sp() - 4;
                     let old_value = self.memory.read_long(old_address)?;
                     self.debugger.add_mutation(MutationOperation::WriteMemory {
                         address: old_address,
@@ -847,10 +842,10 @@ impl Interpreter {
             Instruction::JSR(source) => {
                 let address = self.get_operand_address(source)?;
                 if self.keep_history {
-                    let old_address = self.get_sp() - 4; 
+                    let old_address = self.get_sp() - 4;
                     let old_value = self.memory.read_long(old_address)?;
                     self.debugger.add_mutation(MutationOperation::WriteMemory {
-                        address: old_address, 
+                        address: old_address,
                         old: old_value,
                         size: Size::Long,
                     });
@@ -1161,7 +1156,7 @@ impl Interpreter {
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
                 if self.keep_history {
-                    self.debugger.add_mutation(MutationOperation::PopCall{
+                    self.debugger.add_mutation(MutationOperation::PopCall {
                         to: value.get_long() as usize,
                         from: self.get_pc() - 4, //pc is incremented before execution
                     })
@@ -1281,9 +1276,20 @@ impl Interpreter {
                 let address = self.cpu.a_reg[1].get_long();
                 let length = self.cpu.d_reg[1].get_word() as i32;
                 if length > 255 || length < 0 {
+                    //only for interrupt 1 and 2, check bounds
                     return Err(RuntimeError::Raw(format!("Invalid String read, length of string in d1 register is: {}, expected between 0 and 255", length)));
                 } else {
-                    let bytes = self.memory.read_bytes(address as usize, length as usize)?;
+                    let mut bytes = self
+                        .memory
+                        .read_bytes(address as usize, length as usize)?
+                        .to_vec();
+                    if value == 0 {
+                        //get all bytes until 0x00
+                        match bytes.iter().position(|&x| x == 0x00) {
+                            Some(pos) => bytes = bytes[..pos].to_vec(),
+                            None => {}
+                        }
+                    }
                     //TODO implement call to interrupt handler
                     match String::from_utf8(bytes.to_vec()) {
                         Ok(str) if value == 0 => Ok(Interrupt::DisplayStringWithCRLF(str)),
@@ -1306,8 +1312,41 @@ impl Interpreter {
                 let value = self.cpu.d_reg[1].get_byte();
                 Ok(Interrupt::DisplayChar(value as char))
             }
-            7 => Ok(Interrupt::Terminate),
             8 => Ok(Interrupt::GetTime),
+            9 => {
+                self.status = InterpreterStatus::Terminated;
+                Ok(Interrupt::Terminate)
+            }
+            13 | 14 => {
+                //read untill null char
+                let max = 16384; //to prevent infinite loop
+                let address = self.cpu.a_reg[1].get_long() as usize;
+                let mut bytes = Vec::new();
+                let mut i = 0;
+                loop {
+                    let byte = self.memory.read_byte(address + i)?;
+                    if byte == 0x00 {
+                        break;
+                    }
+                    bytes.push(byte);
+                    i += 1;
+                    if i > max {
+                        return Err(RuntimeError::Raw(format!(
+                            "Invalid String read, reached max length of {} bytes",
+                            max
+                        )));
+                    }
+                }
+                match String::from_utf8(bytes.to_vec()) {
+                    Ok(str) if value == 13 => Ok(Interrupt::DisplayStringWithCRLF(str)),
+                    Ok(str) if value == 14 => Ok(Interrupt::DisplayStringWithoutCRLF(str)),
+                    Err(_) | Ok(_) => Err(RuntimeError::Raw(format!(
+                        "Invalid String read, received: {:?}, expected UTF-8",
+                        bytes
+                    ))),
+                }
+                
+            }
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
         }
     }
