@@ -18,7 +18,7 @@ pub fn num_to_signed_base(num: i64, base: i64) -> Result<i64, &'static str> {
 }
 pub const VALID_ARITHMETICAL_REGEX: &str =
     r"((?:[%@$]*\w+)|(?:'\S*'))((?:\*\*)|[\+\-\*/\^%\|\&\^])?(\S+)?";
-pub const VALID_ARITHMETICAL_TOKENS: &str = r"(('.+')|(\*\*|[+\-*\&^()|])|([%@$]?\w*)|)";
+pub const VALID_ARITHMETICAL_TOKENS: &str = r"(('.+')|(\*\*|[+\-*\&/^()|])|([%@$]?\w*)|)";
 lazy_static! {
     static ref ARITHMETICAL_REGEX: Regex = Regex::new(VALID_ARITHMETICAL_REGEX).unwrap();
     static ref ARITHMETICAL_TOKEN_REGEX: Regex = Regex::new(VALID_ARITHMETICAL_TOKENS).unwrap();

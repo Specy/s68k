@@ -3,8 +3,8 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
     instructions::{
-        Condition, DisplacementOperands, Instruction, Operand, RegisterOperand, ShiftDirection,
-        Sign, Size, Label,
+        Condition, DisplacementOperands, Instruction, Label, Operand, RegisterOperand,
+        ShiftDirection, Sign, Size,
     },
     lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     math::sign_extend_to_long,
@@ -34,6 +34,7 @@ pub struct InstructionLine {
     pub address: usize,
     pub parsed_line: ParsedLine,
 }
+#[derive(Debug)]
 pub enum CompilationError {
     Raw(String),
     InvalidTrap(String),
@@ -369,8 +370,8 @@ impl Compiler {
                 "unlk" => Instruction::UNLK(self.extract_register(op)?),
                 "extb" => Instruction::EXT(self.extract_register(op)?, Size::Byte, Size::Long),
                 "tst" => Instruction::TST(op, self.get_size(size, Size::Word)?),
-                "bcc" | "bcs" | "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls" | "bhi" | "bhs"
-                | "bpl" | "bmi" | "bvc" | "bvs" => {
+                "bcc" | "bcs" | "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "blo" | "bls"
+                | "bhi" | "bhs" | "bpl" | "bmi" | "bvc" | "bvs" => {
                     let address = self.extract_address(&op)?;
                     match name[1..].parse() {
                         Ok(condition) => Instruction::Bcc(address, condition),
@@ -393,15 +394,17 @@ impl Compiler {
                 "jmp" => Instruction::JMP(op),
                 //scc
                 "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt" | "shi"
-                | "smi" | "spl" | "svc" | "svs" | "sf" | "st" | "shs" | "slo" => match name[1..].parse() {
-                    Ok(condition) => Instruction::Scc(op, condition),
-                    Err(_) => {
-                        return Err(CompilationError::ParseError(format!(
-                            "Invalid condition code: {}",
-                            name
-                        )))
+                | "smi" | "spl" | "svc" | "svs" | "sf" | "st" | "shs" | "slo" => {
+                    match name[1..].parse() {
+                        Ok(condition) => Instruction::Scc(op, condition),
+                        Err(_) => {
+                            return Err(CompilationError::ParseError(format!(
+                                "Invalid condition code: {}",
+                                name
+                            )))
+                        }
                     }
-                },
+                }
                 "swap" => Instruction::SWAP(self.extract_register(op)?),
                 //not sure if the default is word
                 "not" => Instruction::NOT(op, self.get_size(size, Size::Word)?),
@@ -549,8 +552,8 @@ impl Compiler {
                 let offset = if offset == "" {
                     0
                 } else {
-                    match offset.parse() {
-                        Ok(offset) => sign_extend_to_long(offset, &Size::Byte),
+                    match parse_absolute_expression(offset, &self.labels) {
+                        Ok(offset) => sign_extend_to_long(offset as u32, &Size::Byte),
                         Err(_) => {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid offset: {}",
@@ -726,10 +729,10 @@ impl Compiler {
                     "org" => {
                         let parsed = match self.parse_absolute(&args[1]) {
                             Ok(value) => value as usize,
-                            Err(_) => {
+                            Err(e) => {
                                 return Err(format!(
-                                    "Invalid hex ORG address: {}; at line {}",
-                                    args[1], line.line_index
+                                    "Invalid hex ORG address: {}; at line {}, {:?}",
+                                    args[1], line.line_index, e
                                 ))
                             }
                         };
@@ -748,10 +751,10 @@ impl Compiler {
                             next_address = last_address
                                 + (bytes * size.to_bytes_word_default() as u32) as usize;
                         }
-                        Err(_) => {
+                        Err(e) => {
                             return Err(format!(
-                                "Invalid number of bytes for DS directive at line {}",
-                                line.line_index
+                                "Invalid number of bytes for DS directive at line {}, {:?}",
+                                line.line_index, e
                             ));
                         }
                     },
@@ -760,14 +763,13 @@ impl Compiler {
                             next_address = last_address
                                 + (bytes * size.to_bytes_word_default() as u32) as usize;
                         }
-                        Err(_) => {
+                        Err(e) => {
                             return Err(format!(
-                                "Invalid number of bytes for dcb directive at line {}",
-                                line.line_index
+                                "Invalid number of bytes for dcb directive at line {}, {:?}",
+                                line.line_index, e
                             ));
                         }
                     },
-
                     "dc" => {
                         next_address = last_address;
                         for arg in args[1..].iter() {
@@ -821,7 +823,7 @@ impl Compiler {
                         Label {
                             address: last_address,
                             name: name.clone(),
-                            line: line.line_index
+                            line: line.line_index,
                         },
                     );
                 }
