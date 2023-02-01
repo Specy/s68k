@@ -886,31 +886,51 @@ impl Interpreter {
             }
 
             Instruction::BCHG(bit_source, dest) => {
-                let bit = self.get_operand_value(bit_source, &Size::Byte)?;
-                let mut source_value = self.get_operand_value(dest, &Size::Long)?;
-                let mask = self.set_bit_test_flags(source_value, bit, &Size::Long);
+                let mut bit = self.get_operand_value(bit_source, &Size::Byte)?;
+                bit = self.limit_bit_size(bit, dest)?;
+                let mut size = match dest {
+                    Operand::Register(r) => Ok(&Size::Long),
+                    _ => Ok(&Size::Byte),
+                }?;
+                let mut source_value = self.get_operand_value(dest, size)?;
+                let mask = self.set_bit_test_flags(source_value, bit, size);
                 source_value = (source_value & !mask) | (!(source_value & mask) & mask);
-                self.store_operand_value(dest, source_value, &Size::Long, Used::Twice)?;
+                self.store_operand_value(dest, source_value, size, Used::Twice)?;
             }
             Instruction::BCLR(bit_source, dest) => {
-                let bit = self.get_operand_value(bit_source, &Size::Byte)?;
-                let mut src_val = self.get_operand_value(dest, &Size::Long)?;
-                let mask = self.set_bit_test_flags(src_val, bit, &Size::Long);
+                let mut bit = self.get_operand_value(bit_source, &Size::Byte)?;
+                bit = self.limit_bit_size(bit, dest)?;
+                let mut size = match dest {
+                    Operand::Register(r) => Ok(&Size::Long),
+                    _ => Ok(&Size::Byte),
+                }?;
+                let mut src_val = self.get_operand_value(dest, size)?;
+                let mask = self.set_bit_test_flags(src_val, bit, size);
                 src_val = src_val & !mask;
-                self.store_operand_value(dest, src_val, &Size::Long, Used::Twice)?;
+                self.store_operand_value(dest, src_val, size, Used::Twice)?;
             }
             Instruction::BSET(bit_source, dest) => {
-                let bit = self.get_operand_value(bit_source, &Size::Byte)?;
-                let mut value = self.get_operand_value(dest, &Size::Long)?;
-                let mask = self.set_bit_test_flags(value, bit, &Size::Long);
+                let mut bit = self.get_operand_value(bit_source, &Size::Byte)?;
+                let mut size = match dest {
+                    Operand::Register(r) => Ok(&Size::Long),
+                    _ => Ok(&Size::Byte),
+                }?;
+                bit = self.limit_bit_size(bit, dest)?;
+                let mut value = self.get_operand_value(dest, size)?;
+                let mask = self.set_bit_test_flags(value, bit, size);
                 value = value | mask;
-                self.store_operand_value(dest, value, &Size::Long, Used::Twice)?;
+                self.store_operand_value(dest, value, size, Used::Twice)?;
             }
 
             Instruction::BTST(bit, op2) => {
-                let bit = self.get_operand_value(bit, &Size::Byte)?;
-                let value = self.get_operand_value(op2, &Size::Long)?;
-                self.set_bit_test_flags(value, bit, &Size::Long);
+                let mut bit = self.get_operand_value(bit, &Size::Byte)?;
+                bit = self.limit_bit_size(bit, op2)?;
+                let mut size = match op2 {
+                    Operand::Register(r) => Ok(&Size::Long),
+                    _ => Ok(&Size::Byte),
+                }?;
+                let value = self.get_operand_value(op2, size)?;
+                self.set_bit_test_flags(value, bit, size);
             }
             Instruction::ASd(amount, dest, direction, size) => {
                 let amount_value = self.get_operand_value(amount, size)? % 64;
@@ -1348,6 +1368,16 @@ impl Interpreter {
                 
             }
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
+        }
+    }
+    /**
+     * Some instructions limit inputs to 8 bits if the destination is
+     * not a register.
+     */
+    fn limit_bit_size(&mut self, bit: u32, dest: &Operand) -> RuntimeResult<u32> {
+        match dest {
+            Operand::Register(r) => Ok(bit),
+            _ => { Ok(bit % 8) },
         }
     }
     fn get_operand_value(&mut self, op: &Operand, size: &Size) -> RuntimeResult<u32> {
