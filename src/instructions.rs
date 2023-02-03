@@ -23,19 +23,19 @@ impl Size {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 #[serde(tag = "type", content = "value")]
 pub enum RegisterOperand {
     Address(u8),
     Data(u8),
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Copy)]
 pub struct DisplacementOperands{
    pub base: RegisterOperand,
    pub index: RegisterOperand,
     //scale: u8,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Copy)]
 pub enum Operand {
     Register(RegisterOperand),
     Immediate(u32),
@@ -119,7 +119,7 @@ pub enum Sign {
     Unsigned,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Copy)]
 pub enum Instruction {
     MOVE(Operand, Operand, Size),
     ADD(Operand, Operand, Size),

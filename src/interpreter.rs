@@ -484,7 +484,7 @@ impl Interpreter {
                 .add_step(ExecutionStep::new(self.pc, self.cpu.ccr));
         }
         self.last_line_address = self.pc;
-        match self.get_instruction_at(self.pc) {
+        match self.program.get(&self.pc) {
             _ if self.status == InterpreterStatus::Terminated
                 || self.status == InterpreterStatus::TerminatedWithException =>
             {
@@ -497,13 +497,13 @@ impl Interpreter {
             )),
 
             Some(ins) => {
-                let clone = ins.instruction.clone();
                 if self.keep_history {
                     self.debugger.set_line(ins.parsed_line.line_index);
                 }
                 //need to find a way to remove this clone
-                self.increment_pc(4);
-                self.execute_instruction(&clone)?;
+                //self.increment_pc(4);
+                self.pc += 4;
+                self.execute_instruction(&ins.instruction)?;
                 let status = self.get_status();
                 //TODO not sure if doing this before or after running the instruction
                 if self.has_reached_bottom() && *status != InterpreterStatus::Interrupt {
