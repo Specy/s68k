@@ -503,7 +503,7 @@ impl Interpreter {
                 //need to find a way to remove this clone
                 //self.increment_pc(4);
                 self.pc += 4;
-                self.execute_instruction(&ins.instruction)?;
+                self.execute_instruction(&ins.instruction.clone())?;
                 let status = self.get_status();
                 //TODO not sure if doing this before or after running the instruction
                 if self.has_reached_bottom() && *status != InterpreterStatus::Interrupt {

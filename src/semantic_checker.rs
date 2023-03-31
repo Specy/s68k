@@ -713,11 +713,34 @@ impl SemanticChecker {
                     }
                 }
                 SizeRules::AnySize => {
-                    if *size == LexedSize::Unknown {
-                        self.errors.push(SemanticError::new(
-                            line.clone(),
-                            format!("Unknown size, expected any of \"b\", \"w\", \"l\""),
-                        ))
+                    match *size {
+                        LexedSize::Unknown => {
+                            self.errors.push(SemanticError::new(
+                                line.clone(),
+                                format!("Unknown size, expected any of \"b\", \"w\", \"l\""),
+                            ))
+                        }
+                        LexedSize::Byte => {
+                            match &line.parsed {
+                                LexedLine::Instruction { operands, ..} => {
+                                    //check if it has any address register
+                                    let has_address_reg = operands.iter().find(|op| {
+                                        match op {
+                                            LexedOperand::Register(LexedRegisterType::Address, _) => true,
+                                            _ => false,
+                                        }
+                                    });
+                                    if let Some(_op) = has_address_reg  {
+                                        self.errors.push(SemanticError::new(
+                                            line.clone(),
+                                            format!("Invalid size, address register cannot be used with byte size"),
+                                        ));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
                     }
                 }
             },

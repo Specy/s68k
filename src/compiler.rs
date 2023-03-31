@@ -184,9 +184,42 @@ impl Compiler {
         if operands.len() == 2 {
             let (op1, op2) = (operands.remove(0), operands.remove(0));
             let parsed = match name.as_str() {
-                "move" => Instruction::MOVE(op1, op2, self.get_size(size, Size::Word)?),
-                "add" => Instruction::ADD(op1, op2, self.get_size(size, Size::Word)?),
-                "sub" => Instruction::SUB(op1, op2, self.get_size(size, Size::Word)?),
+                "move" => match op2 {
+                    Operand::Register(RegisterOperand::Address(a)) => Instruction::MOVEA(
+                        op1,
+                        RegisterOperand::Address(a),
+                        self.get_size(size, Size::Word)?,
+                    ),
+                    _ => Instruction::MOVE(op1, op2, self.get_size(size, Size::Word)?),
+                },
+                "add" => match op2 {
+                    Operand::Register(RegisterOperand::Address(a)) => Instruction::ADDA(
+                        op1,
+                        RegisterOperand::Address(a),
+                        self.get_size(size, Size::Word)?,
+                    ),
+                    _ => Instruction::ADD(op1, op2, self.get_size(size, Size::Word)?),
+                },
+                "sub" => match op2 {
+                    Operand::Register(RegisterOperand::Address(a)) => Instruction::SUBA(
+                        op1,
+                        RegisterOperand::Address(a),
+                        self.get_size(size, Size::Word)?,
+                    ),
+                    _ => Instruction::SUB(op1, op2, self.get_size(size, Size::Word)?),
+                },
+                "cmp" => match op2 {
+                    Operand::Register(RegisterOperand::Address(a)) => Instruction::CMPA(
+                        op1,
+                        RegisterOperand::Address(a),
+                        self.get_size(size, Size::Word)?,
+                    ),
+                    _ => Instruction::CMP(
+                        op1,
+                        self.extract_register(op2)?,
+                        self.get_size(size, Size::Word)?,
+                    ),
+                },
                 "adda" => Instruction::ADDA(
                     op1,
                     self.extract_register(op2)?,
@@ -216,11 +249,6 @@ impl Compiler {
                 "muls" => Instruction::MULx(op1, self.extract_register(op2)?, Sign::Signed),
                 "mulu" => Instruction::MULx(op1, self.extract_register(op2)?, Sign::Unsigned),
                 "exg" => Instruction::EXG(self.extract_register(op1)?, self.extract_register(op2)?),
-                "cmp" => Instruction::CMP(
-                    op1,
-                    self.extract_register(op2)?,
-                    self.get_size(size, Size::Word)?,
-                ),
                 "or" => Instruction::OR(op1, op2, self.get_size(size, Size::Word)?),
                 "and" => Instruction::AND(op1, op2, self.get_size(size, Size::Word)?),
                 "eor" => Instruction::EOR(op1, op2, self.get_size(size, Size::Word)?),
