@@ -137,6 +137,16 @@ pub enum SizeRules {
     AnySize,
     OnlyLongOrWord,
 }
+impl SizeRules {
+    pub fn get_valid_sizes(&self) -> String {
+        match *self {
+            SizeRules::NoSize => "",
+            SizeRules::AnySize => "b, w, l",
+            SizeRules::OnlyLongOrWord => "w, l",
+        }
+        .to_string()
+    }
+}
 
 pub struct SemanticChecker {
     labels: HashMap<String, Label>,
@@ -221,7 +231,7 @@ impl SemanticChecker {
                     }
                     "adda" | "suba" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::ONLY_A_REG, line);
-                        self.verify_size(SizeRules::AnySize, line);
+                        self.verify_size(SizeRules::OnlyLongOrWord, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
 
@@ -696,6 +706,13 @@ impl SemanticChecker {
     fn verify_size(&mut self, rule: SizeRules, line: &ParsedLine) {
         match &line.parsed {
             LexedLine::Instruction { size, .. } | LexedLine::Directive { size, .. } => match rule {
+                _ if *size == LexedSize::Unknown => {
+                    self.errors.push(SemanticError::new(
+                        line.clone(),
+                        format!("Unknown size, expected any of \"{}\"", rule.get_valid_sizes()),
+                    ));
+                }
+                
                 SizeRules::NoSize => {
                     if *size != LexedSize::Unspecified || *size == LexedSize::Unknown {
                         self.errors.push(SemanticError::new(
@@ -705,7 +722,7 @@ impl SemanticChecker {
                     }
                 }
                 SizeRules::OnlyLongOrWord => {
-                    if *size != LexedSize::Long && *size != LexedSize::Word {
+                    if *size != LexedSize::Long && *size != LexedSize::Word && *size != LexedSize::Unspecified {
                         self.errors.push(SemanticError::new(
                             line.clone(),
                             format!("Invalid size, instruction must be long or word"),
@@ -714,12 +731,6 @@ impl SemanticChecker {
                 }
                 SizeRules::AnySize => {
                     match *size {
-                        LexedSize::Unknown => {
-                            self.errors.push(SemanticError::new(
-                                line.clone(),
-                                format!("Unknown size, expected any of \"b\", \"w\", \"l\""),
-                            ))
-                        }
                         LexedSize::Byte => {
                             match &line.parsed {
                                 LexedLine::Instruction { operands, ..} => {

@@ -674,7 +674,7 @@ impl Interpreter {
             Instruction::SUBA(source, dest, size) => {
                 let source_value =
                     sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
-                let dest_value = self.get_register_value(dest, size);
+                let dest_value = self.get_register_value(dest, &Size::Long);
                 let (result, _) = overflowing_sub_sized(dest_value, source_value, &Size::Long);
                 self.set_register_value(dest, result, &Size::Long);
             }
@@ -734,10 +734,10 @@ impl Interpreter {
             Instruction::ADDA(source, dest, size) => {
                 let source_value =
                     sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
-                let dest_value = self.get_register_value(dest, size);
+                let dest_value = self.get_register_value(dest, &Size::Long);
                 let (result, _) = overflowing_add_sized(dest_value, source_value, &Size::Long);
                 self.set_register_value(dest, result, &Size::Long);
-            }
+            }   
             Instruction::ADDI(source_value, dest, size) => {
                 let dest_value = self.get_operand_value(dest, size)?;
                 let (result, carry) = overflowing_add_sized(dest_value, *source_value, size);
@@ -1089,7 +1089,7 @@ impl Interpreter {
                         )))
                     }
                 };
-                self.set_register_value(reg, result, &Size::Long);
+                self.set_register_value(reg, result, to);
                 self.set_logic_flags(result, to);
             }
             Instruction::SWAP(reg) => {
@@ -1111,7 +1111,6 @@ impl Interpreter {
                 self.set_compare_flags(result, size, carry, overflow);
             }
             Instruction::CMPA(source, dest, size) => {
-                //TODO not sure about this
                 let source_value =
                     sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
                 let dest_value = self.get_register_value(dest, &Size::Long);
@@ -1225,6 +1224,7 @@ impl Interpreter {
         println!("{}", ccr);
     }
 
+    #[inline]
     pub fn get_register_value(&self, register: &RegisterOperand, size: &Size) -> u32 {
         match register {
             RegisterOperand::Address(num) => self.cpu.a_reg[*num as usize].get_size(size),
@@ -1232,6 +1232,7 @@ impl Interpreter {
         }
     }
 
+    #[inline]
     pub fn set_register_value(&mut self, register: &RegisterOperand, value: u32, size: &Size) {
         let old_value = match register {
             RegisterOperand::Address(num) => {
