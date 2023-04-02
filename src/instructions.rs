@@ -23,19 +23,19 @@ impl Size {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 #[serde(tag = "type", content = "value")]
 pub enum RegisterOperand {
     Address(u8),
     Data(u8),
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Copy)]
 pub struct DisplacementOperands{
    pub base: RegisterOperand,
    pub index: RegisterOperand,
     //scale: u8,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Copy)]
 pub enum Operand {
     Register(RegisterOperand),
     Immediate(u32),
@@ -119,13 +119,15 @@ pub enum Sign {
     Unsigned,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Copy)]
 pub enum Instruction {
+    ADDA(Operand, RegisterOperand, Size),
+    SUBA(Operand, RegisterOperand, Size),
+    CMPA(Operand, RegisterOperand, Size),
+    MOVEA(Operand, RegisterOperand, Size), //add TAS()
     MOVE(Operand, Operand, Size),
     ADD(Operand, Operand, Size),
     SUB(Operand, Operand, Size),
-    ADDA(Operand, RegisterOperand, Size),
-    SUBA(Operand, RegisterOperand, Size),
     ADDQ(u8, Operand, Size), 
     MOVEQ(u8, RegisterOperand), 
     SUBQ(u8, Operand, Size),
@@ -135,9 +137,7 @@ pub enum Instruction {
     ORI(u32, Operand, Size),
     EORI(u32, Operand, Size),
     CMPI(u32, Operand, Size),
-    CMPA(Operand, RegisterOperand, Size),
     CMPM(Operand, Operand, Size),
-    MOVEA(Operand, RegisterOperand, Size), //add TAS()
     DIVx(Operand, RegisterOperand, Sign),
     MULx(Operand, RegisterOperand, Sign),
     SWAP(RegisterOperand),

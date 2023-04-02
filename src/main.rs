@@ -2,6 +2,7 @@ use console::Term;
 use s68k::{
     instructions::{Interrupt, InterruptResult},
     interpreter::{InterpreterStatus, InterpreterOptions, Interpreter},
+    compiler::{InstructionLine},
     S68k,
 };
 use core::panic;
@@ -41,7 +42,11 @@ fn main() {
     println!("\n----COMPILED-PROGRAM----\n");
     let compiled_program = s68k.compile().unwrap();
     //pre_interpreter.debug_print();
-
+    if args.contains(&"--show-compiled".to_string()) {
+        let mut instructions:Vec<InstructionLine> = compiled_program.get_instructions_map().into_values().collect();
+        instructions.sort_by_key(|i| i.address);
+        println!("{:#?}", instructions);
+    }
     let options = InterpreterOptions{
         keep_history: true,
         ..Default::default()
