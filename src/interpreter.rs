@@ -654,7 +654,7 @@ impl Interpreter {
             Instruction::MOVEA(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size)?;
                 let source_value = sign_extend_to_long(source_value, size) as u32;
-                self.set_register_value(dest, source_value, size);
+                self.set_register_value(dest, source_value, &Size::Long);
             }
             Instruction::MOVEQ(value, dest) => {
                 let value = sign_extend_to_long(*value as u32, &Size::Byte) as u32;
