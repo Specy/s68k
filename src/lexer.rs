@@ -225,7 +225,7 @@ impl AsmRegex {
             post_indirect_only: Regex::new(&Grammar::PostIndirect.get_opt(GrammarOptions::IS_LINE)).unwrap(),
             pre_indirect_only: Regex::new(&Grammar::PreIndirect.get_opt(GrammarOptions::IS_LINE)).unwrap(),
             label_line: Regex::new(r"^\S+:.*").unwrap(),
-            directive: Regex::new(&Grammar::Directive.get_opt(GrammarOptions::IGNORE_CASE))
+            directive: Regex::new( &format!(r"^\s*({})",Grammar::Directive.get_opt(GrammarOptions::IGNORE_CASE)))
                 .unwrap(),
             operand_arg: Regex::new(&Grammar::OperandArg.get_regex()).unwrap(),
             comment_line: Regex::new(&Grammar::CommentLine.get_regex()).unwrap(),
