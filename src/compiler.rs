@@ -305,13 +305,13 @@ impl Compiler {
                     ShiftDirection::Right,
                     self.get_size(size, Size::Word)?,
                 ),
-                "asl" => Instruction::LSd(
+                "asl" => Instruction::ASd(
                     op1,
                     op2,
                     ShiftDirection::Left,
                     self.get_size(size, Size::Word)?,
                 ),
-                "asr" => Instruction::LSd(
+                "asr" => Instruction::ASd(
                     op1,
                     op2,
                     ShiftDirection::Right,

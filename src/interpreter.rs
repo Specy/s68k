@@ -798,22 +798,7 @@ impl Interpreter {
                 self.set_compare_flags(result as u32, &Size::Long, false, false);
                 self.set_register_value(dest, result as u32, &Size::Long);
             }
-            Instruction::LSd(amount_source, dest, direction, size) => {
-                let amount = self.get_operand_value(amount_source, size)? % 64;
-                let (mut value, mut msb) = (self.get_operand_value(dest, size)?, false);
-                for _ in 0..amount {
-                    (value, msb) = shift(direction, value, size, false);
-                }
-                self.store_operand_value(dest, value, size, Used::Twice)?;
-                self.set_logic_flags(value, size);
-                self.set_flag(Flags::Overflow, false);
-                if amount != 0 {
-                    self.set_flag(Flags::Extend, msb);
-                    self.set_flag(Flags::Carry, msb);
-                } else {
-                    self.set_flag(Flags::Carry, false);
-                }
-            }
+
             Instruction::BRA(address) => {
                 //instead of using the absolute address, the original language uses pc + 2 + offset
                 self.pc = *address as usize;
@@ -961,6 +946,22 @@ impl Interpreter {
                 if amount_value != 0 {
                     self.set_flag(Flags::Extend, carry);
                     self.set_flag(Flags::Carry, carry);
+                } else {
+                    self.set_flag(Flags::Carry, false);
+                }
+            }
+            Instruction::LSd(amount_source, dest, direction, size) => {
+                let amount = self.get_operand_value(amount_source, size)? % 64;
+                let (mut value, mut msb) = (self.get_operand_value(dest, size)?, false);
+                for _ in 0..amount {
+                    (value, msb) = shift(direction, value, size, false);
+                }
+                self.store_operand_value(dest, value, size, Used::Twice)?;
+                self.set_logic_flags(value, size);
+                self.set_flag(Flags::Overflow, false);
+                if amount != 0 {
+                    self.set_flag(Flags::Extend, msb);
+                    self.set_flag(Flags::Carry, msb);
                 } else {
                     self.set_flag(Flags::Carry, false);
                 }
