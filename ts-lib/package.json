@@ -2,7 +2,7 @@
     "type": "module",
     "name": "s68k",
     "description": "An M68000 emulator written in Rust and compiled to WebAssembly for teaching purposes.",
-    "version": "2.9.3",
+    "version": "3.0.0",
     "main": "dist/index.js",
     "module": "dist/index.js",
     "typings": "dist/index.d.ts",
@@ -14,6 +14,6 @@
         "build-lib": "node build.js"
     },
     "devDependencies": {
-        "typescript": "^4.8.4"
+        "typescript": "^5.2.2"
     }
 }

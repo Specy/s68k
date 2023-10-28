@@ -370,7 +370,10 @@ pub struct Interpreter {
     memory: Memory,
     cpu: Cpu,
     pc: usize,
-    program: HashMap<usize, InstructionLine>,
+    program: Vec<InstructionLine>,
+    //i could store this in the memory instead of having a separate vector but it prevents accidental memory writes overriding the instruction map
+    //even tho this is more similar to how a real cpu works
+    instruction_map: Vec<usize>,
     debugger: Debugger,
     keep_history: bool,
     last_line_address: usize,
@@ -388,14 +391,21 @@ impl Interpreter {
         let sp = memory_size >> 4;
         let start = compiled_program.get_start_address();
         let end = compiled_program.get_final_instruction_address();
-        let program = compiled_program.get_instructions_map();
+        let program = compiled_program.get_instructions().clone();
         let length = program.len();
         let options = options.unwrap_or(InterpreterOptions {
             keep_history: false,
             history_size: 100,
         });
+        let max_address = program.iter().map(|i| i.address).max().unwrap_or(0);
+        let mut instruction_map = vec![usize::MAX; max_address + 1];
+        for (index, ins) in program.iter().enumerate() {
+            //no need to check if the array is big enough because i already checked the max address
+            instruction_map[ins.address] = index;
+        }
         let mut interpreter = Self {
             memory: Memory::new(memory_size),
+            instruction_map,
             cpu: Cpu::new(),
             pc: start,
             final_instruction_address: end,
@@ -484,7 +494,10 @@ impl Interpreter {
                 .add_step(ExecutionStep::new(self.pc, self.cpu.ccr));
         }
         self.last_line_address = self.pc;
-        match self.program.get(&self.pc) {
+        let instruction = self
+            .get_instruction_at(self.pc)
+            .map(|i| (i.parsed_line.line_index, i.instruction));
+        match instruction {
             _ if self.status == InterpreterStatus::Terminated
                 || self.status == InterpreterStatus::TerminatedWithException =>
             {
@@ -496,14 +509,12 @@ impl Interpreter {
                 "Attempted to step while interrupt is pending".to_string(),
             )),
 
-            Some(ins) => {
+            Some((index, ins)) => {
                 if self.keep_history {
-                    self.debugger.set_line(ins.parsed_line.line_index);
+                    self.debugger.set_line(index);
                 }
-                //need to find a way to remove this clone
-                //self.increment_pc(4);
-                self.pc += 4;
-                self.execute_instruction(&ins.instruction.clone())?;
+                self.increment_pc(4);
+                self.execute_instruction(&ins)?;
                 let status = self.get_status();
                 //TODO not sure if doing this before or after running the instruction
                 if self.has_reached_bottom() && *status != InterpreterStatus::Interrupt {
@@ -636,7 +647,11 @@ impl Interpreter {
     }
     #[inline(always)]
     pub fn get_instruction_at(&self, address: usize) -> Option<&InstructionLine> {
-        self.program.get(&address)
+        let index = self.instruction_map.get(address);
+        match index {
+            Some(index) => self.program.get(*index),
+            None => None,
+        }
     }
     pub fn get_current_interrupt(&self) -> RuntimeResult<Interrupt> {
         match &self.current_interrupt {
@@ -737,7 +752,7 @@ impl Interpreter {
                 let dest_value = self.get_register_value(dest, &Size::Long);
                 let (result, _) = overflowing_add_sized(dest_value, source_value, &Size::Long);
                 self.set_register_value(dest, result, &Size::Long);
-            }   
+            }
             Instruction::ADDI(source_value, dest, size) => {
                 let dest_value = self.get_operand_value(dest, size)?;
                 let (result, carry) = overflowing_add_sized(dest_value, *source_value, size);
@@ -1366,19 +1381,18 @@ impl Interpreter {
                         bytes
                     ))),
                 }
-                
             }
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
         }
     }
     /**
-        Some instructions limit inputs to 8 bits if the destination is
-        not a register.
-     */
+       Some instructions limit inputs to 8 bits if the destination is
+       not a register.
+    */
     fn limit_bit_size(&mut self, bit: u32, dest: &Operand) -> RuntimeResult<u32> {
         match dest {
             Operand::Register(_) => Ok(bit),
-            _ => { Ok(bit % 8) },
+            _ => Ok(bit % 8),
         }
     }
     fn get_operand_value(&mut self, op: &Operand, size: &Size) -> RuntimeResult<u32> {

@@ -99,11 +99,8 @@ impl Compiler {
         self.final_instrucion_address
     }
 
-    pub fn get_instructions_map(&self) -> HashMap<usize, InstructionLine> {
-        self.instructions
-            .iter()
-            .map(|x| (x.address, x.clone()))
-            .collect()
+    pub fn get_instructions(&self) -> &Vec<InstructionLine> {
+        &self.instructions
     }
 
     pub fn get_labels_map(&self) -> &HashMap<String, Label> {
@@ -115,7 +112,7 @@ impl Compiler {
     fn load(&mut self, lines: &[ParsedLine]) -> Result<(), String> {
         self.parse_labels_and_addresses(lines)?; //has side effect, place before the parsing
         self.parse_instruction_lines(lines)?;
-        self.start_address = match self.labels.get("start") {
+        self.start_address = match self.labels.get("START") {
             Some(label) => label.address,
             None => match self.instructions.first() {
                 Some(instruction) => instruction.address,
