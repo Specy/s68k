@@ -113,7 +113,15 @@ impl Compiler {
         self.parse_labels_and_addresses(lines)?; //has side effect, place before the parsing
         self.parse_instruction_lines(lines)?;
         self.start_address = match self.labels.get("START") {
-            Some(label) => label.address,
+            Some(label) => {
+                //find the closest instruction after the label
+                self.instructions
+                    .iter()
+                    .map(|x| x.address)
+                    .filter(|x| *x >= label.address)
+                    .min()
+                    .unwrap_or(0)
+            }
             None => match self.instructions.first() {
                 Some(instruction) => instruction.address,
                 None => 0,
