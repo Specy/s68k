@@ -2,8 +2,9 @@
 A rust interpreter for m68k with semantic checker.
 It compiles to WASM to be used with javascript and node.js, [available on npm](https://www.npmjs.com/package/s68k)
 
-
 [Typescript library documentation](https://github.com/Specy/s68k/wiki)
+
+From my tests, it runs at 50/70mhz natively and 30/40mhz on the browser with WASM
 
 ## Purpose
 The purpose of this interpreter is to help people learn the basics of assembly, in this case m68k, by providing useful errors and hints like a modern language, in the hope to help understand the addressing modes and learn the different instructions/directives.
