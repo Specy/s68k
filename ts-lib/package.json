@@ -2,7 +2,7 @@
     "type": "module",
     "name": "s68k",
     "description": "An M68000 emulator written in Rust and compiled to WebAssembly for teaching purposes.",
-    "version": "3.0.2",
+    "version": "3.0.3",
     "main": "dist/index.js",
     "module": "dist/index.js",
     "typings": "dist/index.d.ts",

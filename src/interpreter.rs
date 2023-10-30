@@ -1543,7 +1543,8 @@ impl Interpreter {
         self.verify_can_run()?;
         let breakpoints_map = self.generate_breakpoints_map(&breakpoint_lines);
         let mut iterations = 0;
-        let mut limit_counter = limit.unwrap_or(usize::MAX);
+        let limit = limit.unwrap_or(usize::MAX);
+        let mut limit_counter = limit;
         while self.status == InterpreterStatus::Running && limit_counter > 0 {
             match breakpoints_map.get(self.pc) {
                 //skip the first iteration if the pc is in a breakpoint
@@ -1557,6 +1558,9 @@ impl Interpreter {
             }
             limit_counter -= 1;
             iterations += 1;
+        }
+        if limit_counter <= 0 {
+            return Err(RuntimeError::ExecutionLimit(limit));
         }
         Ok(self.status)
         //convert the line numbers to their corresponding addresses, to then save it in a vector to check if the current pc is in it
