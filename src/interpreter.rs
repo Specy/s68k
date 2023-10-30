@@ -16,7 +16,7 @@ use crate::{
         Condition, Instruction, Interrupt, InterruptResult, Label, Operand, RegisterOperand,
         ShiftDirection, Sign, Size,
     },
-    math::*,
+    math::*, lexer::ParsedLine,
 };
 use bitflags::bitflags;
 use core::panic;
@@ -1516,6 +1516,52 @@ impl Interpreter {
         }
         Ok(self.status)
     }
+
+    pub fn generate_breakpoints_map(&self, breakpoint_lines: &Vec<usize>) -> Vec<bool> {
+        let breakpoints_lines_map = breakpoint_lines
+            .iter()
+            .map(|l| (l, true))
+            .collect::<HashMap<&usize, bool>>();
+        let breakpoints_addresses = self
+            .program
+            .iter()
+            .filter(|l| breakpoints_lines_map.contains_key(&l.parsed_line.line_index))
+            .map(|l| l.address)
+            .collect::<Vec<usize>>();
+        let max = *breakpoints_addresses.iter().max().unwrap_or(&0);
+        let mut breakpoints_addresses_map = vec![false; max + 1];
+        for line in breakpoints_addresses {
+            breakpoints_addresses_map[line] = true
+        }
+        breakpoints_addresses_map
+    }
+    pub fn run_with_breakpoints(
+        &mut self,
+        breakpoint_lines: &Vec<usize>,
+        limit: Option<usize>,
+    ) -> RuntimeResult<InterpreterStatus> {
+        self.verify_can_run()?;
+        let breakpoints_map = self.generate_breakpoints_map(&breakpoint_lines);
+        let mut iterations = 0;
+        let mut limit_counter = limit.unwrap_or(usize::MAX);
+        while self.status == InterpreterStatus::Running && limit_counter > 0 {
+            match breakpoints_map.get(self.pc) {
+                //skip the first iteration if the pc is in a breakpoint
+                Some(true) if iterations > 0 => {
+                    self.status = InterpreterStatus::Running;
+                    break;
+                }
+                _ => {
+                    self.step()?;
+                }
+            }
+            limit_counter -= 1;
+            iterations += 1;
+        }
+        Ok(self.status)
+        //convert the line numbers to their corresponding addresses, to then save it in a vector to check if the current pc is in it
+    }
+
     pub fn run_with_limit(&mut self, limit: usize) -> RuntimeResult<InterpreterStatus> {
         let mut limit_counter = limit;
         self.verify_can_run()?;
@@ -1653,6 +1699,16 @@ impl Interpreter {
     }
     pub fn wasm_run(&mut self) -> Result<InterpreterStatus, JsValue> {
         match self.run() {
+            Ok(status) => Ok(status),
+            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
+        }
+    }
+    pub fn wasm_run_with_breakpoints(
+        &mut self,
+        breakpoint_lines: Vec<usize>,
+        limit: Option<usize>,
+    ) -> Result<InterpreterStatus, JsValue> {
+        match self.run_with_breakpoints(&breakpoint_lines, limit) {
             Ok(status) => Ok(status),
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }

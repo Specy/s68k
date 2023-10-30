@@ -174,6 +174,9 @@ export class Interpreter {
     runWithLimit(limit: number): InterpreterStatus {
         return this.interpreter.wasm_run_with_limit(limit)
     }
+    runWithBreakpoints(breakpoints: Uint32Array, limit?: number): InterpreterStatus {
+        return this.interpreter.wasm_run_with_breakpoints(breakpoints, limit)
+    }
     async runWithInterruptHandler(onInterrupt: InterruptHandler): Promise<InterpreterStatus> {
         const status = this.interpreter.wasm_run() as InterpreterStatus
         if (status == InterpreterStatus.Interrupt) {

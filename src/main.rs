@@ -47,19 +47,14 @@ fn main() {
         instructions.sort_by_key(|i| i.address);
         println!("{:#?}", instructions);
     }
-    let options = InterpreterOptions {
-        keep_history: false,
-        ..Default::default()
-    };
-    //16 mb of memory
-    let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF, Some(options));
+
     //ask user if it wants to run the code (0) or allow to step through it (1)
     let execution_mode = if args.contains(&"--step".to_string()) {
         "1".to_string()
     } else if args.contains(&"--run".to_string()) {
         "0".to_string()
     } else {
-        println!("Do you want to run the code (0) or step through it (1)?");
+        println!("Do you want to run the code (0), step through it (1), or benchmark it (2)?");
         let mut value = Term::stdout().read_line().expect("Unable to read line");
         while value != "0" && value != "1" {
             println!("Please enter 0 or 1");
@@ -68,7 +63,13 @@ fn main() {
         value
     };
     let start = Instant::now();
+    let options = InterpreterOptions {
+        keep_history: true,
+        ..Default::default()
+    };
     if execution_mode == "0" {
+        let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF, Some(options));
+        //16 mb of memory
         while !interpreter.has_terminated() {
             let status = interpreter.run().unwrap();
             match status {
@@ -79,10 +80,15 @@ fn main() {
                 InterpreterStatus::TerminatedWithException => {
                     println!("Program Terminated with exception");
                 }
-                _ => {}
+                _ => {println!("paused")}
             }
         }
-    } else {
+        if !args.contains(&"--no-debug".to_string()) {
+            interpreter.debug_status();
+            println!("\nExecution took: {:?}", start.elapsed());
+        }
+    } else if execution_mode == "1" {
+        let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF, Some(options));
         println!("D for step, A for undo, S for print, Q for quit");
         while !interpreter.has_terminated() {
             let step_kind = ask_step_kind();
@@ -113,11 +119,34 @@ fn main() {
                 }
                 _ => {}
             }
+        }
+        if !args.contains(&"--no-debug".to_string()) {
+            interpreter.debug_status();
+            println!("\nExecution took: {:?}", start.elapsed());
+        }
+    } else if execution_mode == "2" {
+        let options = InterpreterOptions {
+            keep_history: false,
+            ..Default::default()
         };
-    }
-    if !args.contains(&"--no-debug".to_string()) {
-        interpreter.debug_status();
-        println!("\nExecution took: {:?}", start.elapsed());
+        let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF, Some(options));
+        while !interpreter.has_terminated() {
+            let status = interpreter.run().unwrap();
+            match status {
+                InterpreterStatus::Interrupt => {
+                    let interrupt = interpreter.get_current_interrupt().unwrap();
+                    handle_interrupt(&mut interpreter, &interrupt);
+                }
+                InterpreterStatus::TerminatedWithException => {
+                    println!("Program Terminated with exception");
+                }
+                _ => {}
+            }
+        }
+        if !args.contains(&"--no-debug".to_string()) {
+            interpreter.debug_status();
+            println!("\nExecution took: {:?}", start.elapsed());
+        }
     }
 }
 
