@@ -56,8 +56,8 @@ fn main() {
     } else {
         println!("Do you want to run the code (0), step through it (1), or benchmark it (2)?");
         let mut value = Term::stdout().read_line().expect("Unable to read line");
-        while value != "0" && value != "1" {
-            println!("Please enter 0 or 1");
+        while value != "0" && value != "1" && value != "2"{
+            println!("Please enter 0,1 or 2");
             value = Term::stdout().read_line().expect("Unable to read line");
         }
         value
@@ -127,6 +127,7 @@ fn main() {
     } else if execution_mode == "2" {
         let options = InterpreterOptions {
             keep_history: false,
+            history_size: 0,
             ..Default::default()
         };
         let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF, Some(options));
