@@ -1,7 +1,7 @@
 use std::collections::{LinkedList, HashMap};
 
 use serde::Serialize;
-use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
+use wasm_bindgen::{prelude::wasm_bindgen};
 
 use crate::{
     instructions::{RegisterOperand, Size, Label},

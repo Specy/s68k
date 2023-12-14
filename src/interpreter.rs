@@ -16,7 +16,7 @@ use crate::{
         Condition, Instruction, Interrupt, InterruptResult, Label, Operand, RegisterOperand,
         ShiftDirection, Sign, Size,
     },
-    math::*, lexer::ParsedLine,
+    math::*,
 };
 use bitflags::bitflags;
 use core::panic;
@@ -388,7 +388,7 @@ impl Interpreter {
         memory_size: usize,
         options: Option<InterpreterOptions>,
     ) -> Self {
-        let sp = memory_size >> 4;
+        let sp = (memory_size >> 4) + 1;
         let start = compiled_program.get_start_address();
         let end = compiled_program.get_final_instruction_address();
         let program = compiled_program.get_instructions().clone();

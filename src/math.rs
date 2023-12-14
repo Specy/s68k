@@ -114,7 +114,7 @@ pub fn rotate(dir: &ShiftDirection, value: u32, size: &Size) -> (u32, bool) {
             let rotate = match size {
                 Size::Byte => ((value as u8) << 1) as u32,
                 Size::Word => ((value as u16) << 1) as u32,
-                Size::Long => (value << 1),
+                Size::Long => value << 1,
             };
             ((mask | rotate), bit)
         }
