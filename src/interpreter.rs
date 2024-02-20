@@ -9,6 +9,13 @@
     to the same incremented register, 3 increments are applied, when only 1 should be applied.
     There needs to be added a way to only apply the side effect once, and then store the result to the register.
 */
+use core::panic;
+use std::{collections::HashMap, hash::Hash};
+
+use bitflags::bitflags;
+use serde::{Deserialize, Serialize};
+use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
+
 use crate::{
     compiler::{Compiler, Directive, InstructionLine},
     debugger::{Debugger, ExecutionStep, MutationOperation},
@@ -18,11 +25,6 @@ use crate::{
     },
     math::*,
 };
-use bitflags::bitflags;
-use core::panic;
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, hash::Hash};
-use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Used {
@@ -66,6 +68,7 @@ pub enum MemoryCell {
     Word(u16),
     Long(u32),
 }
+
 impl MemoryCell {
     pub fn get_long(&self) -> u32 {
         match self {
@@ -95,6 +98,7 @@ impl MemoryCell {
 pub struct Memory {
     data: Vec<u8>,
 }
+
 impl Memory {
     pub fn new(size: usize) -> Self {
         Self {
@@ -221,6 +225,7 @@ impl Memory {
         Ok(&self.data[address..address + length])
     }
 }
+
 #[wasm_bindgen]
 impl Memory {
     pub fn wasm_read_bytes(&self, address: usize, size: usize) -> Vec<u8> {
@@ -236,6 +241,7 @@ impl Memory {
 pub struct Register {
     data: u32,
 }
+
 impl Register {
     pub fn new() -> Self {
         Self { data: 0 }
@@ -277,6 +283,7 @@ impl Register {
         self.data = 0;
     }
 }
+
 #[wasm_bindgen]
 impl Register {
     pub fn wasm_get_long(&self) -> u32 {
@@ -289,6 +296,7 @@ impl Register {
         self.get_byte()
     }
 }
+
 #[derive(Debug, Clone, Copy)]
 #[wasm_bindgen]
 pub struct Cpu {
@@ -296,6 +304,7 @@ pub struct Cpu {
     a_reg: [Register; 8],
     ccr: Flags,
 }
+
 impl Cpu {
     pub fn new() -> Self {
         Self {
@@ -347,11 +356,13 @@ pub enum InterpreterStatus {
     Terminated,
     TerminatedWithException,
 }
+
 #[derive(Serialize, Deserialize)]
 pub struct InterpreterOptions {
     pub keep_history: bool,
     pub history_size: usize,
 }
+
 impl InterpreterOptions {
     pub fn new() -> Self {
         Self {
@@ -360,11 +371,13 @@ impl InterpreterOptions {
         }
     }
 }
+
 impl Default for InterpreterOptions {
     fn default() -> Self {
         Self::new()
     }
 }
+
 #[wasm_bindgen]
 pub struct Interpreter {
     memory: Memory,
@@ -500,11 +513,11 @@ impl Interpreter {
         match instruction {
             _ if self.status == InterpreterStatus::Terminated
                 || self.status == InterpreterStatus::TerminatedWithException =>
-            {
-                Err(RuntimeError::Raw(
-                    "Attempt to run terminated program".to_string(),
-                ))
-            }
+                {
+                    Err(RuntimeError::Raw(
+                        "Attempt to run terminated program".to_string(),
+                    ))
+                }
             _ if self.status == InterpreterStatus::Interrupt => Err(RuntimeError::Raw(
                 "Attempted to step while interrupt is pending".to_string(),
             )),
@@ -662,12 +675,12 @@ impl Interpreter {
     fn execute_instruction(&mut self, ins: &Instruction) -> RuntimeResult<()> {
         match ins {
             Instruction::MOVE(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size)?;
+                let source_value = self.get_operand_value(source, size, Used::Once)?;
                 self.set_logic_flags(source_value, size);
                 self.store_operand_value(dest, source_value, size, Used::Once)?;
             }
             Instruction::MOVEA(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size)?;
+                let source_value = self.get_operand_value(source, size, Used::Once)?;
                 let source_value = sign_extend_to_long(source_value, size) as u32;
                 self.set_register_value(dest, source_value, &Size::Long);
             }
@@ -678,8 +691,8 @@ impl Interpreter {
             }
 
             Instruction::SUB(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size)?;
-                let dest_value = self.get_operand_value(dest, size)?;
+                let source_value = self.get_operand_value(source, size, Used::Once)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
@@ -688,7 +701,7 @@ impl Interpreter {
             }
             Instruction::SUBA(source, dest, size) => {
                 let source_value =
-                    sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
+                    sign_extend_to_long(self.get_operand_value(source, size, Used::Once)?, size) as u32;
                 let dest_value = self.get_register_value(dest, &Size::Long);
                 let (result, _) = overflowing_sub_sized(dest_value, source_value, &Size::Long);
                 self.set_register_value(dest, result, &Size::Long);
@@ -720,7 +733,7 @@ impl Interpreter {
                     }
                     _ => {
                         let source_value = *value as u32;
-                        let dest_value = self.get_operand_value(dest, size)?;
+                        let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                         let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
                         let overflow = has_sub_overflowed(dest_value, source_value, result, size);
                         self.set_compare_flags(result, size, carry, overflow);
@@ -730,7 +743,7 @@ impl Interpreter {
                 }
             }
             Instruction::SUBI(source_value, dest, size) => {
-                let dest_value = self.get_operand_value(dest, size)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let (result, carry) = overflowing_sub_sized(dest_value, *source_value, size);
                 let overflow = has_sub_overflowed(dest_value, *source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
@@ -738,8 +751,8 @@ impl Interpreter {
                 self.store_operand_value(dest, result, size, Used::Twice)?;
             }
             Instruction::ADD(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size)?;
-                let dest_value = self.get_operand_value(dest, size)?;
+                let source_value = self.get_operand_value(source, size, Used::Once)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let (result, carry) = overflowing_add_sized(dest_value, source_value, size);
                 let overflow = has_add_overflowed(dest_value, source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
@@ -748,13 +761,13 @@ impl Interpreter {
             }
             Instruction::ADDA(source, dest, size) => {
                 let source_value =
-                    sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
+                    sign_extend_to_long(self.get_operand_value(source, size, Used::Once)?, size) as u32;
                 let dest_value = self.get_register_value(dest, &Size::Long);
                 let (result, _) = overflowing_add_sized(dest_value, source_value, &Size::Long);
                 self.set_register_value(dest, result, &Size::Long);
             }
             Instruction::ADDI(source_value, dest, size) => {
-                let dest_value = self.get_operand_value(dest, size)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let (result, carry) = overflowing_add_sized(dest_value, *source_value, size);
                 let overflow = has_add_overflowed(dest_value, *source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
@@ -788,7 +801,7 @@ impl Interpreter {
                     }
                     _ => {
                         let source_value = *value as u32;
-                        let dest_value = self.get_operand_value(dest, size)?;
+                        let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                         let (result, carry) = overflowing_add_sized(dest_value, source_value, size);
                         let overflow = has_add_overflowed(dest_value, source_value, result, size);
                         self.set_compare_flags(result, size, carry, overflow);
@@ -799,7 +812,7 @@ impl Interpreter {
             }
 
             Instruction::MULx(source, dest, sign) => {
-                let source_value = self.get_operand_value(source, &Size::Word)?;
+                let source_value = self.get_operand_value(source, &Size::Word, Used::Once)?;
                 let dest_value =
                     get_value_sized(self.get_register_value(dest, &Size::Long), &Size::Word);
                 let result = match sign {
@@ -885,55 +898,55 @@ impl Interpreter {
                 self.set_sp(new_sp);
             }
             Instruction::BCHG(bit_source, dest) => {
-                let bit = self.get_operand_value(bit_source, &Size::Byte)?;
+                let bit = self.get_operand_value(bit_source, &Size::Byte, Used::Once)?;
                 let limited_bit = self.limit_bit_size(bit, dest)?;
                 let size = match dest {
                     Operand::Register(_) => Ok(&Size::Long),
                     _ => Ok(&Size::Byte),
                 }?;
-                let source_value = self.get_operand_value(dest, size)?;
+                let source_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let mask = self.set_bit_test_flags(source_value, limited_bit, size);
                 let source_value = (source_value & !mask) | (!(source_value & mask) & mask);
                 self.store_operand_value(dest, source_value, size, Used::Twice)?;
             }
             Instruction::BCLR(bit_source, dest) => {
-                let bit = self.get_operand_value(bit_source, &Size::Byte)?;
+                let bit = self.get_operand_value(bit_source, &Size::Byte, Used::Once)?;
                 let limited_bit = self.limit_bit_size(bit, dest)?;
                 let size = match dest {
                     Operand::Register(_) => Ok(&Size::Long),
                     _ => Ok(&Size::Byte),
                 }?;
-                let src_val = self.get_operand_value(dest, size)?;
+                let src_val = self.get_operand_value(dest, size, Used::Twice)?;
                 let mask = self.set_bit_test_flags(src_val, limited_bit, size);
                 let src_val = src_val & !mask;
                 self.store_operand_value(dest, src_val, size, Used::Twice)?;
             }
             Instruction::BSET(bit_source, dest) => {
-                let bit = self.get_operand_value(bit_source, &Size::Byte)?;
+                let bit = self.get_operand_value(bit_source, &Size::Byte, Used::Once)?;
                 let size = match dest {
                     Operand::Register(_) => Ok(&Size::Long),
                     _ => Ok(&Size::Byte),
                 }?;
                 let limited_bit = self.limit_bit_size(bit, dest)?;
-                let value = self.get_operand_value(dest, size)?;
+                let value = self.get_operand_value(dest, size, Used::Twice)?;
                 let mask = self.set_bit_test_flags(value, limited_bit, size);
                 let value = value | mask;
                 self.store_operand_value(dest, value, size, Used::Twice)?;
             }
 
             Instruction::BTST(bit, op2) => {
-                let bit = self.get_operand_value(bit, &Size::Byte)?;
+                let bit = self.get_operand_value(bit, &Size::Byte, Used::Once)?;
                 let limited_bit = self.limit_bit_size(bit, op2)?;
                 let size = match op2 {
                     Operand::Register(_) => Ok(&Size::Long),
                     _ => Ok(&Size::Byte),
                 }?;
-                let value = self.get_operand_value(op2, size)?;
+                let value = self.get_operand_value(op2, size, Used::Once)?;
                 self.set_bit_test_flags(value, limited_bit, size);
             }
             Instruction::ASd(amount, dest, direction, size) => {
-                let amount_value = self.get_operand_value(amount, size)? % 64;
-                let dest_value = self.get_operand_value(dest, size)?;
+                let amount_value = self.get_operand_value(amount, size, Used::Once)? % 64;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let mut has_overflowed = false;
                 let (mut value, mut msb) = (dest_value, false);
                 let mut previous_msb = get_sign(value, size);
@@ -966,8 +979,8 @@ impl Interpreter {
                 }
             }
             Instruction::LSd(amount_source, dest, direction, size) => {
-                let amount = self.get_operand_value(amount_source, size)? % 64;
-                let (mut value, mut msb) = (self.get_operand_value(dest, size)?, false);
+                let amount = self.get_operand_value(amount_source, size, Used::Once)? % 64;
+                let (mut value, mut msb) = (self.get_operand_value(dest, size, Used::Twice)?, false);
                 for _ in 0..amount {
                     (value, msb) = shift(direction, value, size, false);
                 }
@@ -982,8 +995,8 @@ impl Interpreter {
                 }
             }
             Instruction::ROd(amount, dest, direction, size) => {
-                let count = self.get_operand_value(amount, size)? % 64;
-                let (mut value, mut carry) = (self.get_operand_value(dest, size)?, false);
+                let count = self.get_operand_value(amount, size, Used::Once)? % 64;
+                let (mut value, mut carry) = (self.get_operand_value(dest, size, Used::Twice)?, false);
                 for _ in 0..count {
                     (value, carry) = rotate(direction, value, size);
                 }
@@ -995,53 +1008,53 @@ impl Interpreter {
             }
 
             Instruction::AND(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size)?;
-                let dest_value = self.get_operand_value(dest, size)?;
+                let source_value = self.get_operand_value(source, size, Used::Once)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let result = get_value_sized(dest_value & source_value, size);
                 self.store_operand_value(dest, result, size, Used::Twice)?;
                 self.set_logic_flags(result, size);
             }
             Instruction::OR(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size)?;
-                let dest_value = self.get_operand_value(dest, size)?;
+                let source_value = self.get_operand_value(source, size, Used::Once)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let result = get_value_sized(dest_value | source_value, size);
                 self.store_operand_value(dest, result, size, Used::Twice)?;
                 self.set_logic_flags(result, size);
             }
             Instruction::EOR(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size)?;
-                let dest_value = self.get_operand_value(dest, size)?;
+                let source_value = self.get_operand_value(source, size, Used::Once)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let result = get_value_sized(dest_value ^ source_value, size);
                 self.store_operand_value(dest, result, size, Used::Twice)?;
                 self.set_logic_flags(result, size);
             }
             Instruction::NOT(op, size) => {
                 //watchout for the "!"
-                let value = !self.get_operand_value(op, size)?;
+                let value = !self.get_operand_value(op, size, Used::Twice)?;
                 let value = get_value_sized(value, size);
                 self.store_operand_value(op, value, size, Used::Twice)?;
                 self.set_logic_flags(value, size);
             }
             Instruction::ANDI(source_value, dest, size) => {
-                let dest_value = self.get_operand_value(dest, size)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let result = get_value_sized(dest_value & source_value, size);
                 self.store_operand_value(dest, result, size, Used::Twice)?;
                 self.set_logic_flags(result, size);
             }
             Instruction::ORI(source_value, dest, size) => {
-                let dest_value = self.get_operand_value(dest, size)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let result = get_value_sized(dest_value | source_value, size);
                 self.store_operand_value(dest, result, size, Used::Twice)?;
                 self.set_logic_flags(result, size);
             }
             Instruction::EORI(source_value, dest, size) => {
-                let dest_value = self.get_operand_value(dest, size)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
                 let result = get_value_sized(dest_value ^ source_value, size);
                 self.store_operand_value(dest, result, size, Used::Twice)?;
                 self.set_logic_flags(result, size);
             }
             Instruction::NEG(source, size) => {
-                let original = self.get_operand_value(source, size)?;
+                let original = self.get_operand_value(source, size, Used::Twice)?;
                 let (result, overflow) = overflowing_sub_signed_sized(0, original, size);
                 let carry = result != 0;
                 self.store_operand_value(source, result, size, Used::Twice)?;
@@ -1049,7 +1062,7 @@ impl Interpreter {
                 self.set_flag(Flags::Extend, carry);
             }
             Instruction::DIVx(source, dest, sign) => {
-                let source_value = self.get_operand_value(source, &Size::Word)?;
+                let source_value = self.get_operand_value(source, &Size::Word, Used::Once)?;
                 if source_value == 0 {
                     return Err(RuntimeError::DivisionByZero);
                 }
@@ -1058,7 +1071,7 @@ impl Interpreter {
                 let (remainder, quotient, has_overflowed) = match sign {
                     Sign::Signed => {
                         let dest_value = dest_value as i32;
-                        let source_value = sign_extend_to_long(source_value, &Size::Word) as i32;
+                        let source_value = sign_extend_to_long(source_value, &Size::Word);
                         let quotient = dest_value / source_value;
                         (
                             (dest_value % source_value) as u32,
@@ -1076,7 +1089,7 @@ impl Interpreter {
                     }
                 };
                 if !has_overflowed {
-                    self.set_compare_flags(quotient as u32, &Size::Word, false, false);
+                    self.set_compare_flags(quotient, &Size::Word, false, false);
                     self.set_register_value(
                         dest,
                         (remainder << 16) | (0xFFFF & quotient),
@@ -1102,7 +1115,7 @@ impl Interpreter {
                     _ => {
                         return Err(RuntimeError::Raw(format!(
                             "Invalid size for EXT instruction"
-                        )))
+                        )));
                     }
                 };
                 self.set_register_value(reg, result, to);
@@ -1115,12 +1128,12 @@ impl Interpreter {
                 self.set_logic_flags(new_value, &Size::Long);
             }
             Instruction::TST(source, size) => {
-                let value = self.get_operand_value(source, size)?;
+                let value = self.get_operand_value(source, size, Used::Once)?;
                 self.set_logic_flags(value, size);
             }
             Instruction::CMP(source, dest, size) => {
                 //TODO revise this, should i strict it to only data registers?
-                let source_value = self.get_operand_value(source, size)?;
+                let source_value = self.get_operand_value(source, size, Used::Once)?;
                 let dest_value = self.get_register_value(dest, size);
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, size);
@@ -1128,21 +1141,21 @@ impl Interpreter {
             }
             Instruction::CMPA(source, dest, size) => {
                 let source_value =
-                    sign_extend_to_long(self.get_operand_value(source, size)?, size) as u32;
+                    sign_extend_to_long(self.get_operand_value(source, size, Used::Once)?, size) as u32;
                 let dest_value = self.get_register_value(dest, &Size::Long);
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, &Size::Long);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, &Size::Long);
                 self.set_compare_flags(result, &Size::Long, carry, overflow);
             }
             Instruction::CMPI(source_value, dest, size) => {
-                let dest_value = self.get_operand_value(dest, size)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Once)?;
                 let (result, carry) = overflowing_sub_sized(dest_value, *source_value, size);
                 let overflow = has_sub_overflowed(dest_value, *source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
             }
             Instruction::CMPM(source, dest, size) => {
-                let source_value = self.get_operand_value(source, size)?;
-                let dest_value = self.get_operand_value(dest, size)?;
+                let source_value = self.get_operand_value(source, size, Used::Once)?;
+                let dest_value = self.get_operand_value(dest, size, Used::Once)?;
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, size);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, size);
                 self.set_compare_flags(result, size, carry, overflow);
@@ -1210,7 +1223,7 @@ impl Interpreter {
                     return Err(RuntimeError::Raw(format!(
                         "Unknown trap: {}, only IO with #15 allowed",
                         value
-                    )))
+                    )));
                 }
             },
         };
@@ -1386,16 +1399,16 @@ impl Interpreter {
         }
     }
     /**
-       Some instructions limit inputs to 8 bits if the destination is
-       not a register.
-    */
+    Some instructions limit inputs to 8 bits if the destination is
+    not a register.
+     */
     fn limit_bit_size(&mut self, bit: u32, dest: &Operand) -> RuntimeResult<u32> {
         match dest {
             Operand::Register(_) => Ok(bit),
             _ => Ok(bit % 8),
         }
     }
-    fn get_operand_value(&mut self, op: &Operand, size: &Size) -> RuntimeResult<u32> {
+    fn get_operand_value(&mut self, op: &Operand, size: &Size, used: Used) -> RuntimeResult<u32> {
         match op {
             Operand::Immediate(v) => Ok(*v),
             Operand::Register(op) => Ok(self.get_register_value(&op, size)),
@@ -1408,13 +1421,17 @@ impl Interpreter {
             Operand::PreIndirect(op) => {
                 let address = self.get_register_value(&op, &Size::Long);
                 let address = (address).wrapping_sub(size.to_bytes() as u32);
-                self.set_register_value(&op, address as u32, &Size::Long);
+                //in this case the read should always decrement the addressm
+                self.set_register_value(&op, address, &Size::Long);
                 Ok(self.memory.read_size(address as usize, size)?)
             }
             Operand::PostIndirect(op) => {
                 let address = self.get_register_value(&op, &Size::Long);
-                let new_address = (address).wrapping_add(size.to_bytes() as u32);
-                self.set_register_value(&op, new_address, &Size::Long);
+                if used != Used::Twice {
+                    //if the value is used twice, give precedence of increment to the setter
+                    let new_address = (address).wrapping_add(size.to_bytes() as u32);
+                    self.set_register_value(&op, new_address, &Size::Long);
+                }
                 Ok(self.memory.read_size(address as usize, size)?)
             }
             Operand::IndirectBaseDisplacement { offset, operands } => {
@@ -1472,6 +1489,7 @@ impl Interpreter {
             Operand::PreIndirect(op) => {
                 let address = self.get_register_value(&op, &Size::Long);
                 let address = (address).wrapping_sub(size.to_bytes() as u32);
+                //give priority to the getter to decrement
                 if used != Used::Twice {
                     self.set_register_value(&op, address, &Size::Long);
                 }
@@ -1480,9 +1498,8 @@ impl Interpreter {
             Operand::PostIndirect(op) => {
                 let address = self.get_register_value(&op, &Size::Long);
                 let new_address = (address).wrapping_add(size.to_bytes() as u32);
-                if used != Used::Twice {
-                    self.set_register_value(&op, new_address, &Size::Long);
-                }
+                //give priority to increment to the setter
+                self.set_register_value(&op, new_address, &Size::Long);
                 Ok(self.set_memory_value(address as usize, size, value)?)
             }
             Operand::IndirectBaseDisplacement { offset, operands } => {
@@ -1651,8 +1668,8 @@ impl Interpreter {
                     && self.get_flag(Flags::Overflow)
                     && !self.get_flag(Flags::Zero))
                     || (!self.get_flag(Flags::Negative)
-                        && !self.get_flag(Flags::Overflow)
-                        && !self.get_flag(Flags::Zero))
+                    && !self.get_flag(Flags::Overflow)
+                    && !self.get_flag(Flags::Zero))
             }
             Condition::LessThanOrEqual => {
                 self.get_flag(Flags::Zero)
@@ -1795,7 +1812,7 @@ impl Interpreter {
                 return Err(format!(
                     "Cannot set register, invalid register {:?}, {}",
                     reg, e
-                ))
+                ));
             }
         }
         Ok(())
