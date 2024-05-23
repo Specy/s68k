@@ -483,13 +483,13 @@ impl Interpreter {
         }
     }
     pub fn get_flags_as_array(&self) -> Vec<u8> {
-        let bits = self.cpu.ccr.bits();
-        let mut flags = Vec::new();
-        //TODO there are 5 flags for now, if i add more remember to change this
-        for i in 0..5 {
-            flags.push((bits & (1 << i) != 0) as u8);
-        }
-        flags
+        vec![
+            self.cpu.ccr.contains(Flags::Carry) as u8,
+            self.cpu.ccr.contains(Flags::Overflow) as u8,
+            self.cpu.ccr.contains(Flags::Zero) as u8,
+            self.cpu.ccr.contains(Flags::Negative) as u8,
+            self.cpu.ccr.contains(Flags::Extend) as u8,
+        ]
     }
     pub fn has_terminated(&self) -> bool {
         return self.status == InterpreterStatus::Terminated
@@ -1167,8 +1167,10 @@ impl Interpreter {
             }
             Instruction::CLR(dest, size) => {
                 self.store_operand_value(dest, 0, size, Used::Once)?;
-                self.cpu.ccr.clear(); //what about extend flag?
+                let extend = self.get_flag(Flags::Extend);
+                self.cpu.ccr.clear();
                 self.set_flag(Flags::Zero, true);
+                self.set_flag(Flags::Extend, extend);
             }
             Instruction::Scc(op, condition) => {
                 if self.get_condition_value(condition) {

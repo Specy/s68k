@@ -197,26 +197,48 @@ impl Compiler {
                     ),
                     _ => Instruction::MOVE(op1, op2, self.get_size(size, Size::Word)?),
                 },
-                "add" => match op2 {
-                    Operand::Register(RegisterOperand::Address(a)) => Instruction::ADDA(
+                "add" => match (op1, op2) {
+                    (Operand::Immediate(num), _) => {
+                        Instruction::ADDI(
+                            num,
+                            op2,
+                            self.get_size(size, Size::Word)?,
+                        )
+                    }
+                    (_, Operand::Register(RegisterOperand::Address(a))) => Instruction::ADDA(
                         op1,
                         RegisterOperand::Address(a),
                         self.get_size(size, Size::Word)?,
                     ),
                     _ => Instruction::ADD(op1, op2, self.get_size(size, Size::Word)?),
                 },
-                "sub" => match op2 {
-                    Operand::Register(RegisterOperand::Address(a)) => Instruction::SUBA(
+                "sub" => match (op1, op2) {
+                    (Operand::Immediate(num), _) => {
+                        Instruction::SUBI(
+                            num,
+                            op2,
+                            self.get_size(size, Size::Word)?,
+                        )
+                    }
+                    (_, Operand::Register(RegisterOperand::Address(a))) => Instruction::SUBA(
                         op1,
                         RegisterOperand::Address(a),
                         self.get_size(size, Size::Word)?,
                     ),
                     _ => Instruction::SUB(op1, op2, self.get_size(size, Size::Word)?),
                 },
-                "cmp" => match op2 {
-                    Operand::Register(RegisterOperand::Address(a)) => Instruction::CMPA(
+                "cmp" => match (op1, op2) {
+                    (_, Operand::Register(RegisterOperand::Address(a))) => Instruction::CMPA(
                         op1,
                         RegisterOperand::Address(a),
+                        self.get_size(size, Size::Word)?,
+                    ),
+                    (Operand::Immediate(num), op2 ) => {
+                        Instruction::CMPI(num, op2, self.get_size(size, Size::Word)?)
+                    },
+                    (Operand::PostIndirect(_), Operand::PostIndirect(_)) => Instruction::CMPM(
+                        op1,
+                        op2,
                         self.get_size(size, Size::Word)?,
                     ),
                     _ => Instruction::CMP(

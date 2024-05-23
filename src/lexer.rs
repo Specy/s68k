@@ -1,10 +1,11 @@
-//TODO remake everything with an actual lexer
-use crate::constants::{COMMENT_1, COMMENT_2, EQU};
 use bitflags::bitflags;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use wasm_bindgen::prelude::wasm_bindgen;
+
+//TODO remake everything with an actual lexer
+use crate::constants::{COMMENT_1, COMMENT_2, EQU};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[wasm_bindgen]
 pub enum LexedRegisterType {
@@ -12,6 +13,7 @@ pub enum LexedRegisterType {
     Data,
     SP,
 }
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[wasm_bindgen]
 pub enum LexedSize {
@@ -21,6 +23,7 @@ pub enum LexedSize {
     Unspecified,
     Unknown,
 }
+
 impl LexedSize {
     pub fn to_bytes(&self, default: LexedSize) -> u8 {
         match self {
@@ -86,6 +89,7 @@ pub enum LexedLine {
         content: String,
     },
 }
+
 #[derive(Debug)]
 #[wasm_bindgen]
 pub enum OperandKind {
@@ -99,7 +103,6 @@ pub enum OperandKind {
 }
 
 #[derive(Debug, Clone)]
-
 pub enum LineKind {
     Label { name: String, inner: Option<String> },
     Directive,
@@ -153,10 +156,13 @@ bitflags! {
         const IGNORE_CASE = 2;
     }
 }
+
+#[derive(Debug)]
 enum LexLineResult {
     Line(LexedLine),
     Multiple(Vec<LexedLine>),
 }
+
 impl Grammar {
     fn get_regex(&self) -> String {
         match &self {
@@ -215,6 +221,7 @@ struct AsmRegex {
     comment_line: Regex,
     comment: Regex,
 }
+
 impl AsmRegex {
     pub fn new() -> Self {
         AsmRegex {
@@ -225,7 +232,7 @@ impl AsmRegex {
             post_indirect_only: Regex::new(&Grammar::PostIndirect.get_opt(GrammarOptions::IS_LINE)).unwrap(),
             pre_indirect_only: Regex::new(&Grammar::PreIndirect.get_opt(GrammarOptions::IS_LINE)).unwrap(),
             label_line: Regex::new(r"^\S+:.*").unwrap(),
-            directive: Regex::new( &format!(r"^\s*({})",Grammar::Directive.get_opt(GrammarOptions::IGNORE_CASE)))
+            directive: Regex::new(&format!(r"^\s*({})", Grammar::Directive.get_opt(GrammarOptions::IGNORE_CASE)))
                 .unwrap(),
             operand_arg: Regex::new(&Grammar::OperandArg.get_regex()).unwrap(),
             comment_line: Regex::new(&Grammar::CommentLine.get_regex()).unwrap(),
@@ -302,7 +309,7 @@ impl AsmRegex {
                         break;
                     }
                     current_arg.push(c);
-                }, //if it reaches the end where there is a comment
+                } //if it reaches the end where there is a comment
                 ' ' => {
                     if last_char == ',' || ignore_space {
                         continue;
@@ -387,72 +394,31 @@ pub struct EquValue {
     pub name: String,
     pub replacement: String,
 }
+
 impl EquValue {
     pub fn new(name: String, replacement: String) -> EquValue {
         EquValue { name, replacement }
     }
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedLine {
     pub parsed: LexedLine,
     pub line: String,
     pub line_index: usize,
 }
+
 pub struct Lexer {
     lines: Vec<ParsedLine>,
     regex: AsmRegex,
 }
+
 impl Lexer {
     pub fn new() -> Self {
         Lexer {
             lines: Vec::new(),
             regex: AsmRegex::new(),
         }
-    }
-    pub fn apply_equ(&self, lines: Vec<String>) -> Vec<String> {
-        let mut equs: Vec<EquValue> = Vec::new();
-        let mut equ_map_indexes: HashMap<usize, bool> = HashMap::new();
-        lines
-            .iter()
-            .map(|line| self.regex.split_at_whitespace(line))
-            .enumerate()
-            .for_each(|(index, args)| {
-                if args.len() >= 3 && args[1] == EQU {
-                    equs.push(EquValue::new(
-                        args[0].to_string(),
-                        args[2..].join(" ")
-                    ));
-                    equ_map_indexes.insert(index, true);
-                }
-            });
-        lines
-            .iter()
-            .enumerate()
-            .map(|(i, line)| {
-                if equ_map_indexes.contains_key(&i) {
-                    return line.to_string();
-                }
-                let split_at_comments = self.regex.split_at_comment(line);
-                match split_at_comments[..] {
-                    [code, ..] => {
-                        //TODO maybe replace only if not around special characters
-                        let comment = split_at_comments[1..].join(&COMMENT_1.to_string());
-                        let mut new_line = code.to_string();
-                        for equ in equs.iter() {
-                            if new_line.contains(&equ.name) {
-                                new_line =
-                                    new_line.replace(equ.name.as_str(), equ.replacement.as_str());
-                            }
-                        }
-                        match comment.as_str() {
-                            "" => new_line,
-                            _ => format!("{} ;{}", new_line, comment),
-                        }
-                    }
-                    _ => line.to_string(),
-                }
-            })
-            .collect::<Vec<String>>()
     }
     pub fn parse_operands(&self, operands: Vec<String>) -> Vec<LexedOperand> {
         operands
@@ -507,21 +473,37 @@ impl Lexer {
             }
         }
     }
+
+    pub fn make_equ_map(&self, lines: &Vec<String>) -> Vec<(String, String)> {
+        let mut equs: Vec<(String, String)> = vec![];
+        lines
+            .iter()
+            .map(|line| self.regex.split_at_whitespace(line))
+            .for_each(|args| {
+                if args.len() >= 3 && args[1] == EQU {
+                    equs.push((args[0].to_string(), args[2..].join(" ")));
+                }
+            });
+        //sort by length so that the longest ones are replaced first
+        equs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        equs
+    }
     pub fn lex(&mut self, code: &String) -> &Vec<ParsedLine> {
         let lines = code.lines().map(String::from).collect::<Vec<String>>();
-        let lines = self.apply_equ(lines);
+        //let lines = self.apply_equ(lines);
+        let equ_map = self.make_equ_map(&lines);
         let mut parsed = vec![];
         for (i, line) in lines.iter().enumerate() {
             match self.lex_line(line) {
                 LexLineResult::Line(parsed_line) => parsed.push(ParsedLine {
-                    parsed: parsed_line,
+                    parsed: self.apply_equ_to_line(parsed_line, &equ_map),
                     line: line.to_string(),
                     line_index: i,
                 }),
                 LexLineResult::Multiple(parsed_lines) => {
                     for parsed_line in parsed_lines {
                         parsed.push(ParsedLine {
-                            parsed: parsed_line,
+                            parsed: self.apply_equ_to_line(parsed_line, &equ_map),
                             line: line.to_string(),
                             line_index: i,
                         })
@@ -532,10 +514,82 @@ impl Lexer {
         self.lines = parsed;
         &self.lines
     }
+    fn apply_equ_to_line(&self, line: LexedLine, equ_map: &Vec<(String, String)>) -> LexedLine {
+        match line {
+            LexedLine::Instruction { name, operands, size } => LexedLine::Instruction {
+                name,
+                operands: operands
+                    .into_iter()
+                    .map(|op| self.apply_equ_to_operand(op, equ_map))
+                    .collect(),
+                size,
+            },
+            LexedLine::Directive { name, args, size } => LexedLine::Directive {
+                name,
+                args: args
+                    .into_iter()
+                    .map(|arg| {
+                        self.apply_equ_to_expression_string(arg, equ_map)
+                    })
+                    .collect(),
+                size,
+            },
+            _ => line,
+        }
+    }
+
+    fn apply_equ_to_expression_string(&self, mut expression: String, equ_map: &Vec<(String, String)>) -> String {
+        for (key, value) in equ_map.iter() {
+            expression = expression.replace(key, value);
+        }
+        expression
+    }
+    fn apply_equ_to_operand(&self, op: LexedOperand, equ_map: &Vec<(String, String)>) -> LexedOperand {
+        match op {
+            LexedOperand::Register(_, _)
+            | LexedOperand::Other(_)
+            | LexedOperand::PostIndirect(_)
+            | LexedOperand::PreIndirect(_) => op,
+            | LexedOperand::Immediate(im) => {
+                LexedOperand::Immediate(self.apply_equ_to_expression_string(im, equ_map))
+            }
+            LexedOperand::Absolute(abs) => {
+                LexedOperand::Absolute(self.apply_equ_to_expression_string(abs, equ_map))
+            }
+            LexedOperand::Label(label) => {
+                LexedOperand::Label(self.apply_equ_to_expression_string(label, equ_map))
+            }
+            LexedOperand::IndirectBaseDisplacement { offset, operands } => {
+                let operands = operands
+                    .iter()
+                    .map(|op| self.apply_equ_to_operand(op.clone(), equ_map))
+                    .collect();
+                let offset = self.apply_equ_to_expression_string(offset, equ_map);
+                LexedOperand::IndirectBaseDisplacement { offset, operands }
+            }
+            LexedOperand::IndirectOrDisplacement { offset, operand } => {
+                let operand = self.apply_equ_to_operand(*operand, equ_map);
+                let offset = self.apply_equ_to_expression_string(offset, equ_map);
+                LexedOperand::IndirectOrDisplacement {
+                    offset,
+                    operand: Box::new(operand),
+                }
+            }
+        }
+    }
+
     fn lex_line(&mut self, line: &String) -> LexLineResult {
         let line = line.trim();
-        let kind = self.regex.get_line_kind(&line.to_string());
-        let args = self.regex.split_at_whitespace(line);
+        let split_at_comments = self.regex.split_at_comment(line);
+        let code = split_at_comments[0].trim();
+        /*
+                let comment = match split_at_comments[..] {
+            [_, ..] => split_at_comments[1..].join(&COMMENT_1.to_string()),
+            _ => "".to_string(),
+        };
+         */
+        let kind = self.regex.get_line_kind(&code.to_string());
+        let args = self.regex.split_at_whitespace(code);
         match kind {
             LineKind::Instruction { size, name } => {
                 let operands = self
@@ -564,7 +618,7 @@ impl Lexer {
             },
             LineKind::Directive => {
                 let mut parsed_args: Vec<String> =
-                    self.regex.split_into_separated_args(&line.replace("\t", " "), false);
+                    self.regex.split_into_separated_args(&code.replace("\t", " "), false);
                 //lowercase the first arg
                 let first = parsed_args.get(0).expect("Missing first argument").to_lowercase();
                 parsed_args[0] = first;

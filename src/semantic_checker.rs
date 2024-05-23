@@ -1,19 +1,23 @@
 //TODO some instructions might accept indirect and also displacement, check that
 
-use crate::{
-    lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
-    utils::{num_to_signed_base, parse_absolute_expression}, instructions::Label,
-};
+use std::collections::HashMap;
+
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
+
+use crate::{
+    instructions::Label,
+    lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine}, utils::{num_to_signed_base, parse_absolute_expression},
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[wasm_bindgen]
 pub struct SemanticError {
     line: ParsedLine,
     error: String,
 }
+
 impl SemanticError {
     pub fn new(line: ParsedLine, error: String) -> Self {
         Self { line, error }
@@ -104,9 +108,10 @@ impl AdrMode {
             AdrMode::ADDRESS => "Ea",
             _ => "UNKNOWN",
         }
-        .to_string()
+            .to_string()
     }
 }
+
 impl Rules {
     pub fn get_valid_addressing_modes(&self) -> String {
         match *self {
@@ -126,17 +131,19 @@ impl Rules {
             Rules::ONLY_ADDRESS_OR_LABEL => "Ea/<LABEL>",
             Rules::ONLY_IMMEDIATE => "Im",
             Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE => "(An)/Ea/<LABEL>",
-            
+
             _ => "UNKNOWN",
         }
-        .to_string()
+            .to_string()
     }
 }
+
 pub enum SizeRules {
     NoSize,
     AnySize,
     OnlyLongOrWord,
 }
+
 impl SizeRules {
     pub fn get_valid_sizes(&self) -> String {
         match *self {
@@ -144,7 +151,7 @@ impl SizeRules {
             SizeRules::AnySize => "b, w, l",
             SizeRules::OnlyLongOrWord => "w, l",
         }
-        .to_string()
+            .to_string()
     }
 }
 
@@ -182,7 +189,7 @@ impl SemanticChecker {
                             Label {
                                 name: name.to_string(),
                                 address: 1 << 31 as usize, //placeholder value,
-                                line: line.line_index
+                                line: line.line_index,
                             },
                         );
                     }
@@ -224,7 +231,53 @@ impl SemanticChecker {
             } => {
                 let name = name.as_str();
                 match name {
-                    "move" | "add" | "sub" => {
+                    "add" | "sub" => {
+                        self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE, line);
+                        match &operands[..] {
+                            [LexedOperand::Absolute(_), LexedOperand::Absolute(_)] => {
+                                self.errors.push(SemanticError::new(
+                                    line.clone(),
+                                    format!("Incorrect operands addressing mode, at most one of the two operands can be an address, not both.", ),
+                                ));
+                            }
+                            [LexedOperand::IndirectBaseDisplacement { .. }
+                            | LexedOperand::IndirectOrDisplacement { .. }
+                            | LexedOperand::PostIndirect(_)
+                            | LexedOperand::PreIndirect(_),
+                            LexedOperand::IndirectBaseDisplacement { .. }
+                            | LexedOperand::IndirectOrDisplacement { .. }
+                            | LexedOperand::PostIndirect(_)
+                            | LexedOperand::PreIndirect(_)]
+                            => {
+                                self.errors.push(SemanticError::new(
+                                    line.clone(),
+                                    format!("Invalid operands addressing mode, at most one of the two operands can be indirect.", ),
+                                ));
+                            }
+                            [LexedOperand::IndirectBaseDisplacement { .. } |
+                            LexedOperand::IndirectOrDisplacement { .. },
+                            LexedOperand::IndirectBaseDisplacement { .. } |
+                            LexedOperand::IndirectOrDisplacement { .. }] => {
+                                self.errors.push(SemanticError::new(
+                                    line.clone(),
+                                    format!("Invalid operands, only one of the operands can be a memory location", ),
+                                ));
+                            }
+                            _ => {}
+                        };
+                        match (self.get_size_of_instruction(line), operands.get(0), operands.get(1)) {
+                            (Some(LexedSize::Byte), _, Some(LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _))) => {
+                                self.errors.push(SemanticError::new(
+                                    line.clone(),
+                                    format!("Byte size not allowed when destination operand is address"),
+                                ));
+                            }
+                            _ => {} //cannot reach this
+                        };
+                        self.verify_size(SizeRules::AnySize, line);
+                        self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
+                    }
+                    "move" => {
                         self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE, line);
                         self.verify_size(SizeRules::AnySize, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
@@ -275,9 +328,9 @@ impl SemanticChecker {
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "bcc" | "bcs" | "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" | "bls" | "bhi"
-                     | "bpl" | "bmi" | "blo" | "bhs" | "bvc" | "bvs"
-                     //other
-                     | "bsr" | "bra" => {
+                    | "bpl" | "bmi" | "blo" | "bhs" | "bvc" | "bvs"
+                    //other
+                    | "bsr" | "bra" => {
                         self.verify_one_arg(operands, Rules::ONLY_ADDRESS_OR_LABEL, line);
                         self.verify_size(SizeRules::NoSize, line);
                     }
@@ -334,7 +387,7 @@ impl SemanticChecker {
                         self.verify_size(SizeRules::AnySize, line);
                     }
                     "lea" => {
-                        self.verify_two_args(operands, Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE ,Rules::ONLY_A_REG, line);
+                        self.verify_two_args(operands, Rules::ONLY_INDIRECT_OR_DISPLACEMENT_OR_ABSOLUTE, Rules::ONLY_A_REG, line);
                         self.verify_size(SizeRules::NoSize, line);
                     }
                     "pea" => {
@@ -344,7 +397,7 @@ impl SemanticChecker {
                     "addq" | "subq" => {
                         //.b not allowed for address registers
                         self.verify_two_args(operands, Rules::ONLY_IMMEDIATE, Rules::NO_IMMEDIATE, line);
-                        self.verify_value_bounds_if_immediate(operands, 0,line, 1, 8);
+                        self.verify_value_bounds_if_immediate(operands, 0, line, 1, 8);
                         self.verify_size(SizeRules::AnySize, line);
                         match operands.get(1) {
                             Some(LexedOperand::Register(LexedRegisterType::Address, _)) => {
@@ -360,7 +413,7 @@ impl SemanticChecker {
                     }
                     "moveq" => {
                         self.verify_two_args(operands, Rules::ONLY_IMMEDIATE, Rules::ONLY_D_REG, line);
-                        self.verify_value_bounds_if_immediate(operands, 0,line, -127, 127);
+                        self.verify_value_bounds_if_immediate(operands, 0, line, -127, 127);
                         self.verify_size(SizeRules::NoSize, line);
                     }
                     "jmp" => {
@@ -469,14 +522,14 @@ impl SemanticChecker {
                     match &args[..] {
                         [_, ..] => {
                             for (i, arg) in args[1..].iter().enumerate() {
-                                match arg{
+                                match arg {
                                     _ if arg.starts_with('\'') && arg.ends_with('\'') => {}
                                     _ => {
                                         match self.get_absolute_value(&arg) {
                                             Ok(_) => {}
                                             Err(_) => self.errors.push(SemanticError::new(
                                                 line.clone(),
-                                                format!("Invalid argument \"{}\" for directive dc at position {}",arg, i + 1),
+                                                format!("Invalid argument \"{}\" for directive dc at position {}", arg, i + 1),
                                             )),
                                         }
                                     }
@@ -492,30 +545,30 @@ impl SemanticChecker {
                 "ds" => {
                     self.verify_size(SizeRules::AnySize, line);
                     match &args[..] {
-                            [_] => self.errors.push(SemanticError::new(
+                        [_] => self.errors.push(SemanticError::new(
+                            line.clone(),
+                            format!(
+                                "Missing arguments for directive: \"{}\", expected 1, got {}",
+                                "ds",
+                                args.len()
+                            ),
+                        )),
+                        [_, arg] => match self.get_absolute_value(&arg) {
+                            Ok(_) => {}
+                            Err(_) => self.errors.push(SemanticError::new(
                                 line.clone(),
-                                format!(
-                                    "Missing arguments for directive: \"{}\", expected 1, got {}",
-                                    "ds",
-                                    args.len()
-                                ),
+                                format!("Invalid argument for directive: \"{}\"", "ds"),
                             )),
-                            [_,arg] => match self.get_absolute_value(&arg){
-                                Ok(_) => {}
-                                Err(_) => self.errors.push(SemanticError::new(
-                                    line.clone(),
-                                    format!("Invalid argument for directive: \"{}\"", "ds"),
-                                )),
-                            },
-                            _ => self.errors.push(SemanticError::new(
-                                line.clone(),
-                                format!(
-                                    "Too many arguments for label directive: \"{}\", expected 1, got {}",
-                                    "ds",
-                                    args.len()
-                                ),
-                            )),
-                        }
+                        },
+                        _ => self.errors.push(SemanticError::new(
+                            line.clone(),
+                            format!(
+                                "Too many arguments for label directive: \"{}\", expected 1, got {}",
+                                "ds",
+                                args.len()
+                            ),
+                        )),
+                    }
                 }
                 "dcb" => {
                     self.verify_size(SizeRules::AnySize, line);
@@ -703,6 +756,13 @@ impl SemanticChecker {
             }
         }
     }
+
+    fn get_size_of_instruction(&self, line: &ParsedLine) -> Option<LexedSize> {
+        match &line.parsed {
+            LexedLine::Instruction { size, .. } => Some(size.clone()),
+            _ => None,
+        }
+    }
     fn verify_size(&mut self, rule: SizeRules, line: &ParsedLine) {
         match &line.parsed {
             LexedLine::Instruction { size, .. } | LexedLine::Directive { size, .. } => match rule {
@@ -712,7 +772,7 @@ impl SemanticChecker {
                         format!("Unknown size, expected any of \"{}\"", rule.get_valid_sizes()),
                     ));
                 }
-                
+
                 SizeRules::NoSize => {
                     if *size != LexedSize::Unspecified || *size == LexedSize::Unknown {
                         self.errors.push(SemanticError::new(
@@ -733,7 +793,7 @@ impl SemanticChecker {
                     match *size {
                         LexedSize::Byte => {
                             match &line.parsed {
-                                LexedLine::Instruction { operands, ..} => {
+                                LexedLine::Instruction { operands, .. } => {
                                     //check if it has any address register
                                     let has_address_reg = operands.iter().find(|op| {
                                         match op {
@@ -741,7 +801,7 @@ impl SemanticChecker {
                                             _ => false,
                                         }
                                     });
-                                    if let Some(_op) = has_address_reg  {
+                                    if let Some(_op) = has_address_reg {
                                         self.errors.push(SemanticError::new(
                                             line.clone(),
                                             format!("Invalid size, address register cannot be used with byte size"),
