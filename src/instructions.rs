@@ -1,17 +1,19 @@
 use std::{
-    fmt::{Debug},
+    fmt::Debug,
     str::FromStr,
 };
 
-use serde::{Serialize, Deserialize};
-use wasm_bindgen::{prelude::wasm_bindgen};
+use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::wasm_bindgen;
+
 #[wasm_bindgen]
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Eq, PartialEq)]
 pub enum Size {
     Byte = 1,
     Word = 2,
     Long = 4,
 }
+
 impl Size {
     #[inline(always)]
     pub fn to_bytes(&self) -> usize {
@@ -29,23 +31,27 @@ pub enum RegisterOperand {
     Address(u8),
     Data(u8),
 }
+
 #[derive(Debug, Clone, Serialize, Copy)]
-pub struct DisplacementOperands{
-   pub base: RegisterOperand,
-   pub index: RegisterOperand,
-    //scale: u8,
+pub struct IndexRegister {
+    pub register: RegisterOperand,
+    //pub scale: u8,
+    pub size: Size,
 }
+
 #[derive(Debug, Clone, Serialize, Copy)]
 pub enum Operand {
-    Register(RegisterOperand),
     Immediate(u32),
-    IndirectOrDisplacement {
+    Register(RegisterOperand),
+    Indirect(RegisterOperand),
+    IndirectDisplacement {
         offset: i32,
-        operand: RegisterOperand,
+        base: RegisterOperand,
     },
-    IndirectBaseDisplacement {
+    IndirectIndex {
+        base: RegisterOperand,
         offset: i32,
-        operands: DisplacementOperands
+        index: IndexRegister,
     },
     PostIndirect(RegisterOperand),
     PreIndirect(RegisterOperand),
@@ -57,15 +63,16 @@ for the Conditions and inspiration
  */
 
 
- #[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Label {
     pub name: String,
     pub address: usize,
     pub line: usize,
 }
+
 #[wasm_bindgen]
 #[derive(Copy, Clone, Debug, Serialize)]
-pub enum Condition{
+pub enum Condition {
     True,
     False,
     High,
@@ -83,6 +90,7 @@ pub enum Condition{
     GreaterThan,
     LessThanOrEqual,
 }
+
 impl FromStr for Condition {
     type Err = String;
     fn from_str(s: &str) -> Result<Condition, Self::Err> {
@@ -93,7 +101,7 @@ impl FromStr for Condition {
             "hi" => Condition::High,
             "ls" => Condition::LowOrSame,
             "cc" | "hs" => Condition::CarryClear,
-            "cs" | "lo"=> Condition::CarrySet,
+            "cs" | "lo" => Condition::CarrySet,
             "ne" => Condition::NotEqual,
             "eq" => Condition::Equal,
             "vc" => Condition::OverflowClear,
@@ -108,11 +116,13 @@ impl FromStr for Condition {
         })
     }
 }
+
 #[derive(Copy, Clone, Debug, Serialize)]
 pub enum ShiftDirection {
     Right,
     Left,
 }
+
 #[derive(Copy, Clone, Debug, Serialize)]
 pub enum Sign {
     Signed,
@@ -128,8 +138,8 @@ pub enum Instruction {
     MOVE(Operand, Operand, Size),
     ADD(Operand, Operand, Size),
     SUB(Operand, Operand, Size),
-    ADDQ(u8, Operand, Size), 
-    MOVEQ(u8, RegisterOperand), 
+    ADDQ(u8, Operand, Size),
+    MOVEQ(u8, RegisterOperand),
     SUBQ(u8, Operand, Size),
     ADDI(u32, Operand, Size),
     SUBI(u32, Operand, Size),
@@ -143,7 +153,7 @@ pub enum Instruction {
     SWAP(RegisterOperand),
     CLR(Operand, Size),
     EXG(RegisterOperand, RegisterOperand),
-    LEA(Operand,RegisterOperand),
+    LEA(Operand, RegisterOperand),
     PEA(Operand),
     NEG(Operand, Size),
     EXT(RegisterOperand, Size, Size),
@@ -175,7 +185,7 @@ pub enum Instruction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
-pub enum Interrupt{
+pub enum Interrupt {
     DisplayStringWithCRLF(String),
     DisplayStringWithoutCRLF(String),
     ReadKeyboardString,
@@ -186,9 +196,10 @@ pub enum Interrupt{
     GetTime,
     Terminate,
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
-pub enum InterruptResult{
+pub enum InterruptResult {
     DisplayStringWithCRLF,
     DisplayStringWithoutCRLF,
     ReadKeyboardString(String),

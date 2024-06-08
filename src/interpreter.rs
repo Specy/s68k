@@ -1415,9 +1415,9 @@ impl Interpreter {
             Operand::Immediate(v) => Ok(*v),
             Operand::Register(op) => Ok(self.get_register_value(&op, size)),
             Operand::Absolute(address) => Ok(self.memory.read_size(*address, size)?),
-            Operand::IndirectOrDisplacement { offset, operand } => {
-                //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
+
+            Operand::Indirect(reg) => {
+                let address = self.get_register_value(&reg, &Size::Long);
                 Ok(self.memory.read_size(address as usize, size)?)
             }
             Operand::PreIndirect(op) => {
@@ -1436,12 +1436,21 @@ impl Interpreter {
                 }
                 Ok(self.memory.read_size(address as usize, size)?)
             }
-            Operand::IndirectBaseDisplacement { offset, operands } => {
+            Operand::IndirectDisplacement { offset, base } => {
+                //TODO not sure if this works fine with full 32bits
+                let address = self.get_register_value(&base, &Size::Long) as i32;
+                let address = address.wrapping_add(*offset);
+                Ok(self.memory.read_size(address as usize, size)?)
+            }
+            Operand::IndirectIndex { offset, base, index } => {
                 //TODO not sure if this is how it should work
-                let base_value = self.get_register_value(&operands.base, &Size::Long) as i32;
-                let index_value = self.get_register_value(&operands.index, &Size::Long) as i32;
-
-                let final_address = base_value + offset + index_value;
+                //TODO should this be i32?
+                let base_value = self.get_register_value(base, &Size::Long) as i32;
+                let index_value = self.get_register_value(&index.register, &index.size);
+                let index_value = sign_extend_to_long(index_value, &index.size);
+                let final_address = base_value
+                    .wrapping_add(*offset)
+                    .wrapping_add(index_value);
                 Ok(self.memory.read_size(final_address as usize, size)?)
             }
         }
@@ -1451,16 +1460,21 @@ impl Interpreter {
             Operand::PreIndirect(op) | Operand::PostIndirect(op) => {
                 Ok(self.get_register_value(&op, &Size::Long))
             }
-            Operand::IndirectOrDisplacement { offset, operand } => {
+            Operand::Indirect(reg) => Ok(self.get_register_value(&reg, &Size::Long)),
+            Operand::IndirectDisplacement { offset, base } => {
                 //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
+                let address = self.get_register_value(&base, &Size::Long) as i32;
+                let address = address.wrapping_add(*offset);
                 Ok(address as u32)
             }
-            Operand::IndirectBaseDisplacement { offset, operands } => {
+            Operand::IndirectIndex { offset, base, index } => {
                 //TODO not sure if this is how it should work
-                let base_value = self.get_register_value(&operands.base, &Size::Long) as i32;
-                let index_value = self.get_register_value(&operands.index, &Size::Long) as i32;
-                let final_address = base_value + offset + index_value;
+                let base_value = self.get_register_value(base, &Size::Long) as i32;
+                let index_value = self.get_register_value(&index.register, &index.size);
+                let index_value = sign_extend_to_long(index_value, &index.size);
+                let final_address = base_value
+                    .wrapping_add(*offset)
+                    .wrapping_add(index_value);
                 Ok(final_address as u32)
             }
             Operand::Absolute(address) => Ok(*address as u32),
@@ -1483,11 +1497,11 @@ impl Interpreter {
             )),
             Operand::Register(op) => Ok(self.set_register_value(&op, value, size)),
             Operand::Absolute(address) => Ok(self.set_memory_value(*address, size, value)?),
-            Operand::IndirectOrDisplacement { offset, operand } => {
-                //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(&operand, &Size::Long) as i32 + offset;
+            Operand::Indirect(reg) => {
+                let address = self.get_register_value(&reg, &Size::Long);
                 Ok(self.set_memory_value(address as usize, size, value)?)
             }
+
             Operand::PreIndirect(op) => {
                 let address = self.get_register_value(&op, &Size::Long);
                 let address = (address).wrapping_sub(size.to_bytes() as u32);
@@ -1504,11 +1518,19 @@ impl Interpreter {
                 self.set_register_value(&op, new_address, &Size::Long);
                 Ok(self.set_memory_value(address as usize, size, value)?)
             }
-            Operand::IndirectBaseDisplacement { offset, operands } => {
-                let base_value = self.get_register_value(&operands.base, &Size::Long) as i32;
-                let index_value = self.get_register_value(&operands.index, &Size::Long) as i32;
-
-                let final_address = base_value + offset + index_value;
+            Operand::IndirectDisplacement { offset, base } => {
+                //TODO not sure if this works fine with full 32bits
+                let address = self.get_register_value(&base, &Size::Long) as i32;
+                let address = address.wrapping_add(*offset);
+                Ok(self.set_memory_value(address as usize, size, value)?)
+            }
+            Operand::IndirectIndex { offset, index, base } => {
+                let base_value = self.get_register_value(base, &Size::Long) as i32;
+                let index_value = self.get_register_value(&index.register, &index.size);
+                let index_value = sign_extend_to_long(index_value, &index.size);
+                let final_address = base_value
+                    .wrapping_add(*offset)
+                    .wrapping_add(index_value);
                 Ok(self.set_memory_value(final_address as usize, size, value)?)
             }
         }

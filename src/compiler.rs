@@ -1,17 +1,20 @@
+use std::{collections::HashMap, vec};
+use std::fmt;
+
 use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
     instructions::{
-        Condition, DisplacementOperands, Instruction, Label, Operand, RegisterOperand,
+        Condition, Instruction, Label, Operand, RegisterOperand,
         ShiftDirection, Sign, Size,
     },
     lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     math::sign_extend_to_long,
     utils::{parse_absolute_expression, parse_string_into_padded_bytes},
 };
-use std::fmt;
-use std::{collections::HashMap, vec};
+use crate::instructions::IndexRegister;
+
 #[derive(Debug)]
 pub enum Directive {
     DC { data: Vec<u8>, address: usize },
@@ -19,6 +22,7 @@ pub enum Directive {
     DCB { data: Vec<u8>, address: usize },
     Other,
 }
+
 #[wasm_bindgen]
 pub struct Compiler {
     labels: HashMap<String, Label>,
@@ -28,12 +32,14 @@ pub struct Compiler {
     start_address: usize,
     final_instrucion_address: usize,
 }
+
 #[derive(Clone, Serialize)]
 pub struct InstructionLine {
     pub instruction: Instruction,
     pub address: usize,
     pub parsed_line: ParsedLine,
 }
+
 #[derive(Debug)]
 pub enum CompilationError {
     Raw(String),
@@ -41,6 +47,7 @@ pub enum CompilationError {
     InvalidAddressingMode(String),
     ParseError(String),
 }
+
 impl CompilationError {
     pub fn get_message(&self) -> String {
         match self {
@@ -53,6 +60,7 @@ impl CompilationError {
 }
 
 pub type CompilationResult<T> = Result<T, CompilationError>;
+
 impl fmt::Debug for InstructionLine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InstructionLine")
@@ -62,6 +70,7 @@ impl fmt::Debug for InstructionLine {
             .finish()
     }
 }
+
 impl Compiler {
     pub fn new(lines: &[ParsedLine]) -> Result<Compiler, String> {
         let mut pre_interpreter = Compiler {
@@ -164,13 +173,13 @@ impl Compiler {
                                         e.get_message(),
                                         line.line_index
                                     )
-                                    .to_string())
+                                        .to_string());
                                 }
                             }
                         }
                         Err(e) => {
                             return Err(format!("{}; at line {}", e.get_message(), line.line_index)
-                                .to_string())
+                                .to_string());
                         }
                     }
                 }
@@ -233,9 +242,9 @@ impl Compiler {
                         RegisterOperand::Address(a),
                         self.get_size(size, Size::Word)?,
                     ),
-                    (Operand::Immediate(num), op2 ) => {
+                    (Operand::Immediate(num), op2) => {
                         Instruction::CMPI(num, op2, self.get_size(size, Size::Word)?)
-                    },
+                    }
                     (Operand::PostIndirect(_), Operand::PostIndirect(_)) => Instruction::CMPM(
                         op1,
                         op2,
@@ -373,7 +382,7 @@ impl Compiler {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid condition code: {}",
                                 name
-                            )))
+                            )));
                         }
                     }
                 }
@@ -389,7 +398,7 @@ impl Compiler {
                     return Err(CompilationError::Raw(format!(
                         "Unknown instruction {}",
                         name
-                    )))
+                    )));
                 }
             };
             Ok(parsed)
@@ -408,7 +417,7 @@ impl Compiler {
                         s => {
                             return Err(CompilationError::Raw(
                                 format!("Invalid size {:?}", s).to_string(),
-                            ))
+                            ));
                         }
                     },
                     //to
@@ -418,7 +427,7 @@ impl Compiler {
                         s => {
                             return Err(CompilationError::Raw(
                                 format!("Invalid size {:?}", s).to_string(),
-                            ))
+                            ));
                         }
                     },
                 ),
@@ -434,7 +443,7 @@ impl Compiler {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid condition code: {}",
                                 name
-                            )))
+                            )));
                         }
                     }
                 }
@@ -456,7 +465,7 @@ impl Compiler {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid condition code: {}",
                                 name
-                            )))
+                            )));
                         }
                     }
                 }
@@ -479,7 +488,7 @@ impl Compiler {
                     return Err(CompilationError::Raw(format!(
                         "Unknown instruction {}",
                         name
-                    )))
+                    )));
                 }
             };
             Ok(result)
@@ -490,7 +499,7 @@ impl Compiler {
                     return Err(CompilationError::Raw(format!(
                         "Unknown instruction {}",
                         name
-                    )))
+                    )));
                 }
             };
             Ok(result)
@@ -538,29 +547,59 @@ impl Compiler {
             )),
         }
     }
+
+    fn parse_register_with_size(&mut self, operand: &LexedOperand, line: &ParsedLine) -> CompilationResult<(RegisterOperand, Size)> {
+        match operand {
+            LexedOperand::Register(register_type, register_name) => {
+                let register = self.parse_register(register_type, register_name)?;
+                Ok((register, Size::Word))
+            }
+            LexedOperand::RegisterWithSize(register_type, register_name, size) => {
+                let register = self.parse_register(register_type, register_name)?;
+                let size = self.get_size(size, Size::Word).unwrap();
+                if size == Size::Byte {
+                    Err(CompilationError::InvalidAddressingMode(
+                        "Invalid size for register".to_string(),
+                    ))
+                } else {
+                    Ok((register, size))
+                }
+            }
+            _ => Err(CompilationError::ParseError(format!(
+                "Invalid operand: {:?}",
+                operand
+            ))),
+        }
+    }
+    fn parse_register(&mut self, register_type: &LexedRegisterType, register_name: &String) -> CompilationResult<RegisterOperand> {
+        match register_type {
+            LexedRegisterType::Address => match register_name[1..].parse() {
+                Ok(reg) => Ok(RegisterOperand::Address(reg)),
+                Err(_) => Err(CompilationError::ParseError(format!(
+                    "Invalid a register name: {}",
+                    register_name
+                ))),
+            },
+            LexedRegisterType::Data => match register_name[1..].parse() {
+                Ok(reg) => Ok(RegisterOperand::Data(reg)),
+                Err(_) => Err(CompilationError::ParseError(format!(
+                    "Invalid d register name: {}",
+                    register_name
+                ))),
+            },
+            LexedRegisterType::SP => Ok(RegisterOperand::Address(7)),
+        }
+    }
     fn parse_operand(
         &mut self,
         operand: &LexedOperand,
         line: &ParsedLine,
     ) -> CompilationResult<Operand> {
         match operand {
-            LexedOperand::Register(register_type, register_name) => match register_type {
-                LexedRegisterType::Address => match register_name[1..].parse() {
-                    Ok(reg) => Ok(Operand::Register(RegisterOperand::Address(reg))),
-                    Err(_) => Err(CompilationError::ParseError(format!(
-                        "Invalid a register name: {}",
-                        register_name
-                    ))),
-                },
-                LexedRegisterType::Data => match register_name[1..].parse() {
-                    Ok(reg) => Ok(Operand::Register(RegisterOperand::Data(reg))),
-                    Err(_) => Err(CompilationError::ParseError(format!(
-                        "Invalid d register name: {}",
-                        register_name
-                    ))),
-                },
-                LexedRegisterType::SP => Ok(Operand::Register(RegisterOperand::Address(7))),
-            },
+            LexedOperand::Register(register_type, register_name) => {
+                let register = self.parse_register(register_type, register_name)?;
+                Ok(Operand::Register(register))
+            }
             LexedOperand::Absolute(value) => match self.parse_absolute(value) {
                 Ok(absolute) => Ok(Operand::Absolute(absolute as usize)),
                 Err(_) => Err(CompilationError::ParseError(format!(
@@ -575,7 +614,12 @@ impl Compiler {
                     label
                 ))),
             },
-            LexedOperand::IndirectOrDisplacement { offset, operand } => {
+            LexedOperand::Indirect(operand) => {
+                let parsed_operand = self.parse_operand(operand, line)?;
+                let parsed_operand = self.extract_register(parsed_operand)?;
+                Ok(Operand::Indirect(parsed_operand))
+            }
+            LexedOperand::IndirectDisplacement { offset, operand } => {
                 let parsed_operand = self.parse_operand(operand, line)?;
                 let parsed_operand = self.extract_register(parsed_operand)?;
                 let offset = if offset.trim() == "" {
@@ -587,23 +631,16 @@ impl Compiler {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid offset: {}",
                                 offset
-                            )))
+                            )));
                         }
                     }
                 };
-                Ok(Operand::IndirectOrDisplacement {
+                Ok(Operand::IndirectDisplacement {
                     offset,
-                    operand: parsed_operand,
+                    base: parsed_operand,
                 })
             }
-            LexedOperand::IndirectBaseDisplacement { offset, operands } => {
-                let parsed_operands = operands
-                    .iter()
-                    .map(|x| {
-                        let parsed = self.parse_operand(x, line)?;
-                        self.extract_register(parsed)
-                    })
-                    .collect::<CompilationResult<Vec<RegisterOperand>>>();
+            LexedOperand::IndirectIndex { offset, operands } => {
                 let offset = if offset == "" {
                     0
                 } else {
@@ -613,26 +650,36 @@ impl Compiler {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid offset: {}",
                                 offset
-                            )))
+                            )));
                         }
                     }
                 };
-                match parsed_operands {
-                    Ok(registers_operands) => match &registers_operands[..] {
-                        [RegisterOperand::Address(_), RegisterOperand::Address(_) | RegisterOperand::Data(_)] => {
-                            Ok(Operand::IndirectBaseDisplacement {
-                                offset,
-                                operands: DisplacementOperands {
-                                    base: registers_operands[0].clone(),
-                                    index: registers_operands[1].clone(),
-                                },
-                            })
-                        }
-                        _ => Err(CompilationError::InvalidAddressingMode(
-                            "Invalid displacement addressing mode".to_string(),
-                        )),
-                    },
-                    Err(e) => Err(e),
+                if operands.len() != 2 {
+                    return Err(CompilationError::ParseError(format!(
+                        "Invalid number of operands for indirect index addressing mode: {:?}, expected 2 operands, found {}",
+                        operands,
+                        operands.len()
+                    )));
+                }
+                let first = self.parse_operand(&operands[0], line)?;
+                let first = self.extract_register(first)?;
+                let second = self.parse_register_with_size(&operands[1], line)?;
+                match first {
+                    RegisterOperand::Data(_) => {
+                        return Err(CompilationError::InvalidAddressingMode(
+                            "First operand of indirect index addressing mode must be an address register".to_string(),
+                        ));
+                    }
+                    RegisterOperand::Address(_) => {
+                        Ok(Operand::IndirectIndex {
+                            offset,
+                            base: first,
+                            index: IndexRegister {
+                                register: second.0,
+                                size: second.1,
+                            }
+                        })
+                    }
                 }
             }
             LexedOperand::PostIndirect(operand) => {
@@ -708,7 +755,7 @@ impl Compiler {
                                 _ => {
                                     return Err(CompilationError::Raw(
                                         "Invalid size for DC directive".to_string(),
-                                    ))
+                                    ));
                                 }
                             };
                         }
@@ -742,7 +789,7 @@ impl Compiler {
                         _ => {
                             return Err(CompilationError::Raw(
                                 "Invalid number of arguments for DCB directive".to_string(),
-                            ))
+                            ));
                         }
                     },
                     //TODO is word default?
@@ -754,7 +801,7 @@ impl Compiler {
                         _ => {
                             return Err(CompilationError::Raw(
                                 "Invalid number of arguments for DCB directive".to_string(),
-                            ))
+                            ));
                         }
                     },
                     LexedSize::Byte => match parsed_args[..] {
@@ -762,13 +809,13 @@ impl Compiler {
                         _ => {
                             return Err(CompilationError::Raw(
                                 "Invalid number of arguments for DCB directive".to_string(),
-                            ))
+                            ));
                         }
                     },
                     _ => {
                         return Err(CompilationError::Raw(
                             "Invalid size for DCB directive".to_string(),
-                        ))
+                        ));
                     }
                 };
                 Ok(Directive::DCB { data, address })
@@ -788,11 +835,11 @@ impl Compiler {
                                 return Err(format!(
                                     "Invalid hex ORG address: {}; at line {}, {:?}",
                                     args[1], line.line_index, e
-                                ))
+                                ));
                             }
                         };
                         if parsed < last_address {
-                            return Err(format!("The address of the ORG directive ({}) must be greater than the previous address ({}); at line {}",parsed, last_address, line.line_index));
+                            return Err(format!("The address of the ORG directive ({}) must be greater than the previous address ({}); at line {}", parsed, last_address, line.line_index));
                         }
                         next_address = parsed;
                         //align at 2 bytes intervals
@@ -834,7 +881,7 @@ impl Compiler {
                                         &arg[1..arg.len() - 1],
                                         size.to_bytes_word_default() as usize,
                                     )
-                                    .len();
+                                        .len();
                                 }
                                 _ => {
                                     next_address =

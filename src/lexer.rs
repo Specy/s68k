@@ -48,13 +48,15 @@ impl LexedSize {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum LexedOperand {
-    Register(LexedRegisterType, String),
     Immediate(String),
-    IndirectOrDisplacement {
+    Register(LexedRegisterType, String),
+    RegisterWithSize(LexedRegisterType, String, LexedSize),
+    Indirect(Box<LexedOperand>),
+    IndirectDisplacement {
         offset: String,
         operand: Box<LexedOperand>,
     },
-    IndirectBaseDisplacement {
+    IndirectIndex {
         offset: String,
         operands: Vec<LexedOperand>,
     },
@@ -63,6 +65,21 @@ pub enum LexedOperand {
     Absolute(String),
     Label(String),
     Other(String),
+}
+
+impl LexedOperand {
+    pub fn affects_memory(&self) -> bool {
+        match self {
+            LexedOperand::Indirect(_) => true,
+            LexedOperand::IndirectDisplacement { .. } => true,
+            LexedOperand::IndirectIndex { .. } => true,
+            LexedOperand::PostIndirect(_) => true,
+            LexedOperand::PreIndirect(_) => true,
+            LexedOperand::Absolute(_) => true,
+
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,9 +111,11 @@ pub enum LexedLine {
 #[wasm_bindgen]
 pub enum OperandKind {
     Register,
+    RegisterWithSize,
     Immediate,
     Indirect,
     IndirectDisplacement,
+    IndirectIndex,
     PostIndirect,
     PreIndirect,
     Absolute,
@@ -135,8 +154,10 @@ At the same time, the directive should have dc/ds/dcb/etc and not just org
 enum Grammar {
     Directive,
     Register,
+    RegisterWithSize,
     Indirect,
     IndirectDisplacement,
+    IndirectIndex,
     PostIndirect,
     PreIndirect,
     Immediate,
@@ -168,8 +189,13 @@ impl Grammar {
         match &self {
             Grammar::Directive => r"(.+\s+equ\s+.+)|((org|dc|dcb|ds)\s*.*)".to_string(),
             Grammar::Register => r"(d\d|a\d|sp)".to_string(),
-            Grammar::Indirect => format!(r"([^\r\n\t\f\v,])*\({}\)", Grammar::Register.get_regex()),
-            Grammar::IndirectDisplacement => r"([^\r\n\t\f\v,])*\((.+,)+.+\)".to_string(),
+            Grammar::RegisterWithSize => format!(
+                r"({})\.(b|w|l)",
+                Grammar::Register.get_regex()
+            ),
+            Grammar::Indirect => format!(r"\({}\)", Grammar::Register.get_regex()),
+            Grammar::IndirectDisplacement => format!(r"([^\r\n\t\f\v,])*\({}\)", Grammar::Register.get_regex()),
+            Grammar::IndirectIndex => r"([^\r\n\t\f\v,])*\((.+,)+.+\)".to_string(),
             Grammar::PostIndirect => r"\(\w+\)\+".to_string(), //TODO should i include registers in here or leave it?
             Grammar::PreIndirect => r"-\(\w+\)".to_string(),
             Grammar::Immediate => r"#\S+".to_string(), //TODO could #add absolute here but it wouldn't change the end result
@@ -180,9 +206,10 @@ impl Grammar {
             Grammar::Absolute => r"((%|@|$|)\w+)|('.')|(\d+)".to_string(), //TODO this does not include labels
             Grammar::OperandArg => r"(\w*\((?:.+,)+.+\)\w*)|(\w+)|(#\S+)".to_string(),
             Grammar::Operand => format!(
-                r"(({})|({})|({})|({})|({})|({})|({}))",
+                r"(({})|({})|({})|({})|({})|({})|({})|({}))",
                 Grammar::Register.get_regex(),
                 Grammar::Indirect.get_regex(),
+                Grammar::IndirectIndex.get_regex(),
                 Grammar::IndirectDisplacement.get_regex(),
                 Grammar::PostIndirect.get_regex(),
                 Grammar::PreIndirect.get_regex(),
@@ -210,9 +237,11 @@ indirect_displacement
 
 struct AsmRegex {
     register_only: Regex,
+    register_with_size_only: Regex,
     immediate_only: Regex,
     indirect_only: Regex,
     indirect_displacement_only: Regex,
+    indirect_index_only: Regex,
     post_indirect_only: Regex,
     pre_indirect_only: Regex,
     label_line: Regex,
@@ -226,9 +255,11 @@ impl AsmRegex {
     pub fn new() -> Self {
         AsmRegex {
             register_only: Regex::new(&Grammar::Register.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
+            register_with_size_only: Regex::new(&Grammar::RegisterWithSize.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
             immediate_only: Regex::new(&Grammar::Immediate.get_opt(GrammarOptions::IS_LINE)).unwrap(),
             indirect_only: Regex::new(&Grammar::Indirect.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
             indirect_displacement_only: Regex::new(&Grammar::IndirectDisplacement.get_opt(GrammarOptions::IS_LINE)).unwrap(),
+            indirect_index_only: Regex::new(&Grammar::IndirectIndex.get_opt(GrammarOptions::IS_LINE)).unwrap(),
             post_indirect_only: Regex::new(&Grammar::PostIndirect.get_opt(GrammarOptions::IS_LINE)).unwrap(),
             pre_indirect_only: Regex::new(&Grammar::PreIndirect.get_opt(GrammarOptions::IS_LINE)).unwrap(),
             label_line: Regex::new(r"^\S+:.*").unwrap(),
@@ -242,10 +273,12 @@ impl AsmRegex {
     pub fn get_operand_kind(&self, operand: &String) -> OperandKind {
         let kind = match operand {
             //TODO order is important
-            _ if self.indirect_displacement_only.is_match(operand) => OperandKind::IndirectDisplacement,
             _ if self.post_indirect_only.is_match(operand) => OperandKind::PostIndirect,
             _ if self.pre_indirect_only.is_match(operand) => OperandKind::PreIndirect,
             _ if self.indirect_only.is_match(operand) => OperandKind::Indirect,
+            _ if self.indirect_index_only.is_match(operand) => OperandKind::IndirectIndex,
+            _ if self.indirect_displacement_only.is_match(operand) => OperandKind::IndirectDisplacement,
+            _ if self.register_with_size_only.is_match(operand) => OperandKind::RegisterWithSize,
             _ if self.register_only.is_match(operand) => OperandKind::Register,
             _ if self.immediate_only.is_match(operand) => OperandKind::Immediate,
             //_ if self.absolute.is_match(operand) => OperandKind::Absolute,
@@ -430,6 +463,27 @@ impl Lexer {
         let operand = operand.to_string();
         match self.regex.get_operand_kind(&operand) {
             OperandKind::Immediate => LexedOperand::Immediate(operand),
+            OperandKind::RegisterWithSize => {
+                let split = operand.split('.').collect::<Vec<&str>>();
+                match split[..] {
+                    [register, size] => {
+                        let register = self.parse_operand(&register.to_string());
+                        let size = match size {
+                            "b" => LexedSize::Byte,
+                            "w" => LexedSize::Word,
+                            "l" => LexedSize::Long,
+                            _ => return LexedOperand::Other(split.join(".")),
+                        };
+                        match register {
+                            LexedOperand::Register(reg, name) => {
+                                LexedOperand::RegisterWithSize(reg, name, size)
+                            }
+                            _ => LexedOperand::Other(operand),
+                        }
+                    }
+                    _ => LexedOperand::Other(operand), 
+                }
+            }
             OperandKind::Register => {
                 let operand = operand.to_lowercase();
                 let register_type = match operand.chars().nth(0).expect("Missing register") {
@@ -440,24 +494,41 @@ impl Lexer {
                 };
                 LexedOperand::Register(register_type, operand)
             }
-            OperandKind::IndirectDisplacement | OperandKind::Indirect => {
+            OperandKind::Indirect => {
+                let operand = operand.replace("(", "").replace(")", "");
+                let operand = self.parse_operand(&operand);
+                LexedOperand::Indirect(Box::new(operand))
+            }
+            OperandKind::IndirectIndex
+            => {
                 let split = operand.split('(').collect::<Vec<&str>>();
-                match split[..] {
-                    [displacement, args] => {
-                        let args = args.replace(")", "");
-                        let args = self.regex.split_into_separated_args(args.as_str(), true);
-                        let offset = displacement.trim().to_string();
-                        let operands = self.parse_operands(args);
-                        match &operands[..] {
-                            [operand] => LexedOperand::IndirectOrDisplacement {
-                                offset,
-                                operand: Box::new(operand.clone()),
-                            },
-                            [_, ..] => LexedOperand::IndirectBaseDisplacement { offset, operands },
-                            _ => panic!("Invalid indirect operand '{}'", operand),
-                        }
-                    }
-                    _ => LexedOperand::Other(operand),
+                if split.len() != 2 {
+                    return LexedOperand::Other(operand);
+                }
+                let offset = split[0].trim().to_string();
+                let args = split[1].replace(")", "");
+                let args = self.regex.split_into_separated_args(args.trim(), true);
+                let operands = self.parse_operands(args);
+                LexedOperand::IndirectIndex {
+                    offset,
+                    operands,
+                }
+            } 
+            OperandKind::IndirectDisplacement => {
+                let split = operand.split('(').collect::<Vec<&str>>();
+                if split.len() != 2 {
+                    return LexedOperand::Other(operand);
+                }
+                let offset = split[0].trim().to_string();
+                let args = split[1].replace(")", "");
+                let args = self.regex.split_into_separated_args(args.trim(), true);
+                let operands = self.parse_operands(args);
+                if operands.len() != 1 {
+                    return LexedOperand::Other(operand);
+                }
+                LexedOperand::IndirectDisplacement {
+                    offset,
+                    operand: Box::new(operands[0].to_owned()),
                 }
             }
             OperandKind::Absolute => LexedOperand::Absolute(operand),
@@ -559,21 +630,26 @@ impl Lexer {
             LexedOperand::Label(label) => {
                 LexedOperand::Label(self.apply_equ_to_expression_string(label, equ_map))
             }
-            LexedOperand::IndirectBaseDisplacement { offset, operands } => {
-                let operands = operands
-                    .iter()
-                    .map(|op| self.apply_equ_to_operand(op.clone(), equ_map))
-                    .collect();
-                let offset = self.apply_equ_to_expression_string(offset, equ_map);
-                LexedOperand::IndirectBaseDisplacement { offset, operands }
+            LexedOperand::Indirect(operand) => {
+                let operand = self.apply_equ_to_operand(*operand, equ_map);
+                LexedOperand::Indirect(Box::new(operand))
             }
-            LexedOperand::IndirectOrDisplacement { offset, operand } => {
+
+            LexedOperand::IndirectDisplacement { offset, operand } => {
                 let operand = self.apply_equ_to_operand(*operand, equ_map);
                 let offset = self.apply_equ_to_expression_string(offset, equ_map);
-                LexedOperand::IndirectOrDisplacement {
-                    offset,
-                    operand: Box::new(operand),
-                }
+                LexedOperand::IndirectDisplacement { offset, operand: Box::new(operand) }
+            }
+            LexedOperand::IndirectIndex { offset, operands } => {
+                let operands = operands
+                    .into_iter()
+                    .map(|op| self.apply_equ_to_operand(op, equ_map))
+                    .collect();
+                let offset = self.apply_equ_to_expression_string(offset, equ_map);
+                LexedOperand::IndirectIndex { offset, operands }
+            }
+            LexedOperand::RegisterWithSize(reg, name, size) => {
+                LexedOperand::RegisterWithSize(reg, name, size)
             }
         }
     }
