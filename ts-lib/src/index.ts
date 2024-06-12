@@ -100,6 +100,9 @@ export class Interpreter {
         return this.interpreter.wasm_step_only_status()
     }
 
+    writeMemoryBytes(address: number, data: Uint8Array) {
+        return this.interpreter.wasm_write_memory_bytes(address, data)
+    }
     getLastInstruction(): InstructionLine {
         return this.interpreter.wasm_get_last_instruction()
     }

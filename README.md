@@ -1,6 +1,6 @@
 # s68k
 A rust interpreter for m68k with semantic checker.
-It compiles to WASM to be used with javascript and node.js, [available on npm](https://www.npmjs.com/package/s68k)
+It compiles to WASM to be used with javascript and node.js, [available on npm](https://www.npmjs.com/package/@specy/s68k)
 
 [Typescript library documentation](https://github.com/Specy/s68k/wiki)
 

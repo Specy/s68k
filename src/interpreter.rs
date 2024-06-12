@@ -440,6 +440,7 @@ impl Interpreter {
         }
     }
 
+
     //TODO could make this an external function and pass the memory in
     fn prepare_memory(&mut self, directives: &Vec<Directive>) -> RuntimeResult<()> {
         for directive in directives {
@@ -1710,6 +1711,12 @@ impl Interpreter {
         match self.memory.read_bytes(address, size) {
             Ok(bytes) => bytes.to_vec(),
             Err(_) => vec![],
+        }
+    }
+    pub fn wasm_write_memory_bytes(&mut self, address: usize, bytes: Vec<u8>) -> Result<(), JsValue> {
+        match self.memory.write_bytes(address, &bytes) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
     }
     pub fn wasm_get_cpu_snapshot(&self) -> Cpu {
