@@ -559,7 +559,7 @@ impl Compiler {
                 let size = self.get_size(size, Size::Word).unwrap();
                 if size == Size::Byte {
                     Err(CompilationError::InvalidAddressingMode(
-                        "Invalid size for register".to_string(),
+                        "Invalid size for register, byte is not allowed".to_string(),
                     ))
                 } else {
                     Ok((register, size))

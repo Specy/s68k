@@ -8,6 +8,8 @@ pub mod lexer;
 pub mod compiler;
 mod semantic_checker;
 mod utils;
+
+mod test;
 mod math;
 mod ts_types;
 mod debugger;

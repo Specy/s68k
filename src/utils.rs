@@ -16,6 +16,7 @@ pub fn num_to_signed_base(num: i64, base: i64) -> Result<i64, &'static str> {
         Ok(num)
     }
 }
+
 pub const VALID_ARITHMETICAL_REGEX: &str =
     r"((?:[%@$]*\w+)|(?:'\S*'))((?:\*\*)|[\+\-\*/\^%\|\&\^])?(\S+)?";
 pub const VALID_ARITHMETICAL_TOKENS: &str = r"(('.+')|(\*\*|[+\-*\&/^()|])|([%@$]?\w*)|)";
@@ -37,6 +38,7 @@ pub enum ArithmeticalOperandToken {
     OpenBracket,
     CloseBracket,
 }
+
 impl FromStr for ArithmeticalOperandToken {
     type Err = String;
     fn from_str(s: &str) -> Result<ArithmeticalOperandToken, String> {
@@ -56,6 +58,7 @@ impl FromStr for ArithmeticalOperandToken {
         })
     }
 }
+
 impl ArithmeticalOperandToken {
     pub fn to_precedence(&self) -> u8 {
         match self {
@@ -76,7 +79,7 @@ pub enum ArithmeticalToken {
     Operand(ArithmeticalOperandToken),
 }
 
-pub fn to_reverse_polish_notation(tokens: &Vec<ArithmeticalToken>) -> Result<Vec<ArithmeticalToken>, String>{
+pub fn to_reverse_polish_notation(tokens: &Vec<ArithmeticalToken>) -> Result<Vec<ArithmeticalToken>, String> {
     let mut operators: Vec<ArithmeticalOperandToken> = Vec::new();
     let mut result: Vec<ArithmeticalToken> = Vec::new();
     for token in tokens.iter() {
@@ -118,6 +121,7 @@ pub fn to_reverse_polish_notation(tokens: &Vec<ArithmeticalToken>) -> Result<Vec
     }
     Ok(result)
 }
+
 fn should_unwind(operators: &Vec<ArithmeticalOperandToken>, next: &ArithmeticalOperandToken) -> bool {
     match operators.last() {
         None => false,
@@ -129,7 +133,7 @@ fn should_unwind(operators: &Vec<ArithmeticalOperandToken>, next: &ArithmeticalO
 
 fn calculate_rpn(tokens: &Vec<ArithmeticalToken>) -> Result<i64, String> {
     if tokens.len() == 0 {
-        return Err(format!("Invalid number of arguments for expression, it must not be empty"))
+        return Err(format!("Invalid number of arguments for expression, it must not be empty"));
     }
     let mut stack = Vec::new();
     for token in tokens.iter() {
@@ -148,7 +152,7 @@ fn calculate_rpn(tokens: &Vec<ArithmeticalToken>) -> Result<i64, String> {
                             ArithmeticalOperandToken::BitAnd => first & second,
                             ArithmeticalOperandToken::BitOr => first | second,
                             ArithmeticalOperandToken::BitXor => first ^ second,
-        
+
                             _ => return Err(format!("Invalid operand \"{:?}\"", op)),
                         };
                         stack.push(result)
@@ -224,6 +228,7 @@ pub fn parse_string_into_u32_chunks(str: &str, align_left: bool) -> Vec<u32> {
     }
     result
 }
+
 pub fn parse_absolute(str: &str, labels: &HashMap<String, Label>) -> Result<u32, String> {
     match str.chars().collect::<Vec<char>>()[..] {
         ['%', ..] => match i64::from_str_radix(&str[1..], 2) {

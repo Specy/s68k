@@ -899,6 +899,12 @@ impl SemanticChecker {
                 }
                 match operands[..] {
                     [LexedOperand::Register(LexedRegisterType::Address, _), LexedOperand::Register(_, _) | LexedOperand::RegisterWithSize(_, _, _)] => {
+                        let op2 = &operands[1];
+                        if let LexedOperand::RegisterWithSize(_, _, size) = op2 {
+                            if *size == LexedSize::Byte {
+                                return Err("Byte size in register is not allowed for index indirect".to_string());
+                            }
+                        }
                         Ok(AdrMode::INDIRECT_INDEX)
                     }
                     _ => Err(

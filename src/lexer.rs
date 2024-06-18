@@ -198,7 +198,7 @@ impl Grammar {
             Grammar::IndirectIndex => r"([^\r\n\t\f\v,])*\((.+,)+.+\)".to_string(),
             Grammar::PostIndirect => r"\(\w+\)\+".to_string(), //TODO should i include registers in here or leave it?
             Grammar::PreIndirect => r"-\(\w+\)".to_string(),
-            Grammar::Immediate => r"#\S+".to_string(), //TODO could #add absolute here but it wouldn't change the end result
+            Grammar::Immediate => r"#(('.+')|(\S+))".to_string(), //TODO could #add absolute here but it wouldn't change the end result
             Grammar::Comment => r"\s+((;|\*).*)|^(;.*|\*.*)".to_string(),
             Grammar::CommentLine => r"^((;|\*).*)$".to_string(),
             Grammar::Label => r"\w+:$".to_string(),
@@ -344,7 +344,8 @@ impl AsmRegex {
                     current_arg.push(c);
                 } //if it reaches the end where there is a comment
                 ' ' => {
-                    if last_char == ',' || ignore_space {
+                    // last_char == ',' ||
+                    if ignore_space && !in_quotes {
                         continue;
                     }
                     if in_parenthesis || in_quotes {
@@ -481,7 +482,7 @@ impl Lexer {
                             _ => LexedOperand::Other(operand),
                         }
                     }
-                    _ => LexedOperand::Other(operand), 
+                    _ => LexedOperand::Other(operand),
                 }
             }
             OperandKind::Register => {
@@ -513,7 +514,7 @@ impl Lexer {
                     offset,
                     operands,
                 }
-            } 
+            }
             OperandKind::IndirectDisplacement => {
                 let split = operand.split('(').collect::<Vec<&str>>();
                 if split.len() != 2 {
@@ -549,7 +550,11 @@ impl Lexer {
         let mut equs: Vec<(String, String)> = vec![];
         lines
             .iter()
-            .map(|line| self.regex.split_at_whitespace(line))
+            .map(|line| {
+                let split_at_comments = self.regex.split_at_comment(line);
+                let code = split_at_comments[0].trim();
+                self.regex.split_at_whitespace(code)
+            })
             .for_each(|args| {
                 if args.len() >= 3 && args[1] == EQU {
                     equs.push((args[0].to_string(), args[2..].join(" ")));
@@ -561,7 +566,6 @@ impl Lexer {
     }
     pub fn lex(&mut self, code: &String) -> &Vec<ParsedLine> {
         let lines = code.lines().map(String::from).collect::<Vec<String>>();
-        //let lines = self.apply_equ(lines);
         let equ_map = self.make_equ_map(&lines);
         let mut parsed = vec![];
         for (i, line) in lines.iter().enumerate() {
@@ -625,10 +629,13 @@ impl Lexer {
                 LexedOperand::Immediate(self.apply_equ_to_expression_string(im, equ_map))
             }
             LexedOperand::Absolute(abs) => {
-                LexedOperand::Absolute(self.apply_equ_to_expression_string(abs, equ_map))
+                let string = self.apply_equ_to_expression_string(abs, equ_map);
+                //TODO this is a bit of a hack, after applying the equ, it could change the operand type
+                self.parse_operand(&string)
             }
             LexedOperand::Label(label) => {
-                LexedOperand::Label(self.apply_equ_to_expression_string(label, equ_map))
+                let string = self.apply_equ_to_expression_string(label, equ_map);
+                self.parse_operand(&string)
             }
             LexedOperand::Indirect(operand) => {
                 let operand = self.apply_equ_to_operand(*operand, equ_map);

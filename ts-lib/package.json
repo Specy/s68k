@@ -2,7 +2,7 @@
     "type": "module",
     "name": "@specy/s68k",
     "description": "An M68000 emulator written in Rust and compiled to WebAssembly for teaching purposes.",
-    "version": "1.0.0",
+    "version": "1.0.5",
     "main": "dist/index.js",
     "module": "dist/index.js",
     "typings": "dist/index.d.ts",
@@ -10,7 +10,7 @@
     "scripts": {
         "ci-build": "npm i -g wasm-pack && npm run build-all",
         "build-all": "npm run build-wasm && npm run build-lib",
-        "build-wasm": "cd .. && wasm-pack build --out-dir ts-lib/src/pkg --out-name s68k",
+        "build-wasm": "cd .. && cargo test && wasm-pack build --out-dir ts-lib/src/pkg --out-name s68k",
         "build-lib": "node build.js"
     },
     "devDependencies": {

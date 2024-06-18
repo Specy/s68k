@@ -87,8 +87,11 @@ impl Debugger {
         for (_, label) in labels {
             labels_map.insert(label.address, label.clone());
         }
+        //include at least one to prevent initialization errors when pushing history state
+        let mut empty_history: LinkedList<ExecutionStep> = LinkedList::new();
+        empty_history.push_front(ExecutionStep::new(0, Flags::empty()));
         Self {
-            history: LinkedList::new(),
+            history: empty_history,
             history_size,
             call_stack: vec![],
             labels: labels_map
