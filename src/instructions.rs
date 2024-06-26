@@ -38,6 +38,14 @@ pub enum RegisterOperand {
     Address(u8),
     Data(u8),
 }
+impl RegisterOperand{
+    pub fn to_index(&self) -> u16 {
+        match self {
+            RegisterOperand::Address(index) => *index as u16 + 8,
+            RegisterOperand::Data(index) => *index as u16,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Copy)]
 pub struct IndexRegister {

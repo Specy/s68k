@@ -209,7 +209,15 @@ impl Compiler {
                 "movem" => {
                     let (mut register_mask, target, direction) = match (op1, op2) {
                         (Operand::Immediate(mask), op2) => (mask as u16, op2, TargetDirection::ToMemory),
+                        (Operand::Register(op), op2) => {
+                            let index = op.to_index();
+                            (1 << index, op2, TargetDirection::ToMemory)
+                        }
                         (op1, Operand::Immediate(mask)) => (mask as u16, op1, TargetDirection::FromMemory),
+                        (op1, Operand::Register(op)) => {
+                            let index = op.to_index();
+                            (1 << index, op1, TargetDirection::FromMemory)
+                        }
                         _ => {
                             return Err(CompilationError::InvalidAddressingMode(
                                 "Invalid operands for MOVEM".to_string(),

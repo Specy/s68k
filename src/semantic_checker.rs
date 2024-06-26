@@ -432,11 +432,11 @@ impl SemanticChecker {
                     }
                     "movem" => {
                         self.verify_size(SizeRules::OnlyLongOrWord, line);
-                        match &operands[..]{
-                            [LexedOperand::RegisterRange { .. }, op2] => {
+                        match &operands[..] {
+                            [LexedOperand::RegisterRange { .. } | LexedOperand::Register(_, _), op2] => {
                                 self.verify_arg_rule(op2, Rules::ONLY_INDIRECT_OR_ABSOLUTE, line, 2);
                             }
-                            [op1, LexedOperand::RegisterRange { .. }] => {
+                            [op1, LexedOperand::RegisterRange { .. } | LexedOperand::Register(_, _)] => {
                                 self.verify_arg_rule(op1, Rules::ONLY_INDIRECT_OR_ABSOLUTE, line, 1);
                             }
                             _ => {
@@ -446,7 +446,6 @@ impl SemanticChecker {
                                 ));
                             }
                         }
-
                     }
                     "jmp" => {
                         self.verify_one_arg(
@@ -628,7 +627,7 @@ impl SemanticChecker {
                                         line.clone(),
                                         "Invalid default value argument for dcb directive".to_string(),
                                     ));
-                                    return ;
+                                    return;
                                 }
                             };
                             let max = 1 << size.to_bits_word_default();
@@ -851,7 +850,6 @@ impl SemanticChecker {
         match operand {
             LexedOperand::Register(reg_type, reg_name)
             | LexedOperand::RegisterWithSize(reg_type, reg_name, _) => {
-      
                 match reg_type {
                     LexedRegisterType::Data => match reg_name[1..].parse::<i8>() {
                         Ok(reg) if (0..8).contains(&reg) => Ok(AdrMode::D_REG),
@@ -864,7 +862,7 @@ impl SemanticChecker {
                     LexedRegisterType::SP => Ok(AdrMode::A_REG),
                 }
             }
-            LexedOperand::RegisterRange {..} => Ok(AdrMode::REG_LIST),
+            LexedOperand::RegisterRange { .. } => Ok(AdrMode::REG_LIST),
             LexedOperand::Immediate(num) => match self.get_immediate_value(num) {
                 Ok(_) => Ok(AdrMode::IMMEDIATE),
                 Err(e) => Err(format!("Invalid immediate: {}", e)),
@@ -909,7 +907,7 @@ impl SemanticChecker {
             LexedOperand::IndirectIndex {
                 operands, offset, ..
             } => {
-                if !offset.is_empty(){
+                if !offset.is_empty() {
                     match offset.parse::<i64>() {
                         Ok(num) => {
                             if !(-(1 << 7)..=1 << 7).contains(&num) {

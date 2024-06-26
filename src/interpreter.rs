@@ -1381,7 +1381,6 @@ impl Interpreter {
             if (mask & 0x01) != 0 {
                 let value = self.cpu.a_reg[i].get_long();
                 addr -= size.to_bytes();
-                println!("AREG Setting memory at {:#010X} to {:#010X} of {}", addr, value, i);
                 self.set_memory_value(addr, size, value)?;
             }
             mask >>= 1;
@@ -1389,7 +1388,6 @@ impl Interpreter {
         for i in (0..8).rev() {
             if (mask & 0x01) != 0 {
                 addr -= size.to_bytes();
-                println!("DREG Setting memory at {:#010X} to {:#010X} of {}", addr, self.cpu.d_reg[i].get_long(), i);
                 self.set_memory_value(addr, size, self.cpu.d_reg[i].get_long())?;
             }
             mask >>= 1;
