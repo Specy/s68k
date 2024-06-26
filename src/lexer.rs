@@ -18,13 +18,10 @@ pub enum LexedRegisterType {
 
 impl LexedRegisterType {
     pub fn from_string(string: &str) -> Result<LexedRegisterType, String> {
-        if string.len() < 2 {
-            return Err(format!("Invalid register type '{}'", string));
-        }
         match string.chars().collect::<Vec<char>>().as_slice() {
-            ['d', num] if num.is_ascii_digit() => Ok(LexedRegisterType::Data),
-            ['a', num] if num.is_ascii_digit() => Ok(LexedRegisterType::Address),
-            ['s', 'p'] => Ok(LexedRegisterType::SP),
+            ['d' | 'D', num] if num.is_ascii_digit() => Ok(LexedRegisterType::Data),
+            ['a' | 'A', num] if num.is_ascii_digit() => Ok(LexedRegisterType::Address),
+            ['s' | 'S', 'p' | 'P'] => Ok(LexedRegisterType::SP),
             _ => Err(format!("Invalid register type '{}'", string)),
         }
     }
@@ -299,7 +296,6 @@ impl AsmRegex {
         }
     }
     pub fn get_operand_kind(&self, operand: &String) -> OperandKind {
-        
         match operand {
             //TODO order is important
             _ if self.post_indirect_only.is_match(operand) => OperandKind::PostIndirect,
@@ -573,7 +569,7 @@ impl Lexer {
                 LexedOperand::RegisterRange { mask }
             }
             OperandKind::Indirect => {
-                let operand = operand.replace('(', "").replace(')', "");
+                let operand = operand.replace(['(', ')'], "");
                 let operand = self.parse_operand(&operand);
                 LexedOperand::Indirect(Box::new(operand))
             }

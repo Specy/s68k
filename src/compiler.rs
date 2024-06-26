@@ -207,7 +207,7 @@ impl Compiler {
                     _ => Instruction::MOVE(op1, op2, self.get_size(size, Size::Word)?),
                 },
                 "movem" => {
-                    let (register_mask, target, direction) = match (op1, op2) {
+                    let (mut register_mask, target, direction) = match (op1, op2) {
                         (Operand::Immediate(mask), op2) => (mask as u16, op2, TargetDirection::ToMemory),
                         (op1, Operand::Immediate(mask)) => (mask as u16, op1, TargetDirection::FromMemory),
                         _ => {
@@ -216,6 +216,11 @@ impl Compiler {
                             ));
                         }
                     };
+                    //it will be read in reverse, so we need to reverse the mask
+                    if let Operand::PreIndirect(_) = target {
+                        register_mask = register_mask.reverse_bits();
+                    }
+
                     Instruction::MOVEM {
                         registers_mask: register_mask,
                         target,

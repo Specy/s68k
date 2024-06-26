@@ -10,9 +10,8 @@ use crate::S68k;
 mod tests {
     use crate::test::test::lex_and_run;
 
-
     #[test]
-    fn equ_substitution(){
+    fn equ_substitution() {
         lex_and_run("ten equ #10
 register_1 equ d1
 	move.l ten, register_1
@@ -20,7 +19,7 @@ register_1 equ d1
     }
 
     #[test]
-    fn test_addressing_modes(){
+    fn test_addressing_modes() {
         lex_and_run("
     move.l #10, d0
     move.l #$10, (a0)
@@ -33,6 +32,7 @@ register_1 equ d1
     move.l d0, 1000
     move.l d0, $1000
     movem.l d0-d1/a0-a5/a7, (a0)
+    movem.l D0-D1/A0-A5/A7, (a0)
 
 
         ");
@@ -158,6 +158,7 @@ for_end:
 end:");
     }
 }
+
 
 const TEST_LIMIT: usize = 3000000;
 

@@ -1,1 +1,1 @@
-pub mod test;
+mod test;

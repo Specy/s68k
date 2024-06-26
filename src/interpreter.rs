@@ -1381,6 +1381,7 @@ impl Interpreter {
             if (mask & 0x01) != 0 {
                 let value = self.cpu.a_reg[i].get_long();
                 addr -= size.to_bytes();
+                println!("AREG Setting memory at {:#010X} to {:#010X} of {}", addr, value, i);
                 self.set_memory_value(addr, size, value)?;
             }
             mask >>= 1;
@@ -1388,6 +1389,7 @@ impl Interpreter {
         for i in (0..8).rev() {
             if (mask & 0x01) != 0 {
                 addr -= size.to_bytes();
+                println!("DREG Setting memory at {:#010X} to {:#010X} of {}", addr, self.cpu.d_reg[i].get_long(), i);
                 self.set_memory_value(addr, size, self.cpu.d_reg[i].get_long())?;
             }
             mask >>= 1;
@@ -1620,7 +1622,10 @@ impl Interpreter {
             Operand::Immediate(_) => Err(RuntimeError::IncorrectAddressingMode(
                 "Attempted to store to immediate value".to_string(),
             )),
-            Operand::Register(op) => Ok(self.set_register_value(op, value, size)),
+            Operand::Register(op) => {
+                self.set_register_value(op, value, size);
+                Ok(())
+            },
             Operand::Absolute(address) => Ok(self.set_memory_value(*address, size, value)?),
             Operand::Indirect(reg) => {
                 let address = self.get_a_reg_sized(*reg, Size::Long);

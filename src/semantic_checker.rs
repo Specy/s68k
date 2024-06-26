@@ -124,6 +124,7 @@ bitflags! {
             | AdrMode::ADDRESS.bits()
         );
         const ONLY_REG_LIST = !AdrMode::REG_LIST.bits();
+        const NO_A_REG_OR_IMMEDIATE = AdrMode::A_REG.bits() | AdrMode::IMMEDIATE.bits();
     }
 }
 //TODO refactor this
@@ -166,6 +167,7 @@ impl Rules {
             Rules::ONLY_INDIRECT_OR_ABSOLUTE => "(An)/Ea/<label>",
             Rules::ONLY_POST_INCREMENT => "(An)",
             Rules::ONLY_REG_LIST => "<reg list>",
+            Rules::NO_A_REG_OR_IMMEDIATE => "Dn/(An)/(An)/Ea/<label>",
             _ => "UNKNOWN",
         }
             .to_string()
@@ -208,7 +210,7 @@ impl SemanticChecker {
     }
 
     pub fn check(&mut self, lines: &[ParsedLine]) {
-        self.lines = lines.iter().cloned().collect();
+        self.lines = lines.to_vec();
         for line in lines.iter() {
             match &line.parsed {
                 LexedLine::Label { name } => {
@@ -310,7 +312,7 @@ impl SemanticChecker {
                         self.verify_size(SizeRules::NoSize, line);
                     }
                     "clr" => {
-                        self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
+                        self.verify_one_arg(operands, Rules::NO_A_REG_OR_IMMEDIATE, line);
                         self.verify_size(SizeRules::AnySize, line);
                     }
                     "exg" => {
@@ -335,7 +337,7 @@ impl SemanticChecker {
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
                     "cmp" => {
-                        self.verify_two_args(operands, Rules::NONE, Rules::NO_IMMEDIATE | Rules::ONLY_REG, line);
+                        self.verify_two_args(operands, Rules::NONE, Rules::ONLY_REG, line);
                         self.verify_size(SizeRules::AnySize, line);
                         self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
                     }
@@ -348,7 +350,7 @@ impl SemanticChecker {
                     }
                     "scc" | "scs" | "seq" | "sne" | "sge" | "sgt" | "sle" | "sls" | "slt"
                     | "shi" | "smi" | "spl" | "svc" | "svs" | "slo" | "shs" | "sf" | "st" => {
-                        self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
+                        self.verify_one_arg(operands, Rules::NO_A_REG_OR_IMMEDIATE, line);
                         self.verify_size(SizeRules::NoSize, line);
                     }
                     "dbcc" | "dbcs" | "dbeq" | "dbne" | "dbge" | "dbgt" | "dble" | "dbls" | "dblt"
@@ -371,11 +373,11 @@ impl SemanticChecker {
                         self.verify_size(SizeRules::NoSize, line);
                     }
                     "not" => {
-                        self.verify_one_arg(operands, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
+                        self.verify_one_arg(operands, Rules::NO_A_REG_OR_IMMEDIATE, line);
                         self.verify_size(SizeRules::AnySize, line);
                     }
                     "addi" | "andi" | "ori" | "eori" | "subi" | "cmpi" => {
-                        self.verify_two_args(operands, Rules::ONLY_IMMEDIATE, Rules::NO_A_REG | Rules::NO_IMMEDIATE, line);
+                        self.verify_two_args(operands, Rules::ONLY_IMMEDIATE, Rules::NO_A_REG_OR_IMMEDIATE, line);
                         self.verify_size(SizeRules::AnySize, line);
                     }
                     "movea" => {
@@ -393,7 +395,7 @@ impl SemanticChecker {
                         self.verify_two_args(
                             operands,
                             Rules::NO_A_REG,
-                            Rules::NO_IMMEDIATE | Rules::NO_A_REG,
+                            Rules::NO_A_REG_OR_IMMEDIATE,
                             line,
                         );
                         self.verify_size(SizeRules::AnySize, line);
@@ -429,6 +431,7 @@ impl SemanticChecker {
                         self.verify_size(SizeRules::NoSize, line);
                     }
                     "movem" => {
+                        self.verify_size(SizeRules::OnlyLongOrWord, line);
                         match &operands[..]{
                             [LexedOperand::RegisterRange { .. }, op2] => {
                                 self.verify_arg_rule(op2, Rules::ONLY_INDIRECT_OR_ABSOLUTE, line, 2);
@@ -439,7 +442,7 @@ impl SemanticChecker {
                             _ => {
                                 self.errors.push(SemanticError::new(
                                     line.clone(),
-                                    format!("Invalid number of operands for movem instruction, expected 2 operands, received \"{}\"", operands.len()),
+                                    format!("Invalid operands for movem instruction, register list and memory, or memory and register list, received \"{}\" operands", operands.len()),
                                 ));
                             }
                         }
@@ -497,7 +500,7 @@ impl SemanticChecker {
                         self.verify_two_args(
                             operands,
                             Rules::NO_A_REG,
-                            Rules::NO_IMMEDIATE | Rules::NO_A_REG,
+                            Rules::NO_A_REG_OR_IMMEDIATE,
                             line,
                         );
                         self.verify_value_bounds_if_immediate(operands, 0, line, 0, 8);
@@ -507,7 +510,7 @@ impl SemanticChecker {
                         self.verify_two_args(
                             operands,
                             Rules::NO_A_REG,
-                            Rules::NO_IMMEDIATE | Rules::NO_A_REG,
+                            Rules::NO_A_REG_OR_IMMEDIATE,
                             line,
                         );
                         self.verify_size(SizeRules::NoSize, line);
@@ -825,10 +828,7 @@ impl SemanticChecker {
                                 LexedLine::Instruction { operands, .. } => {
                                     //check if it has any address register
                                     let has_address_reg = operands.iter().find(|op| {
-                                        match op {
-                                            LexedOperand::Register(LexedRegisterType::Address, _) => true,
-                                            _ => false,
-                                        }
+                                        matches!(op, LexedOperand::Register(LexedRegisterType::Address, _))
                                     });
                                     if let Some(_op) = has_address_reg {
                                         self.errors.push(SemanticError::new(
