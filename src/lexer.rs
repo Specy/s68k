@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+
 
 use bitflags::bitflags;
 use regex::Regex;
@@ -22,8 +22,8 @@ impl LexedRegisterType {
             return Err(format!("Invalid register type '{}'", string));
         }
         match string.chars().collect::<Vec<char>>().as_slice() {
-            ['d', num] if num.is_digit(10) => Ok(LexedRegisterType::Data),
-            ['a', num] if num.is_digit(10) => Ok(LexedRegisterType::Address),
+            ['d', num] if num.is_ascii_digit() => Ok(LexedRegisterType::Data),
+            ['a', num] if num.is_ascii_digit() => Ok(LexedRegisterType::Address),
             ['s', 'p'] => Ok(LexedRegisterType::SP),
             _ => Err(format!("Invalid register type '{}'", string)),
         }
@@ -299,7 +299,8 @@ impl AsmRegex {
         }
     }
     pub fn get_operand_kind(&self, operand: &String) -> OperandKind {
-        let kind = match operand {
+        
+        match operand {
             //TODO order is important
             _ if self.post_indirect_only.is_match(operand) => OperandKind::PostIndirect,
             _ if self.pre_indirect_only.is_match(operand) => OperandKind::PreIndirect,
@@ -312,8 +313,7 @@ impl AsmRegex {
             _ if self.immediate_only.is_match(operand) => OperandKind::Immediate,
             //_ if self.absolute.is_match(operand) => OperandKind::Absolute,
             _ => OperandKind::Absolute,
-        };
-        kind
+        }
     }
     pub fn split_at_size(&self, data: &String) -> (String, LexedSize) {
         let data = data.to_string();
@@ -339,7 +339,7 @@ impl AsmRegex {
         let mut in_quotes = false;
         let mut last_char = ' ';
         let mut last_separator = ' ';
-        if line.len() == 0 {
+        if line.is_empty() {
             return args;
         }
         for c in line.chars() {
@@ -381,7 +381,7 @@ impl AsmRegex {
                         //ignore if in parenthesis or if it's a char
                         current_arg.push(c);
                     } else {
-                        if current_arg == "" {
+                        if current_arg.is_empty() {
                             continue;
                         }
                         args.push(current_arg.trim().to_string());
@@ -397,16 +397,14 @@ impl AsmRegex {
         }
         match current_arg.trim() {
             "" => args,
-            _ => match last_separator {
-                _ => {
-                    args.push(current_arg.trim().to_string());
-                    args
-                }
+            _ => {
+                args.push(current_arg.trim().to_string());
+                args
             },
         }
     }
     pub fn split_at_whitespace(&self, line: &str) -> Vec<String> {
-        line.replace("\t", " ")
+        line.replace('\t', " ")
             .trim()
             .split(' ')
             .map(|x| x.to_string())
@@ -414,7 +412,7 @@ impl AsmRegex {
             .collect::<Vec<String>>()
     }
     pub fn split_at_comment<'a>(&self, string: &'a str) -> Vec<&'a str> {
-        self.comment.split(&string).collect()
+        self.comment.split(string).collect()
     }
     pub fn get_line_kind(&self, line: &String) -> LineKind {
         let line = line.trim();
@@ -474,6 +472,12 @@ pub struct ParsedLine {
 pub struct Lexer {
     lines: Vec<ParsedLine>,
     regex: AsmRegex,
+}
+
+impl Default for Lexer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Lexer {
@@ -569,7 +573,7 @@ impl Lexer {
                 LexedOperand::RegisterRange { mask }
             }
             OperandKind::Indirect => {
-                let operand = operand.replace("(", "").replace(")", "");
+                let operand = operand.replace('(', "").replace(')', "");
                 let operand = self.parse_operand(&operand);
                 LexedOperand::Indirect(Box::new(operand))
             }
@@ -580,7 +584,7 @@ impl Lexer {
                     return LexedOperand::Other(operand);
                 }
                 let offset = split[0].trim().to_string();
-                let args = split[1].replace(")", "");
+                let args = split[1].replace(')', "");
                 let args = self.regex.split_into_separated_args(args.trim(), true);
                 let operands = self.parse_operands(args);
                 LexedOperand::IndirectIndex {
@@ -594,7 +598,7 @@ impl Lexer {
                     return LexedOperand::Other(operand);
                 }
                 let offset = split[0].trim().to_string();
-                let args = split[1].replace(")", "");
+                let args = split[1].replace(')', "");
                 let args = self.regex.split_into_separated_args(args.trim(), true);
                 let operands = self.parse_operands(args);
                 if operands.len() != 1 {
@@ -607,12 +611,12 @@ impl Lexer {
             }
             OperandKind::Absolute => LexedOperand::Absolute(operand),
             OperandKind::PostIndirect => {
-                let parsed_operand = operand.replace("(", "").replace(")+", "");
+                let parsed_operand = operand.replace('(', "").replace(")+", "");
                 let arg = self.parse_operand(&parsed_operand);
                 LexedOperand::PostIndirect(Box::new(arg))
             }
             OperandKind::PreIndirect => {
-                let parsed_operand = operand.replace("-(", "").replace(")", "");
+                let parsed_operand = operand.replace("-(", "").replace(')', "");
                 let arg = self.parse_operand(&parsed_operand);
                 LexedOperand::PreIndirect(Box::new(arg))
             }
@@ -775,9 +779,9 @@ impl Lexer {
             },
             LineKind::Directive => {
                 let mut parsed_args: Vec<String> =
-                    self.regex.split_into_separated_args(&code.replace("\t", " "), false);
+                    self.regex.split_into_separated_args(&code.replace('\t', " "), false);
                 //lowercase the first arg
-                let first = parsed_args.get(0).expect("Missing first argument").to_lowercase();
+                let first = parsed_args.first().expect("Missing first argument").to_lowercase();
                 parsed_args[0] = first;
                 let line = match &parsed_args[..] {
                     [_, equ, ..] if equ.to_lowercase() == "equ" => LexedLine::Directive {
@@ -819,7 +823,7 @@ fn parse_register_range(range: &str) -> Result<(LexedRegisterType, u32), String>
     if reg_type == LexedRegisterType::SP {
         return Ok((reg_type, 0));
     }
-    let num = range.chars().nth(1).map(|x| x.to_digit(10)).flatten();
+    let num = range.chars().nth(1).and_then(|x| x.to_digit(10));
     match num {
         Some(num) => Ok((reg_type, num)),
         None => Err(format!("Invalid register range '{}'", range))

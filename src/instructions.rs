@@ -228,7 +228,7 @@ pub enum InterruptResult {
 impl Instruction {
     pub fn get_instruction_name(&self) -> String {
         let string = format!("{:?}", self);
-        let mut string = string.split("(");
+        let mut string = string.split('(');
         string.next().unwrap().to_string()
     }
 }

@@ -44,7 +44,12 @@ bitflags! {
         const Extend   = 1<<5;
     }
 }
-#[wasm_bindgen]
+impl Default for Flags {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Flags {
     pub fn new() -> Self {
         Flags::empty()
@@ -243,6 +248,12 @@ pub struct Register {
     data: u32,
 }
 
+impl Default for Register {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Register {
     pub fn new() -> Self {
         Self { data: 0 }
@@ -304,6 +315,12 @@ pub struct Cpu {
     d_reg: [Register; 8],
     a_reg: [Register; 8],
     ccr: Flags,
+}
+
+impl Default for Cpu {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Cpu {
@@ -435,7 +452,7 @@ impl Interpreter {
             },
         };
         interpreter.cpu.a_reg[7].store_long(sp as u32);
-        match interpreter.prepare_memory(&compiled_program.get_directives()) {
+        match interpreter.prepare_memory(compiled_program.get_directives()) {
             Ok(_) => interpreter,
             Err(e) => panic!("Error preparing memory: {:?}", e),
         }
@@ -449,7 +466,7 @@ impl Interpreter {
                 Directive::DC { data, address }
                 | Directive::DS { data, address }
                 | Directive::DCB { data, address } => {
-                    self.memory.write_bytes(*address, &data)?;
+                    self.memory.write_bytes(*address, data)?;
                 }
                 Directive::Other => {}
             };
@@ -494,8 +511,8 @@ impl Interpreter {
         ]
     }
     pub fn has_terminated(&self) -> bool {
-        return self.status == InterpreterStatus::Terminated
-            || self.status == InterpreterStatus::TerminatedWithException;
+        self.status == InterpreterStatus::Terminated
+            || self.status == InterpreterStatus::TerminatedWithException
     }
 
     #[inline(always)]
@@ -542,14 +559,14 @@ impl Interpreter {
             }
             None if self.pc < self.final_instruction_address => {
                 self.set_status(InterpreterStatus::TerminatedWithException);
-                return Err(RuntimeError::OutOfBounds(format!(
+                Err(RuntimeError::OutOfBounds(format!(
                     "Invalid instruction address: {}",
                     self.pc,
-                )));
+                )))
             }
             None => {
                 self.set_status(InterpreterStatus::TerminatedWithException);
-                return Err(RuntimeError::Raw("Program has terminated".to_string()));
+                Err(RuntimeError::Raw("Program has terminated".to_string()))
             }
         }
     }
@@ -567,7 +584,7 @@ impl Interpreter {
                         MutationOperation::WriteRegister {
                             register,
                             old,
-                            size,
+                            size: _,
                         } => match register {
                             RegisterOperand::Address(reg) => {
                                 self.cpu.a_reg[*reg as usize].store_long(*old)
@@ -580,9 +597,9 @@ impl Interpreter {
                             self.memory.write_size(*address, *size, *old)?;
                         }
                         MutationOperation::WriteMemoryBytes { address, old } => {
-                            self.memory.write_bytes(*address, &old)?;
+                            self.memory.write_bytes(*address, old)?;
                         }
-                        MutationOperation::PopCall { to, from } => {
+                        MutationOperation::PopCall { to, from: _ } => {
                             //try to get the address of the function that popped the call
                             let ins = self.get_instruction_at(*to - 4);
                             let callee_address = match ins {
@@ -597,7 +614,7 @@ impl Interpreter {
                             };
                             self.debugger.push_call(callee_address);
                         }
-                        MutationOperation::PushCall { to, from } => {
+                        MutationOperation::PushCall { to: _, from: _ } => {
                             self.debugger.pop_call();
                         }
                     }
@@ -917,7 +934,7 @@ impl Interpreter {
             }
             Instruction::LEA(source, dest) => {
                 let addr = self.get_operand_address(source)?;
-                self.set_register_value(dest, addr as u32, Size::Long);
+                self.set_register_value(dest, addr, Size::Long);
             }
             Instruction::PEA(source) => {
                 let addr = self.get_operand_address(source)?;
@@ -931,7 +948,7 @@ impl Interpreter {
                 }
                 let new_sp = self
                     .memory
-                    .push(&MemoryCell::Long(addr as u32), self.get_sp())?;
+                    .push(&MemoryCell::Long(addr), self.get_sp())?;
                 self.set_sp(new_sp);
             }
             Instruction::BCHG(bit_source, dest) => {
@@ -1150,9 +1167,7 @@ impl Interpreter {
                     (Size::Word, Size::Long) => (((input as u16) as i16) as i32) as u32,
                     (Size::Byte, Size::Long) => (((input as u8) as i8) as i32) as u32,
                     _ => {
-                        return Err(RuntimeError::Raw(format!(
-                            "Invalid size for EXT instruction"
-                        )));
+                        return Err(RuntimeError::Raw("Invalid size for EXT instruction".to_string()));
                     }
                 };
                 self.set_register_value(reg, result, *to);
@@ -1318,9 +1333,9 @@ impl Interpreter {
         if self.keep_history {
             self.debugger
                 .add_mutation(MutationOperation::WriteRegister {
-                    register: register.clone(),
+                    register: *register,
                     old: old_value,
-                    size: size.clone(),
+                    size,
                 });
         }
     }
@@ -1336,7 +1351,7 @@ impl Interpreter {
             self.debugger.add_mutation(MutationOperation::WriteMemory {
                 address,
                 old: old_value,
-                size: size.clone(),
+                size,
             });
         }
         self.memory.write_size(address, size, value)?;
@@ -1379,7 +1394,7 @@ impl Interpreter {
         }
         Ok(addr as u32)
     }
-    pub fn move_memory_to_registers(&mut self, mut addr: usize, size: Size, mut mask: u16) -> RuntimeResult<u32> {
+    pub fn move_memory_to_registers(&mut self, addr: usize, size: Size, mut mask: u16) -> RuntimeResult<u32> {
         let size_bytes = size.to_bytes() as u32;
         let mut addr = addr as u32;
         for i in 0..8 {
@@ -1422,9 +1437,9 @@ impl Interpreter {
                 //TODO not sure if this is correct or if it should read untill 0x00
                 let address = self.cpu.a_reg[1].get_long();
                 let length = self.cpu.d_reg[1].get_word() as i32;
-                if length > 255 || length < 0 {
+                if !(0..=255).contains(&length) {
                     //only for interrupt 1 and 2, check bounds
-                    return Err(RuntimeError::Raw(format!("Invalid String read, length of string in d1 register is: {}, expected between 0 and 255", length)));
+                    Err(RuntimeError::Raw(format!("Invalid String read, length of string in d1 register is: {}, expected between 0 and 255", length)))
                 } else {
                     let mut bytes = self
                         .memory
@@ -1517,14 +1532,14 @@ impl Interpreter {
                 .add_mutation(MutationOperation::WriteRegister {
                     register: RegisterOperand::Address(reg),
                     old: old_value,
-                    size: size,
+                    size,
                 });
         }
     }
     fn get_operand_value(&mut self, op: &Operand, size: Size, used: Used) -> RuntimeResult<u32> {
         match op {
             Operand::Immediate(v) => Ok(*v),
-            Operand::Register(op) => Ok(self.get_register_value(&op, size)),
+            Operand::Register(op) => Ok(self.get_register_value(op, size)),
             Operand::Absolute(address) => Ok(self.memory.read_size(*address, size)?),
 
             Operand::Indirect(reg) => {
@@ -1549,7 +1564,7 @@ impl Interpreter {
             }
             Operand::IndirectDisplacement { offset, base } => {
                 //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(&base, Size::Long) as i32;
+                let address = self.get_register_value(base, Size::Long) as i32;
                 let address = address.wrapping_add(*offset);
                 Ok(self.memory.read_size(address as usize, size)?)
             }
@@ -1574,7 +1589,7 @@ impl Interpreter {
             Operand::Indirect(reg) => Ok(self.get_a_reg_sized(*reg, Size::Long)),
             Operand::IndirectDisplacement { offset, base } => {
                 //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(&base, Size::Long) as i32;
+                let address = self.get_register_value(base, Size::Long) as i32;
                 let address = address.wrapping_add(*offset);
                 Ok(address as u32)
             }
@@ -1605,7 +1620,7 @@ impl Interpreter {
             Operand::Immediate(_) => Err(RuntimeError::IncorrectAddressingMode(
                 "Attempted to store to immediate value".to_string(),
             )),
-            Operand::Register(op) => Ok(self.set_register_value(&op, value, size)),
+            Operand::Register(op) => Ok(self.set_register_value(op, value, size)),
             Operand::Absolute(address) => Ok(self.set_memory_value(*address, size, value)?),
             Operand::Indirect(reg) => {
                 let address = self.get_a_reg_sized(*reg, Size::Long);
@@ -1630,7 +1645,7 @@ impl Interpreter {
             }
             Operand::IndirectDisplacement { offset, base } => {
                 //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(&base, Size::Long) as i32;
+                let address = self.get_register_value(base, Size::Long) as i32;
                 let address = address.wrapping_add(*offset);
                 Ok(self.set_memory_value(address as usize, size, value)?)
             }
@@ -1692,7 +1707,7 @@ impl Interpreter {
         limit: Option<usize>,
     ) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
-        let breakpoints_map = self.generate_breakpoints_map(&breakpoint_lines);
+        let breakpoints_map = self.generate_breakpoints_map(breakpoint_lines);
         let mut iterations = 0;
         let limit = limit.unwrap_or(usize::MAX);
         let mut limit_counter = limit;
@@ -1892,7 +1907,7 @@ impl Interpreter {
     pub fn wasm_get_previous_mutations(&self) -> JsValue {
         match self.debugger.get_previous_mutations() {
             Some(m) => serde_wasm_bindgen::to_value(&m).unwrap(),
-            None => return JsValue::NULL,
+            None => JsValue::NULL,
         }
     }
     pub fn wasm_get_undo_history(&self, count: usize) -> JsValue {

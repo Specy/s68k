@@ -208,7 +208,7 @@ impl SemanticChecker {
     }
 
     pub fn check(&mut self, lines: &[ParsedLine]) {
-        self.lines = lines.iter().map(|x| x.clone()).collect();
+        self.lines = lines.iter().cloned().collect();
         for line in lines.iter() {
             match &line.parsed {
                 LexedLine::Label { name } => {
@@ -277,7 +277,7 @@ impl SemanticChecker {
                             }
                             _ => {}
                         };
-                        match (self.get_size_of_instruction(line), operands.get(0), operands.get(1)) {
+                        match (self.get_size_of_instruction(line), operands.first(), operands.get(1)) {
                             (Some(LexedSize::Byte), _, Some(LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _))) => {
                                 self.errors.push(SemanticError::new(
                                     line.clone(),
@@ -416,7 +416,7 @@ impl SemanticChecker {
                                 if *size == LexedSize::Byte {
                                     self.errors.push(SemanticError::new(
                                         line.clone(),
-                                        format!("Byte size not allowed for address register"),
+                                        "Byte size not allowed for address register".to_string(),
                                     ))
                                 }
                             }
@@ -486,10 +486,10 @@ impl SemanticChecker {
                     }
                     "rts" => {
                         self.verify_size(SizeRules::NoSize, line);
-                        if operands.len() != 0 {
+                        if !operands.is_empty() {
                             self.errors.push(SemanticError::new(
                                 line.clone(),
-                                format!("RTS instruction does not accept operands"),
+                                "RTS instruction does not accept operands".to_string(),
                             ));
                         }
                     }
@@ -554,7 +554,7 @@ impl SemanticChecker {
                                 match arg {
                                     _ if arg.starts_with('\'') && arg.ends_with('\'') => {}
                                     _ => {
-                                        match self.get_absolute_value(&arg) {
+                                        match self.get_absolute_value(arg) {
                                             Ok(_) => {}
                                             Err(_) => self.errors.push(SemanticError::new(
                                                 line.clone(),
@@ -582,7 +582,7 @@ impl SemanticChecker {
                                 args.len()
                             ),
                         )),
-                        [_, arg] => match self.get_absolute_value(&arg) {
+                        [_, arg] => match self.get_absolute_value(arg) {
                             Ok(_) => {}
                             Err(_) => self.errors.push(SemanticError::new(
                                 line.clone(),
@@ -625,7 +625,7 @@ impl SemanticChecker {
                                         line.clone(),
                                         "Invalid default value argument for dcb directive".to_string(),
                                     ));
-                                    return ();
+                                    return ;
                                 }
                             };
                             let max = 1 << size.to_bits_word_default();
@@ -668,7 +668,7 @@ impl SemanticChecker {
         rule2: Rules,
         line: &ParsedLine,
     ) {
-        match &args[..] {
+        match args {
             [first, second] => {
                 self.verify_arg_rule(first, rule1, line, 1);
                 self.verify_arg_rule(second, rule2, line, 2);
@@ -681,7 +681,7 @@ impl SemanticChecker {
     }
 
     fn verify_one_arg(&mut self, args: &[LexedOperand], rule: Rules, line: &ParsedLine) {
-        match &args[..] {
+        match args {
             [first] => {
                 self.verify_arg_rule(first, rule, line, 1);
             }
@@ -711,7 +711,7 @@ impl SemanticChecker {
             },
             _ => 0,
         };
-        match &args[..] {
+        match args {
             [LexedOperand::Immediate(value), ..] => match self.get_immediate_value(value) {
                 Ok(parsed) => match num_to_signed_base(parsed, size_value) {
                     Ok(_) => {}
@@ -854,11 +854,11 @@ impl SemanticChecker {
       
                 match reg_type {
                     LexedRegisterType::Data => match reg_name[1..].parse::<i8>() {
-                        Ok(reg) if reg >= 0 && reg < 8 => Ok(AdrMode::D_REG),
+                        Ok(reg) if (0..8).contains(&reg) => Ok(AdrMode::D_REG),
                         _ => Err("Invalid data register".to_string()),
                     },
                     LexedRegisterType::Address => match reg_name[1..].parse::<i8>() {
-                        Ok(reg) if reg >= 0 && reg < 8 => Ok(AdrMode::A_REG),
+                        Ok(reg) if (0..8).contains(&reg) => Ok(AdrMode::A_REG),
                         _ => Err("Invalid address register".to_string()),
                     },
                     LexedRegisterType::SP => Ok(AdrMode::A_REG),
@@ -892,7 +892,7 @@ impl SemanticChecker {
             } => {
                 match parse_absolute_expression(offset, &self.labels) {
                     Ok(num) => {
-                        if num > 1 << 15 || num < -(1 << 15) {
+                        if !(-(1 << 15)..=1 << 15).contains(&num) {
                             return Err(format!("Invalid offset \"{}\", must be between -32768 and 32768", num));
                         }
                     }
@@ -912,7 +912,7 @@ impl SemanticChecker {
                 if !offset.is_empty(){
                     match offset.parse::<i64>() {
                         Ok(num) => {
-                            if num > 1 << 7 || num < -(1 << 7) {
+                            if !(-(1 << 7)..=1 << 7).contains(&num) {
                                 return Err("Invalid offset, must be between -128 and 128".to_string());
                             }
                         }

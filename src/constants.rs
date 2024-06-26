@@ -10,4 +10,4 @@ pub const DIRECTIVES: &[&str] = &["equ", "org"];
 pub const COMMENT_1: char = ';';
 pub const COMMENT_2: char  = '*';
 pub const OPERAND_SEPARATOR: char = ',';
-pub const EQU: &'static str = "equ";
+pub const EQU: &str = "equ";

@@ -86,7 +86,7 @@ impl Compiler {
     }
 
     pub fn debug_print(&self) {
-        if self.labels.len() == 0 {
+        if self.labels.is_empty() {
             println!("\n[NO LABELS]\n");
         } else {
             println!("\n[LABELS]\n");
@@ -218,7 +218,7 @@ impl Compiler {
                     };
                     Instruction::MOVEM {
                         registers_mask: register_mask,
-                        target: target,
+                        target,
                         direction,
                         size: self.get_size(size, Size::Word)?,
                     }
@@ -420,7 +420,7 @@ impl Compiler {
             };
             Ok(parsed)
         } else if operands.len() == 1 {
-            let op = operands[0].clone();
+            let op = operands[0];
             let result = match name.as_str() {
                 "clr" => Instruction::CLR(op, self.get_size(size, Size::Word)?),
                 "neg" => Instruction::NEG(op, self.get_size(size, Size::Word)?),
@@ -493,7 +493,7 @@ impl Compiler {
 
                 "trap" => {
                     let value = self.extract_immediate(&op)? as i32;
-                    if value > 15 || value < 0 {
+                    if !(0..=15).contains(&value) {
                         return Err(CompilationError::InvalidTrap(format!(
                             "Invalid trap value: {}, must be between 0 and 15",
                             value
@@ -509,7 +509,7 @@ impl Compiler {
                 }
             };
             Ok(result)
-        } else if operands.len() == 0 {
+        } else if operands.is_empty() {
             let result = match name.as_str() {
                 "rts" => Instruction::RTS,
                 _ => {
@@ -565,7 +565,7 @@ impl Compiler {
         }
     }
 
-    fn parse_register_with_size(&mut self, operand: &LexedOperand, line: &ParsedLine) -> CompilationResult<(RegisterOperand, Size)> {
+    fn parse_register_with_size(&mut self, operand: &LexedOperand, _line: &ParsedLine) -> CompilationResult<(RegisterOperand, Size)> {
         match operand {
             LexedOperand::Register(register_type, register_name) => {
                 let register = self.parse_register(register_type, register_name)?;
@@ -654,7 +654,7 @@ impl Compiler {
                 })
             }
             LexedOperand::IndirectIndex { offset, operands } => {
-                let offset = if offset == "" {
+                let offset = if offset.is_empty() {
                     0
                 } else {
                     match parse_absolute_expression(offset, &self.labels) {
@@ -679,9 +679,9 @@ impl Compiler {
                 let second = self.parse_register_with_size(&operands[1], line)?;
                 match first {
                     RegisterOperand::Data(_) => {
-                        return Err(CompilationError::InvalidAddressingMode(
+                        Err(CompilationError::InvalidAddressingMode(
                             "First operand of indirect index addressing mode must be an address register".to_string(),
-                        ));
+                        ))
                     }
                     RegisterOperand::Address(_) => {
                         Ok(Operand::IndirectIndex {
@@ -790,7 +790,7 @@ impl Compiler {
                                     data.extend_from_slice(&(num as u16).to_be_bytes())
                                 }
                                 LexedSize::Long => {
-                                    data.extend_from_slice(&(num as u32).to_be_bytes())
+                                    data.extend_from_slice(&num.to_be_bytes())
                                 }
                                 _ => {
                                     return Err(CompilationError::Raw(
@@ -822,7 +822,7 @@ impl Compiler {
                 let parsed_args = self.parse_absolutes(&args[1..])?;
                 let data = match size {
                     LexedSize::Long => match parsed_args[..] {
-                        [size, default] => vec![default as u32; size as usize]
+                        [size, default] => vec![default; size as usize]
                             .iter()
                             .flat_map(|x| x.to_be_bytes())
                             .collect(),
@@ -885,7 +885,7 @@ impl Compiler {
                         //align at 2 bytes intervals
                         //TODO should i align here?
                         if next_address % 2 != 0 {
-                            next_address = next_address + 1;
+                            next_address += 1;
                         }
                     }
                     "ds" => match self.parse_absolute(&args[1]) {
@@ -924,8 +924,7 @@ impl Compiler {
                                         .len();
                                 }
                                 _ => {
-                                    next_address =
-                                        next_address + size.to_bytes_word_default() as usize;
+                                    next_address += size.to_bytes_word_default() as usize;
                                 }
                             }
                         }
