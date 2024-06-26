@@ -824,7 +824,7 @@ impl Compiler {
                     LexedSize::Long => match parsed_args[..] {
                         [size, default] => vec![default as u32; size as usize]
                             .iter()
-                            .flat_map(|x| (*x as u32).to_be_bytes())
+                            .flat_map(|x| x.to_be_bytes())
                             .collect(),
                         _ => {
                             return Err(CompilationError::Raw(
@@ -836,7 +836,7 @@ impl Compiler {
                     LexedSize::Word | LexedSize::Unspecified => match parsed_args[..] {
                         [size, default] => vec![default as u16; size as usize]
                             .iter()
-                            .flat_map(|x| (*x as u16).to_be_bytes())
+                            .flat_map(|x| x.to_be_bytes())
                             .collect(),
                         _ => {
                             return Err(CompilationError::Raw(

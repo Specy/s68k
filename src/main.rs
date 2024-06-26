@@ -1,7 +1,6 @@
 use console::Term;
 use core::panic;
 use s68k::{
-    compiler::InstructionLine,
     instructions::{Interrupt, InterruptResult},
     interpreter::{Interpreter, InterpreterOptions, InterpreterStatus},
     S68k,
@@ -27,15 +26,13 @@ fn main() {
         }
     }
     let errors = s68k.semantic_check();
-    if !args.contains(&"--no-errors".to_string()) {
-        if errors.len() > 0 {
-            println!("\n---------ERRORS--------\n");
-            for error in errors.iter() {
-                println!("{}", error.get_message());
-            }
+    if !args.contains(&"--no-errors".to_string()) && !errors.is_empty() {
+        println!("\n---------ERRORS--------\n");
+        for error in errors.iter() {
+            println!("{}", error.get_message());
         }
     }
-    if errors.len() > 0 {
+    if !errors.is_empty() {
         println!("\n");
         panic!("Errors found, aborting");
     }
@@ -128,7 +125,6 @@ fn main() {
         let options = InterpreterOptions {
             keep_history: false,
             history_size: 0,
-            ..Default::default()
         };
         let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF, Some(options));
         while !interpreter.has_terminated() {

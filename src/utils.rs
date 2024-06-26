@@ -79,50 +79,50 @@ pub enum ArithmeticalToken {
     Operand(ArithmeticalOperandToken),
 }
 
-pub fn to_reverse_polish_notation(tokens: &Vec<ArithmeticalToken>) -> Result<Vec<ArithmeticalToken>, String> {
+pub fn to_reverse_polish_notation(tokens: &[ArithmeticalToken]) -> Result<Vec<ArithmeticalToken>, String> {
     let mut operators: Vec<ArithmeticalOperandToken> = Vec::new();
     let mut result: Vec<ArithmeticalToken> = Vec::new();
     for token in tokens.iter() {
         match token {
             ArithmeticalToken::Number(_) => {
-                result.push(token.clone());
+                result.push(*token);
             }
             ArithmeticalToken::Operand(op) => {
                 match op {
-                    ArithmeticalOperandToken::OpenBracket => operators.push(op.clone()),
+                    ArithmeticalOperandToken::OpenBracket => operators.push(*op),
                     ArithmeticalOperandToken::CloseBracket => {
                         //adds all operands untill it finds a open bracket
                         while operators.last() != Some(&ArithmeticalOperandToken::OpenBracket) {
                             match operators.pop() {
                                 Some(op) => result.push(ArithmeticalToken::Operand(op)),
-                                None => return Err(format!("Invalid expression, could not pop arguments")),
+                                None => return Err("Invalid expression, could not pop arguments".to_string()),
                             }
                         }
                         match operators.pop() {
-                            None => return Err(format!("Invalid expression, could not find open bracket")),
+                            None => return Err("Invalid expression, could not find open bracket".to_string()),
                             _ => {}
                         }
                     }
                     _ => {
                         while should_unwind(&operators, op) {
                             match operators.pop() {
-                                None => return Err(format!("Invalid expression, failed to unwind")),
+                                None => return Err("Invalid expression, failed to unwind".to_string()),
                                 Some(op) => result.push(ArithmeticalToken::Operand(op)),
                             }
                         }
-                        operators.push(op.clone());
+                        operators.push(*op);
                     }
                 }
             }
         }
     }
     for op in operators.iter().rev() {
-        result.push(ArithmeticalToken::Operand(op.clone()));
+        result.push(ArithmeticalToken::Operand(*op));
     }
     Ok(result)
 }
 
-fn should_unwind(operators: &Vec<ArithmeticalOperandToken>, next: &ArithmeticalOperandToken) -> bool {
+fn should_unwind(operators: &[ArithmeticalOperandToken], next: &ArithmeticalOperandToken) -> bool {
     match operators.last() {
         None => false,
         Some(last) => {
@@ -131,9 +131,9 @@ fn should_unwind(operators: &Vec<ArithmeticalOperandToken>, next: &ArithmeticalO
     }
 }
 
-fn calculate_rpn(tokens: &Vec<ArithmeticalToken>) -> Result<i64, String> {
-    if tokens.len() == 0 {
-        return Err(format!("Invalid number of arguments for expression, it must not be empty"));
+fn calculate_rpn(tokens: &[ArithmeticalToken]) -> Result<i64, String> {
+    if tokens.is_empty(){
+        return Err("Invalid number of arguments for expression, it must not be empty".to_string());
     }
     let mut stack = Vec::new();
     for token in tokens.iter() {
@@ -173,7 +173,7 @@ fn calculate_rpn(tokens: &Vec<ArithmeticalToken>) -> Result<i64, String> {
     }
     match stack.pop() {
         Some(num) => Ok(num),
-        None => Err(format!("Invalid number of arguments for expression"))
+        None => Err("Invalid number of arguments for expression".to_string())
     }
 }
 
@@ -249,14 +249,14 @@ pub fn parse_absolute(str: &str, labels: &HashMap<String, Label>) -> Result<u32,
             if chunks.len() > 1 {
                 return Err(format!("String exceedes 32bits: {}", str));
             }
-            if chunks.len() == 0 {
+            if chunks.is_empty() {
                 return Err(format!("Empty string: {}", str));
             }
             Ok(chunks[0])
         }
         [..] => match labels.get(str) {
             Some(label) => Ok((label.address as i64) as u32),
-            None => match i64::from_str_radix(str, 10) {
+            None => match str.parse::<i64>() {
                 Ok(value) => Ok(value as u32),
                 Err(e) => Err(format!(
                     "Invalid decimal number or non existing label: {}, {}",

@@ -23,7 +23,7 @@ pub enum MutationOperation {
     },
     WriteMemoryBytes {
         address: usize,
-        old: Box<Vec<u8>>,
+        old: Vec<u8>,
     },
     PushCall {
         to: usize,
@@ -84,7 +84,7 @@ pub struct Debugger {
 impl Debugger {
     pub fn new(history_size: usize, labels: &HashMap<String, Label>) -> Self {
         let mut labels_map = HashMap::new();
-        for (_, label) in labels {
+        for label in labels.values() {
             labels_map.insert(label.address, label.clone());
         }
         //include at least one to prevent initialization errors when pushing history state
@@ -113,7 +113,7 @@ impl Debugger {
         }
     }
     pub fn can_undo(&self) -> bool {
-        self.history.len() > 0
+        !self.history.is_empty()
     }
     pub fn get_last_step(&self) -> Option<&ExecutionStep> {
         self.history.back()

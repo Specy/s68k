@@ -1408,7 +1408,7 @@ impl Interpreter {
             self.debugger
                 .add_mutation(MutationOperation::WriteMemoryBytes {
                     address,
-                    old: Box::new(old_bytes.to_vec()),
+                    old: old_bytes.to_vec()
                 });
         }
         self.memory.write_bytes(address, bytes)

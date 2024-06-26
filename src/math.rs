@@ -2,7 +2,7 @@ use crate::instructions::{ShiftDirection, Size};
 
 fn get_sign_mask(value: u32, size: Size) -> u32 {
     match size {
-        Size::Byte => value & 0x00000080, 
+        Size::Byte => value & 0x00000080,
         Size::Word => value & 0x00008000,
         Size::Long => value & 0x80000000,
     }
@@ -26,6 +26,7 @@ pub fn overflowing_add_sized(op1: u32, op2: u32, size: Size) -> (u32, bool) {
         Size::Long => op1.overflowing_add(op2),
     }
 }
+
 pub fn overflowing_sub_sized(op1: u32, op2: u32, size: Size) -> (u32, bool) {
     match size {
         Size::Byte => {
@@ -39,6 +40,7 @@ pub fn overflowing_sub_sized(op1: u32, op2: u32, size: Size) -> (u32, bool) {
         Size::Long => op1.overflowing_sub(op2),
     }
 }
+
 pub fn overflowing_sub_signed_sized(op1: u32, op2: u32, size: Size) -> (u32, bool) {
     match size {
         Size::Byte => {
@@ -55,6 +57,7 @@ pub fn overflowing_sub_signed_sized(op1: u32, op2: u32, size: Size) -> (u32, boo
         }
     }
 }
+
 pub fn sign_extend_to_long(value: u32, from: Size) -> i32 {
     match from {
         Size::Byte => ((value as u8) as i8) as i32,
@@ -70,12 +73,14 @@ pub fn get_value_sized(value: u32, size: Size) -> u32 {
         Size::Long => value,
     }
 }
+
 pub fn has_add_overflowed(op1: u32, op2: u32, result: u32, size: Size) -> bool {
     let s1 = get_sign(op1, size);
     let s2 = get_sign(op2, size);
     let result_sign = get_sign(result, size);
     (s1 && s2 && !result_sign) || (!s1 && !s2 && result_sign)
 }
+
 pub fn has_sub_overflowed(op1: u32, op2: u32, result: u32, size: Size) -> bool {
     let s1 = get_sign(op1, size);
     let s2 = !get_sign(op2, size);
@@ -91,7 +96,7 @@ pub fn shift(dir: &ShiftDirection, value: u32, size: Size, is_arithmetic: bool) 
             let shift = match size {
                 Size::Byte => ((value as u8) << 1) as u32,
                 Size::Word => ((value as u16) << 1) as u32,
-                Size::Long => (value << 1) as u32,
+                Size::Long => value << 1
             };
             (shift, bit)
         }
@@ -119,7 +124,7 @@ pub fn rotate(dir: &ShiftDirection, value: u32, size: Size) -> (u32, bool) {
             ((mask | rotate), bit)
         }
         ShiftDirection::Right => {
-            let bit = if (value & 0x01) != 0 { true } else { false };
+            let bit = (value & 0x01) != 0;
             let mask = if bit {
                 get_sign_mask(0xffffffff, size)
             } else {

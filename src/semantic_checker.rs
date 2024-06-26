@@ -833,7 +833,7 @@ impl SemanticChecker {
                                     if let Some(_op) = has_address_reg {
                                         self.errors.push(SemanticError::new(
                                             line.clone(),
-                                            format!("Invalid size, address register cannot be used with byte size"),
+                                            "Invalid size, address register cannot be used with byte size".to_string(),
                                         ));
                                     }
                                 }
@@ -909,7 +909,7 @@ impl SemanticChecker {
             LexedOperand::IndirectIndex {
                 operands, offset, ..
             } => {
-                if offset != "" {
+                if !offset.is_empty(){
                     match offset.parse::<i64>() {
                         Ok(num) => {
                             if num > 1 << 7 || num < -(1 << 7) {
@@ -954,7 +954,7 @@ impl SemanticChecker {
     }
     fn get_absolute_value(&self, num: &str) -> Result<i64, String> {
         match parse_absolute_expression(num, &self.labels) {
-            Ok(num) => Ok(num as i64),
+            Ok(num) => Ok(num),
             Err(e) => Err(e),
         }
     }
