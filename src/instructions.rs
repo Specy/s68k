@@ -50,7 +50,9 @@ pub struct IndexRegister {
 pub enum Operand {
     Immediate(u32),
     Register(RegisterOperand),
-    Indirect(RegisterOperand),
+    Indirect(u8),
+    PostIndirect(u8),
+    PreIndirect(u8),
     IndirectDisplacement {
         offset: i32,
         base: RegisterOperand,
@@ -60,8 +62,7 @@ pub enum Operand {
         offset: i32,
         index: IndexRegister,
     },
-    PostIndirect(RegisterOperand),
-    PreIndirect(RegisterOperand),
+
     Absolute(usize),
 }
 /*
@@ -142,7 +143,7 @@ pub enum Instruction {
     SUBA(Operand, RegisterOperand, Size),
     CMPA(Operand, RegisterOperand, Size),
     MOVEA(Operand, RegisterOperand, Size), //add TAS()
-    MOVEM{
+    MOVEM {
         direction: TargetDirection,
         size: Size,
         registers_mask: u16,

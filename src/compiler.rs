@@ -207,7 +207,7 @@ impl Compiler {
                     _ => Instruction::MOVE(op1, op2, self.get_size(size, Size::Word)?),
                 },
                 "movem" => {
-                    let (register_mask, target, direction) = match(op1, op2) {
+                    let (register_mask, target, direction) = match (op1, op2) {
                         (Operand::Immediate(mask), op2) => (mask as u16, op2, TargetDirection::ToMemory),
                         (op1, Operand::Immediate(mask)) => (mask as u16, op1, TargetDirection::FromMemory),
                         _ => {
@@ -631,11 +631,7 @@ impl Compiler {
                     label
                 ))),
             },
-            LexedOperand::Indirect(operand) => {
-                let parsed_operand = self.parse_operand(operand, line)?;
-                let parsed_operand = self.extract_register(parsed_operand)?;
-                Ok(Operand::Indirect(parsed_operand))
-            }
+
             LexedOperand::IndirectDisplacement { offset, operand } => {
                 let parsed_operand = self.parse_operand(operand, line)?;
                 let parsed_operand = self.extract_register(parsed_operand)?;
@@ -643,7 +639,7 @@ impl Compiler {
                     0
                 } else {
                     match parse_absolute_expression(offset, &self.labels) {
-                        Ok(offset) => sign_extend_to_long(offset as u32, &Size::Word),
+                        Ok(offset) => sign_extend_to_long(offset as u32, Size::Word),
                         Err(_) => {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid offset: {}",
@@ -662,7 +658,7 @@ impl Compiler {
                     0
                 } else {
                     match parse_absolute_expression(offset, &self.labels) {
-                        Ok(offset) => sign_extend_to_long(offset as u32, &Size::Byte),
+                        Ok(offset) => sign_extend_to_long(offset as u32, Size::Byte),
                         Err(_) => {
                             return Err(CompilationError::ParseError(format!(
                                 "Invalid offset: {}",
@@ -694,20 +690,46 @@ impl Compiler {
                             index: IndexRegister {
                                 register: second.0,
                                 size: second.1,
-                            }
+                            },
                         })
                     }
+                }
+            }
+            LexedOperand::Indirect(operand) => {
+                let parsed_operand = self.parse_operand(operand, line)?;
+                let parsed_operand = self.extract_register(parsed_operand)?;
+                match parsed_operand {
+                    RegisterOperand::Data(_) => {
+                        Err(CompilationError::InvalidAddressingMode( 
+                            "Operand of indirect addressing mode must be an address register".to_string(),
+                        ))
+                    }
+                    RegisterOperand::Address(a) => Ok(Operand::Indirect(a)),
                 }
             }
             LexedOperand::PostIndirect(operand) => {
                 let parsed_operand = self.parse_operand(operand, line)?;
                 let parsed_operand = self.extract_register(parsed_operand)?;
-                Ok(Operand::PostIndirect(parsed_operand))
+                match parsed_operand {
+                    RegisterOperand::Data(_) => {
+                        Err(CompilationError::InvalidAddressingMode(
+                            "Operand of post indirect addressing mode must be an address register".to_string(),
+                        ))
+                    }
+                    RegisterOperand::Address(a) => Ok(Operand::PostIndirect(a)),
+                }
             }
             LexedOperand::PreIndirect(operand) => {
                 let parsed_operand = self.parse_operand(operand, line)?;
                 let parsed_operand = self.extract_register(parsed_operand)?;
-                Ok(Operand::PreIndirect(parsed_operand))
+                match parsed_operand {
+                    RegisterOperand::Data(_) => {
+                        Err(CompilationError::InvalidAddressingMode(
+                            "Operand of pre indirect addressing mode must be an address register".to_string(),
+                        ))
+                    }
+                    RegisterOperand::Address(a) => Ok(Operand::PreIndirect(a)),
+                }
             }
             LexedOperand::Immediate(num) => match self.parse_immediate(num) {
                 Ok(absolute) => Ok(Operand::Immediate(absolute)),
@@ -716,7 +738,7 @@ impl Compiler {
                     e.get_message()
                 ))),
             },
-            LexedOperand::RegisterRange { mask} => Ok(Operand::Immediate(*mask as u32)),
+            LexedOperand::RegisterRange { mask } => Ok(Operand::Immediate(*mask as u32)),
             _ => Err(CompilationError::ParseError(format!(
                 "Invalid operand: {:?}",
                 operand
