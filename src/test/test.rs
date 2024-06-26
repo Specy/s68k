@@ -20,6 +20,25 @@ register_1 equ d1
     }
 
     #[test]
+    fn test_addressing_modes(){
+        lex_and_run("
+    move.l #10, d0
+    move.l #$10, (a0)
+    move.l #10*2, (a0)+
+    move.l #'hi', -(a0)
+    move.l #10, 10(a0)
+    move.l #10, 10(a0,d0)
+    move.l #10, 10(a0,d0.w)
+    move.l #10, 10(a0,d0.l)
+    move.l d0, 1000
+    move.l d0, $1000
+    movem.l d0-d1/a0-a5/a7, (a0)
+
+
+        ");
+    }
+
+    #[test]
     fn test_complex_code() {
         lex_and_run("ORG    $1000
     length: dc.w 20

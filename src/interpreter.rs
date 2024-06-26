@@ -25,6 +25,7 @@ use crate::{
     },
     math::*,
 };
+use crate::instructions::TargetDirection;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Used {
@@ -690,7 +691,42 @@ impl Interpreter {
                 self.set_logic_flags(value, &Size::Long);
                 self.set_register_value(dest, value, &Size::Long);
             }
-
+            Instruction::MOVEM { registers_mask, direction, target, size } => {
+                let addr = self.get_operand_address(target)?;
+                let post_addr = match target {
+                    Operand::PostIndirect(_) => {
+                        if *direction != TargetDirection::FromMemory {
+                            return Err(RuntimeError::Raw(
+                                "MOVEM to postindirect not allowed".to_string(),
+                            ));
+                        }
+                        self.move_memory_to_registers(addr as usize, *size, *registers_mask)?
+                    }
+                    Operand::PreIndirect(_) => {
+                        if *direction != TargetDirection::ToMemory {
+                            return Err(RuntimeError::Raw(
+                                "MOVEM from preindirect not allowed".to_string(),
+                            ));
+                        }
+                        self.move_registers_to_memory_reverse(addr as usize, *size, *registers_mask)?
+                    }
+                    _ => match direction {
+                        TargetDirection::ToMemory => {
+                            self.move_registers_to_memory(addr as usize, *size, *registers_mask)?
+                        }
+                        TargetDirection::FromMemory => {
+                            self.move_memory_to_registers(addr as usize, *size, *registers_mask)?
+                        }
+                    }
+                };
+                match target {
+                    Operand::PostIndirect(RegisterOperand::Address(reg))
+                    | Operand::PreIndirect(RegisterOperand::Address(reg)) => {
+                        self.set_register_value(&RegisterOperand::Address(*reg), post_addr, &Size::Long);
+                    }
+                    _ => {}
+                }
+            }
             Instruction::SUB(source, dest, size) => {
                 let source_value = self.get_operand_value(source, size, Used::Once)?;
                 let dest_value = self.get_operand_value(dest, size, Used::Twice)?;
@@ -1307,6 +1343,65 @@ impl Interpreter {
         Ok(())
     }
 
+    pub fn move_registers_to_memory(&mut self, mut addr: usize, size: Size, mut mask: u16) -> RuntimeResult<u32> {
+        for i in 0..8 {
+            if (mask & 0x01) != 0 {
+                self.set_memory_value(addr, &size, self.cpu.d_reg[i].get_long())?;
+                addr += size.to_bytes();
+            }
+            mask >>= 1;
+        }
+        for i in 0..8 {
+            if (mask & 0x01) != 0 {
+                let value = self.cpu.a_reg[i].get_long();
+                self.set_memory_value(addr, &size, value)?;
+                addr += size.to_bytes();
+            }
+            mask >>= 1;
+        }
+        Ok(addr as u32)
+    }
+    pub fn move_registers_to_memory_reverse(&mut self, mut addr: usize, size: Size, mut mask: u16) -> RuntimeResult<u32> {
+        for i in (0..8).rev() {
+            if (mask & 0x01) != 0 {
+                let value = self.cpu.a_reg[i].get_long();
+                addr -= size.to_bytes();
+                self.set_memory_value(addr, &size, value)?;
+            }
+            mask >>= 1;
+        }
+        for i in (0..8).rev() {
+            if (mask & 0x01) != 0 {
+                addr -= size.to_bytes();
+                self.set_memory_value(addr, &size, self.cpu.d_reg[i].get_long())?;
+            }
+            mask >>= 1;
+        }
+        Ok(addr as u32)
+    }
+    pub fn move_memory_to_registers(&mut self, mut addr: usize, size: Size, mut mask: u16) -> RuntimeResult<u32> {
+        let size_bytes = size.to_bytes() as u32;
+        let mut addr = addr as u32;
+        for i in 0..8 {
+            if (mask & 0x01) != 0 {
+                let val = sign_extend_to_long(self.memory.read_size(addr as usize, &size)?, &size) as u32;
+                self.set_register_value(&RegisterOperand::Data(i), val, &size);
+                (addr, _) = overflowing_add_sized(addr, size_bytes, &Size::Long);
+            }
+            mask >>= 1;
+        }
+        for i in 0..8 {
+            if (mask & 0x01) != 0 {
+                let val = sign_extend_to_long(self.memory.read_size(addr as usize, &size)?, &size) as u32;
+                self.set_register_value(&RegisterOperand::Address(i), val, &Size::Long);
+               (addr, _)  = overflowing_add_sized(addr, size_bytes, &Size::Long);
+            }
+            mask >>= 1;
+        }
+        Ok(addr)
+    }
+
+
     pub fn set_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
         if self.keep_history {
             let old_bytes = self.memory.read_bytes(address, bytes.len())?;
@@ -1601,7 +1696,7 @@ impl Interpreter {
             limit_counter -= 1;
             iterations += 1;
         }
-        if limit_counter <= 0 {
+        if limit_counter == 0 {
             return Err(RuntimeError::ExecutionLimit(limit));
         }
         Ok(self.status)
@@ -1615,7 +1710,7 @@ impl Interpreter {
             self.step()?;
             limit_counter -= 1;
         }
-        if limit_counter <= 0 {
+        if limit_counter == 0 {
             return Err(RuntimeError::ExecutionLimit(limit));
         }
         Ok(self.status)

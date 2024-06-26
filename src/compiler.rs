@@ -13,7 +13,7 @@ use crate::{
     math::sign_extend_to_long,
     utils::{parse_absolute_expression, parse_string_into_padded_bytes},
 };
-use crate::instructions::IndexRegister;
+use crate::instructions::{IndexRegister, TargetDirection};
 
 #[derive(Debug)]
 pub enum Directive {
@@ -206,6 +206,23 @@ impl Compiler {
                     ),
                     _ => Instruction::MOVE(op1, op2, self.get_size(size, Size::Word)?),
                 },
+                "movem" => {
+                    let (register_mask, target, direction) = match(op1, op2) {
+                        (Operand::Immediate(mask), op2) => (mask as u16, op2, TargetDirection::ToMemory),
+                        (op1, Operand::Immediate(mask)) => (mask as u16, op1, TargetDirection::FromMemory),
+                        _ => {
+                            return Err(CompilationError::InvalidAddressingMode(
+                                "Invalid operands for MOVEM".to_string(),
+                            ));
+                        }
+                    };
+                    Instruction::MOVEM {
+                        registers_mask: register_mask,
+                        target: target,
+                        direction,
+                        size: self.get_size(size, Size::Word)?,
+                    }
+                }
                 "add" => match (op1, op2) {
                     (Operand::Immediate(num), _) => {
                         Instruction::ADDI(
@@ -699,6 +716,7 @@ impl Compiler {
                     e.get_message()
                 ))),
             },
+            LexedOperand::RegisterRange { mask} => Ok(Operand::Immediate(*mask as u32)),
             _ => Err(CompilationError::ParseError(format!(
                 "Invalid operand: {:?}",
                 operand

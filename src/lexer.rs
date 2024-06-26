@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use bitflags::bitflags;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -6,12 +8,26 @@ use wasm_bindgen::prelude::wasm_bindgen;
 //TODO remake everything with an actual lexer
 use crate::constants::{COMMENT_1, COMMENT_2, EQU};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[wasm_bindgen]
 pub enum LexedRegisterType {
     Address,
     Data,
     SP,
+}
+
+impl LexedRegisterType {
+    pub fn from_string(string: &str) -> Result<LexedRegisterType, String> {
+        if string.len() < 2 {
+            return Err(format!("Invalid register type '{}'", string));
+        }
+        match string.chars().collect::<Vec<char>>().as_slice() {
+            ['d', num] if num.is_digit(10) => Ok(LexedRegisterType::Data),
+            ['a', num] if num.is_digit(10) => Ok(LexedRegisterType::Address),
+            ['s', 'p'] => Ok(LexedRegisterType::SP),
+            _ => Err(format!("Invalid register type '{}'", string)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,6 +65,9 @@ impl LexedSize {
 #[serde(tag = "type", content = "value")]
 pub enum LexedOperand {
     Immediate(String),
+    RegisterRange{
+        mask: u16
+    },
     Register(LexedRegisterType, String),
     RegisterWithSize(LexedRegisterType, String, LexedSize),
     Indirect(Box<LexedOperand>),
@@ -111,6 +130,7 @@ pub enum LexedLine {
 #[wasm_bindgen]
 pub enum OperandKind {
     Register,
+    RegisterList,
     RegisterWithSize,
     Immediate,
     Indirect,
@@ -156,6 +176,7 @@ enum Grammar {
     Register,
     RegisterWithSize,
     Indirect,
+    RegisterRange,
     IndirectDisplacement,
     IndirectIndex,
     PostIndirect,
@@ -189,6 +210,11 @@ impl Grammar {
         match &self {
             Grammar::Directive => r"(.+\s+equ\s+.+)|((org|dc|dcb|ds)\s*.*)".to_string(),
             Grammar::Register => r"(d\d|a\d|sp)".to_string(),
+            Grammar::RegisterRange => {
+                let r = Grammar::Register.get_regex();
+                //this accepts strings like: "d0-d5/a0-a6/a0/a4"
+                format!("(((({})-({}))|({}))\\/)*((({})-({}))|({}))", r, r, r, r, r, r)
+            }
             Grammar::RegisterWithSize => format!(
                 r"({})\.(b|w|l)",
                 Grammar::Register.get_regex()
@@ -237,6 +263,7 @@ indirect_displacement
 
 struct AsmRegex {
     register_only: Regex,
+    register_list_only: Regex,
     register_with_size_only: Regex,
     immediate_only: Regex,
     indirect_only: Regex,
@@ -255,6 +282,7 @@ impl AsmRegex {
     pub fn new() -> Self {
         AsmRegex {
             register_only: Regex::new(&Grammar::Register.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
+            register_list_only: Regex::new(&Grammar::RegisterRange.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
             register_with_size_only: Regex::new(&Grammar::RegisterWithSize.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
             immediate_only: Regex::new(&Grammar::Immediate.get_opt(GrammarOptions::IS_LINE)).unwrap(),
             indirect_only: Regex::new(&Grammar::Indirect.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
@@ -280,6 +308,7 @@ impl AsmRegex {
             _ if self.indirect_displacement_only.is_match(operand) => OperandKind::IndirectDisplacement,
             _ if self.register_with_size_only.is_match(operand) => OperandKind::RegisterWithSize,
             _ if self.register_only.is_match(operand) => OperandKind::Register,
+            _ if self.register_list_only.is_match(operand) => OperandKind::RegisterList,
             _ if self.immediate_only.is_match(operand) => OperandKind::Immediate,
             //_ if self.absolute.is_match(operand) => OperandKind::Absolute,
             _ => OperandKind::Absolute,
@@ -495,6 +524,50 @@ impl Lexer {
                 };
                 LexedOperand::Register(register_type, operand)
             }
+            OperandKind::RegisterList => {
+                let groups = operand.split('/').collect::<Vec<&str>>();
+                let mut mask = 0u16;
+                for group in groups {
+                    let split = group.split('-').collect::<Vec<&str>>();
+                    match split[..] {
+                        [start, end] => {
+                            let start = parse_register_range(start);
+                            let end = parse_register_range(end);
+                            if start.is_err() || end.is_err() {
+                                return LexedOperand::Other(operand);
+                            }
+                            let (start_reg, start_num) = start.unwrap();
+                            let (end_reg, end_num) = end.unwrap();
+                            if start_reg != end_reg {
+                                return LexedOperand::Other(operand);
+                            }
+                            let base = match start_reg {
+                                LexedRegisterType::Data => 0,
+                                LexedRegisterType::Address => 8,
+                                LexedRegisterType::SP => 15,
+                            };
+                            for i in start_num..=end_num {
+                                mask |= 1 << (base + i);
+                            }
+                        }
+                        [single] => {
+                            let single = parse_register_range(single);
+                            if single.is_err() {
+                                return LexedOperand::Other(operand);
+                            }
+                            let (reg, num) = single.unwrap();
+                            let base = match reg {
+                                LexedRegisterType::Data => 0,
+                                LexedRegisterType::Address => 8,
+                                LexedRegisterType::SP => 15,
+                            };
+                            mask |= 1 << (base + num);
+                        }
+                        _ => return LexedOperand::Other(operand),
+                    }
+                }
+                LexedOperand::RegisterRange { mask }
+            }
             OperandKind::Indirect => {
                 let operand = operand.replace("(", "").replace(")", "");
                 let operand = self.parse_operand(&operand);
@@ -622,6 +695,7 @@ impl Lexer {
     fn apply_equ_to_operand(&self, op: LexedOperand, equ_map: &Vec<(String, String)>) -> LexedOperand {
         match op {
             LexedOperand::Register(_, _)
+            | LexedOperand::RegisterRange { .. }
             | LexedOperand::Other(_)
             | LexedOperand::PostIndirect(_)
             | LexedOperand::PreIndirect(_) => op,
@@ -733,5 +807,21 @@ impl Lexer {
     }
     pub fn get_lines(&self) -> &Vec<ParsedLine> {
         &self.lines
+    }
+}
+
+
+fn parse_register_range(range: &str) -> Result<(LexedRegisterType, u32), String>{
+    let reg_type = match LexedRegisterType::from_string(range) {
+        Ok(reg) => reg,
+        Err(e) => return Err(format!("Invalid register range '{}': {}", range, e))
+    };
+    if reg_type == LexedRegisterType::SP {
+        return Ok((reg_type, 0));
+    }
+    let num = range.chars().nth(1).map(|x| x.to_digit(10)).flatten();
+    match num {
+        Some(num) => Ok((reg_type, num)),
+        None => Err(format!("Invalid register range '{}'", range))
     }
 }

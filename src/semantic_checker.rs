@@ -71,6 +71,7 @@ bitflags! {
         const INDIRECT_POST_INCREMENT = 1<<6;
         const INDIRECT_PRE_DECREMENT = 1<<7;
         const ADDRESS = 1<<8;
+        const REG_LIST = 1<<9;
     }
     struct Rules: usize {
         //TODO refactor this
@@ -119,6 +120,7 @@ bitflags! {
             | AdrMode::INDIRECT_PRE_DECREMENT.bits
             | AdrMode::ADDRESS.bits
         );
+        const ONLY_REG_LIST = !AdrMode::REG_LIST.bits;
     }
 }
 //TODO refactor this
@@ -144,23 +146,23 @@ impl AdrMode {
 impl Rules {
     pub fn get_valid_addressing_modes(&self) -> String {
         match *self {
-            Rules::NONE => "Im/Dn/An/(An)/Ea/<LABEL>",
-            Rules::NO_D_REG => "Im/An/(An)/Ea/<LABEL>",
-            Rules::NO_A_REG => "Im/Dn/(An)/Ea/<LABEL>",
-            Rules::NO_IMMEDIATE => "Dn/An/(An)/Ea/<LABEL>",
+            Rules::NONE => "Im/Dn/An/(An)/Ea/<label>",
+            Rules::NO_D_REG => "Im/An/(An)/Ea/<label>",
+            Rules::NO_A_REG => "Im/Dn/(An)/Ea/<label>",
+            Rules::NO_IMMEDIATE => "Dn/An/(An)/Ea/<label>",
             Rules::NO_ADDRESS => "Im/Dn/An/(An)",
-            Rules::NO_INDIRECT => "Im/Dn/An/Ea/<LABEL>",
+            Rules::NO_INDIRECT => "Im/Dn/An/Ea/<label>",
             Rules::ONLY_REG => "Dn/An",
             Rules::ONLY_A_REG => "An",
             Rules::ONLY_D_REG => "Dn",
             Rules::ONLY_INDIRECT => "(An)",
             Rules::ONLY_D_REG_OR_INDIRECT => "Dn/(An)",
             Rules::ONLY_D_REG_OR_INDIRECT_OR_ADDRESS => "Dn/(An)/Ea",
-            Rules::ONLY_ADDRESS => "Ea/<LABEL>",
+            Rules::ONLY_ADDRESS => "Ea/<label>",
             Rules::ONLY_IMMEDIATE => "Im",
-            Rules::ONLY_INDIRECT_OR_ABSOLUTE => "(An)/Ea/<LABEL>",
+            Rules::ONLY_INDIRECT_OR_ABSOLUTE => "(An)/Ea/<label>",
             Rules::ONLY_POST_INCREMENT => "(An)",
-
+            Rules::ONLY_REG_LIST => "<reg list>",
             _ => "UNKNOWN",
         }
             .to_string()
@@ -422,6 +424,23 @@ impl SemanticChecker {
                         self.verify_two_args(operands, Rules::ONLY_IMMEDIATE, Rules::ONLY_D_REG, line);
                         self.verify_value_bounds_if_immediate(operands, 0, line, -127, 127);
                         self.verify_size(SizeRules::NoSize, line);
+                    }
+                    "movem" => {
+                        match &operands[..]{
+                            [LexedOperand::RegisterRange { .. }, op2] => {
+                                self.verify_arg_rule(op2, Rules::ONLY_INDIRECT_OR_ABSOLUTE, line, 2);
+                            }
+                            [op1, LexedOperand::RegisterRange { .. }] => {
+                                self.verify_arg_rule(op1, Rules::ONLY_INDIRECT_OR_ABSOLUTE, line, 1);
+                            }
+                            _ => {
+                                self.errors.push(SemanticError::new(
+                                    line.clone(),
+                                    format!("Invalid number of operands for movem instruction, expected 2 operands, received \"{}\"", operands.len()),
+                                ));
+                            }
+                        }
+
                     }
                     "jmp" => {
                         self.verify_one_arg(
@@ -842,7 +861,7 @@ impl SemanticChecker {
                     LexedRegisterType::SP => Ok(AdrMode::A_REG),
                 }
             }
-
+            LexedOperand::RegisterRange {..} => Ok(AdrMode::REG_LIST),
             LexedOperand::Immediate(num) => match self.get_immediate_value(num) {
                 Ok(_) => Ok(AdrMode::IMMEDIATE),
                 Err(e) => Err(format!("Invalid immediate: {}", e)),

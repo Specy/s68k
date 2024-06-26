@@ -14,6 +14,13 @@ pub enum Size {
     Long = 4,
 }
 
+#[wasm_bindgen]
+#[derive(Debug, Clone, Copy, Serialize, Eq, PartialEq)]
+pub enum TargetDirection {
+    ToMemory,
+    FromMemory,
+}
+
 impl Size {
     #[inline(always)]
     pub fn to_bytes(&self) -> usize {
@@ -135,6 +142,12 @@ pub enum Instruction {
     SUBA(Operand, RegisterOperand, Size),
     CMPA(Operand, RegisterOperand, Size),
     MOVEA(Operand, RegisterOperand, Size), //add TAS()
+    MOVEM{
+        direction: TargetDirection,
+        size: Size,
+        registers_mask: u16,
+        target: Operand,
+    },
     MOVE(Operand, Operand, Size),
     ADD(Operand, Operand, Size),
     SUB(Operand, Operand, Size),
