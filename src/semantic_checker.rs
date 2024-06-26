@@ -61,6 +61,7 @@ impl SemanticError {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct AdrMode: usize {
         const IMMEDIATE = 1<<0;
         const D_REG = 1<<1;
@@ -73,54 +74,56 @@ bitflags! {
         const ADDRESS = 1<<8;
         const REG_LIST = 1<<9;
     }
+    
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct Rules: usize {
         //TODO refactor this
         const NONE = 0;
-        const NO_D_REG = AdrMode::D_REG.bits;
-        const NO_A_REG = AdrMode::A_REG.bits;
-        const NO_IMMEDIATE = AdrMode::IMMEDIATE.bits;
-        const NO_ADDRESS = AdrMode::ADDRESS.bits;
-        const NO_INDIRECT = AdrMode::INDIRECT.bits
-            | AdrMode::INDIRECT_DISPLACEMENT.bits
-            | AdrMode::INDIRECT_INDEX.bits
-            | AdrMode::INDIRECT_POST_INCREMENT.bits
-            | AdrMode::INDIRECT_PRE_DECREMENT.bits;
+        const NO_D_REG = AdrMode::D_REG.bits();
+        const NO_A_REG = AdrMode::A_REG.bits();
+        const NO_IMMEDIATE = AdrMode::IMMEDIATE.bits();
+        const NO_ADDRESS = AdrMode::ADDRESS.bits();
+        const NO_INDIRECT = AdrMode::INDIRECT.bits()
+            | AdrMode::INDIRECT_DISPLACEMENT.bits()
+            | AdrMode::INDIRECT_INDEX.bits()
+            | AdrMode::INDIRECT_POST_INCREMENT.bits()
+            | AdrMode::INDIRECT_PRE_DECREMENT.bits();
 
-        const ONLY_POST_INCREMENT = !AdrMode::INDIRECT_POST_INCREMENT.bits;
-        const ONLY_REG = !(AdrMode::D_REG.bits | AdrMode::A_REG.bits);
-        const ONLY_A_REG = !AdrMode::A_REG.bits;
-        const ONLY_D_REG = !AdrMode::D_REG.bits;
-        const ONLY_INDIRECT = !(AdrMode::INDIRECT.bits
-            | AdrMode::INDIRECT_DISPLACEMENT.bits
-            | AdrMode::INDIRECT_INDEX.bits
-            | AdrMode::INDIRECT_POST_INCREMENT.bits
-            | AdrMode::INDIRECT_PRE_DECREMENT.bits
+        const ONLY_POST_INCREMENT = !AdrMode::INDIRECT_POST_INCREMENT.bits();
+        const ONLY_REG = !(AdrMode::D_REG.bits() | AdrMode::A_REG.bits());
+        const ONLY_A_REG = !AdrMode::A_REG.bits();
+        const ONLY_D_REG = !AdrMode::D_REG.bits();
+        const ONLY_INDIRECT = !(AdrMode::INDIRECT.bits()
+            | AdrMode::INDIRECT_DISPLACEMENT.bits()
+            | AdrMode::INDIRECT_INDEX.bits()
+            | AdrMode::INDIRECT_POST_INCREMENT.bits()
+            | AdrMode::INDIRECT_PRE_DECREMENT.bits()
         );
-        const ONLY_D_REG_OR_INDIRECT = !(AdrMode::D_REG.bits
-            | AdrMode::INDIRECT.bits
-            | AdrMode::INDIRECT_DISPLACEMENT.bits
-            | AdrMode::INDIRECT_INDEX.bits
-            | AdrMode::INDIRECT_POST_INCREMENT.bits
-            | AdrMode::INDIRECT_PRE_DECREMENT.bits
+        const ONLY_D_REG_OR_INDIRECT = !(AdrMode::D_REG.bits()
+            | AdrMode::INDIRECT.bits()
+            | AdrMode::INDIRECT_DISPLACEMENT.bits()
+            | AdrMode::INDIRECT_INDEX.bits()
+            | AdrMode::INDIRECT_POST_INCREMENT.bits()
+            | AdrMode::INDIRECT_PRE_DECREMENT.bits()
         );
-        const ONLY_D_REG_OR_INDIRECT_OR_ADDRESS = !(AdrMode::D_REG.bits
-            | AdrMode::ADDRESS.bits
-            | AdrMode::INDIRECT.bits
-            | AdrMode::INDIRECT_DISPLACEMENT.bits
-            | AdrMode::INDIRECT_INDEX.bits
-            | AdrMode::INDIRECT_POST_INCREMENT.bits
-            | AdrMode::INDIRECT_PRE_DECREMENT.bits
+        const ONLY_D_REG_OR_INDIRECT_OR_ADDRESS = !(AdrMode::D_REG.bits()
+            | AdrMode::ADDRESS.bits()
+            | AdrMode::INDIRECT.bits()
+            | AdrMode::INDIRECT_DISPLACEMENT.bits()
+            | AdrMode::INDIRECT_INDEX.bits()
+            | AdrMode::INDIRECT_POST_INCREMENT.bits()
+            | AdrMode::INDIRECT_PRE_DECREMENT.bits()
         );
-        const ONLY_ADDRESS = !(AdrMode::ADDRESS.bits);
-        const ONLY_IMMEDIATE = !AdrMode::IMMEDIATE.bits;
-        const ONLY_INDIRECT_OR_ABSOLUTE = !(AdrMode::INDIRECT.bits
-            | AdrMode::INDIRECT_DISPLACEMENT.bits
-            | AdrMode::INDIRECT_INDEX.bits
-            | AdrMode::INDIRECT_POST_INCREMENT.bits
-            | AdrMode::INDIRECT_PRE_DECREMENT.bits
-            | AdrMode::ADDRESS.bits
+        const ONLY_ADDRESS = !(AdrMode::ADDRESS.bits());
+        const ONLY_IMMEDIATE = !AdrMode::IMMEDIATE.bits();
+        const ONLY_INDIRECT_OR_ABSOLUTE = !(AdrMode::INDIRECT.bits()
+            | AdrMode::INDIRECT_DISPLACEMENT.bits()
+            | AdrMode::INDIRECT_INDEX.bits()
+            | AdrMode::INDIRECT_POST_INCREMENT.bits()
+            | AdrMode::INDIRECT_PRE_DECREMENT.bits()
+            | AdrMode::ADDRESS.bits()
         );
-        const ONLY_REG_LIST = !AdrMode::REG_LIST.bits;
+        const ONLY_REG_LIST = !AdrMode::REG_LIST.bits();
     }
 }
 //TODO refactor this
@@ -766,7 +769,7 @@ impl SemanticChecker {
         let addressing_mode = self.get_addressing_mode(arg);
         match addressing_mode {
             Ok(mode) => {
-                if (mode.bits & rule.bits) != 0 {
+                if (mode.bits() & rule.bits()) != 0 {
                     self.errors.push(SemanticError::new(
                         line.clone(),
                         format!(

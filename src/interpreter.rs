@@ -35,7 +35,7 @@ enum Used {
 
 bitflags! {
     #[wasm_bindgen]
-    #[derive(Serialize)]
+    #[derive(Serialize, Copy, Clone, Debug)]
     pub struct Flags: u16 {
         const Carry    = 1<<1;
         const Overflow = 1<<2;
@@ -50,7 +50,7 @@ impl Flags {
         Flags::empty()
     }
     pub fn clear(&mut self) {
-        self.bits = 0;
+        self.clear();
     }
     pub fn get_status(&self) -> String {
         format!(
