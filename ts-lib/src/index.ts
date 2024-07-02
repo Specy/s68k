@@ -275,7 +275,7 @@ export class S68k {
         this._s68k = new RawS68k(code)
     }
 
-    static compile(code: string, memorySize: number, options?: InterpreterOptions): CompilationResult {
+    static compile(code: string, options?: InterpreterOptions): CompilationResult {
         const s68k = new S68k(code)
         const errors = s68k.semanticCheck()
         if (errors.length > 0) return {errors, ok: false}
@@ -283,7 +283,7 @@ export class S68k {
             history_size: 100,
             keep_history: true,
         }
-        const interpreter = s68k.createInterpreter(memorySize, options)
+        const interpreter = s68k.createInterpreter(options)
         return {interpreter, ok: true}
     }
 
@@ -318,11 +318,11 @@ export class S68k {
         return new CompiledProgram(this._s68k.wasm_compile())
     }
 
-    createInterpreter(memorySize: number = 0xFFFFFF, options: InterpreterOptions, program?: CompiledProgram): Interpreter {
+    createInterpreter(options: InterpreterOptions, program?: CompiledProgram): Interpreter {
         if (program) {
-            return new Interpreter(this._s68k.wasm_create_interpreter(program.getCompiledProgram(), memorySize, options))
+            return new Interpreter(this._s68k.wasm_create_interpreter(program.getCompiledProgram(), options))
         }
-        return new Interpreter(this._s68k.wasm_create_interpreter(this.compile().getCompiledProgram(), memorySize, options))
+        return new Interpreter(this._s68k.wasm_create_interpreter(this.compile().getCompiledProgram(), options))
     }
 }
 

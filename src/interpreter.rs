@@ -106,9 +106,9 @@ pub struct Memory {
 }
 
 impl Memory {
-    pub fn new(size: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            data: vec![255; size],
+            data: vec![255; 0x01000000], //16mb
         }
     }
 
@@ -153,19 +153,20 @@ impl Memory {
         Ok((result, sp))
     }
     pub fn read_long(&self, address: usize) -> RuntimeResult<u32> {
-        self.verify_address(address, 4)?;
+        let address = self.verify_address(address, Size::Long)?;
+
         Ok(u32::from_be_bytes(
             self.data[address..address + 4].try_into().unwrap(),
         ))
     }
     pub fn read_word(&self, address: usize) -> RuntimeResult<u16> {
-        self.verify_address(address, 2)?;
+        let address = self.verify_address(address, Size::Word)?;
         Ok(u16::from_be_bytes(
             self.data[address..address + 2].try_into().unwrap(),
         ))
     }
     pub fn read_byte(&self, address: usize) -> RuntimeResult<u8> {
-        self.verify_address(address, 1)?;
+        let address = self.verify_address(address, Size::Byte)?;
         Ok(u8::from_be_bytes(
             self.data[address..address + 1].try_into().unwrap(),
         ))
@@ -194,40 +195,54 @@ impl Memory {
         }
         Ok(())
     }
-    pub fn verify_address(&self, address: usize, length: usize) -> RuntimeResult<()> {
+
+    #[inline(always)]
+    pub fn verify_address_bounds(&self, address: usize, length: usize) -> RuntimeResult<usize> {
+        //m68k does not use the last 2 bytes of the address space, clamp it to 24 bits
+        let address = address & 0x00ffffff;
         let end_address = address.wrapping_add(length);
-        match end_address < self.data.len() && end_address > address {
-            true => Ok(()),
-            false => Err(RuntimeError::OutOfBounds(format!(
-                "Memory out of bounds at address: {}, length: {}, maximum: {}",
+        //+1 because the end address is exclusive
+        if end_address > self.data.len(){
+            return Err(RuntimeError::OutOfBounds(format!(
+                "Memory out of bounds at address: 0x{:x} + {}, maximum: 0x{:x}",
                 address,
                 length,
                 self.data.len()
-            ))),
+            )));
         }
+        Ok(address)
+    }
+    #[inline(always)]
+    pub fn verify_address(&self, address: usize, size: Size) -> RuntimeResult<usize> {
+        let address = self.verify_address_bounds(address, size.to_bytes())?;
+        let odd = address & 1 != 0;
+        if odd && size != Size::Byte {
+            return Err(RuntimeError::AddressError(address, size));
+        }
+        Ok(address)
     }
     pub fn write_long(&mut self, address: usize, value: u32) -> RuntimeResult<()> {
-        self.verify_address(address, 4)?;
+        let address = self.verify_address(address, Size::Long)?;
         self.data[address..address + 4].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
     pub fn write_word(&mut self, address: usize, value: u16) -> RuntimeResult<()> {
-        self.verify_address(address, 2)?;
+        let address = self.verify_address(address, Size::Word)?;
         self.data[address..address + 2].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
     pub fn write_byte(&mut self, address: usize, value: u8) -> RuntimeResult<()> {
-        self.verify_address(address, 1)?;
+        let address = self.verify_address(address, Size::Byte)?;
         self.data[address] = value;
         Ok(())
     }
     pub fn write_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
-        self.verify_address(address, bytes.len())?;
+        let address = self.verify_address_bounds(address, bytes.len())?;
         self.data[address..address + bytes.len()].copy_from_slice(bytes);
         Ok(())
     }
     pub fn read_bytes(&self, address: usize, length: usize) -> RuntimeResult<&[u8]> {
-        self.verify_address(address, length)?;
+        let address = self.verify_address_bounds(address, length)?;
         Ok(&self.data[address..address + length])
     }
 }
@@ -359,6 +374,7 @@ pub enum RuntimeError {
     Raw(String),
     ExecutionLimit(usize),
     OutOfBounds(String),
+    AddressError(usize, Size),
     DivisionByZero,
     IncorrectAddressingMode(String),
     Unimplemented,
@@ -416,10 +432,9 @@ pub struct Interpreter {
 impl Interpreter {
     pub fn new(
         compiled_program: Compiler,
-        memory_size: usize,
         options: Option<InterpreterOptions>,
     ) -> Self {
-        let sp = (memory_size >> 4) + 1;
+        let sp = 0x01000000;
         let start = compiled_program.get_start_address();
         let end = compiled_program.get_final_instruction_address();
         let program = compiled_program.get_instructions().clone();
@@ -435,7 +450,7 @@ impl Interpreter {
             instruction_map[ins.address] = index;
         }
         let mut interpreter = Self {
-            memory: Memory::new(memory_size),
+            memory: Memory::new(),
             instruction_map,
             cpu: Cpu::new(),
             pc: start,

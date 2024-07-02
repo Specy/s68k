@@ -65,7 +65,7 @@ fn main() {
         ..Default::default()
     };
     if execution_mode == "0" {
-        let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF, Some(options));
+        let mut interpreter = s68k.create_interpreter(compiled_program, Some(options));
         //16 mb of memory
         while !interpreter.has_terminated() {
             let status = interpreter.run().unwrap();
@@ -85,7 +85,7 @@ fn main() {
             println!("\nExecution took: {:?}", start.elapsed());
         }
     } else if execution_mode == "1" {
-        let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF, Some(options));
+        let mut interpreter = s68k.create_interpreter(compiled_program, Some(options));
         println!("D for step, A for undo, S for print, Q for quit");
         while !interpreter.has_terminated() {
             let step_kind = ask_step_kind();
@@ -126,7 +126,7 @@ fn main() {
             keep_history: false,
             history_size: 0,
         };
-        let mut interpreter = s68k.create_interpreter(compiled_program, 0xFFFFFF, Some(options));
+        let mut interpreter = s68k.create_interpreter(compiled_program, Some(options));
         while !interpreter.has_terminated() {
             let status = interpreter.run().unwrap();
             match status {

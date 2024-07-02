@@ -160,6 +160,13 @@ impl Compiler {
                             let instruction = self.parse_instruction(name, ops, size);
                             match instruction {
                                 Ok(ins) => {
+                                    let address = self.line_addresses[i];
+                                    if address & 0x1 != 0 {
+                                        return Err(format!(
+                                            "Instruction address must not be odd, maybe you defined an odd number of byte constants in memory somewhere? found {} at line {}",
+                                            address, line.line_index
+                                        ));
+                                    }
                                     let instuction_line = InstructionLine {
                                         instruction: ins,
                                         address: self.line_addresses[i],

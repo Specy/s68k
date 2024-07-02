@@ -173,7 +173,7 @@ fn lex_and_run(code: &str) -> Interpreter {
         panic!("Code did not pass semantic check: {:#?}", errors);
     }
     let compiled = s68k.compile().expect("To compile correctly");
-    let mut interpreter = s68k.create_interpreter(compiled, 0xFFFFFF, Some(options));
+    let mut interpreter = s68k.create_interpreter(compiled, Some(options));
     while !interpreter.has_terminated() {
         let status = interpreter.run().unwrap();
         match status {

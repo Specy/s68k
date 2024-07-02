@@ -49,10 +49,9 @@ impl S68k {
     pub fn create_interpreter(
         &self,
         pre_processed_program: Compiler,
-        memory_size: usize,
         options: Option<InterpreterOptions>,
     ) -> Interpreter {
-        Interpreter::new(pre_processed_program, memory_size, options)
+        Interpreter::new(pre_processed_program, options)
     }
 }
 
@@ -90,12 +89,11 @@ impl S68k {
     pub fn wasm_create_interpreter(
         &self,
         pre_processed_program: Compiler,
-        memory_size: usize,
         interpreter_options: JsValue,
     ) -> Interpreter {
         console_error_panic_hook::set_once();
         let interpreter_options: InterpreterOptions = serde_wasm_bindgen::from_value(interpreter_options).unwrap();
-        self.create_interpreter(pre_processed_program, memory_size, Some(interpreter_options))
+        self.create_interpreter(pre_processed_program, Some(interpreter_options))
     }
 }
 

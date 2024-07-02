@@ -26,6 +26,7 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "DisplayChar" } | 
 { type: "Terminate" }
 "#;
+
 #[wasm_bindgen(typescript_custom_section)]
 pub const IRuntimeError: &'static str = r#"
 export type RuntimeError = { type: "Raw", value: string } |
@@ -33,7 +34,10 @@ export type RuntimeError = { type: "Raw", value: string } |
 { type: "OutOfBounds", value: string } |
 { type: "DivisionByZero" } |
 { type: "IncorrectAddressingMode", value: string } |
-{ type: "Unimplemented" }
+{ type: "Unimplemented" } |
+{ type: "AddressError", address: number, size: Size }
+
+
 "#;
 
 #[wasm_bindgen(typescript_custom_section)]
