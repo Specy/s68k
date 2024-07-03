@@ -881,7 +881,7 @@ impl SemanticChecker {
             },
 
             LexedOperand::Indirect(boxed_arg) => match boxed_arg.as_ref() {
-                LexedOperand::Register(LexedRegisterType::Address, _) => Ok(AdrMode::INDIRECT),
+                LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => Ok(AdrMode::INDIRECT),
                 _ => Err("Invalid indirect value, only address registers allowed".to_string()),
             },
 
