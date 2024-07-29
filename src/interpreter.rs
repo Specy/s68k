@@ -55,7 +55,7 @@ impl Flags {
         Flags::empty()
     }
     pub fn clear(&mut self) {
-        self.set(Flags::all(), false);
+        *self = Flags::empty();
     }
     pub fn get_status(&self) -> String {
         format!(
