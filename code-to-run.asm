@@ -1,1 +1,1 @@
-move.l (sp), d0
+clr d0
