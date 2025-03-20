@@ -616,7 +616,7 @@ impl Interpreter {
                         }
                         MutationOperation::PopCall { to, from: _ } => {
                             //try to get the address of the function that popped the call
-                            let ins = self.get_instruction_at(*to - 4);
+                            let ins = self.get_instruction_at(to.wrapping_sub(4));
                             let callee_address = match ins {
                                 Some(ins) => match &ins.instruction {
                                     Instruction::BSR(address) => *address as usize,
@@ -902,7 +902,7 @@ impl Interpreter {
             }
             Instruction::BSR(address) => {
                 if self.keep_history {
-                    let old_address = self.get_sp() - 4;
+                    let old_address = self.get_sp().wrapping_sub(4);
                     let old_value = self.memory.read_long(old_address)?;
                     self.debugger.add_mutation(MutationOperation::WriteMemory {
                         address: old_address,
@@ -911,7 +911,7 @@ impl Interpreter {
                     });
                     self.debugger.add_mutation(MutationOperation::PushCall {
                         to: *address as usize,
-                        from: self.get_pc() - 4, //the pc is incremented before the instruction is executed
+                        from: self.get_pc().wrapping_sub(4), //the pc is incremented before the instruction is executed
                     });
                 }
                 let new_sp = self
@@ -924,7 +924,7 @@ impl Interpreter {
             Instruction::JSR(source) => {
                 let address = self.get_operand_address(source)?;
                 if self.keep_history {
-                    let old_address = self.get_sp() - 4;
+                    let old_address = self.get_sp().wrapping_sub(4);
                     let old_value = self.memory.read_long(old_address)?;
                     self.debugger.add_mutation(MutationOperation::WriteMemory {
                         address: old_address,
@@ -933,7 +933,7 @@ impl Interpreter {
                     });
                     self.debugger.add_mutation(MutationOperation::PushCall {
                         to: address as usize,
-                        from: self.get_pc() - 4, //pc is incremented before the instruction is executed
+                        from: self.get_pc().wrapping_sub(4), //pc is incremented before the instruction is executed
                     });
                 }
                 let new_sp = self
@@ -956,7 +956,7 @@ impl Interpreter {
                 if self.keep_history {
                     let old_value = self.memory.read_long(self.get_sp())?;
                     self.debugger.add_mutation(MutationOperation::WriteMemory {
-                        address: self.get_sp() - 4,
+                        address: self.get_sp().wrapping_sub(4),
                         old: old_value,
                         size: Size::Long,
                     })
@@ -1256,10 +1256,10 @@ impl Interpreter {
                 }
             }
             Instruction::LINK(reg, offset) => {
-                let sp = self.get_sp() - 4; //TODO convert to push
+                let sp = self.get_sp().wrapping_sub(4);
                 self.set_sp(sp);
                 let value = self.get_register_value(reg, Size::Long);
-                self.set_memory_value(value as usize, Size::Long, sp as u32)?;
+                self.set_memory_value(sp, Size::Long, value)?;
                 self.set_register_value(reg, sp as u32, Size::Long);
                 self.set_sp((sp as i32).wrapping_add(*offset as i32) as usize)
             }
@@ -1274,7 +1274,7 @@ impl Interpreter {
                 if self.keep_history {
                     self.debugger.add_mutation(MutationOperation::PopCall {
                         to: value.get_long() as usize,
-                        from: self.get_pc() - 4, //pc is incremented before execution
+                        from: self.get_pc().wrapping_sub(4), //pc is incremented before execution
                     })
                 }
                 self.set_sp(new_sp);
