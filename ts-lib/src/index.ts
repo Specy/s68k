@@ -11,6 +11,7 @@ import {
     Interrupt,
     InterruptResult,
     Label,
+    StackFrame,
     LexedLine,
     LexedOperand,
     LexedRegisterType,
@@ -108,7 +109,7 @@ export class Interpreter {
     }
 
     undo(): ExecutionStep {
-        return this.interpreter.wasm_undo()
+        return internalExecutionStepToExecutionStep(this.interpreter.wasm_undo())
     }
 
     getPreviousMutations() {
@@ -169,12 +170,12 @@ export class Interpreter {
         return this.interpreter.wasm_can_undo()
     }
 
-    getCallStack(): Label[] {
-        return this.interpreter.wasm_get_call_stack() as Label[]
+    getCallStack(): StackFrame[] {
+        return this.interpreter.wasm_get_call_stack() as StackFrame[]
     }
 
     getUndoHistory(amount: number): ExecutionStep[] {
-        return this.interpreter.wasm_get_undo_history(amount) as ExecutionStep[]
+        return this.interpreter.wasm_get_undo_history(amount).map(internalExecutionStepToExecutionStep)
     }
 
     getInstructionAt(address: number): InstructionLine | null {
@@ -354,6 +355,38 @@ export function ccrToFlagsArray(ccr: number) {
     ]
 }
 
+export type ExecutionStepInternal = {
+    mutations: MutationOperation[],
+    pc: number,
+    old_ccr: string,
+    new_ccr: string
+    line: number
+}
+
+
+function internalExecutionStepToExecutionStep(step: ExecutionStepInternal): ExecutionStep {
+    return {
+        ...step,
+        old_ccr: {
+            bits: stringCCRBitfieldToNumber(step.old_ccr as string)
+        },
+        new_ccr: {
+            bits: stringCCRBitfieldToNumber(step.new_ccr as string)
+        }
+
+    }
+}
+
+
+const ccrFlags = Object.keys(Flag)
+function stringCCRBitfieldToNumber(bitfield: string): number {
+    const fields = bitfield.split('|').map(v => v.trim()) // ['Carry', 'Overflow', 'Zero', 'Negative', 'Extend'] etc... the selected flags will be present
+    let ccr = 0
+    for (let field of fields) {
+        ccr |= Flag[field as keyof typeof Flag]
+    }
+    return ccr
+}
 
 export {
     RawS68k,
@@ -378,5 +411,6 @@ export {
     MutationOperation,
     InterpreterOptions,
     RuntimeError,
-    Label
+    Label,
+    StackFrame,
 }

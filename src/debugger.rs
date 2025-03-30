@@ -1,7 +1,7 @@
 use std::collections::{LinkedList, HashMap};
 
 use serde::Serialize;
-use wasm_bindgen::{prelude::wasm_bindgen};
+use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
 use crate::{
     instructions::{RegisterOperand, Size, Label},
@@ -72,11 +72,38 @@ impl ExecutionStep {
         self.old_ccr
     }
 }
+
+pub struct CallStackFrame {
+    address: usize,
+    source_address: usize,
+    registers: Vec<u32>,
+}
+
+impl CallStackFrame {
+    pub fn new(address: usize, source_address: usize, registers: Vec<u32>) -> Self {
+        Self {
+            address,
+            source_address,
+            registers,
+        }
+    }
+    pub fn get_address(&self) -> usize {
+        self.address
+    }
+    pub fn get_source_address(&self) -> usize {
+        self.source_address
+    }
+    pub fn get_registers(&self) -> Vec<u32> {
+        self.registers.clone()
+    }
+}
+
+
 #[wasm_bindgen]
 pub struct Debugger {
     history: LinkedList<ExecutionStep>,
     history_size: usize,
-    call_stack: Vec<usize>,
+    call_stack: Vec<CallStackFrame>,
     labels: HashMap<usize, Label>
 }
 
@@ -149,22 +176,57 @@ impl Debugger {
     pub fn get_labels(&self) -> &HashMap<usize, Label> {
         &self.labels
     }
-    pub fn push_call(&mut self, address: usize) {
-        self.call_stack.push(address);
+    pub fn push_call(&mut self, address: usize, source_address: usize, registers: Vec<u32>) {
+        self.call_stack.push(
+            CallStackFrame::new(address, source_address, registers)
+        );
     }
-    pub fn pop_call(&mut self) -> Option<usize> {
+    pub fn pop_call(&mut self) -> Option<CallStackFrame> {
         self.call_stack.pop()
     }
-    pub fn to_call_stack(&self) -> Vec<Label> {
-        self.call_stack.iter().map(|address| {
-            match self.labels.get(address) {
-                Some(label) => label.clone(),
-                None => Label {
-                    name: "".to_string(),
-                    address: *address,
-                    line: 0
+    pub fn to_call_stack(&self) -> Vec<PrettyStackFrame> {
+        self.call_stack.iter().map(|frame| {
+            match self.labels.get(&frame.address) {
+                Some(label) => PrettyStackFrame {
+                    address: frame.address,
+                    source_address: frame.source_address,
+                    registers: frame.registers.clone(),
+                    label_name: label.name.clone(),
+                    label_address: label.address,
+                    label_line: label.line
+                },
+                None => PrettyStackFrame {
+                    address: frame.address,
+                    source_address: frame.source_address,
+                    registers: frame.registers.clone(),
+                    label_name: "Unknown".to_string(),
+                    label_address: frame.address,
+                    label_line: 0,
                 }
             }
         }).collect()
     }
 }
+
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrettyStackFrame {
+    pub address: usize,
+    pub source_address: usize,
+    pub registers: Vec<u32>,
+    
+    pub label_name: String,
+    pub label_address: usize,
+    pub label_line: usize,
+}
+#[wasm_bindgen(typescript_custom_section)]
+const TS_STACK_FRAME: &'static str = r#"
+export interface StackFrame {
+    address: number,
+    source_address: number,
+    registers: number[],
+    label_name: string,
+    label_address: number,
+    label_line: number
+}
+"#;
