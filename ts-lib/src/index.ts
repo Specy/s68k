@@ -352,8 +352,9 @@ export function ccrToFlagsArray(ccr: number) {
         ccr & Flag.Zero,
         ccr & Flag.Negative,
         ccr & Flag.Extend
-    ]
+    ].map(v => Number(Boolean(v)))
 }
+
 
 export type ExecutionStepInternal = {
     mutations: MutationOperation[],
