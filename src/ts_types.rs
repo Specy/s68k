@@ -11,7 +11,8 @@ export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
 { type: "ReadChar" } |
 { type: "GetTime" } |
 { type: "Terminate" } | 
-{ type: "DisplayChar", value: string }
+{ type: "DisplayChar", value: string } | 
+{ type: "Delay", value: number }
 "#;
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -24,7 +25,8 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "ReadChar", value: string } |
 { type: "GetTime", value: number } |
 { type: "DisplayChar" } | 
-{ type: "Terminate" }
+{ type: "Terminate" } |
+{ type: "Delay" }
 "#;
 
 #[wasm_bindgen(typescript_custom_section)]

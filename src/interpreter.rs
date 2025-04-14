@@ -653,7 +653,8 @@ impl Interpreter {
             InterruptResult::DisplayNumber
             | InterruptResult::DisplayStringWithCRLF
             | InterruptResult::DisplayStringWithoutCRLF
-            | InterruptResult::DisplayChar => {}
+            | InterruptResult::DisplayChar
+            | InterruptResult::Delay => {}
             InterruptResult::ReadKeyboardString(str) => {
                 if str.len() > 80 {
                     //TODO should i error or truncate?
@@ -1546,7 +1547,7 @@ impl Interpreter {
                 Ok(Interrupt::Terminate)
             }
             13 | 14 => {
-                //read untill null char
+                //read until null char
                 let max = 16384; //to prevent infinite loop
                 let address = self.cpu.a_reg[1].get_long() as usize;
                 let mut bytes = Vec::new();
@@ -1573,6 +1574,10 @@ impl Interpreter {
                         bytes
                     ))),
                 }
+            }
+            23 => {
+                let time = self.cpu.d_reg[1].get_long();
+                Ok(Interrupt::Delay(time))
             }
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
         }

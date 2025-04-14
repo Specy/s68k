@@ -217,6 +217,7 @@ pub enum Interrupt {
     DisplayChar(char),
     GetTime,
     Terminate,
+    Delay(u32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +232,7 @@ pub enum InterruptResult {
     DisplayChar,
     GetTime(u32),
     Terminate,
+    Delay,
 }
 
 impl Instruction {

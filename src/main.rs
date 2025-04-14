@@ -221,5 +221,10 @@ fn handle_interrupt(interpreter: &mut Interpreter, interrupt: &Interrupt) {
                 .answer_interrupt(InterruptResult::Terminate)
                 .unwrap();
         }
+        Interrupt::Delay(_) => {
+            interpreter
+                .answer_interrupt(InterruptResult::Delay)
+                .unwrap();
+        }
     }
 }
