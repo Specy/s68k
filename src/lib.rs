@@ -1,18 +1,18 @@
-use interpreter::{Interpreter, InterpreterOptions};
 use compiler::Compiler;
+use interpreter::{Interpreter, InterpreterOptions};
 use wasm_bindgen::prelude::*;
+pub mod compiler;
 mod constants;
 pub mod instructions;
 pub mod interpreter;
 pub mod lexer;
-pub mod compiler;
 mod semantic_checker;
 mod utils;
 
-mod test;
-mod math;
-mod ts_types;
 mod debugger;
+mod math;
+mod test;
+mod ts_types;
 use crate::{
     lexer::{Lexer, ParsedLine},
     semantic_checker::{SemanticChecker, SemanticError},
@@ -22,7 +22,6 @@ use crate::{
 pub struct S68k {
     code: String,
     lines: Vec<ParsedLine>,
-    
 }
 impl S68k {
     pub fn new(code: String) -> S68k {
@@ -74,7 +73,7 @@ impl S68k {
             Err(e) => Err(JsValue::from_str(&e.to_string())),
         }
     }
-    pub fn wasm_compile(&self) -> Result<Compiler, String>{
+    pub fn wasm_compile(&self) -> Result<Compiler, String> {
         console_error_panic_hook::set_once();
         self.compile()
     }
@@ -92,7 +91,8 @@ impl S68k {
         interpreter_options: JsValue,
     ) -> Interpreter {
         console_error_panic_hook::set_once();
-        let interpreter_options: InterpreterOptions = serde_wasm_bindgen::from_value(interpreter_options).unwrap();
+        let interpreter_options: InterpreterOptions =
+            serde_wasm_bindgen::from_value(interpreter_options).unwrap();
         self.create_interpreter(pre_processed_program, Some(interpreter_options))
     }
 }

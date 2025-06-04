@@ -8,7 +8,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::{
     instructions::Label,
-    lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine}, utils::{num_to_signed_base, parse_absolute_expression},
+    lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
+    utils::{num_to_signed_base, parse_absolute_expression},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,7 +75,7 @@ bitflags! {
         const ADDRESS = 1<<8;
         const REG_LIST = 1<<9;
     }
-    
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct Rules: usize {
         //TODO refactor this
@@ -133,8 +134,7 @@ impl AdrMode {
         match *self {
             AdrMode::D_REG => "Dn",
             AdrMode::A_REG => "An",
-            AdrMode::INDIRECT
-            | AdrMode::INDIRECT_DISPLACEMENT => "(An)",
+            AdrMode::INDIRECT | AdrMode::INDIRECT_DISPLACEMENT => "(An)",
             AdrMode::INDIRECT_POST_INCREMENT => "(An)+",
             AdrMode::INDIRECT_PRE_DECREMENT => "-(An)",
             AdrMode::INDIRECT_INDEX => "(An, Dn)",
@@ -143,7 +143,7 @@ impl AdrMode {
 
             _ => "UNKNOWN",
         }
-            .to_string()
+        .to_string()
     }
 }
 
@@ -170,7 +170,7 @@ impl Rules {
             Rules::NO_A_REG_OR_IMMEDIATE => "Dn/(An)/(An)/Ea/<label>",
             _ => "UNKNOWN",
         }
-            .to_string()
+        .to_string()
     }
 }
 
@@ -187,7 +187,7 @@ impl SizeRules {
             SizeRules::AnySize => "b, w, l",
             SizeRules::OnlyLongOrWord => "w, l",
         }
-            .to_string()
+        .to_string()
     }
 }
 
@@ -196,7 +196,6 @@ pub struct SemanticChecker {
     errors: Vec<SemanticError>,
     lines: Vec<ParsedLine>,
 }
-
 
 impl SemanticChecker {
     pub fn new(lines: &[ParsedLine]) -> SemanticChecker {
@@ -625,7 +624,8 @@ impl SemanticChecker {
                                 Err(_) => {
                                     self.errors.push(SemanticError::new(
                                         line.clone(),
-                                        "Invalid default value argument for dcb directive".to_string(),
+                                        "Invalid default value argument for dcb directive"
+                                            .to_string(),
                                     ));
                                     return;
                                 }
@@ -634,10 +634,7 @@ impl SemanticChecker {
                             if el > max {
                                 self.errors.push(SemanticError::new(
                                     line.clone(),
-                                    format!(
-                                        "Value exceeds the limit of the specified size{}",
-                                        max
-                                    ),
+                                    format!("Value exceeds the limit of the specified size{}", max),
                                 ));
                             }
                         }
@@ -800,7 +797,10 @@ impl SemanticChecker {
                 _ if *size == LexedSize::Unknown => {
                     self.errors.push(SemanticError::new(
                         line.clone(),
-                        format!("Unknown size, expected any of \"{}\"", rule.get_valid_sizes()),
+                        format!(
+                            "Unknown size, expected any of \"{}\"",
+                            rule.get_valid_sizes()
+                        ),
                     ));
                 }
 
@@ -813,7 +813,10 @@ impl SemanticChecker {
                     }
                 }
                 SizeRules::OnlyLongOrWord => {
-                    if *size != LexedSize::Long && *size != LexedSize::Word && *size != LexedSize::Unspecified {
+                    if *size != LexedSize::Long
+                        && *size != LexedSize::Word
+                        && *size != LexedSize::Unspecified
+                    {
                         self.errors.push(SemanticError::new(
                             line.clone(),
                             "Invalid size, instruction must be long or word".to_string(),
@@ -827,7 +830,10 @@ impl SemanticChecker {
                                 LexedLine::Instruction { operands, .. } => {
                                     //check if it has any address register
                                     let has_address_reg = operands.iter().find(|op| {
-                                        matches!(op, LexedOperand::Register(LexedRegisterType::Address, _))
+                                        matches!(
+                                            op,
+                                            LexedOperand::Register(LexedRegisterType::Address, _)
+                                        )
                                     });
                                     if let Some(_op) = has_address_reg {
                                         self.errors.push(SemanticError::new(
@@ -849,19 +855,17 @@ impl SemanticChecker {
     fn get_addressing_mode(&mut self, operand: &LexedOperand) -> Result<AdrMode, String> {
         match operand {
             LexedOperand::Register(reg_type, reg_name)
-            | LexedOperand::RegisterWithSize(reg_type, reg_name, _) => {
-                match reg_type {
-                    LexedRegisterType::Data => match reg_name[1..].parse::<i8>() {
-                        Ok(reg) if (0..8).contains(&reg) => Ok(AdrMode::D_REG),
-                        _ => Err("Invalid data register".to_string()),
-                    },
-                    LexedRegisterType::Address => match reg_name[1..].parse::<i8>() {
-                        Ok(reg) if (0..8).contains(&reg) => Ok(AdrMode::A_REG),
-                        _ => Err("Invalid address register".to_string()),
-                    },
-                    LexedRegisterType::SP => Ok(AdrMode::A_REG),
-                }
-            }
+            | LexedOperand::RegisterWithSize(reg_type, reg_name, _) => match reg_type {
+                LexedRegisterType::Data => match reg_name[1..].parse::<i8>() {
+                    Ok(reg) if (0..8).contains(&reg) => Ok(AdrMode::D_REG),
+                    _ => Err("Invalid data register".to_string()),
+                },
+                LexedRegisterType::Address => match reg_name[1..].parse::<i8>() {
+                    Ok(reg) if (0..8).contains(&reg) => Ok(AdrMode::A_REG),
+                    _ => Err("Invalid address register".to_string()),
+                },
+                LexedRegisterType::SP => Ok(AdrMode::A_REG),
+            },
             LexedOperand::RegisterRange { .. } => Ok(AdrMode::REG_LIST),
             LexedOperand::Immediate(num) => match self.get_immediate_value(num) {
                 Ok(_) => Ok(AdrMode::IMMEDIATE),
@@ -871,7 +875,9 @@ impl SemanticChecker {
                 LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => {
                     Ok(AdrMode::INDIRECT_POST_INCREMENT)
                 }
-                _ => Err("Invalid post indirect value, only address or SP registers allowed".to_string()),
+                _ => Err(
+                    "Invalid post indirect value, only address or SP registers allowed".to_string(),
+                ),
             },
             LexedOperand::PreIndirect(boxed_arg) => match boxed_arg.as_ref() {
                 LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => {
@@ -881,7 +887,9 @@ impl SemanticChecker {
             },
 
             LexedOperand::Indirect(boxed_arg) => match boxed_arg.as_ref() {
-                LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => Ok(AdrMode::INDIRECT),
+                LexedOperand::Register(LexedRegisterType::Address | LexedRegisterType::SP, _) => {
+                    Ok(AdrMode::INDIRECT)
+                }
                 _ => Err("Invalid indirect value, only address registers allowed".to_string()),
             },
 
@@ -891,10 +899,18 @@ impl SemanticChecker {
                 match parse_absolute_expression(offset, &self.labels) {
                     Ok(num) => {
                         if !(-(1 << 15)..=1 << 15).contains(&num) {
-                            return Err(format!("Invalid offset \"{}\", must be between -32768 and 32768", num));
+                            return Err(format!(
+                                "Invalid offset \"{}\", must be between -32768 and 32768",
+                                num
+                            ));
                         }
                     }
-                    Err(_) => return Err(format!("Offset \"{}\" is not a valid decimal number", offset)),
+                    Err(_) => {
+                        return Err(format!(
+                            "Offset \"{}\" is not a valid decimal number",
+                            offset
+                        ))
+                    }
                 }
                 match operand.as_ref() {
                     LexedOperand::Register(LexedRegisterType::Address, _)
@@ -911,24 +927,31 @@ impl SemanticChecker {
                     match offset.parse::<i64>() {
                         Ok(num) => {
                             if !(-(1 << 7)..=1 << 7).contains(&num) {
-                                return Err("Invalid offset, must be between -128 and 128".to_string());
+                                return Err(
+                                    "Invalid offset, must be between -128 and 128".to_string()
+                                );
                             }
                         }
                         Err(_) => return Err("Offset is not a valid decimal number".to_string()),
                     }
                 }
                 match operands[..] {
-                    [LexedOperand::Register(LexedRegisterType::Address, _), LexedOperand::Register(_, _) | LexedOperand::RegisterWithSize(_, _, _)] => {
+                    [LexedOperand::Register(LexedRegisterType::Address, _), LexedOperand::Register(_, _) | LexedOperand::RegisterWithSize(_, _, _)] =>
+                    {
                         let op2 = &operands[1];
                         if let LexedOperand::RegisterWithSize(_, _, size) = op2 {
                             if *size == LexedSize::Byte {
-                                return Err("Byte size in register is not allowed for index indirect".to_string());
+                                return Err(
+                                    "Byte size in register is not allowed for index indirect"
+                                        .to_string(),
+                                );
                             }
                         }
                         Ok(AdrMode::INDIRECT_INDEX)
                     }
                     _ => Err(
-                        "Invalid operands for index indirect, only \"(An, Dn/An)\" allowed".to_string(),
+                        "Invalid operands for index indirect, only \"(An, Dn/An)\" allowed"
+                            .to_string(),
                     ),
                 }
             }

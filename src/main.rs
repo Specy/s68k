@@ -53,7 +53,7 @@ fn main() {
     } else {
         println!("Do you want to run the code (0), step through it (1), or benchmark it (2)?");
         let mut value = Term::stdout().read_line().expect("Unable to read line");
-        while value != "0" && value != "1" && value != "2"{
+        while value != "0" && value != "1" && value != "2" {
             println!("Please enter 0,1 or 2");
             value = Term::stdout().read_line().expect("Unable to read line");
         }
@@ -77,7 +77,9 @@ fn main() {
                 InterpreterStatus::TerminatedWithException => {
                     println!("Program Terminated with exception");
                 }
-                _ => {println!("paused")}
+                _ => {
+                    println!("paused")
+                }
             }
         }
         if !args.contains(&"--no-debug".to_string()) {
@@ -224,6 +226,12 @@ fn handle_interrupt(interpreter: &mut Interpreter, interrupt: &Interrupt) {
         Interrupt::Delay(_) => {
             interpreter
                 .answer_interrupt(InterruptResult::Delay)
+                .unwrap();
+        }
+        _ => {
+            println!("Unhandled interrupt: {:?}", interrupt);
+            interpreter
+                .answer_interrupt(InterruptResult::Terminate)
                 .unwrap();
         }
     }

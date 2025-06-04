@@ -1,6 +1,5 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 
-
 #[wasm_bindgen(typescript_custom_section)]
 pub const IInterrupt: &'static str = r#"
 export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
@@ -68,7 +67,6 @@ export type Label = {
     line: number
 }
 "#;
-
 
 #[wasm_bindgen(typescript_custom_section)]
 pub const IParsedLine: &'static str = r#"
@@ -154,6 +152,18 @@ export type MutationOperation = {
     value: {
         address: number,
         old: number[]
+    }
+} | {
+    type: "PopCall",
+    value: {
+        to: number,
+        from: number,
+    }
+} | {
+    type: "PushCall",
+    value: {
+        to: number,
+        from: number,
     }
 }
 "#;

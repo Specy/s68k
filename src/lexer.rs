@@ -1,5 +1,3 @@
-
-
 use bitflags::bitflags;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -62,8 +60,8 @@ impl LexedSize {
 #[serde(tag = "type", content = "value")]
 pub enum LexedOperand {
     Immediate(String),
-    RegisterRange{
-        mask: u16
+    RegisterRange {
+        mask: u16,
     },
     Register(LexedRegisterType, String),
     RegisterWithSize(LexedRegisterType, String, LexedSize),
@@ -210,14 +208,16 @@ impl Grammar {
             Grammar::RegisterRange => {
                 let r = Grammar::Register.get_regex();
                 //this accepts strings like: "d0-d5/a0-a6/a0/a4"
-                format!("(((({})-({}))|({}))\\/)*((({})-({}))|({}))", r, r, r, r, r, r)
+                format!(
+                    "(((({})-({}))|({}))\\/)*((({})-({}))|({}))",
+                    r, r, r, r, r, r
+                )
             }
-            Grammar::RegisterWithSize => format!(
-                r"({})\.(b|w|l)",
-                Grammar::Register.get_regex()
-            ),
+            Grammar::RegisterWithSize => format!(r"({})\.(b|w|l)", Grammar::Register.get_regex()),
             Grammar::Indirect => format!(r"\({}\)", Grammar::Register.get_regex()),
-            Grammar::IndirectDisplacement => format!(r"([^\r\n\t\f\v,])*\({}\)", Grammar::Register.get_regex()),
+            Grammar::IndirectDisplacement => {
+                format!(r"([^\r\n\t\f\v,])*\({}\)", Grammar::Register.get_regex())
+            }
             Grammar::IndirectIndex => r"([^\r\n\t\f\v,])*\((.+,)+.+\)".to_string(),
             Grammar::PostIndirect => r"\(\w+\)\+".to_string(), //TODO should i include registers in here or leave it?
             Grammar::PreIndirect => r"-\(\w+\)".to_string(),
@@ -278,18 +278,44 @@ struct AsmRegex {
 impl AsmRegex {
     pub fn new() -> Self {
         AsmRegex {
-            register_only: Regex::new(&Grammar::Register.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
-            register_list_only: Regex::new(&Grammar::RegisterRange.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
-            register_with_size_only: Regex::new(&Grammar::RegisterWithSize.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
-            immediate_only: Regex::new(&Grammar::Immediate.get_opt(GrammarOptions::IS_LINE)).unwrap(),
-            indirect_only: Regex::new(&Grammar::Indirect.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE)).unwrap(),
-            indirect_displacement_only: Regex::new(&Grammar::IndirectDisplacement.get_opt(GrammarOptions::IS_LINE)).unwrap(),
-            indirect_index_only: Regex::new(&Grammar::IndirectIndex.get_opt(GrammarOptions::IS_LINE)).unwrap(),
-            post_indirect_only: Regex::new(&Grammar::PostIndirect.get_opt(GrammarOptions::IS_LINE)).unwrap(),
-            pre_indirect_only: Regex::new(&Grammar::PreIndirect.get_opt(GrammarOptions::IS_LINE)).unwrap(),
-            label_line: Regex::new(r"^\S+:.*").unwrap(),
-            directive: Regex::new(&format!(r"^\s*({})", Grammar::Directive.get_opt(GrammarOptions::IGNORE_CASE)))
+            register_only: Regex::new(
+                &Grammar::Register.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE),
+            )
+            .unwrap(),
+            register_list_only: Regex::new(
+                &Grammar::RegisterRange
+                    .get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE),
+            )
+            .unwrap(),
+            register_with_size_only: Regex::new(
+                &Grammar::RegisterWithSize
+                    .get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE),
+            )
+            .unwrap(),
+            immediate_only: Regex::new(&Grammar::Immediate.get_opt(GrammarOptions::IS_LINE))
                 .unwrap(),
+            indirect_only: Regex::new(
+                &Grammar::Indirect.get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE),
+            )
+            .unwrap(),
+            indirect_displacement_only: Regex::new(
+                &Grammar::IndirectDisplacement.get_opt(GrammarOptions::IS_LINE),
+            )
+            .unwrap(),
+            indirect_index_only: Regex::new(
+                &Grammar::IndirectIndex.get_opt(GrammarOptions::IS_LINE),
+            )
+            .unwrap(),
+            post_indirect_only: Regex::new(&Grammar::PostIndirect.get_opt(GrammarOptions::IS_LINE))
+                .unwrap(),
+            pre_indirect_only: Regex::new(&Grammar::PreIndirect.get_opt(GrammarOptions::IS_LINE))
+                .unwrap(),
+            label_line: Regex::new(r"^\S+:.*").unwrap(),
+            directive: Regex::new(&format!(
+                r"^\s*({})",
+                Grammar::Directive.get_opt(GrammarOptions::IGNORE_CASE)
+            ))
+            .unwrap(),
             operand_arg: Regex::new(&Grammar::OperandArg.get_regex()).unwrap(),
             comment_line: Regex::new(&Grammar::CommentLine.get_regex()).unwrap(),
             comment: Regex::new(&Grammar::Comment.get_regex()).unwrap(),
@@ -302,7 +328,9 @@ impl AsmRegex {
             _ if self.pre_indirect_only.is_match(operand) => OperandKind::PreIndirect,
             _ if self.indirect_only.is_match(operand) => OperandKind::Indirect,
             _ if self.indirect_index_only.is_match(operand) => OperandKind::IndirectIndex,
-            _ if self.indirect_displacement_only.is_match(operand) => OperandKind::IndirectDisplacement,
+            _ if self.indirect_displacement_only.is_match(operand) => {
+                OperandKind::IndirectDisplacement
+            }
             _ if self.register_with_size_only.is_match(operand) => OperandKind::RegisterWithSize,
             _ if self.register_only.is_match(operand) => OperandKind::Register,
             _ if self.register_list_only.is_match(operand) => OperandKind::RegisterList,
@@ -396,7 +424,7 @@ impl AsmRegex {
             _ => {
                 args.push(current_arg.trim().to_string());
                 args
-            },
+            }
         }
     }
     pub fn split_at_whitespace(&self, line: &str) -> Vec<String> {
@@ -484,10 +512,7 @@ impl Lexer {
         }
     }
     pub fn parse_operands(&self, operands: Vec<String>) -> Vec<LexedOperand> {
-        operands
-            .iter()
-            .map(|o| self.parse_operand(o))
-            .collect()
+        operands.iter().map(|o| self.parse_operand(o)).collect()
     }
     pub fn parse_operand(&self, operand: &String) -> LexedOperand {
         let operand = operand.to_string();
@@ -573,8 +598,7 @@ impl Lexer {
                 let operand = self.parse_operand(&operand);
                 LexedOperand::Indirect(Box::new(operand))
             }
-            OperandKind::IndirectIndex
-            => {
+            OperandKind::IndirectIndex => {
                 let split = operand.split('(').collect::<Vec<&str>>();
                 if split.len() != 2 {
                     return LexedOperand::Other(operand);
@@ -583,10 +607,7 @@ impl Lexer {
                 let args = split[1].replace(')', "");
                 let args = self.regex.split_into_separated_args(args.trim(), true);
                 let operands = self.parse_operands(args);
-                LexedOperand::IndirectIndex {
-                    offset,
-                    operands,
-                }
+                LexedOperand::IndirectIndex { offset, operands }
             }
             OperandKind::IndirectDisplacement => {
                 let split = operand.split('(').collect::<Vec<&str>>();
@@ -664,7 +685,11 @@ impl Lexer {
     }
     fn apply_equ_to_line(&self, line: LexedLine, equ_map: &Vec<(String, String)>) -> LexedLine {
         match line {
-            LexedLine::Instruction { name, operands, size } => LexedLine::Instruction {
+            LexedLine::Instruction {
+                name,
+                operands,
+                size,
+            } => LexedLine::Instruction {
                 name,
                 operands: operands
                     .into_iter()
@@ -676,9 +701,7 @@ impl Lexer {
                 name,
                 args: args
                     .into_iter()
-                    .map(|arg| {
-                        self.apply_equ_to_expression_string(arg, equ_map)
-                    })
+                    .map(|arg| self.apply_equ_to_expression_string(arg, equ_map))
                     .collect(),
                 size,
             },
@@ -686,20 +709,28 @@ impl Lexer {
         }
     }
 
-    fn apply_equ_to_expression_string(&self, mut expression: String, equ_map: &Vec<(String, String)>) -> String {
+    fn apply_equ_to_expression_string(
+        &self,
+        mut expression: String,
+        equ_map: &Vec<(String, String)>,
+    ) -> String {
         for (key, value) in equ_map.iter() {
             expression = expression.replace(key, value);
         }
         expression
     }
-    fn apply_equ_to_operand(&self, op: LexedOperand, equ_map: &Vec<(String, String)>) -> LexedOperand {
+    fn apply_equ_to_operand(
+        &self,
+        op: LexedOperand,
+        equ_map: &Vec<(String, String)>,
+    ) -> LexedOperand {
         match op {
             LexedOperand::Register(_, _)
             | LexedOperand::RegisterRange { .. }
             | LexedOperand::Other(_)
             | LexedOperand::PostIndirect(_)
             | LexedOperand::PreIndirect(_) => op,
-            | LexedOperand::Immediate(im) => {
+            LexedOperand::Immediate(im) => {
                 LexedOperand::Immediate(self.apply_equ_to_expression_string(im, equ_map))
             }
             LexedOperand::Absolute(abs) => {
@@ -719,7 +750,10 @@ impl Lexer {
             LexedOperand::IndirectDisplacement { offset, operand } => {
                 let operand = self.apply_equ_to_operand(*operand, equ_map);
                 let offset = self.apply_equ_to_expression_string(offset, equ_map);
-                LexedOperand::IndirectDisplacement { offset, operand: Box::new(operand) }
+                LexedOperand::IndirectDisplacement {
+                    offset,
+                    operand: Box::new(operand),
+                }
             }
             LexedOperand::IndirectIndex { offset, operands } => {
                 let operands = operands
@@ -774,10 +808,14 @@ impl Lexer {
                 None => LexLineResult::Line(LexedLine::Label { name }),
             },
             LineKind::Directive => {
-                let mut parsed_args: Vec<String> =
-                    self.regex.split_into_separated_args(&code.replace('\t', " "), false);
+                let mut parsed_args: Vec<String> = self
+                    .regex
+                    .split_into_separated_args(&code.replace('\t', " "), false);
                 //lowercase the first arg
-                let first = parsed_args.first().expect("Missing first argument").to_lowercase();
+                let first = parsed_args
+                    .first()
+                    .expect("Missing first argument")
+                    .to_lowercase();
                 parsed_args[0] = first;
                 let line = match &parsed_args[..] {
                     [_, equ, ..] if equ.to_lowercase() == "equ" => LexedLine::Directive {
@@ -810,11 +848,10 @@ impl Lexer {
     }
 }
 
-
-fn parse_register_range(range: &str) -> Result<(LexedRegisterType, u32), String>{
+fn parse_register_range(range: &str) -> Result<(LexedRegisterType, u32), String> {
     let reg_type = match LexedRegisterType::from_string(range) {
         Ok(reg) => reg,
-        Err(e) => return Err(format!("Invalid register range '{}': {}", range, e))
+        Err(e) => return Err(format!("Invalid register range '{}': {}", range, e)),
     };
     if reg_type == LexedRegisterType::SP {
         return Ok((reg_type, 0));
@@ -822,6 +859,6 @@ fn parse_register_range(range: &str) -> Result<(LexedRegisterType, u32), String>
     let num = range.chars().nth(1).and_then(|x| x.to_digit(10));
     match num {
         Some(num) => Ok((reg_type, num)),
-        None => Err(format!("Invalid register range '{}'", range))
+        None => Err(format!("Invalid register range '{}'", range)),
     }
 }

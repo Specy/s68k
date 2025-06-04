@@ -1,7 +1,4 @@
-use std::{
-    fmt::Debug,
-    str::FromStr,
-};
+use std::{fmt::Debug, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -38,7 +35,7 @@ pub enum RegisterOperand {
     Address(u8),
     Data(u8),
 }
-impl RegisterOperand{
+impl RegisterOperand {
     pub fn to_index(&self) -> u16 {
         match self {
             RegisterOperand::Address(index) => *index as u16 + 8,
@@ -77,7 +74,6 @@ pub enum Operand {
 Thanks to:  https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/instructions.rs
 for the Conditions and inspiration
  */
-
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Label {
@@ -218,6 +214,27 @@ pub enum Interrupt {
     GetTime,
     Terminate,
     Delay(u32),
+
+    // graphics
+    SetPenColor(u32),                          //80
+    SetFillColor(u32),                         //81
+    DrawPixel(u32, u32),                       //82
+    GetPixelColor(u32, u32),                   //83
+    DrawLine(u32, u32, u32, u32),              //84
+    DrawLineTo(u32, u32),                      //85
+    MoveTo(u32, u32),                          //86
+    DrawRectangle(u32, u32, u32, u32),         //87
+    DrawEllipse(u32, u32, u32, u32),           //88
+    FloodFill(u32, u32),                       //89
+    DrawUnfilledRectangle(u32, u32, u32, u32), //90
+    DrawUnfilledEllipse(u32, u32, u32, u32),   //91
+    //SetDrawingMode() //92
+    SetPenWidth(u32), //93
+    //Repaint //94, copies screen buffer to screen, for double buffering, needs SetDrawingMode
+    DrawText(u32, u32, String), //95
+    //GetPenPosition(u32, u32),
+    SetScreenSize(u32, u32), //33
+    ClearScreen,             //11
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,6 +250,27 @@ pub enum InterruptResult {
     GetTime(u32),
     Terminate,
     Delay,
+
+    // graphics
+    SetPenColor,
+    SetFillColor,
+    DrawPixel,
+    GetPixelColor(u32),
+    DrawLine,
+    DrawLineTo,
+    MoveTo,
+    DrawRectangle,
+    DrawEllipse,
+    FloodFill,
+    DrawUnfilledRectangle,
+    DrawUnfilledEllipse,
+    //SetDrawingMode() //92
+    SetPenWidth,
+    //Repaint //94, copies screen buffer to screen, for double buffering, needs SetDrawingMode
+    DrawText,
+    //GetPenPosition(u32, u32),
+    SetScreenSize,
+    ClearScreen,
 }
 
 impl Instruction {

@@ -8,19 +8,40 @@ use crate::S68k;
 //TODO add better tests for all cases and if i find bugs etc
 #[cfg(test)]
 mod tests {
+    use crate::interpreter;
     use crate::test::test::lex_and_run;
 
     #[test]
     fn equ_substitution() {
-        lex_and_run("ten equ #10
+        lex_and_run(
+            "ten equ #10
 register_1 equ d1
 	move.l ten, register_1
-");
+",
+        );
+    }
+
+    #[test]
+    fn correctly_apply_pre_decrement(){
+        let interpreter = lex_and_run(
+            "move.l #$818081a8, d0
+move.l #$1000, a0
+move.l d0, (a0)+
+move.l d0, (a0)
+move.l #$0F0F, d0
+and.w d0, (a0)
+and.w d0, -(a0)");
+        let expected: u32 = 0x81800108;
+        let expected2: u32 = 0x010081A8;
+        let mem = interpreter.get_memory();
+        assert_eq!(mem.read_long(0x1000).unwrap(), expected);
+        assert_eq!(mem.read_long(0x1004).unwrap(), expected2);
     }
 
     #[test]
     fn test_addressing_modes() {
-        lex_and_run("
+        lex_and_run(
+            "
     move.l #10, d0
     move.l #$10, (a0)
     move.l #10*2, (a0)+
@@ -35,12 +56,14 @@ register_1 equ d1
     movem.l D0-D1/A0-A5/A7, (a0)
 
 
-        ");
+        ",
+        );
     }
 
     #[test]
     fn test_complex_code() {
-        lex_and_run("ORG    $1000
+        lex_and_run(
+            "ORG    $1000
     length: dc.w 20
     arr: dc.w 11, 71, 26, 44, 45, 65, 86, 10, 36, 26, 87, 86, 99, 48, 70, 89, 68, 92, 47, 80
 START:
@@ -155,10 +178,10 @@ for_end:
     MOVE.w (sp)+,d1
     MOVE.l (sp)+,d0
     rts
-end:");
+end:",
+        );
     }
 }
-
 
 const TEST_LIMIT: usize = 3000000;
 
@@ -198,7 +221,6 @@ fn lex_only(code: &str) -> Compiler {
     }
     s68k.compile().expect("To compile correctly")
 }
-
 
 fn handle_interrupt(interpreter: &mut Interpreter, interrupt: &Interrupt) {
     match interrupt {
@@ -258,6 +280,12 @@ fn handle_interrupt(interpreter: &mut Interpreter, interrupt: &Interrupt) {
         Interrupt::Delay(_) => {
             interpreter
                 .answer_interrupt(InterruptResult::Delay)
+                .unwrap();
+        }
+        _ => {
+            println!("Unhandled interrupt: {:?}", interrupt);
+            interpreter
+                .answer_interrupt(InterruptResult::Terminate)
                 .unwrap();
         }
     }

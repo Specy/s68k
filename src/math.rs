@@ -96,7 +96,7 @@ pub fn shift(dir: &ShiftDirection, value: u32, size: Size, is_arithmetic: bool) 
             let shift = match size {
                 Size::Byte => ((value as u8) << 1) as u32,
                 Size::Word => ((value as u16) << 1) as u32,
-                Size::Long => value << 1
+                Size::Long => value << 1,
             };
             (shift, bit)
         }

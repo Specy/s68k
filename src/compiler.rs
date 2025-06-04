@@ -1,19 +1,18 @@
-use std::{collections::HashMap, vec};
 use std::fmt;
+use std::{collections::HashMap, vec};
 
 use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
 
+use crate::instructions::{IndexRegister, TargetDirection};
 use crate::{
     instructions::{
-        Condition, Instruction, Label, Operand, RegisterOperand,
-        ShiftDirection, Sign, Size,
+        Condition, Instruction, Label, Operand, RegisterOperand, ShiftDirection, Sign, Size,
     },
     lexer::{LexedLine, LexedOperand, LexedRegisterType, LexedSize, ParsedLine},
     math::sign_extend_to_long,
     utils::{parse_absolute_expression, parse_string_into_padded_bytes},
 };
-use crate::instructions::{IndexRegister, TargetDirection};
 
 #[derive(Debug)]
 pub enum Directive {
@@ -180,13 +179,17 @@ impl Compiler {
                                         e.get_message(),
                                         line.line_index
                                     )
-                                        .to_string());
+                                    .to_string());
                                 }
                             }
                         }
                         Err(e) => {
-                            return Err(format!("{}; at line {}", e.get_message(), line.line_index)
-                                .to_string());
+                            return Err(format!(
+                                "{}; at line {}",
+                                e.get_message(),
+                                line.line_index
+                            )
+                            .to_string());
                         }
                     }
                 }
@@ -215,12 +218,16 @@ impl Compiler {
                 },
                 "movem" => {
                     let (mut register_mask, target, direction) = match (op1, op2) {
-                        (Operand::Immediate(mask), op2) => (mask as u16, op2, TargetDirection::ToMemory),
+                        (Operand::Immediate(mask), op2) => {
+                            (mask as u16, op2, TargetDirection::ToMemory)
+                        }
                         (Operand::Register(op), op2) => {
                             let index = op.to_index();
                             (1 << index, op2, TargetDirection::ToMemory)
                         }
-                        (op1, Operand::Immediate(mask)) => (mask as u16, op1, TargetDirection::FromMemory),
+                        (op1, Operand::Immediate(mask)) => {
+                            (mask as u16, op1, TargetDirection::FromMemory)
+                        }
                         (op1, Operand::Register(op)) => {
                             let index = op.to_index();
                             (1 << index, op1, TargetDirection::FromMemory)
@@ -245,11 +252,7 @@ impl Compiler {
                 }
                 "add" => match (op1, op2) {
                     (Operand::Immediate(num), _) => {
-                        Instruction::ADDI(
-                            num,
-                            op2,
-                            self.get_size(size, Size::Word)?,
-                        )
+                        Instruction::ADDI(num, op2, self.get_size(size, Size::Word)?)
                     }
                     (_, Operand::Register(RegisterOperand::Address(a))) => Instruction::ADDA(
                         op1,
@@ -260,11 +263,7 @@ impl Compiler {
                 },
                 "sub" => match (op1, op2) {
                     (Operand::Immediate(num), _) => {
-                        Instruction::SUBI(
-                            num,
-                            op2,
-                            self.get_size(size, Size::Word)?,
-                        )
+                        Instruction::SUBI(num, op2, self.get_size(size, Size::Word)?)
                     }
                     (_, Operand::Register(RegisterOperand::Address(a))) => Instruction::SUBA(
                         op1,
@@ -282,11 +281,9 @@ impl Compiler {
                     (Operand::Immediate(num), op2) => {
                         Instruction::CMPI(num, op2, self.get_size(size, Size::Word)?)
                     }
-                    (Operand::PostIndirect(_), Operand::PostIndirect(_)) => Instruction::CMPM(
-                        op1,
-                        op2,
-                        self.get_size(size, Size::Word)?,
-                    ),
+                    (Operand::PostIndirect(_), Operand::PostIndirect(_)) => {
+                        Instruction::CMPM(op1, op2, self.get_size(size, Size::Word)?)
+                    }
                     _ => Instruction::CMP(
                         op1,
                         self.extract_register(op2)?,
@@ -585,7 +582,11 @@ impl Compiler {
         }
     }
 
-    fn parse_register_with_size(&mut self, operand: &LexedOperand, _line: &ParsedLine) -> CompilationResult<(RegisterOperand, Size)> {
+    fn parse_register_with_size(
+        &mut self,
+        operand: &LexedOperand,
+        _line: &ParsedLine,
+    ) -> CompilationResult<(RegisterOperand, Size)> {
         match operand {
             LexedOperand::Register(register_type, register_name) => {
                 let register = self.parse_register(register_type, register_name)?;
@@ -608,7 +609,11 @@ impl Compiler {
             ))),
         }
     }
-    fn parse_register(&mut self, register_type: &LexedRegisterType, register_name: &String) -> CompilationResult<RegisterOperand> {
+    fn parse_register(
+        &mut self,
+        register_type: &LexedRegisterType,
+        register_name: &String,
+    ) -> CompilationResult<RegisterOperand> {
         match register_type {
             LexedRegisterType::Address => match register_name[1..].parse() {
                 Ok(reg) => Ok(RegisterOperand::Address(reg)),
@@ -719,11 +724,10 @@ impl Compiler {
                 let parsed_operand = self.parse_operand(operand, line)?;
                 let parsed_operand = self.extract_register(parsed_operand)?;
                 match parsed_operand {
-                    RegisterOperand::Data(_) => {
-                        Err(CompilationError::InvalidAddressingMode( 
-                            "Operand of indirect addressing mode must be an address register".to_string(),
-                        ))
-                    }
+                    RegisterOperand::Data(_) => Err(CompilationError::InvalidAddressingMode(
+                        "Operand of indirect addressing mode must be an address register"
+                            .to_string(),
+                    )),
                     RegisterOperand::Address(a) => Ok(Operand::Indirect(a)),
                 }
             }
@@ -731,11 +735,10 @@ impl Compiler {
                 let parsed_operand = self.parse_operand(operand, line)?;
                 let parsed_operand = self.extract_register(parsed_operand)?;
                 match parsed_operand {
-                    RegisterOperand::Data(_) => {
-                        Err(CompilationError::InvalidAddressingMode(
-                            "Operand of post indirect addressing mode must be an address register".to_string(),
-                        ))
-                    }
+                    RegisterOperand::Data(_) => Err(CompilationError::InvalidAddressingMode(
+                        "Operand of post indirect addressing mode must be an address register"
+                            .to_string(),
+                    )),
                     RegisterOperand::Address(a) => Ok(Operand::PostIndirect(a)),
                 }
             }
@@ -743,11 +746,10 @@ impl Compiler {
                 let parsed_operand = self.parse_operand(operand, line)?;
                 let parsed_operand = self.extract_register(parsed_operand)?;
                 match parsed_operand {
-                    RegisterOperand::Data(_) => {
-                        Err(CompilationError::InvalidAddressingMode(
-                            "Operand of pre indirect addressing mode must be an address register".to_string(),
-                        ))
-                    }
+                    RegisterOperand::Data(_) => Err(CompilationError::InvalidAddressingMode(
+                        "Operand of pre indirect addressing mode must be an address register"
+                            .to_string(),
+                    )),
                     RegisterOperand::Address(a) => Ok(Operand::PreIndirect(a)),
                 }
             }
@@ -809,9 +811,7 @@ impl Compiler {
                                 LexedSize::Word | LexedSize::Unspecified => {
                                     data.extend_from_slice(&(num as u16).to_be_bytes())
                                 }
-                                LexedSize::Long => {
-                                    data.extend_from_slice(&num.to_be_bytes())
-                                }
+                                LexedSize::Long => data.extend_from_slice(&num.to_be_bytes()),
                                 _ => {
                                     return Err(CompilationError::Raw(
                                         "Invalid size for DC directive".to_string(),
@@ -941,7 +941,7 @@ impl Compiler {
                                         &arg[1..arg.len() - 1],
                                         size.to_bytes_word_default() as usize,
                                     )
-                                        .len();
+                                    .len();
                                 }
                                 _ => {
                                     next_address += size.to_bytes_word_default() as usize;

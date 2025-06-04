@@ -16,17 +16,17 @@ use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
+use crate::debugger::PrettyStackFrame;
 use crate::instructions::TargetDirection;
 use crate::{
     compiler::{Compiler, Directive, InstructionLine},
     debugger::{Debugger, ExecutionStep, MutationOperation},
     instructions::{
-        Condition, Instruction, Interrupt, InterruptResult, Label, Operand, RegisterOperand,
+        Condition, Instruction, Interrupt, InterruptResult, Operand, RegisterOperand,
         ShiftDirection, Sign, Size,
     },
     math::*,
 };
-use crate::debugger::PrettyStackFrame;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Used {
@@ -552,11 +552,11 @@ impl Interpreter {
         match instruction {
             _ if self.status == InterpreterStatus::Terminated
                 || self.status == InterpreterStatus::TerminatedWithException =>
-            {
-                Err(RuntimeError::Raw(
-                    "Attempt to run terminated program".to_string(),
-                ))
-            }
+                {
+                    Err(RuntimeError::Raw(
+                        "Attempt to run terminated program".to_string(),
+                    ))
+                }
             _ if self.status == InterpreterStatus::Interrupt => Err(RuntimeError::Raw(
                 "Attempted to step while interrupt is pending".to_string(),
             )),
@@ -635,7 +635,7 @@ impl Interpreter {
                             self.debugger.push_call(
                                 callee_address,
                                 *from,
-                                self.cpu.get_register_values()
+                                self.cpu.get_register_values(),
                             );
                         }
                         MutationOperation::PushCall { to: _, from: _ } => {
@@ -654,7 +654,27 @@ impl Interpreter {
             | InterruptResult::DisplayStringWithCRLF
             | InterruptResult::DisplayStringWithoutCRLF
             | InterruptResult::DisplayChar
-            | InterruptResult::Delay => {}
+            | InterruptResult::Delay
+            | InterruptResult::SetPenColor
+            | InterruptResult::SetFillColor
+            | InterruptResult::DrawPixel
+            | InterruptResult::DrawLine
+            | InterruptResult::DrawLineTo
+            | InterruptResult::MoveTo
+            | InterruptResult::DrawRectangle
+            | InterruptResult::DrawEllipse
+            | InterruptResult::FloodFill
+            | InterruptResult::DrawUnfilledRectangle
+            | InterruptResult::DrawUnfilledEllipse
+            //| InterruptResult::SetDrawingMode
+            | InterruptResult::SetPenWidth
+            //| InterruptResult::Repaint
+            | InterruptResult::DrawText
+            //| InterruptResult::GetPenPosition(_)
+            | InterruptResult::SetScreenSize
+            | InterruptResult::ClearScreen
+
+            => {}
             InterruptResult::ReadKeyboardString(str) => {
                 if str.len() > 80 {
                     //TODO should i error or truncate?
@@ -664,20 +684,23 @@ impl Interpreter {
                 }
                 let address = self.cpu.a_reg[0].get_long() as usize;
                 self.set_memory_bytes(address, str.as_bytes())?;
-                self.set_register_value(&RegisterOperand::Data(1), str.len() as u32, Size::Word);
+                self.set_register_value(RegisterOperand::Data(1), str.len() as u32, Size::Word);
                 //self.cpu.d_reg[1].store_word(str.len() as u16);
             }
             InterruptResult::ReadNumber(num) => {
-                self.set_register_value(&RegisterOperand::Data(1), num as u32, Size::Long);
+                self.set_register_value(RegisterOperand::Data(1), num as u32, Size::Long);
             }
             InterruptResult::ReadChar(char) => {
-                self.set_register_value(&RegisterOperand::Data(1), char as u8 as u32, Size::Byte);
+                self.set_register_value(RegisterOperand::Data(1), char as u8 as u32, Size::Byte);
             }
             InterruptResult::GetTime(time) => {
-                self.set_register_value(&RegisterOperand::Data(1), time, Size::Long);
+                self.set_register_value(RegisterOperand::Data(1), time, Size::Long);
             }
             InterruptResult::Terminate => {
                 self.set_status(InterpreterStatus::Terminated);
+            }
+            InterruptResult::GetPixelColor(color) => {
+                self.set_register_value(RegisterOperand::Data(0), color, Size::Long);
             }
         };
         self.current_interrupt = None;
@@ -700,7 +723,7 @@ impl Interpreter {
     }
     #[inline(always)]
     pub fn set_sp(&mut self, sp: usize) {
-        self.set_register_value(&RegisterOperand::Address(7), sp as u32, Size::Long);
+        self.set_register_value(RegisterOperand::Address(7), sp as u32, Size::Long);
     }
     #[inline(always)]
     pub fn get_instruction_at(&self, address: usize) -> Option<&InstructionLine> {
@@ -726,12 +749,12 @@ impl Interpreter {
             Instruction::MOVEA(source, dest, size) => {
                 let source_value = self.get_operand_value(source, *size, Used::Once)?;
                 let source_value = sign_extend_to_long(source_value, *size) as u32;
-                self.set_register_value(dest, source_value, Size::Long);
+                self.set_register_value(*dest, source_value, Size::Long);
             }
             Instruction::MOVEQ(value, dest) => {
                 let value = sign_extend_to_long(*value as u32, Size::Byte) as u32;
                 self.set_logic_flags(value, Size::Long);
-                self.set_register_value(dest, value, Size::Long);
+                self.set_register_value(*dest, value, Size::Long);
             }
             Instruction::MOVEM {
                 registers_mask,
@@ -773,7 +796,7 @@ impl Interpreter {
                 match target {
                     Operand::PostIndirect(reg) | Operand::PreIndirect(reg) => {
                         self.set_register_value(
-                            &RegisterOperand::Address(*reg),
+                            RegisterOperand::Address(*reg),
                             post_addr,
                             Size::Long,
                         );
@@ -794,9 +817,9 @@ impl Interpreter {
                 let source_value =
                     sign_extend_to_long(self.get_operand_value(source, *size, Used::Once)?, *size)
                         as u32;
-                let dest_value = self.get_register_value(dest, Size::Long);
+                let dest_value = self.get_register_value(*dest, Size::Long);
                 let (result, _) = overflowing_sub_sized(dest_value, source_value, Size::Long);
-                self.set_register_value(dest, result, Size::Long);
+                self.set_register_value(*dest, result, Size::Long);
             }
             Instruction::SUBQ(value, dest, size) => {
                 match dest {
@@ -810,13 +833,13 @@ impl Interpreter {
                             }
                             Size::Word | Size::Long => {
                                 let dest_value = self.get_register_value(
-                                    &RegisterOperand::Address(*reg),
+                                    RegisterOperand::Address(*reg),
                                     Size::Long,
                                 );
                                 let (result, _) =
                                     overflowing_sub_sized(dest_value, *value as u32, Size::Long);
                                 self.set_register_value(
-                                    &RegisterOperand::Address(*reg),
+                                    RegisterOperand::Address(*reg),
                                     result,
                                     Size::Long,
                                 );
@@ -856,9 +879,9 @@ impl Interpreter {
                 let source_value =
                     sign_extend_to_long(self.get_operand_value(source, *size, Used::Once)?, *size)
                         as u32;
-                let dest_value = self.get_register_value(dest, Size::Long);
+                let dest_value = self.get_register_value(*dest, Size::Long);
                 let (result, _) = overflowing_add_sized(dest_value, source_value, Size::Long);
-                self.set_register_value(dest, result, Size::Long);
+                self.set_register_value(*dest, result, Size::Long);
             }
             Instruction::ADDI(source_value, dest, size) => {
                 let dest_value = self.get_operand_value(dest, *size, Used::Twice)?;
@@ -880,13 +903,13 @@ impl Interpreter {
                             }
                             Size::Word | Size::Long => {
                                 let dest_value = self.get_register_value(
-                                    &RegisterOperand::Address(*reg),
+                                    RegisterOperand::Address(*reg),
                                     Size::Long,
                                 );
                                 let (result, _) =
                                     overflowing_add_sized(dest_value, *value as u32, Size::Long);
                                 self.set_register_value(
-                                    &RegisterOperand::Address(*reg),
+                                    RegisterOperand::Address(*reg),
                                     result,
                                     Size::Long,
                                 );
@@ -909,7 +932,7 @@ impl Interpreter {
             Instruction::MULx(source, dest, sign) => {
                 let source_value = self.get_operand_value(source, Size::Word, Used::Once)?;
                 let dest_value =
-                    get_value_sized(self.get_register_value(dest, Size::Long), Size::Word);
+                    get_value_sized(self.get_register_value(*dest, Size::Long), Size::Word);
                 let result = match sign {
                     Sign::Signed => {
                         ((((dest_value as u16) as i16) as i64)
@@ -919,7 +942,7 @@ impl Interpreter {
                     Sign::Unsigned => dest_value as u64 * source_value as u64,
                 };
                 self.set_compare_flags(result as u32, Size::Long, false, false);
-                self.set_register_value(dest, result as u32, Size::Long);
+                self.set_register_value(*dest, result as u32, Size::Long);
             }
 
             Instruction::BRA(address) => {
@@ -982,7 +1005,7 @@ impl Interpreter {
             }
             Instruction::LEA(source, dest) => {
                 let addr = self.get_operand_address(source)?;
-                self.set_register_value(dest, addr, Size::Long);
+                self.set_register_value(*dest, addr, Size::Long);
             }
             Instruction::PEA(source) => {
                 let addr = self.get_operand_address(source)?;
@@ -1168,7 +1191,7 @@ impl Interpreter {
                 if source_value == 0 {
                     return Err(RuntimeError::DivisionByZero);
                 }
-                let dest_value = self.get_register_value(dest, Size::Long);
+                let dest_value = self.get_register_value(*dest, Size::Long);
                 let dest_value = get_value_sized(dest_value, Size::Long);
                 let (remainder, quotient, has_overflowed) = match sign {
                     Sign::Signed => {
@@ -1193,7 +1216,7 @@ impl Interpreter {
                 if !has_overflowed {
                     self.set_compare_flags(quotient, Size::Word, false, false);
                     self.set_register_value(
-                        dest,
+                        *dest,
                         (remainder << 16) | (0xFFFF & quotient),
                         Size::Long,
                     );
@@ -1203,13 +1226,13 @@ impl Interpreter {
                 }
             }
             Instruction::EXG(reg1, reg2) => {
-                let reg1_value = self.get_register_value(reg1, Size::Long);
-                let reg2_value = self.get_register_value(reg2, Size::Long);
-                self.set_register_value(reg1, reg2_value, Size::Long);
-                self.set_register_value(reg2, reg1_value, Size::Long);
+                let reg1_value = self.get_register_value(*reg1, Size::Long);
+                let reg2_value = self.get_register_value(*reg2, Size::Long);
+                self.set_register_value(*reg1, reg2_value, Size::Long);
+                self.set_register_value(*reg2, reg1_value, Size::Long);
             }
             Instruction::EXT(reg, from, to) => {
-                let input = get_value_sized(self.get_register_value(reg, Size::Long), *from);
+                let input = get_value_sized(self.get_register_value(*reg, Size::Long), *from);
                 let result = match (from, to) {
                     (Size::Byte, Size::Word) => ((((input as u8) as i8) as i16) as u16) as u32,
                     (Size::Word, Size::Long) => (((input as u16) as i16) as i32) as u32,
@@ -1220,13 +1243,13 @@ impl Interpreter {
                         ));
                     }
                 };
-                self.set_register_value(reg, result, *to);
+                self.set_register_value(*reg, result, *to);
                 self.set_logic_flags(result, *to);
             }
             Instruction::SWAP(reg) => {
-                let value = self.get_register_value(reg, Size::Long);
+                let value = self.get_register_value(*reg, Size::Long);
                 let new_value = ((value & 0x0000FFFF) << 16) | ((value & 0xFFFF0000) >> 16);
-                self.set_register_value(reg, new_value, Size::Long);
+                self.set_register_value(*reg, new_value, Size::Long);
                 self.set_logic_flags(new_value, Size::Long);
             }
             Instruction::TST(source, size) => {
@@ -1236,7 +1259,7 @@ impl Interpreter {
             Instruction::CMP(source, dest, size) => {
                 //TODO revise this, should i strict it to only data registers?
                 let source_value = self.get_operand_value(source, *size, Used::Once)?;
-                let dest_value = self.get_register_value(dest, *size);
+                let dest_value = self.get_register_value(*dest, *size);
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, *size);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, *size);
                 self.set_compare_flags(result, *size, carry, overflow);
@@ -1245,7 +1268,7 @@ impl Interpreter {
                 let source_value =
                     sign_extend_to_long(self.get_operand_value(source, *size, Used::Once)?, *size)
                         as u32;
-                let dest_value = self.get_register_value(dest, Size::Long);
+                let dest_value = self.get_register_value(*dest, Size::Long);
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, Size::Long);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, Size::Long);
                 self.set_compare_flags(result, Size::Long, carry, overflow);
@@ -1284,8 +1307,8 @@ impl Interpreter {
             }
             Instruction::DBcc(reg, address, cond) => {
                 if !self.get_condition_value(cond) {
-                    let next = (self.get_register_value(reg, Size::Word) as i16).wrapping_sub(1);
-                    self.set_register_value(reg, next as u32, Size::Word);
+                    let next = (self.get_register_value(*reg, Size::Word) as i16).wrapping_sub(1);
+                    self.set_register_value(*reg, next as u32, Size::Word);
                     if next != -1 {
                         self.pc = *address as usize;
                     }
@@ -1294,15 +1317,15 @@ impl Interpreter {
             Instruction::LINK(reg, offset) => {
                 let sp = self.get_sp().wrapping_sub(4);
                 self.set_sp(sp);
-                let value = self.get_register_value(reg, Size::Long);
+                let value = self.get_register_value(*reg, Size::Long);
                 self.set_memory_value(sp, Size::Long, value)?;
-                self.set_register_value(reg, sp as u32, Size::Long);
+                self.set_register_value(*reg, sp as u32, Size::Long);
                 self.set_sp((sp as i32).wrapping_add(*offset as i32) as usize)
             }
             Instruction::UNLK(reg) => {
-                let value = self.get_register_value(reg, Size::Long);
+                let value = self.get_register_value(*reg, Size::Long);
                 let (value, new_sp) = self.memory.pop(Size::Long, value as usize)?;
-                self.set_register_value(reg, value.get_long(), Size::Long);
+                self.set_register_value(*reg, value.get_long(), Size::Long);
                 self.set_sp(new_sp);
             }
             Instruction::RTS => {
@@ -1359,32 +1382,32 @@ impl Interpreter {
     }
 
     #[inline]
-    pub fn get_register_value(&self, register: &RegisterOperand, size: Size) -> u32 {
+    pub fn get_register_value(&self, register: RegisterOperand, size: Size) -> u32 {
         match register {
-            RegisterOperand::Address(num) => self.cpu.a_reg[*num as usize].get_size(size),
-            RegisterOperand::Data(num) => self.cpu.d_reg[*num as usize].get_size(size),
+            RegisterOperand::Address(num) => self.cpu.a_reg[num as usize].get_size(size),
+            RegisterOperand::Data(num) => self.cpu.d_reg[num as usize].get_size(size),
         }
     }
 
     #[inline]
-    pub fn set_register_value(&mut self, register: &RegisterOperand, value: u32, size: Size) {
+    pub fn set_register_value(&mut self, register: RegisterOperand, value: u32, size: Size) {
         let old_value = match register {
             RegisterOperand::Address(num) => {
                 //TODO i could probably make this a bit more efficient by not having to do the get_size even if the history is not being kept
-                let old_value = self.cpu.a_reg[*num as usize].get_long();
-                self.cpu.a_reg[*num as usize].store_size(size, value);
+                let old_value = self.cpu.a_reg[num as usize].get_long();
+                self.cpu.a_reg[num as usize].store_size(size, value);
                 old_value
             }
             RegisterOperand::Data(num) => {
-                let old_value = self.cpu.d_reg[*num as usize].get_long();
-                self.cpu.d_reg[*num as usize].store_size(size, value);
+                let old_value = self.cpu.d_reg[num as usize].get_long();
+                self.cpu.d_reg[num as usize].store_size(size, value);
                 old_value
             }
         };
         if self.keep_history {
             self.debugger
                 .add_mutation(MutationOperation::WriteRegister {
-                    register: *register,
+                    register,
                     old: old_value,
                     size,
                 });
@@ -1467,7 +1490,7 @@ impl Interpreter {
             if (mask & 0x01) != 0 {
                 let val =
                     sign_extend_to_long(self.memory.read_size(addr as usize, size)?, size) as u32;
-                self.set_register_value(&RegisterOperand::Data(i), val, size);
+                self.set_register_value(RegisterOperand::Data(i), val, size);
                 (addr, _) = overflowing_add_sized(addr, size_bytes, Size::Long);
             }
             mask >>= 1;
@@ -1476,7 +1499,7 @@ impl Interpreter {
             if (mask & 0x01) != 0 {
                 let val =
                     sign_extend_to_long(self.memory.read_size(addr as usize, size)?, size) as u32;
-                self.set_register_value(&RegisterOperand::Address(i), val, Size::Long);
+                self.set_register_value(RegisterOperand::Address(i), val, Size::Long);
                 (addr, _) = overflowing_add_sized(addr, size_bytes, Size::Long);
             }
             mask >>= 1;
@@ -1579,6 +1602,7 @@ impl Interpreter {
                 let time = self.cpu.d_reg[1].get_long();
                 Ok(Interrupt::Delay(time))
             }
+            //TODO add graphics interrupts
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
         }
     }
@@ -1610,7 +1634,7 @@ impl Interpreter {
     fn get_operand_value(&mut self, op: &Operand, size: Size, used: Used) -> RuntimeResult<u32> {
         match op {
             Operand::Immediate(v) => Ok(*v),
-            Operand::Register(op) => Ok(self.get_register_value(op, size)),
+            Operand::Register(op) => Ok(self.get_register_value(*op, size)),
             Operand::Absolute(address) => Ok(self.memory.read_size(*address, size)?),
 
             Operand::Indirect(reg) => {
@@ -1635,7 +1659,7 @@ impl Interpreter {
             }
             Operand::IndirectDisplacement { offset, base } => {
                 //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(base, Size::Long) as i32;
+                let address = self.get_register_value(*base, Size::Long) as i32;
                 let address = address.wrapping_add(*offset);
                 Ok(self.memory.read_size(address as usize, size)?)
             }
@@ -1646,8 +1670,8 @@ impl Interpreter {
             } => {
                 //TODO not sure if this is how it should work
                 //TODO should this be i32?
-                let base_value = self.get_register_value(base, Size::Long) as i32;
-                let index_value = self.get_register_value(&index.register, index.size);
+                let base_value = self.get_register_value(*base, Size::Long) as i32;
+                let index_value = self.get_register_value(index.register, index.size);
                 let index_value = sign_extend_to_long(index_value, index.size);
                 let final_address = base_value.wrapping_add(*offset).wrapping_add(index_value);
                 Ok(self.memory.read_size(final_address as usize, size)?)
@@ -1662,7 +1686,7 @@ impl Interpreter {
             Operand::Indirect(reg) => Ok(self.get_a_reg_sized(*reg, Size::Long)),
             Operand::IndirectDisplacement { offset, base } => {
                 //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(base, Size::Long) as i32;
+                let address = self.get_register_value(*base, Size::Long) as i32;
                 let address = address.wrapping_add(*offset);
                 Ok(address as u32)
             }
@@ -1672,8 +1696,8 @@ impl Interpreter {
                 index,
             } => {
                 //TODO not sure if this is how it should work
-                let base_value = self.get_register_value(base, Size::Long) as i32;
-                let index_value = self.get_register_value(&index.register, index.size);
+                let base_value = self.get_register_value(*base, Size::Long) as i32;
+                let index_value = self.get_register_value(index.register, index.size);
                 let index_value = sign_extend_to_long(index_value, index.size);
                 let final_address = base_value.wrapping_add(*offset).wrapping_add(index_value);
                 Ok(final_address as u32)
@@ -1696,7 +1720,7 @@ impl Interpreter {
                 "Attempted to store to immediate value".to_string(),
             )),
             Operand::Register(op) => {
-                self.set_register_value(op, value, size);
+                self.set_register_value(*op, value, size);
                 Ok(())
             }
             Operand::Absolute(address) => Ok(self.set_memory_value(*address, size, value)?),
@@ -1706,12 +1730,19 @@ impl Interpreter {
             }
 
             Operand::PreIndirect(op) => {
-                let address = self.get_a_reg_sized(*op, Size::Long);
-                let address = (address).wrapping_sub(size.to_bytes() as u32);
                 //give priority to the getter to decrement
-                if used != Used::Twice {
-                    self.set_a_reg_sized(*op, address, Size::Long);
-                }
+                let address = if used == Used::Twice {
+                    //if it's used twice, just get the address 
+                    //as it was already decremented by the get
+                    self.get_a_reg_sized(*op, Size::Long)
+                } else {
+                    //if it's not used twice, then decrement the value
+                    let a = self.get_a_reg_sized(*op, Size::Long);
+                    let a = (a).wrapping_sub(size.to_bytes() as u32);
+                    self.set_a_reg_sized(*op, a, Size::Long);
+                    a
+                };
+
                 Ok(self.set_memory_value(address as usize, size, value)?)
             }
             Operand::PostIndirect(op) => {
@@ -1723,7 +1754,7 @@ impl Interpreter {
             }
             Operand::IndirectDisplacement { offset, base } => {
                 //TODO not sure if this works fine with full 32bits
-                let address = self.get_register_value(base, Size::Long) as i32;
+                let address = self.get_register_value(*base, Size::Long) as i32;
                 let address = address.wrapping_add(*offset);
                 Ok(self.set_memory_value(address as usize, size, value)?)
             }
@@ -1732,8 +1763,8 @@ impl Interpreter {
                 index,
                 base,
             } => {
-                let base_value = self.get_register_value(base, Size::Long) as i32;
-                let index_value = self.get_register_value(&index.register, index.size);
+                let base_value = self.get_register_value(*base, Size::Long) as i32;
+                let index_value = self.get_register_value(index.register, index.size);
                 let index_value = sign_extend_to_long(index_value, index.size);
                 let final_address = base_value.wrapping_add(*offset).wrapping_add(index_value);
                 Ok(self.set_memory_value(final_address as usize, size, value)?)
@@ -1897,8 +1928,8 @@ impl Interpreter {
                     && self.get_flag(Flags::Overflow)
                     && !self.get_flag(Flags::Zero))
                     || (!self.get_flag(Flags::Negative)
-                        && !self.get_flag(Flags::Overflow)
-                        && !self.get_flag(Flags::Zero))
+                    && !self.get_flag(Flags::Overflow)
+                    && !self.get_flag(Flags::Zero))
             }
             Condition::LessThanOrEqual => {
                 self.get_flag(Flags::Zero)
@@ -2032,7 +2063,7 @@ impl Interpreter {
     }
     pub fn wasm_get_register_value(&self, reg: JsValue, size: Size) -> Result<u32, String> {
         match serde_wasm_bindgen::from_value(reg.clone()) {
-            Ok(reg) => Ok(self.get_register_value(&reg, size)),
+            Ok(reg) => Ok(self.get_register_value(reg, size)),
             Err(e) => Err(format!(
                 "Cannot get register, invalid register {:?}, {}",
                 reg, e
@@ -2046,7 +2077,7 @@ impl Interpreter {
         size: Size,
     ) -> Result<(), String> {
         match serde_wasm_bindgen::from_value(reg.clone()) {
-            Ok(parsed) => self.set_register_value(&parsed, value, size),
+            Ok(parsed) => self.set_register_value(parsed, value, size),
             Err(e) => {
                 return Err(format!(
                     "Cannot set register, invalid register {:?}, {}",

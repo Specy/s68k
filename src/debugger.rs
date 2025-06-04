@@ -1,10 +1,10 @@
-use std::collections::{LinkedList, HashMap};
+use std::collections::{HashMap, LinkedList};
 
 use serde::Serialize;
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
 use crate::{
-    instructions::{RegisterOperand, Size, Label},
+    instructions::{Label, RegisterOperand, Size},
     interpreter::Flags,
 };
 
@@ -32,7 +32,7 @@ pub enum MutationOperation {
     PopCall {
         to: usize,
         from: usize,
-    }
+    },
 }
 #[derive(Serialize)]
 pub struct ExecutionStep {
@@ -98,15 +98,13 @@ impl CallStackFrame {
     }
 }
 
-
 #[wasm_bindgen]
 pub struct Debugger {
     history: LinkedList<ExecutionStep>,
     history_size: usize,
     call_stack: Vec<CallStackFrame>,
-    labels: HashMap<usize, Label>
+    labels: HashMap<usize, Label>,
 }
-
 
 impl Debugger {
     pub fn new(history_size: usize, labels: &HashMap<String, Label>) -> Self {
@@ -121,7 +119,7 @@ impl Debugger {
             history: empty_history,
             history_size,
             call_stack: vec![],
-            labels: labels_map
+            labels: labels_map,
         }
     }
     pub fn add_step(&mut self, step: ExecutionStep) {
@@ -177,23 +175,23 @@ impl Debugger {
         &self.labels
     }
     pub fn push_call(&mut self, address: usize, source_address: usize, registers: Vec<u32>) {
-        self.call_stack.push(
-            CallStackFrame::new(address, source_address, registers)
-        );
+        self.call_stack
+            .push(CallStackFrame::new(address, source_address, registers));
     }
     pub fn pop_call(&mut self) -> Option<CallStackFrame> {
         self.call_stack.pop()
     }
     pub fn to_call_stack(&self) -> Vec<PrettyStackFrame> {
-        self.call_stack.iter().map(|frame| {
-            match self.labels.get(&frame.address) {
+        self.call_stack
+            .iter()
+            .map(|frame| match self.labels.get(&frame.address) {
                 Some(label) => PrettyStackFrame {
                     address: frame.address,
                     source_address: frame.source_address,
                     registers: frame.registers.clone(),
                     label_name: label.name.clone(),
                     label_address: label.address,
-                    label_line: label.line
+                    label_line: label.line,
                 },
                 None => PrettyStackFrame {
                     address: frame.address,
@@ -202,19 +200,18 @@ impl Debugger {
                     label_name: "Unknown".to_string(),
                     label_address: frame.address,
                     label_line: 0,
-                }
-            }
-        }).collect()
+                },
+            })
+            .collect()
     }
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PrettyStackFrame {
     pub address: usize,
     pub source_address: usize,
     pub registers: Vec<u32>,
-    
+
     pub label_name: String,
     pub label_address: usize,
     pub label_line: usize,

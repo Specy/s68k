@@ -79,7 +79,9 @@ pub enum ArithmeticalToken {
     Operand(ArithmeticalOperandToken),
 }
 
-pub fn to_reverse_polish_notation(tokens: &[ArithmeticalToken]) -> Result<Vec<ArithmeticalToken>, String> {
+pub fn to_reverse_polish_notation(
+    tokens: &[ArithmeticalToken],
+) -> Result<Vec<ArithmeticalToken>, String> {
     let mut operators: Vec<ArithmeticalOperandToken> = Vec::new();
     let mut result: Vec<ArithmeticalToken> = Vec::new();
     for token in tokens.iter() {
@@ -95,18 +97,28 @@ pub fn to_reverse_polish_notation(tokens: &[ArithmeticalToken]) -> Result<Vec<Ar
                         while operators.last() != Some(&ArithmeticalOperandToken::OpenBracket) {
                             match operators.pop() {
                                 Some(op) => result.push(ArithmeticalToken::Operand(op)),
-                                None => return Err("Invalid expression, could not pop arguments".to_string()),
+                                None => {
+                                    return Err(
+                                        "Invalid expression, could not pop arguments".to_string()
+                                    )
+                                }
                             }
                         }
                         match operators.pop() {
-                            None => return Err("Invalid expression, could not find open bracket".to_string()),
+                            None => {
+                                return Err(
+                                    "Invalid expression, could not find open bracket".to_string()
+                                )
+                            }
                             _ => {}
                         }
                     }
                     _ => {
                         while should_unwind(&operators, op) {
                             match operators.pop() {
-                                None => return Err("Invalid expression, failed to unwind".to_string()),
+                                None => {
+                                    return Err("Invalid expression, failed to unwind".to_string())
+                                }
                                 Some(op) => result.push(ArithmeticalToken::Operand(op)),
                             }
                         }
@@ -125,14 +137,12 @@ pub fn to_reverse_polish_notation(tokens: &[ArithmeticalToken]) -> Result<Vec<Ar
 fn should_unwind(operators: &[ArithmeticalOperandToken], next: &ArithmeticalOperandToken) -> bool {
     match operators.last() {
         None => false,
-        Some(last) => {
-            last.to_precedence() >= next.to_precedence()
-        }
+        Some(last) => last.to_precedence() >= next.to_precedence(),
     }
 }
 
 fn calculate_rpn(tokens: &[ArithmeticalToken]) -> Result<i64, String> {
-    if tokens.is_empty(){
+    if tokens.is_empty() {
         return Err("Invalid number of arguments for expression, it must not be empty".to_string());
     }
     let mut stack = Vec::new();
@@ -157,7 +167,7 @@ fn calculate_rpn(tokens: &[ArithmeticalToken]) -> Result<i64, String> {
                         };
                         stack.push(result)
                     }
-                    //to handle the cases like #-1, does not work with 10 - -1 
+                    //to handle the cases like #-1, does not work with 10 - -1
                     (Some(unary), None) => {
                         let result = match op {
                             ArithmeticalOperandToken::Add => unary,
@@ -166,18 +176,26 @@ fn calculate_rpn(tokens: &[ArithmeticalToken]) -> Result<i64, String> {
                         };
                         stack.push(result)
                     }
-                    _ => return Err(format!("Invalid number of arguments for expression \"{:?}\"", op))
+                    _ => {
+                        return Err(format!(
+                            "Invalid number of arguments for expression \"{:?}\"",
+                            op
+                        ))
+                    }
                 }
             }
         }
     }
     match stack.pop() {
         Some(num) => Ok(num),
-        None => Err("Invalid number of arguments for expression".to_string())
+        None => Err("Invalid number of arguments for expression".to_string()),
     }
 }
 
-pub fn parse_absolute_expression(str: &str, labels: &HashMap<String, Label>) -> Result<i64, String> {
+pub fn parse_absolute_expression(
+    str: &str,
+    labels: &HashMap<String, Label>,
+) -> Result<i64, String> {
     let tokens: Vec<&str> = ARITHMETICAL_TOKEN_REGEX
         .find_iter(str)
         .map(|m| m.as_str())
@@ -186,9 +204,7 @@ pub fn parse_absolute_expression(str: &str, labels: &HashMap<String, Label>) -> 
         .iter()
         .map(|t| match t.parse::<ArithmeticalOperandToken>() {
             Ok(parsed) => Ok(ArithmeticalToken::Operand(parsed)),
-            Err(_) => Ok(ArithmeticalToken::Number(
-                parse_absolute(t, labels)? as i64
-            )),
+            Err(_) => Ok(ArithmeticalToken::Number(parse_absolute(t, labels)? as i64)),
         })
         .collect::<Result<Vec<ArithmeticalToken>, String>>()?;
 
@@ -200,8 +216,8 @@ pub fn parse_absolute_expression(str: &str, labels: &HashMap<String, Label>) -> 
 pub fn parse_string_into_padded_bytes(str: &str, chunk_size: usize) -> Vec<u8> {
     //TODO to decide if i should use utf-8 or ascii
     let mut bytes = str.as_bytes().to_vec(); //full utf-8 bytes
-    //let mut bytes = str.chars().map(|c| c as u8).collect::<Vec<u8>>(); //ascii bytes
-    //fill space if not a modulo of chunk_size
+                                             //let mut bytes = str.chars().map(|c| c as u8).collect::<Vec<u8>>(); //ascii bytes
+                                             //fill space if not a modulo of chunk_size
     let padding = chunk_size - bytes.len() % chunk_size;
     if padding > 0 && padding < chunk_size {
         bytes.resize(bytes.len() + padding, 0);
