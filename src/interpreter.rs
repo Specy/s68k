@@ -218,7 +218,7 @@ impl Memory {
         let address = self.verify_address_bounds(address, size.to_bytes())?;
         let odd = address & 1 != 0;
         if odd && size != Size::Byte {
-            return Err(RuntimeError::AddressError(address, size));
+            return Err(RuntimeError::AddressError { address, size });
         }
         Ok(address)
     }
@@ -383,7 +383,10 @@ pub enum RuntimeError {
     Raw(String),
     ExecutionLimit(usize),
     OutOfBounds(String),
-    AddressError(usize, Size),
+    AddressError {
+        address: usize,
+        size: Size
+    },
     DivisionByZero,
     IncorrectAddressingMode(String),
     Unimplemented,
@@ -1602,7 +1605,117 @@ impl Interpreter {
                 let time = self.cpu.d_reg[1].get_long();
                 Ok(Interrupt::Delay(time))
             }
-            //TODO add graphics interrupts
+            // Graphics interrupts
+            11 => Ok(Interrupt::ClearScreen),
+            33 => {
+                let width = self.cpu.d_reg[1].get_long();
+                let height = self.cpu.d_reg[2].get_long();
+                Ok(Interrupt::SetScreenSize(width, height))
+            }
+            80 => {
+                let color = self.cpu.d_reg[1].get_long();
+                Ok(Interrupt::SetPenColor(color))
+            }
+            81 => {
+                let color = self.cpu.d_reg[1].get_long();
+                Ok(Interrupt::SetFillColor(color))
+            }
+            82 => {
+                let x = self.cpu.d_reg[1].get_word();
+                let y = self.cpu.d_reg[2].get_word();
+                Ok(Interrupt::DrawPixel(x as u32, y as u32))
+            }
+            83 => {
+                let x = self.cpu.d_reg[1].get_word();
+                let y = self.cpu.d_reg[2].get_word();
+                Ok(Interrupt::GetPixelColor(x as u32, y as u32))
+            }
+            84 => {
+                let x1 = self.cpu.d_reg[1].get_word();
+                let y1 = self.cpu.d_reg[2].get_word();
+                let x2 = self.cpu.d_reg[3].get_word();
+                let y2 = self.cpu.d_reg[4].get_word();
+                Ok(Interrupt::DrawLine(x1 as u32, y1 as u32, x2 as u32, y2 as u32))
+            }
+            85 => {
+                let x = self.cpu.d_reg[1].get_word();
+                let y = self.cpu.d_reg[2].get_word();
+                Ok(Interrupt::DrawLineTo(x as u32, y as u32))
+            }
+            86 => {
+                let x = self.cpu.d_reg[1].get_word();
+                let y = self.cpu.d_reg[2].get_word();
+                Ok(Interrupt::MoveTo(x as u32, y as u32))
+            }
+            87 => {
+                let left_x = self.cpu.d_reg[1].get_word();
+                let upper_y = self.cpu.d_reg[2].get_word();
+                let right_x = self.cpu.d_reg[3].get_word();
+                let lower_y = self.cpu.d_reg[4].get_word();
+                Ok(Interrupt::DrawRectangle(left_x as u32, upper_y as u32, right_x as u32, lower_y as u32))
+            }
+            88 => {
+                let left_x = self.cpu.d_reg[1].get_word();
+                let upper_y = self.cpu.d_reg[2].get_word();
+                let right_x = self.cpu.d_reg[3].get_word();
+                let lower_y = self.cpu.d_reg[4].get_word();
+                Ok(Interrupt::DrawEllipse(left_x as u32, upper_y as u32, right_x as u32, lower_y as u32))
+            }
+            89 => {
+                let x = self.cpu.d_reg[1].get_word();
+                let y = self.cpu.d_reg[2].get_word();
+                Ok(Interrupt::FloodFill(x as u32, y as u32))
+            }
+            90 => {
+                let left_x = self.cpu.d_reg[1].get_word();
+                let upper_y = self.cpu.d_reg[2].get_word();
+                let right_x = self.cpu.d_reg[3].get_word();
+                let lower_y = self.cpu.d_reg[4].get_word();
+                Ok(Interrupt::DrawUnfilledRectangle(left_x as u32, upper_y as u32, right_x as u32, lower_y as u32))
+            }
+            91 => {
+                let left_x = self.cpu.d_reg[1].get_word();
+                let upper_y = self.cpu.d_reg[2].get_word();
+                let right_x = self.cpu.d_reg[3].get_word();
+                let lower_y = self.cpu.d_reg[4].get_word();
+                Ok(Interrupt::DrawUnfilledEllipse(left_x as u32, upper_y as u32, right_x as u32, lower_y as u32))
+            }
+            93 => {
+                let width = self.cpu.d_reg[1].get_byte();
+                Ok(Interrupt::SetPenWidth(width as u32))
+            }
+            95 => {
+                // Read null-terminated string from address in A1
+                let max = 16384; // to prevent infinite loop
+                let address = self.cpu.a_reg[1].get_long() as usize;
+                let mut bytes = Vec::new();
+                let mut i = 0;
+                loop {
+                    let byte = self.memory.read_byte(address + i)?;
+                    if byte == 0x00 {
+                        break;
+                    }
+                    bytes.push(byte);
+                    i += 1;
+                    if i > max {
+                        return Err(RuntimeError::Raw(format!(
+                            "Invalid String read, reached max length of {} bytes",
+                            max
+                        )));
+                    }
+                }
+                match String::from_utf8(bytes.to_vec()) {
+                    Ok(str) => {
+                        let x = self.cpu.d_reg[1].get_word();
+                        let y = self.cpu.d_reg[2].get_word();
+                        Ok(Interrupt::DrawText(x as u32, y as u32, str))
+                    }
+                    Err(_) => Err(RuntimeError::Raw(format!(
+                        "Invalid String read for DrawText, received: {:?}, expected UTF-8",
+                        bytes
+                    ))),
+                }
+            }
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
         }
     }

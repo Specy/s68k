@@ -11,7 +11,23 @@ export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
 { type: "GetTime" } |
 { type: "Terminate" } | 
 { type: "DisplayChar", value: string } | 
-{ type: "Delay", value: number }
+{ type: "Delay", value: number } |
+{ type: "SetPenColor", value: number } |
+{ type: "SetFillColor", value: number } |
+{ type: "DrawPixel", value: [number, number] } |
+{ type: "GetPixelColor", value: [number, number] } |
+{ type: "DrawLine", value: [number, number, number, number] } |
+{ type: "DrawLineTo", value: [number, number] } |
+{ type: "MoveTo", value: [number, number] } |
+{ type: "DrawRectangle", value: [number, number, number, number] } |
+{ type: "DrawEllipse", value: [number, number, number, number] } |
+{ type: "FloodFill", value: [number, number] } |
+{ type: "DrawUnfilledRectangle", value: [number, number, number, number] } |
+{ type: "DrawUnfilledEllipse", value: [number, number, number, number] } |
+{ type: "SetPenWidth", value: number } |
+{ type: "DrawText", value: [number, number, string] } |
+{ type: "SetScreenSize", value: [number, number] } |
+{ type: "ClearScreen" }
 "#;
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -25,7 +41,23 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "GetTime", value: number } |
 { type: "DisplayChar" } | 
 { type: "Terminate" } |
-{ type: "Delay" }
+{ type: "Delay" } |
+{ type: "SetPenColor" } |
+{ type: "SetFillColor" } |
+{ type: "DrawPixel" } |
+{ type: "GetPixelColor", value: number } |
+{ type: "DrawLine" } |
+{ type: "DrawLineTo" } |
+{ type: "MoveTo" } |
+{ type: "DrawRectangle" } |
+{ type: "DrawEllipse" } |
+{ type: "FloodFill" } |
+{ type: "DrawUnfilledRectangle" } |
+{ type: "DrawUnfilledEllipse" } |
+{ type: "SetPenWidth" } |
+{ type: "DrawText" } |
+{ type: "SetScreenSize" } |
+{ type: "ClearScreen" }
 "#;
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -36,7 +68,7 @@ export type RuntimeError = { type: "Raw", value: string } |
 { type: "DivisionByZero" } |
 { type: "IncorrectAddressingMode", value: string } |
 { type: "Unimplemented" } |
-{ type: "AddressError", address: number, size: Size }
+{ type: "AddressError", value : { address: number, size: Size } }
 
 
 "#;
