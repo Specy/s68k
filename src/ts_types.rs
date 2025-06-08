@@ -6,6 +6,7 @@ export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
 { type: "DisplayStringWithoutCRLF", value: string } |
 { type: "ReadKeyboardString" } |
 { type: "DisplayNumber", value: number } |
+{ type: "DisplayNumberInBase", value: { value: number, base: number } } |
 { type: "ReadNumber" } |
 { type: "ReadChar" } |
 { type: "GetTime" } |
@@ -36,6 +37,7 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "DisplayStringWithoutCRLF" } |
 { type: "ReadKeyboardString", value: string } |
 { type: "DisplayNumber" } |
+{ type: "DisplayNumberInBase" } |
 { type: "ReadNumber", value: number } |
 { type: "ReadChar", value: string } |
 { type: "GetTime", value: number } |

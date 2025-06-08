@@ -654,6 +654,7 @@ impl Interpreter {
     pub fn answer_interrupt(&mut self, interrupt_result: InterruptResult) -> RuntimeResult<()> {
         match interrupt_result {
             InterruptResult::DisplayNumber
+            | InterruptResult::DisplayNumberInBase
             | InterruptResult::DisplayStringWithCRLF
             | InterruptResult::DisplayStringWithoutCRLF
             | InterruptResult::DisplayChar
@@ -1559,7 +1560,7 @@ impl Interpreter {
             2 => Ok(Interrupt::ReadKeyboardString),
             3 => {
                 let value = self.cpu.d_reg[1].get_long();
-                Ok(Interrupt::DisplayNumber(value))
+                Ok(Interrupt::DisplayNumber(value as i32))
             }
             4 => Ok(Interrupt::ReadNumber),
             5 => Ok(Interrupt::ReadChar),
@@ -1600,6 +1601,22 @@ impl Interpreter {
                         bytes
                     ))),
                 }
+            }
+            15 => {
+               /*
+               Display the unsigned number in D1.L converted to number base (2 through 36) contained in D2.B.
+    For example, to display D1.L in base16 put 16 in D2.B
+ Values of D2.B outside the range 2 to 36 inclusive are ignored.
+                */
+                let value = self.cpu.d_reg[1].get_long();
+                let base = self.cpu.d_reg[2].get_byte() as u32;
+                if !(2..=36).contains(&base) {
+                    return Err(RuntimeError::Raw(format!(
+                        "Invalid base for display number: {} in register D2.b, expected between 2 and 36",
+                        base
+                    )));
+                };
+                Ok(Interrupt::DisplayNumberInBase { value, base: base as u8 })
             }
             23 => {
                 let time = self.cpu.d_reg[1].get_long();
