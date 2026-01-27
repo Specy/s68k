@@ -517,8 +517,12 @@ impl Interpreter {
         &self.status
     }
     fn set_status(&mut self, status: InterpreterStatus) {
+        // ignore if status is the same, helps with the assertion below
+        if status == self.status {
+            return;
+        }
         match self.status {
-            InterpreterStatus::Terminated | InterpreterStatus::TerminatedWithException => {
+            InterpreterStatus::Terminated | InterpreterStatus::TerminatedWithException  => {
                 panic!("Cannot change status of terminated program")
             }
             _ => self.status = status,
@@ -1348,8 +1352,14 @@ impl Interpreter {
                 15 => {
                     let task = self.cpu.d_reg[0].get_byte();
                     let interrupt = self.get_trap(task)?;
+                    
+                    // TODO should i check if the interrupt is the Terminate one or if it terminated?
+                    match &interrupt {
+                        Interrupt::Terminate => self.set_status(InterpreterStatus::Terminated),
+                        _ => self.set_status(InterpreterStatus::Interrupt),
+                    }
                     self.current_interrupt = Some(interrupt);
-                    self.set_status(InterpreterStatus::Interrupt);
+                
                 }
                 _ => {
                     return Err(RuntimeError::Raw(format!(
@@ -1570,7 +1580,7 @@ impl Interpreter {
             }
             8 => Ok(Interrupt::GetTime),
             9 => {
-                self.status = InterpreterStatus::Terminated;
+                self.set_status(InterpreterStatus::Terminated);
                 Ok(Interrupt::Terminate)
             }
             13 | 14 => {
