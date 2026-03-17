@@ -426,7 +426,7 @@ impl SemanticChecker {
                     }
                     "moveq" => {
                         self.verify_two_args(operands, Rules::ONLY_IMMEDIATE, Rules::ONLY_D_REG, line);
-                        self.verify_value_bounds_if_immediate(operands, 0, line, -127, 127);
+                        self.verify_value_bounds_if_immediate(operands, 0, line, -128, 127);
                         self.verify_size(SizeRules::NoSize, line);
                     }
                     "movem" => {
@@ -898,9 +898,9 @@ impl SemanticChecker {
             } => {
                 match parse_absolute_expression(offset, &self.labels) {
                     Ok(num) => {
-                        if !(-(1 << 15)..=1 << 15).contains(&num) {
+                        if num < -(1 << 15) || num > ((1 << 15) - 1) {
                             return Err(format!(
-                                "Invalid offset \"{}\", must be between -32768 and 32768",
+                                "Invalid offset \"{}\", must be between -32768 and 32767",
                                 num
                             ));
                         }
@@ -924,15 +924,21 @@ impl SemanticChecker {
                 operands, offset, ..
             } => {
                 if !offset.is_empty() {
-                    match offset.parse::<i64>() {
+                    match parse_absolute_expression(offset, &self.labels) {
                         Ok(num) => {
-                            if !(-(1 << 7)..=1 << 7).contains(&num) {
-                                return Err(
-                                    "Invalid offset, must be between -128 and 128".to_string()
-                                );
+                            if num < -128 || num > 127 {
+                                return Err(format!(
+                                    "Invalid offset \"{}\", must be between -128 and 127",
+                                    num
+                                ));
                             }
                         }
-                        Err(_) => return Err("Offset is not a valid decimal number".to_string()),
+                        Err(_) => {
+                            return Err(format!(
+                                "Offset \"{}\" is not a valid expression",
+                                offset
+                            ))
+                        }
                     }
                 }
                 match operands[..] {
