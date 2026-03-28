@@ -1,7 +1,2 @@
-limit equ 100000000
-move.l #limit, d0
-move.l #0, d1
-for:
-    add.l #1, d1
-    sub.l #1, d0
-    bne for
+label:
+move.w label-4(a0,d1.w), d0

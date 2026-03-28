@@ -684,16 +684,14 @@ impl Interpreter {
 
             => {}
             InterruptResult::ReadKeyboardString(str) => {
-                if str.len() > 80 {
-                    //TODO should i error or truncate?
-                    return Err(RuntimeError::Raw(
-                        "String is longer than 80 chars".to_string(),
-                    ));
-                }
-                let address = self.cpu.a_reg[0].get_long() as usize;
-                self.set_memory_bytes(address, str.as_bytes())?;
-                self.set_register_value(RegisterOperand::Data(1), str.len() as u32, Size::Word);
-                //self.cpu.d_reg[1].store_word(str.len() as u16);
+                let safe_len = std::cmp::min(str.len(), 80);
+                let safe_str_bytes = &str.as_bytes()[..safe_len];
+                let mut buffer = Vec::with_capacity(safe_len + 1);
+                buffer.extend_from_slice(safe_str_bytes);
+                buffer.push(0);
+                let address = self.cpu.a_reg[1].get_long() as usize;
+                self.set_memory_bytes(address, &buffer)?;
+                self.set_register_value(RegisterOperand::Data(1), safe_len as u32, Size::Word);
             }
             InterruptResult::ReadNumber(num) => {
                 self.set_register_value(RegisterOperand::Data(1), num as u32, Size::Long);
