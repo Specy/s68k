@@ -390,13 +390,22 @@ impl SemanticChecker {
                     "cmpm" => {
                         self.verify_two_args(operands, Rules::ONLY_POST_INCREMENT, Rules::ONLY_POST_INCREMENT, line);
                     }
-                    "or" | "and" | "eor" => {
-                        self.verify_two_args(
-                            operands,
-                            Rules::NO_A_REG,
-                            Rules::NO_A_REG_OR_IMMEDIATE,
-                            line,
-                        );
+                    "or" | "and" => {
+                        self.verify_two_args(operands, Rules::NO_A_REG, Rules::NO_A_REG_OR_IMMEDIATE, line);
+                        match &operands[..] {
+                            [op1, op2] if op1.affects_memory() && op2.affects_memory() => {
+                                self.errors.push(SemanticError::new(
+                                    line.clone(),
+                                    "Invalid operands addressing mode, at most one of the two operands can read/write to memory.".to_string(),
+                                ));
+                            }
+                            _ => {}
+                        };
+                        self.verify_size(SizeRules::AnySize, line);
+                        self.verify_size_if_immediate(operands, line, size, LexedSize::Word);
+                    }
+                    "eor" => {
+                        self.verify_two_args(operands, Rules::ONLY_D_REG, Rules::NO_A_REG_OR_IMMEDIATE, line);
                         self.verify_size(SizeRules::AnySize, line);
                     }
                     "lea" => {
@@ -934,10 +943,7 @@ impl SemanticChecker {
                             }
                         }
                         Err(_) => {
-                            return Err(format!(
-                                "Offset \"{}\" is not a valid expression",
-                                offset
-                            ))
+                            return Err(format!("Offset \"{}\" is not a valid expression", offset))
                         }
                     }
                 }
