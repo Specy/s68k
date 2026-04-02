@@ -199,6 +199,7 @@ pub enum Instruction {
     BSR(u32),
     TRAP(u8),
     RTS,
+    NOP,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

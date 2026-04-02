@@ -529,6 +529,7 @@ impl Compiler {
         } else if operands.is_empty() {
             let result = match name.as_str() {
                 "rts" => Instruction::RTS,
+                "nop" => Instruction::NOP,
                 _ => {
                     return Err(CompilationError::Raw(format!(
                         "Unknown instruction {}",

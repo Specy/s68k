@@ -1334,6 +1334,7 @@ impl Interpreter {
                 self.set_register_value(*reg, value.get_long(), Size::Long);
                 self.set_sp(new_sp);
             }
+            Instruction::NOP => {}
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
                 if self.keep_history {

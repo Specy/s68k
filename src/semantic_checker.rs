@@ -503,6 +503,15 @@ impl SemanticChecker {
                             ));
                         }
                     }
+                    "nop" => {
+                        self.verify_size(SizeRules::NoSize, line);
+                        if !operands.is_empty() {
+                            self.errors.push(SemanticError::new(
+                                line.clone(),
+                                "NOP instruction does not accept operands".to_string(),
+                            ));
+                        }
+                    }
                     "lsl" | "lsr" | "asr" | "asl" | "rol" | "ror" => {
                         self.verify_two_args(
                             operands,
