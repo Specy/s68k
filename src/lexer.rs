@@ -299,17 +299,25 @@ impl AsmRegex {
             )
             .unwrap(),
             indirect_displacement_only: Regex::new(
-                &Grammar::IndirectDisplacement.get_opt(GrammarOptions::IS_LINE),
+                &Grammar::IndirectDisplacement
+                    .get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE),
             )
             .unwrap(),
             indirect_index_only: Regex::new(
-                &Grammar::IndirectIndex.get_opt(GrammarOptions::IS_LINE),
+                &Grammar::IndirectIndex
+                    .get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE),
             )
             .unwrap(),
-            post_indirect_only: Regex::new(&Grammar::PostIndirect.get_opt(GrammarOptions::IS_LINE))
-                .unwrap(),
-            pre_indirect_only: Regex::new(&Grammar::PreIndirect.get_opt(GrammarOptions::IS_LINE))
-                .unwrap(),
+            post_indirect_only: Regex::new(
+                &Grammar::PostIndirect
+                    .get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE),
+            )
+            .unwrap(),
+            pre_indirect_only: Regex::new(
+                &Grammar::PreIndirect
+                    .get_opt(GrammarOptions::IGNORE_CASE | GrammarOptions::IS_LINE),
+            )
+            .unwrap(),
             label_line: Regex::new(r"^\S+:.*").unwrap(),
             directive: Regex::new(&format!(
                 r"^\s*({})",
