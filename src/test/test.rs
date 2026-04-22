@@ -61,6 +61,19 @@ and.w d0, -(a0)");
     }
 
     #[test]
+    fn test_case_insensitive_registers_in_indirect_displacement() {
+        lex_and_run(
+            "
+    move.l #$1000, A0
+    move.b #$42, $0(A0)
+    move.b $0(A0), D0
+    move.b $0(a0), D0
+    move.b $0(A0), d0
+        ",
+        );
+    }
+
+    #[test]
     fn test_complex_code() {
         lex_and_run(
             "ORG    $1000
