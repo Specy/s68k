@@ -507,6 +507,12 @@ impl Compiler {
                 //not sure if the default is word
                 "not" => Instruction::NOT(op, self.get_size(size, Size::Word)?),
                 "jsr" => Instruction::JSR(op),
+                "rol" => Instruction::ROd(Operand::Immediate(1), op, ShiftDirection::Left, Size::Word),
+                "ror" => Instruction::ROd(Operand::Immediate(1), op, ShiftDirection::Right, Size::Word),
+                "lsl" => Instruction::LSd(Operand::Immediate(1), op, ShiftDirection::Left, Size::Word),
+                "lsr" => Instruction::LSd(Operand::Immediate(1), op, ShiftDirection::Right, Size::Word),
+                "asl" => Instruction::ASd(Operand::Immediate(1), op, ShiftDirection::Left, Size::Word),
+                "asr" => Instruction::ASd(Operand::Immediate(1), op, ShiftDirection::Right, Size::Word),
 
                 "trap" => {
                     let value = self.extract_immediate(&op)? as i32;

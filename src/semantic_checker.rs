@@ -513,14 +513,30 @@ impl SemanticChecker {
                         }
                     }
                     "lsl" | "lsr" | "asr" | "asl" | "rol" | "ror" => {
-                        self.verify_two_args(
-                            operands,
-                            Rules::NO_A_REG,
-                            Rules::NO_A_REG_OR_IMMEDIATE,
-                            line,
-                        );
-                        self.verify_value_bounds_if_immediate(operands, 0, line, 0, 8);
-                        self.verify_size(SizeRules::AnySize, line);
+                        match operands.len() {
+                            1 => {
+                                // ROL/ROR <ea> — memory form, word only, no size suffix
+                                self.verify_one_arg(operands, Rules::ONLY_INDIRECT_OR_ABSOLUTE, line);
+                                self.verify_size(SizeRules::NoSize, line);
+                            }
+                            2 => {
+                                // ROL/ROR Dx,Dy or ROL/ROR #<data>,Dy
+                                self.verify_two_args(
+                                    operands,
+                                    Rules::NO_A_REG,
+                                    Rules::ONLY_D_REG,
+                                    line,
+                                );
+                                self.verify_value_bounds_if_immediate(operands, 0, line, 1, 8);
+                                self.verify_size(SizeRules::AnySize, line);
+                            }
+                            _ => {
+                                self.errors.push(SemanticError::new(
+                                    line.clone(),
+                                    format!("Expected one or two operands, received \"{}\"", operands.len()),
+                                ));
+                            }
+                        }
                     }
                     "btst" | "bclr" | "bchg" | "bset" => {
                         self.verify_two_args(
