@@ -5,7 +5,8 @@
     "moduleResolution": "node",
     "lib": [
       "es2018",
-      "dom"
+      "dom",
+      "esnext.disposable"
     ],
     "declaration": true,
     "esModuleInterop": true,
