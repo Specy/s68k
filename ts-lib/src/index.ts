@@ -26,7 +26,7 @@ import {
     SemanticError as RawSemanticError,
     Size,
     Step
-} from './pkg/s68k'
+} from './pkg/s68k.js'
 
 export type CompilationResult = { ok: false, errors: SemanticError[] } | { ok: true, interpreter: Interpreter }
 

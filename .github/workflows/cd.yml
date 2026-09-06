@@ -139,16 +139,15 @@ jobs:
         working-directory: ts-lib
         run: npm run build-lib
 
+      - name: Run smoke test
+        working-directory: ts-lib
+        run: npm test
+
       # No NODE_AUTH_TOKEN: npm detects the OIDC environment and exchanges it
       # for a short-lived, run-scoped credential. Provenance attestations are
       # generated automatically for public packages, so --provenance is not
-      # passed explicitly.
-      #
-      # ts-lib/package.json has no "files" field, so npm falls back to
-      # .gitignore to decide the tarball's contents and ships dist/ only
-      # because it will not apply a rule that would exclude the directory
-      # holding "main". Adding "files": ["dist"] there would make what is
-      # published explicit instead of incidental.
+      # passed explicitly. What lands in the tarball is the "files" allowlist
+      # in ts-lib/package.json, not whatever .gitignore happens to say.
       - name: Publish to npm
         working-directory: ts-lib
         run: npm publish --access public
