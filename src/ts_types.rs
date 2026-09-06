@@ -1,6 +1,15 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 
 #[wasm_bindgen(typescript_custom_section)]
+pub const IKeyState: &'static str = r#"
+export type KeyStateRequest = { type: "Keys", value: [number, number, number, number] } |
+{ type: "LastKeys" }
+
+export type KeyStateResult = { type: "Keys", value: [boolean, boolean, boolean, boolean] } |
+{ type: "LastKeys", value: { up: number, down: number } }
+"#;
+
+#[wasm_bindgen(typescript_custom_section)]
 pub const IInterrupt: &'static str = r#"
 export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
 { type: "DisplayStringWithoutCRLF", value: string } |
@@ -13,6 +22,13 @@ export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
 { type: "Terminate" } | 
 { type: "DisplayChar", value: string } | 
 { type: "Delay", value: number } |
+{ type: "DisplaySignedNumberInField", value: { value: number, width: number } } |
+{ type: "DisplayStringAndNumber", value: { string: string, number: number } } |
+{ type: "DisplayStringAndReadNumber", value: string } |
+{ type: "CheckKeyboardInput" } |
+{ type: "GetKeyState", value: KeyStateRequest } |
+{ type: "ReadMouse", value: number } |
+{ type: "SetSimulatorShortcuts", value: number } |
 { type: "SetPenColor", value: number } |
 { type: "SetFillColor", value: number } |
 { type: "DrawPixel", value: [number, number] } |
@@ -25,10 +41,17 @@ export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
 { type: "FloodFill", value: [number, number] } |
 { type: "DrawUnfilledRectangle", value: [number, number, number, number] } |
 { type: "DrawUnfilledEllipse", value: [number, number, number, number] } |
+{ type: "SetDrawingMode", value: number } |
 { type: "SetPenWidth", value: number } |
+{ type: "Repaint" } |
 { type: "DrawText", value: [number, number, string] } |
+{ type: "GetPenPosition" } |
 { type: "SetScreenSize", value: [number, number] } |
-{ type: "ClearScreen" }
+{ type: "GetScreenSize" } |
+{ type: "SetScreenMode", value: number } |
+{ type: "ClearScreen" } |
+{ type: "SetTextCursorPosition", value: [number, number] } |
+{ type: "GetTextCursorPosition" }
 "#;
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -44,6 +67,13 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "DisplayChar" } | 
 { type: "Terminate" } |
 { type: "Delay" } |
+{ type: "DisplaySignedNumberInField" } |
+{ type: "DisplayStringAndNumber" } |
+{ type: "DisplayStringAndReadNumber", value: number } |
+{ type: "CheckKeyboardInput", value: boolean } |
+{ type: "GetKeyState", value: KeyStateResult } |
+{ type: "ReadMouse", value: { flags: number, x: number, y: number } } |
+{ type: "SetSimulatorShortcuts" } |
 { type: "SetPenColor" } |
 { type: "SetFillColor" } |
 { type: "DrawPixel" } |
@@ -56,10 +86,17 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "FloodFill" } |
 { type: "DrawUnfilledRectangle" } |
 { type: "DrawUnfilledEllipse" } |
+{ type: "SetDrawingMode" } |
 { type: "SetPenWidth" } |
+{ type: "Repaint" } |
 { type: "DrawText" } |
+{ type: "GetPenPosition", value: [number, number] } |
 { type: "SetScreenSize" } |
-{ type: "ClearScreen" }
+{ type: "GetScreenSize", value: [number, number] } |
+{ type: "SetScreenMode" } |
+{ type: "ClearScreen" } |
+{ type: "SetTextCursorPosition" } |
+{ type: "GetTextCursorPosition", value: [number, number] }
 "#;
 
 #[wasm_bindgen(typescript_custom_section)]

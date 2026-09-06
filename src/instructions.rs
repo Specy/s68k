@@ -202,6 +202,28 @@ pub enum Instruction {
     NOP,
 }
 
+/// Which form of task 19 the program asked for, decided by D1.L: EASy68K reads
+/// four key codes packed one per byte, or the codes of the last keys when D1.L is zero.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
+pub enum KeyStateRequest {
+    Keys([u8; 4]),
+    LastKeys,
+}
+
+/// The two answers task 19 accepts, one per request form of [`KeyStateRequest`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
+pub enum KeyStateResult {
+    /// Whether each requested key is down, in the order the codes were given
+    Keys([bool; 4]),
+    /// Codes of the last key released and of the last key pressed
+    LastKeys {
+        up: u8,
+        down: u8,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum Interrupt {
@@ -219,6 +241,23 @@ pub enum Interrupt {
     GetTime,
     Terminate,
     Delay(u32),
+    DisplaySignedNumberInField {
+        //20
+        value: i32,
+        width: u8,
+    },
+    DisplayStringAndNumber {
+        //17, tasks 14 and 3 in one trap
+        string: String,
+        number: i32,
+    },
+    DisplayStringAndReadNumber(String), //18, tasks 14 and 4 in one trap
+
+    // keyboard and mouse
+    CheckKeyboardInput,           //7
+    GetKeyState(KeyStateRequest), //19
+    ReadMouse(u8),                //61, 0 current state, 1 last button up, 2 last button down
+    SetSimulatorShortcuts(u32),   //24, no-op: the screen already receives every key
 
     // graphics
     SetPenColor(u32),                          //80
@@ -233,13 +272,17 @@ pub enum Interrupt {
     FloodFill(u32, u32),                       //89
     DrawUnfilledRectangle(u32, u32, u32, u32), //90
     DrawUnfilledEllipse(u32, u32, u32, u32),   //91
-    //SetDrawingMode() //92
-    SetPenWidth(u32), //93
-    //Repaint //94, copies screen buffer to screen, for double buffering, needs SetDrawingMode
-    DrawText(u32, u32, String), //95
-    //GetPenPosition(u32, u32),
-    SetScreenSize(u32, u32), //33
-    ClearScreen,             //11
+    SetDrawingMode(u8),                        //92, 2 move only, 4 draw, 16 and 17 double buffering off and on
+    SetPenWidth(u32),                          //93
+    Repaint,                                   //94, shows the off screen buffer of drawing mode 17
+    DrawText(u32, u32, String),                //95
+    GetPenPosition,                            //96
+    SetScreenSize(u32, u32),                   //33
+    GetScreenSize,                             //33 with D1.L = 0
+    SetScreenMode(u8),                         //33 with D1.L = 1 windowed or 2 full screen, no-op here
+    ClearScreen,                               //11 with D1.W = $FF00
+    SetTextCursorPosition(u32, u32),           //11, column and row
+    GetTextCursorPosition,                     //11 with D1.W = $00FF
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +299,20 @@ pub enum InterruptResult {
     GetTime(u32),
     Terminate,
     Delay,
+    DisplaySignedNumberInField,
+    DisplayStringAndNumber,
+    DisplayStringAndReadNumber(i32),
+
+    // keyboard and mouse
+    CheckKeyboardInput(bool),
+    GetKeyState(KeyStateResult),
+    /// Button and modifier flags, and the position in screen pixels
+    ReadMouse {
+        flags: u8,
+        x: u16,
+        y: u16,
+    },
+    SetSimulatorShortcuts,
 
     // graphics
     SetPenColor,
@@ -270,13 +327,17 @@ pub enum InterruptResult {
     FloodFill,
     DrawUnfilledRectangle,
     DrawUnfilledEllipse,
-    //SetDrawingMode() //92
+    SetDrawingMode,
     SetPenWidth,
-    //Repaint //94, copies screen buffer to screen, for double buffering, needs SetDrawingMode
+    Repaint,
     DrawText,
-    //GetPenPosition(u32, u32),
+    GetPenPosition(u32, u32),
     SetScreenSize,
+    GetScreenSize(u32, u32),
+    SetScreenMode,
     ClearScreen,
+    SetTextCursorPosition,
+    GetTextCursorPosition(u32, u32),
 }
 
 impl Instruction {

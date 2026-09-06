@@ -22,8 +22,8 @@ use crate::{
     compiler::{Compiler, Directive, InstructionLine},
     debugger::{Debugger, ExecutionStep, MutationOperation},
     instructions::{
-        Condition, Instruction, Interrupt, InterruptResult, Operand, RegisterOperand,
-        ShiftDirection, Sign, Size,
+        Condition, Instruction, Interrupt, InterruptResult, KeyStateRequest, KeyStateResult,
+        Operand, RegisterOperand, ShiftDirection, Sign, Size,
     },
     math::*,
 };
@@ -674,13 +674,17 @@ impl Interpreter {
             | InterruptResult::FloodFill
             | InterruptResult::DrawUnfilledRectangle
             | InterruptResult::DrawUnfilledEllipse
-            //| InterruptResult::SetDrawingMode
+            | InterruptResult::SetDrawingMode
             | InterruptResult::SetPenWidth
-            //| InterruptResult::Repaint
+            | InterruptResult::Repaint
             | InterruptResult::DrawText
-            //| InterruptResult::GetPenPosition(_)
             | InterruptResult::SetScreenSize
+            | InterruptResult::SetScreenMode
             | InterruptResult::ClearScreen
+            | InterruptResult::SetTextCursorPosition
+            | InterruptResult::SetSimulatorShortcuts
+            | InterruptResult::DisplaySignedNumberInField
+            | InterruptResult::DisplayStringAndNumber
 
             => {}
             InterruptResult::ReadKeyboardString(str) => {
@@ -707,6 +711,48 @@ impl Interpreter {
             }
             InterruptResult::GetPixelColor(color) => {
                 self.set_register_value(RegisterOperand::Data(0), color, Size::Long);
+            }
+            InterruptResult::DisplayStringAndReadNumber(num) => {
+                self.set_register_value(RegisterOperand::Data(1), num as u32, Size::Long);
+            }
+            InterruptResult::CheckKeyboardInput(has_input) => {
+                self.set_register_value(RegisterOperand::Data(1), has_input as u32, Size::Byte);
+            }
+            InterruptResult::GetKeyState(state) => {
+                let value = match state {
+                    //EASy68K answers a key state with $FF or $00 in the byte the key code was given in
+                    KeyStateResult::Keys(keys) => keys
+                        .iter()
+                        .fold(0u32, |acc, down| (acc << 8) | if *down { 0xFF } else { 0x00 }),
+                    KeyStateResult::LastKeys { up, down } => ((up as u32) << 16) | down as u32,
+                };
+                self.set_register_value(RegisterOperand::Data(1), value, Size::Long);
+            }
+            InterruptResult::ReadMouse { flags, x, y } => {
+                self.set_register_value(RegisterOperand::Data(0), flags as u32, Size::Long);
+                self.set_register_value(
+                    RegisterOperand::Data(1),
+                    ((y as u32) << 16) | x as u32,
+                    Size::Long,
+                );
+            }
+            InterruptResult::GetPenPosition(x, y) => {
+                self.set_register_value(RegisterOperand::Data(1), x, Size::Word);
+                self.set_register_value(RegisterOperand::Data(2), y, Size::Word);
+            }
+            InterruptResult::GetScreenSize(width, height) => {
+                self.set_register_value(
+                    RegisterOperand::Data(1),
+                    (width << 16) | (height & 0xFFFF),
+                    Size::Long,
+                );
+            }
+            InterruptResult::GetTextCursorPosition(column, row) => {
+                self.set_register_value(
+                    RegisterOperand::Data(1),
+                    ((column & 0xFF) << 8) | (row & 0xFF),
+                    Size::Word,
+                );
             }
         };
         self.current_interrupt = None;
@@ -1534,6 +1580,32 @@ impl Interpreter {
     pub fn get_next_instruction(&self) -> Option<&InstructionLine> {
         self.get_instruction_at(self.pc)
     }
+    /// Tasks 13, 14, 17, 18 and 95 all take the string at (A1), terminated by a null byte.
+    fn read_null_terminated_string(&self, address: usize) -> RuntimeResult<String> {
+        let max = 16384; //to prevent infinite loop
+        let mut bytes = Vec::new();
+        let mut i = 0;
+        loop {
+            let byte = self.memory.read_byte(address + i)?;
+            if byte == 0x00 {
+                break;
+            }
+            bytes.push(byte);
+            i += 1;
+            if i > max {
+                return Err(RuntimeError::Raw(format!(
+                    "Invalid String read, reached max length of {} bytes",
+                    max
+                )));
+            }
+        }
+        String::from_utf8(bytes.to_vec()).map_err(|e| {
+            RuntimeError::Raw(format!(
+                "Invalid String read, received: {:?}, expected UTF-8",
+                e.into_bytes()
+            ))
+        })
+    }
     fn get_trap(&mut self, value: u8) -> RuntimeResult<Interrupt> {
         match value {
             0 | 1 => {
@@ -1577,38 +1649,19 @@ impl Interpreter {
                 let value = self.cpu.d_reg[1].get_byte();
                 Ok(Interrupt::DisplayChar(value as char))
             }
+            7 => Ok(Interrupt::CheckKeyboardInput),
             8 => Ok(Interrupt::GetTime),
             9 => {
                 self.set_status(InterpreterStatus::Terminated);
                 Ok(Interrupt::Terminate)
             }
             13 | 14 => {
-                //read until null char
-                let max = 16384; //to prevent infinite loop
                 let address = self.cpu.a_reg[1].get_long() as usize;
-                let mut bytes = Vec::new();
-                let mut i = 0;
-                loop {
-                    let byte = self.memory.read_byte(address + i)?;
-                    if byte == 0x00 {
-                        break;
-                    }
-                    bytes.push(byte);
-                    i += 1;
-                    if i > max {
-                        return Err(RuntimeError::Raw(format!(
-                            "Invalid String read, reached max length of {} bytes",
-                            max
-                        )));
-                    }
-                }
-                match String::from_utf8(bytes.to_vec()) {
-                    Ok(str) if value == 13 => Ok(Interrupt::DisplayStringWithCRLF(str)),
-                    Ok(str) if value == 14 => Ok(Interrupt::DisplayStringWithoutCRLF(str)),
-                    Err(_) | Ok(_) => Err(RuntimeError::Raw(format!(
-                        "Invalid String read, received: {:?}, expected UTF-8",
-                        bytes
-                    ))),
+                let str = self.read_null_terminated_string(address)?;
+                if value == 13 {
+                    Ok(Interrupt::DisplayStringWithCRLF(str))
+                } else {
+                    Ok(Interrupt::DisplayStringWithoutCRLF(str))
                 }
             }
             15 => {
@@ -1627,16 +1680,71 @@ impl Interpreter {
                 };
                 Ok(Interrupt::DisplayNumberInBase { value, base: base as u8 })
             }
+            17 | 18 => {
+                //tasks 14 and 3, or 14 and 4, in a single trap
+                let address = self.cpu.a_reg[1].get_long() as usize;
+                let string = self.read_null_terminated_string(address)?;
+                if value == 17 {
+                    let number = self.cpu.d_reg[1].get_long() as i32;
+                    Ok(Interrupt::DisplayStringAndNumber { string, number })
+                } else {
+                    Ok(Interrupt::DisplayStringAndReadNumber(string))
+                }
+            }
+            19 => {
+                //D1.L holds up to four key codes, one per byte, or zero to ask for the last keys
+                let request = self.cpu.d_reg[1].get_long();
+                Ok(Interrupt::GetKeyState(if request == 0 {
+                    KeyStateRequest::LastKeys
+                } else {
+                    KeyStateRequest::Keys(request.to_be_bytes())
+                }))
+            }
+            20 => {
+                let value = self.cpu.d_reg[1].get_long() as i32;
+                let width = self.cpu.d_reg[2].get_byte();
+                Ok(Interrupt::DisplaySignedNumberInField { value, width })
+            }
             23 => {
                 let time = self.cpu.d_reg[1].get_long();
                 Ok(Interrupt::Delay(time))
             }
+            24 => {
+                //the focused screen already receives every key, so shortcut control changes nothing here
+                let value = self.cpu.d_reg[1].get_long();
+                Ok(Interrupt::SetSimulatorShortcuts(value))
+            }
+            61 => {
+                let mode = self.cpu.d_reg[1].get_byte();
+                match mode {
+                    0..=2 => Ok(Interrupt::ReadMouse(mode)),
+                    _ => Err(RuntimeError::Raw(format!(
+                        "Invalid mouse read mode: {} in register D1.b, expected 0 (current state), 1 (last button up) or 2 (last button down)",
+                        mode
+                    ))),
+                }
+            }
             // Graphics interrupts
-            11 => Ok(Interrupt::ClearScreen),
+            11 => {
+                //EASy68K reserves two values of D1.W and packs the column in the high byte and the row in the low byte of the rest
+                let request = self.cpu.d_reg[1].get_word();
+                match request {
+                    0xFF00 => Ok(Interrupt::ClearScreen),
+                    0x00FF => Ok(Interrupt::GetTextCursorPosition),
+                    _ => Ok(Interrupt::SetTextCursorPosition(
+                        (request >> 8) as u32,
+                        (request & 0xFF) as u32,
+                    )),
+                }
+            }
             33 => {
-                let width = self.cpu.d_reg[1].get_long();
-                let height = self.cpu.d_reg[2].get_long();
-                Ok(Interrupt::SetScreenSize(width, height))
+                //D1.L holds the width in the high word and the height in the low word, with 0, 1 and 2 reserved
+                let request = self.cpu.d_reg[1].get_long();
+                match request {
+                    0 => Ok(Interrupt::GetScreenSize),
+                    1 | 2 => Ok(Interrupt::SetScreenMode(request as u8)),
+                    _ => Ok(Interrupt::SetScreenSize(request >> 16, request & 0xFFFF)),
+                }
             }
             80 => {
                 let color = self.cpu.d_reg[1].get_long();
@@ -1706,41 +1814,29 @@ impl Interpreter {
                 let lower_y = self.cpu.d_reg[4].get_word();
                 Ok(Interrupt::DrawUnfilledEllipse(left_x as u32, upper_y as u32, right_x as u32, lower_y as u32))
             }
+            92 => {
+                let mode = self.cpu.d_reg[1].get_byte();
+                match mode {
+                    2 | 4 | 16 | 17 => Ok(Interrupt::SetDrawingMode(mode)),
+                    //the bitwise raster modes draw against the background color, which this screen does not implement
+                    _ => Err(RuntimeError::Raw(format!(
+                        "Unsupported drawing mode: {} in register D1.b, expected 2 (move without drawing), 4 (draw normally), 16 (double buffering off) or 17 (double buffering on)",
+                        mode
+                    ))),
+                }
+            }
             93 => {
                 let width = self.cpu.d_reg[1].get_byte();
                 Ok(Interrupt::SetPenWidth(width as u32))
             }
+            94 => Ok(Interrupt::Repaint),
+            96 => Ok(Interrupt::GetPenPosition),
             95 => {
-                // Read null-terminated string from address in A1
-                let max = 16384; // to prevent infinite loop
                 let address = self.cpu.a_reg[1].get_long() as usize;
-                let mut bytes = Vec::new();
-                let mut i = 0;
-                loop {
-                    let byte = self.memory.read_byte(address + i)?;
-                    if byte == 0x00 {
-                        break;
-                    }
-                    bytes.push(byte);
-                    i += 1;
-                    if i > max {
-                        return Err(RuntimeError::Raw(format!(
-                            "Invalid String read, reached max length of {} bytes",
-                            max
-                        )));
-                    }
-                }
-                match String::from_utf8(bytes.to_vec()) {
-                    Ok(str) => {
-                        let x = self.cpu.d_reg[1].get_word();
-                        let y = self.cpu.d_reg[2].get_word();
-                        Ok(Interrupt::DrawText(x as u32, y as u32, str))
-                    }
-                    Err(_) => Err(RuntimeError::Raw(format!(
-                        "Invalid String read for DrawText, received: {:?}, expected UTF-8",
-                        bytes
-                    ))),
-                }
+                let str = self.read_null_terminated_string(address)?;
+                let x = self.cpu.d_reg[1].get_word();
+                let y = self.cpu.d_reg[2].get_word();
+                Ok(Interrupt::DrawText(x as u32, y as u32, str))
             }
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
         }
