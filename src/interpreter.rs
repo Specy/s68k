@@ -2263,6 +2263,10 @@ impl Interpreter {
     pub fn wasm_get_undo_history(&self, count: usize) -> JsValue {
         serde_wasm_bindgen::to_value(&self.debugger.get_last_steps(count)).unwrap()
     }
+
+    pub fn wasm_get_last_step_id(&self) -> f64 {
+        self.debugger.get_last_step().map_or(0, |step| step.get_id()) as f64
+    }
     pub fn wasm_get_status(&self) -> InterpreterStatus {
         *self.get_status()
     }

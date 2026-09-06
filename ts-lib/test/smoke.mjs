@@ -55,4 +55,20 @@ assert.equal(cpu.getRegisterValue(2, RegisterType.Data) | 0, -2, 'D2 should be s
 // the interpreter options allocate, so it is worth one assertion here.
 assert.equal(typeof interpreter.undo, 'function', 'undo should be exposed')
 
+// Identical loop iterations still have distinct IDs after the bounded history fills,
+// and executing again after undo must not reuse the abandoned instruction's ID.
+const loop = S68k.compile('    ORG $1000\nloop: nop\n    bra loop', {
+    keep_history: true,
+    history_size: 2
+}).interpreter
+for (let i = 0; i < 10; i++) loop.stepGetStatus()
+const history = loop.getUndoHistory(2)
+assert.equal(history.length, 2)
+assert.ok(history[0].id > history[1].id)
+assert.equal(loop.getLastStepId(), history[0].id)
+assert.equal(loop.undo().id, history[0].id)
+assert.equal(loop.getLastStepId(), history[1].id)
+loop.stepGetStatus()
+assert.ok(loop.getLastStepId() > history[0].id)
+
 console.log(`ok - ran ${steps} instructions, D1 = ${cpu.getRegisterValue(1, RegisterType.Data)}`)

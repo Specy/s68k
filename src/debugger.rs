@@ -36,6 +36,8 @@ pub enum MutationOperation {
 }
 #[derive(Serialize)]
 pub struct ExecutionStep {
+    /// Identifies this execution, including repeated visits to the same PC. Never reused by undo.
+    id: u64,
     mutations: Vec<MutationOperation>,
     pc: usize,
     line: usize,
@@ -46,6 +48,7 @@ pub struct ExecutionStep {
 impl ExecutionStep {
     pub fn new(pc: usize, ccr: Flags) -> Self {
         Self {
+            id: 0,
             mutations: vec![],
             pc,
             old_ccr: ccr,
@@ -67,6 +70,9 @@ impl ExecutionStep {
     }
     pub fn get_pc(&self) -> usize {
         self.pc
+    }
+    pub fn get_id(&self) -> u64 {
+        self.id
     }
     pub fn get_ccr(&self) -> Flags {
         self.old_ccr
@@ -100,6 +106,7 @@ impl CallStackFrame {
 
 #[wasm_bindgen]
 pub struct Debugger {
+    next_step_id: u64,
     history: LinkedList<ExecutionStep>,
     history_size: usize,
     call_stack: Vec<CallStackFrame>,
@@ -116,13 +123,16 @@ impl Debugger {
         let mut empty_history: LinkedList<ExecutionStep> = LinkedList::new();
         empty_history.push_front(ExecutionStep::new(0, Flags::empty()));
         Self {
+            next_step_id: 1,
             history: empty_history,
             history_size,
             call_stack: vec![],
             labels: labels_map,
         }
     }
-    pub fn add_step(&mut self, step: ExecutionStep) {
+    pub fn add_step(&mut self, mut step: ExecutionStep) {
+        step.id = self.next_step_id;
+        self.next_step_id += 1;
         self.history.push_back(step);
         if self.history.len() > self.history_size {
             self.history.pop_front();

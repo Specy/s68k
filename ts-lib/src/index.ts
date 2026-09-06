@@ -118,6 +118,11 @@ export class Interpreter {
         return this.interpreter.wasm_get_previous_mutations() as MutationOperation[] | null
     }
 
+    /** Identity of the newest retained instruction, or 0 before execution. */
+    getLastStepId(): number {
+        return this.interpreter.wasm_get_last_step_id()
+    }
+
     async stepWithInterruptHandler(onInterrupt: InterruptHandler): Promise<Step> {
         const step = this.interpreter.wasm_step() as Step
         const [_, status] = step
@@ -359,6 +364,7 @@ export function ccrToFlagsArray(ccr: number) {
 
 
 export type ExecutionStepInternal = {
+    id: number,
     mutations: MutationOperation[],
     pc: number,
     old_ccr: string,

@@ -191,6 +191,7 @@ export type InterpreterOptions = {
 #[wasm_bindgen(typescript_custom_section)]
 pub const IExecutionStep: &'static str = r#"
 export type ExecutionStep = {
+    id: number,
     mutations: MutationOperation[],
     pc: number,
     old_ccr: {
