@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      # This repository pins no toolchain of its own - there is no
+      # rust-toolchain.toml and no mise.toml, unlike the MARS and RARS
+      # repositories - so CI compiles with the runner image's stable Rust,
+      # which is the same compiler a contributor gets from rustup. That Rust
+      # is installed with --profile=minimal, so the wasm32 target is genuinely
+      # absent and has to be added; wasm-pack would add it too, but doing it
+      # here fails in one second rather than four minutes in.
+      - name: Add the WebAssembly target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ts-lib/package-lock.json
+
+      # Downloads only: the crate registry, cargo's git checkouts, and the
+      # wasm-bindgen and binaryen binaries that wasm-pack fetches from GitHub
+      # releases - the one unauthenticated third-party download in this job.
+      #
+      # target/ is deliberately not cached. It is over half a gigabyte here,
+      # and actions/cache does not save again when the primary key hits, so a
+      # key that is a pure function of the manifest would freeze one build's
+      # object files and serve them forever. Rebuilding it costs about half a
+      # minute. Cargo.lock is not committed (see .gitignore), so the manifest
+      # is the only thing available to key on; restore-keys means a manifest
+      # edit still starts from the previous download cache.
+      - name: Cache cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cache/.wasm-pack
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # Installed from npm, which is what ts-lib's own ci-build script does.
+      # Pinned, so a wasm-pack release cannot change the generated bindings
+      # without a commit here.
+      - name: Install wasm-pack
+        run: npm install --global wasm-pack@0.15.0
+
+      # The interpreter's own test suite. ts-lib's build-wasm script runs this
+      # too; it is a separate step so that a failing test is not reported as a
+      # build failure.
+      - name: Run Rust tests
+        run: cargo test
+
+      # Mirrors ts-lib's build-wasm script. ts-lib/src/pkg is generated and not
+      # committed, so the TypeScript build below cannot run without this.
+      - name: Build the WebAssembly package
+        run: wasm-pack build --out-dir ts-lib/src/pkg --out-name s68k
+
+      - name: Install TypeScript dependencies
+        working-directory: ts-lib
+        run: npm ci
+
+      # Type-checks the wrapper against the bindings just generated and
+      # assembles dist/, so a Rust signature change the wrapper has not caught
+      # up with fails the build.
+      #
+      # Unlike the MARS and RARS workflows, this one has no runtime smoke test
+      # at the end, so dist/ ships type-checked but never executed. The
+      # obstacle is not WebAssembly - node 24 loads the generated module - but
+      # the extensionless `from './pkg/s68k'` that tsc emits into
+      # dist/index.js, which node's ESM resolver refuses to resolve. Giving
+      # that import in ts-lib/src/index.ts a .js extension would make dist/
+      # importable from node and let this job end with a smoke test like the
+      # siblings do.
+      - name: Build TypeScript library
+        working-directory: ts-lib
+        run: npm run build-lib
