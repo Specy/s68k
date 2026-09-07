@@ -91,7 +91,7 @@ One byte in Latin-1 everywhere; a source character above 255 is an assembly erro
 
 ### Tests
 
-1. Golden fixtures of 1.4.2's output for the 30 editor programs (25 lecture playgrounds, 5 runnable `.x68`; all 30 assemble on 1.4.2, baseline run on 2026-09-07), updated only on purpose with a note.
+1. Golden fixtures of 1.4.2's output for the 30 editor programs (24 lecture playgrounds, 6 runnable `.x68`; all 30 assemble on 1.4.2, baseline run on 2026-09-07), updated only on purpose with a note.
 2. Golden diagnostics for the 3 EASy68K originals: only the "not implemented" errors for macros, structured control and the unsupported traps.
 3. One snapshot case per diagnostic kind (`insta`), EASy68K's error catalogue checked off against ours.
 4. Grammar tests named after the EBNF rules, including the label and comment tables.

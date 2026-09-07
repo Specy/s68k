@@ -12,3 +12,7 @@ Cargo.lock
 # Added by cargo
 
 /target
+
+# Snapshots insta writes beside a failing one; never committed
+*.snap.new
+*.pending-snap

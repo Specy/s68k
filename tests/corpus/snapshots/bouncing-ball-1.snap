@@ -1,0 +1,351 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 7,
+      "text": "move.b #$5c,d0"
+    },
+    {
+      "address": "$1004",
+      "line": 8,
+      "text": "move.b #$11,d1"
+    },
+    {
+      "address": "$1008",
+      "line": 9,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$100c",
+      "line": 10,
+      "text": "move.l #$ffffff,d1"
+    },
+    {
+      "address": "$1010",
+      "line": 11,
+      "text": "move.b #$50,d0"
+    },
+    {
+      "address": "$1014",
+      "line": 12,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1018",
+      "line": 15,
+      "text": "move.b #$b,d0"
+    },
+    {
+      "address": "$101c",
+      "line": 16,
+      "text": "move.w #$ff00,d1"
+    },
+    {
+      "address": "$1020",
+      "line": 17,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1024",
+      "line": 19,
+      "text": "move.l #$d2ff,d1"
+    },
+    {
+      "address": "$1028",
+      "line": 20,
+      "text": "move.b #$51,d0"
+    },
+    {
+      "address": "$102c",
+      "line": 21,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1030",
+      "line": 22,
+      "text": "move.w $10e8,d1"
+    },
+    {
+      "address": "$1034",
+      "line": 23,
+      "text": "move.w $10ea,d2"
+    },
+    {
+      "address": "$1038",
+      "line": 24,
+      "text": "move.w d1,d3"
+    },
+    {
+      "address": "$103c",
+      "line": 25,
+      "text": "addi.w #$28,d3"
+    },
+    {
+      "address": "$1040",
+      "line": 26,
+      "text": "move.w d2,d4"
+    },
+    {
+      "address": "$1044",
+      "line": 27,
+      "text": "addi.w #$28,d4"
+    },
+    {
+      "address": "$1048",
+      "line": 28,
+      "text": "move.b #$58,d0"
+    },
+    {
+      "address": "$104c",
+      "line": 29,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1050",
+      "line": 31,
+      "text": "move.b #$8,d0"
+    },
+    {
+      "address": "$1054",
+      "line": 32,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1058",
+      "line": 33,
+      "text": "divu #$280,d1"
+    },
+    {
+      "address": "$105c",
+      "line": 34,
+      "text": "swap d1"
+    },
+    {
+      "address": "$1060",
+      "line": 35,
+      "text": "andi.l #$ffff,d1"
+    },
+    {
+      "address": "$1064",
+      "line": 36,
+      "text": "move.l d1,d3"
+    },
+    {
+      "address": "$1068",
+      "line": 37,
+      "text": "move.l #$808080,d1"
+    },
+    {
+      "address": "$106c",
+      "line": 38,
+      "text": "move.b #$51,d0"
+    },
+    {
+      "address": "$1070",
+      "line": 39,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1074",
+      "line": 40,
+      "text": "move.l #$0,d1"
+    },
+    {
+      "address": "$1078",
+      "line": 41,
+      "text": "move.l #$0,d2"
+    },
+    {
+      "address": "$107c",
+      "line": 42,
+      "text": "move.l #$8,d4"
+    },
+    {
+      "address": "$1080",
+      "line": 43,
+      "text": "move.b #$57,d0"
+    },
+    {
+      "address": "$1084",
+      "line": 44,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1088",
+      "line": 46,
+      "text": "move.b #$5e,d0"
+    },
+    {
+      "address": "$108c",
+      "line": 47,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1090",
+      "line": 49,
+      "text": "move.b #$17,d0"
+    },
+    {
+      "address": "$1094",
+      "line": 50,
+      "text": "move.l #$2,d1"
+    },
+    {
+      "address": "$1098",
+      "line": 51,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$109c",
+      "line": 53,
+      "text": "move.w $10e8,d5"
+    },
+    {
+      "address": "$10a0",
+      "line": 54,
+      "text": "add.w $10ec,d5"
+    },
+    {
+      "address": "$10a4",
+      "line": 55,
+      "text": "cmpi.w #$0,d5"
+    },
+    {
+      "address": "$10a8",
+      "line": 56,
+      "text": "blt $10bc"
+    },
+    {
+      "address": "$10ac",
+      "line": 57,
+      "text": "cmpi.w #$258,d5"
+    },
+    {
+      "address": "$10b0",
+      "line": 58,
+      "text": "bgt $10bc"
+    },
+    {
+      "address": "$10b4",
+      "line": 59,
+      "text": "move.w d5,$10e8"
+    },
+    {
+      "address": "$10b8",
+      "line": 60,
+      "text": "bra $10c0"
+    },
+    {
+      "address": "$10bc",
+      "line": 62,
+      "text": "neg.w $10ec"
+    },
+    {
+      "address": "$10c0",
+      "line": 64,
+      "text": "move.w $10ea,d5"
+    },
+    {
+      "address": "$10c4",
+      "line": 65,
+      "text": "add.w $10ee,d5"
+    },
+    {
+      "address": "$10c8",
+      "line": 66,
+      "text": "cmpi.w #$0,d5"
+    },
+    {
+      "address": "$10cc",
+      "line": 67,
+      "text": "blt $10e0"
+    },
+    {
+      "address": "$10d0",
+      "line": 68,
+      "text": "cmpi.w #$1b8,d5"
+    },
+    {
+      "address": "$10d4",
+      "line": 69,
+      "text": "bgt $10e0"
+    },
+    {
+      "address": "$10d8",
+      "line": 70,
+      "text": "move.w d5,$10ea"
+    },
+    {
+      "address": "$10dc",
+      "line": 71,
+      "text": "bra $1018"
+    },
+    {
+      "address": "$10e0",
+      "line": 73,
+      "text": "neg.w $10ee"
+    },
+    {
+      "address": "$10e4",
+      "line": 74,
+      "text": "bra $1018"
+    }
+  ],
+  "memory": [
+    {
+      "address": "$10e8",
+      "bytes": "0064"
+    },
+    {
+      "address": "$10ea",
+      "bytes": "003c"
+    },
+    {
+      "address": "$10ec",
+      "bytes": "0005"
+    },
+    {
+      "address": "$10ee",
+      "bytes": "0003"
+    }
+  ],
+  "labels": {
+    "ballx": {
+      "address": "$10e8",
+      "line": 76
+    },
+    "bally": {
+      "address": "$10ea",
+      "line": 77
+    },
+    "flipx": {
+      "address": "$10bc",
+      "line": 61
+    },
+    "flipy": {
+      "address": "$10e0",
+      "line": 72
+    },
+    "frame": {
+      "address": "$1018",
+      "line": 14
+    },
+    "movey": {
+      "address": "$10c0",
+      "line": 63
+    },
+    "stepx": {
+      "address": "$10ec",
+      "line": 78
+    },
+    "stepy": {
+      "address": "$10ee",
+      "line": 79
+    }
+  }
+}

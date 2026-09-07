@@ -1,0 +1,191 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 0,
+      "text": "move.l #$beef,d0"
+    },
+    {
+      "address": "$1004",
+      "line": 1,
+      "text": "move.l #$10,d1"
+    },
+    {
+      "address": "$1008",
+      "line": 2,
+      "text": "bsr $102c"
+    },
+    {
+      "address": "$100c",
+      "line": 3,
+      "text": "move.l #$beef,d0"
+    },
+    {
+      "address": "$1010",
+      "line": 4,
+      "text": "move.l #$a,d1"
+    },
+    {
+      "address": "$1014",
+      "line": 5,
+      "text": "bsr $102c"
+    },
+    {
+      "address": "$1018",
+      "line": 6,
+      "text": "move.l #$beef,d0"
+    },
+    {
+      "address": "$101c",
+      "line": 7,
+      "text": "move.l #$2,d1"
+    },
+    {
+      "address": "$1020",
+      "line": 8,
+      "text": "bsr $102c"
+    },
+    {
+      "address": "$1024",
+      "line": 9,
+      "text": "move.b #$9,d0"
+    },
+    {
+      "address": "$1028",
+      "line": 10,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$102c",
+      "line": 14,
+      "text": "lea $2022,a1"
+    },
+    {
+      "address": "$1030",
+      "line": 15,
+      "text": "clr.b -(a1)"
+    },
+    {
+      "address": "$1034",
+      "line": 17,
+      "text": "move.l d0,d2"
+    },
+    {
+      "address": "$1038",
+      "line": 18,
+      "text": "divu d1,d2"
+    },
+    {
+      "address": "$103c",
+      "line": 19,
+      "text": "move.l d2,d3"
+    },
+    {
+      "address": "$1040",
+      "line": 20,
+      "text": "swap d3"
+    },
+    {
+      "address": "$1044",
+      "line": 21,
+      "text": "andi.l #$ffff,d3"
+    },
+    {
+      "address": "$1048",
+      "line": 22,
+      "text": "andi.l #$ffff,d2"
+    },
+    {
+      "address": "$104c",
+      "line": 23,
+      "text": "cmpi.b #$9,d3"
+    },
+    {
+      "address": "$1050",
+      "line": 24,
+      "text": "bhi $105c"
+    },
+    {
+      "address": "$1054",
+      "line": 25,
+      "text": "addi.b #$30,d3"
+    },
+    {
+      "address": "$1058",
+      "line": 26,
+      "text": "bra $1060"
+    },
+    {
+      "address": "$105c",
+      "line": 28,
+      "text": "addi.b #$37,d3"
+    },
+    {
+      "address": "$1060",
+      "line": 30,
+      "text": "move.b d3,-(a1)"
+    },
+    {
+      "address": "$1064",
+      "line": 31,
+      "text": "move.l d2,d0"
+    },
+    {
+      "address": "$1068",
+      "line": 32,
+      "text": "bne $1034"
+    },
+    {
+      "address": "$106c",
+      "line": 33,
+      "text": "move.b #$d,d0"
+    },
+    {
+      "address": "$1070",
+      "line": 34,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1074",
+      "line": 35,
+      "text": "rts"
+    }
+  ],
+  "memory": [
+    {
+      "address": "$2000",
+      "zeroed": 4
+    }
+  ],
+  "labels": {
+    "buffer": {
+      "address": "$2000",
+      "line": 38
+    },
+    "buffer_end": {
+      "address": "$2022",
+      "line": 39
+    },
+    "digit": {
+      "address": "$1034",
+      "line": 16
+    },
+    "letter": {
+      "address": "$105c",
+      "line": 27
+    },
+    "print_in_base": {
+      "address": "$102c",
+      "line": 13
+    },
+    "store": {
+      "address": "$1060",
+      "line": 29
+    }
+  }
+}

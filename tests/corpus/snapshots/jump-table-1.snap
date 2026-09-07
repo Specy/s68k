@@ -1,0 +1,141 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 0,
+      "text": "move.l #$6,d0"
+    },
+    {
+      "address": "$1004",
+      "line": 1,
+      "text": "move.l #$3,d1"
+    },
+    {
+      "address": "$1008",
+      "line": 2,
+      "text": "move.l #$2,d2"
+    },
+    {
+      "address": "$100c",
+      "line": 4,
+      "text": "lea $2000,a0"
+    },
+    {
+      "address": "$1010",
+      "line": 5,
+      "text": "move.l d2,d3"
+    },
+    {
+      "address": "$1014",
+      "line": 6,
+      "text": "lsl.l #$2,d3"
+    },
+    {
+      "address": "$1018",
+      "line": 7,
+      "text": "movea.l 0(a0,d3.w),a1"
+    },
+    {
+      "address": "$101c",
+      "line": 8,
+      "text": "jmp (a1)"
+    },
+    {
+      "address": "$1020",
+      "line": 11,
+      "text": "move.l d0,d4"
+    },
+    {
+      "address": "$1024",
+      "line": 12,
+      "text": "add.l d1,d4"
+    },
+    {
+      "address": "$1028",
+      "line": 13,
+      "text": "bra $1050"
+    },
+    {
+      "address": "$102c",
+      "line": 15,
+      "text": "move.l d0,d4"
+    },
+    {
+      "address": "$1030",
+      "line": 16,
+      "text": "sub.l d1,d4"
+    },
+    {
+      "address": "$1034",
+      "line": 17,
+      "text": "bra $1050"
+    },
+    {
+      "address": "$1038",
+      "line": 19,
+      "text": "move.l d0,d4"
+    },
+    {
+      "address": "$103c",
+      "line": 20,
+      "text": "mulu d1,d4"
+    },
+    {
+      "address": "$1040",
+      "line": 21,
+      "text": "bra $1050"
+    },
+    {
+      "address": "$1044",
+      "line": 23,
+      "text": "move.l d0,d4"
+    },
+    {
+      "address": "$1048",
+      "line": 24,
+      "text": "divu d1,d4"
+    },
+    {
+      "address": "$104c",
+      "line": 25,
+      "text": "andi.l #$ffff,d4"
+    }
+  ],
+  "memory": [
+    {
+      "address": "$2000",
+      "bytes": "000010200000102c0000103800001044"
+    }
+  ],
+  "labels": {
+    "add_op": {
+      "address": "$1020",
+      "line": 10
+    },
+    "div_op": {
+      "address": "$1044",
+      "line": 22
+    },
+    "done": {
+      "address": "$1050",
+      "line": 26
+    },
+    "mul_op": {
+      "address": "$1038",
+      "line": 18
+    },
+    "sub_op": {
+      "address": "$102c",
+      "line": 14
+    },
+    "table": {
+      "address": "$2000",
+      "line": 29
+    }
+  }
+}

@@ -1,0 +1,32 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "status": "terminated",
+  "steps": 4836,
+  "d": [
+    "$a110009",
+    "$1",
+    "$e6",
+    "$c",
+    "$20",
+    "$1c0c",
+    "$ffff",
+    "$f0d"
+  ],
+  "a": [
+    "$300e",
+    "$309d",
+    "$30b6",
+    "$0",
+    "$0",
+    "$0",
+    "$0",
+    "$1000000"
+  ],
+  "pc": "$11c4",
+  "flags": "X:0 N:0 Z:0 V:0 C:0",
+  "output": "Game over. Score: 1",
+  "memory": "ebaece9526b2b522"
+}

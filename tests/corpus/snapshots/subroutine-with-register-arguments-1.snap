@@ -1,0 +1,99 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 0,
+      "text": "move.l #$54,d0"
+    },
+    {
+      "address": "$1004",
+      "line": 1,
+      "text": "move.l #$24,d1"
+    },
+    {
+      "address": "$1008",
+      "line": 2,
+      "text": "bsr $1014"
+    },
+    {
+      "address": "$100c",
+      "line": 3,
+      "text": "move.l d0,d2"
+    },
+    {
+      "address": "$1010",
+      "line": 4,
+      "text": "bra $103c"
+    },
+    {
+      "address": "$1014",
+      "line": 9,
+      "text": "tst.l d1"
+    },
+    {
+      "address": "$1018",
+      "line": 10,
+      "text": "beq $1038"
+    },
+    {
+      "address": "$101c",
+      "line": 11,
+      "text": "move.l d0,d3"
+    },
+    {
+      "address": "$1020",
+      "line": 12,
+      "text": "divu d1,d3"
+    },
+    {
+      "address": "$1024",
+      "line": 13,
+      "text": "swap d3"
+    },
+    {
+      "address": "$1028",
+      "line": 14,
+      "text": "andi.l #$ffff,d3"
+    },
+    {
+      "address": "$102c",
+      "line": 15,
+      "text": "move.l d1,d0"
+    },
+    {
+      "address": "$1030",
+      "line": 16,
+      "text": "move.l d3,d1"
+    },
+    {
+      "address": "$1034",
+      "line": 17,
+      "text": "bra $1014"
+    },
+    {
+      "address": "$1038",
+      "line": 19,
+      "text": "rts"
+    }
+  ],
+  "memory": [],
+  "labels": {
+    "end": {
+      "address": "$103c",
+      "line": 21
+    },
+    "gcd": {
+      "address": "$1014",
+      "line": 8
+    },
+    "gcd_done": {
+      "address": "$1038",
+      "line": 18
+    }
+  }
+}

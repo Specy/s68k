@@ -1,0 +1,32 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "status": "limit",
+  "steps": 200000,
+  "d": [
+    "$45",
+    "$ff00b4",
+    "$12e",
+    "$218",
+    "$188",
+    "$13",
+    "$146",
+    "$0"
+  ],
+  "a": [
+    "$18c5",
+    "$18b1",
+    "$0",
+    "$0",
+    "$0",
+    "$0",
+    "$0",
+    "$fffff8"
+  ],
+  "pc": "$17f0",
+  "flags": "X:0 N:0 Z:0 V:0 C:0",
+  "output": "",
+  "memory": "62bab66c288bcaf8"
+}

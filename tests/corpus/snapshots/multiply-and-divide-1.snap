@@ -1,0 +1,56 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 0,
+      "text": "move.w #$16d,d0"
+    },
+    {
+      "address": "$1004",
+      "line": 1,
+      "text": "move.w #$18,d1"
+    },
+    {
+      "address": "$1008",
+      "line": 2,
+      "text": "mulu d1,d0"
+    },
+    {
+      "address": "$100c",
+      "line": 4,
+      "text": "move.l #$3e8,d2"
+    },
+    {
+      "address": "$1010",
+      "line": 5,
+      "text": "divu #$3c,d2"
+    },
+    {
+      "address": "$1014",
+      "line": 6,
+      "text": "move.l d2,d3"
+    },
+    {
+      "address": "$1018",
+      "line": 7,
+      "text": "andi.l #$ffff,d2"
+    },
+    {
+      "address": "$101c",
+      "line": 8,
+      "text": "swap d3"
+    },
+    {
+      "address": "$1020",
+      "line": 9,
+      "text": "andi.l #$ffff,d3"
+    }
+  ],
+  "memory": [],
+  "labels": {}
+}

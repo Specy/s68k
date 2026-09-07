@@ -1,0 +1,60 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 2,
+      "text": "lea $2000,a0"
+    },
+    {
+      "address": "$1004",
+      "line": 3,
+      "text": "move.w #$9,d1"
+    },
+    {
+      "address": "$1008",
+      "line": 4,
+      "text": "move.w #$1,d0"
+    },
+    {
+      "address": "$100c",
+      "line": 6,
+      "text": "move.w d0,(a0)"
+    },
+    {
+      "address": "$1010",
+      "line": 7,
+      "text": "addq.l #$2,a0"
+    },
+    {
+      "address": "$1014",
+      "line": 8,
+      "text": "addq.w #$1,d0"
+    },
+    {
+      "address": "$1018",
+      "line": 9,
+      "text": "dbf d1,$100c"
+    }
+  ],
+  "memory": [
+    {
+      "address": "$2000",
+      "zeroed": 2
+    }
+  ],
+  "labels": {
+    "fill": {
+      "address": "$100c",
+      "line": 5
+    },
+    "numbers": {
+      "address": "$2000",
+      "line": 12
+    }
+  }
+}

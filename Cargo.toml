@@ -27,3 +27,8 @@ wasm-opt = [
 
 [features]
 default = ["console_error_panic_hook"]
+
+[dev-dependencies]
+# Pinned exactly: the committed snapshots are this version's file format, and
+# CI resolves dependencies fresh (Cargo.lock is not tracked for this library).
+insta = { version = "=1.48.0", features = ["json"] }
