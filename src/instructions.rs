@@ -262,20 +262,22 @@ pub enum Interrupt {
     // graphics
     SetPenColor(u32),                          //80
     SetFillColor(u32),                         //81
-    DrawPixel(u32, u32),                       //82
-    GetPixelColor(u32, u32),                   //83
-    DrawLine(u32, u32, u32, u32),              //84
-    DrawLineTo(u32, u32),                      //85
-    MoveTo(u32, u32),                          //86
-    DrawRectangle(u32, u32, u32, u32),         //87
-    DrawEllipse(u32, u32, u32, u32),           //88
-    FloodFill(u32, u32),                       //89
-    DrawUnfilledRectangle(u32, u32, u32, u32), //90
-    DrawUnfilledEllipse(u32, u32, u32, u32),   //91
+    //coordinates are signed: EASy68K casts each one to a short before it draws, so a program may
+    //draw off the left or the top of the screen and have the part that is on it clipped
+    DrawPixel(i32, i32),                       //82
+    GetPixelColor(i32, i32),                   //83
+    DrawLine(i32, i32, i32, i32),              //84
+    DrawLineTo(i32, i32),                      //85
+    MoveTo(i32, i32),                          //86
+    DrawRectangle(i32, i32, i32, i32),         //87
+    DrawEllipse(i32, i32, i32, i32),           //88
+    FloodFill(i32, i32),                       //89
+    DrawUnfilledRectangle(i32, i32, i32, i32), //90
+    DrawUnfilledEllipse(i32, i32, i32, i32),   //91
     SetDrawingMode(u8),                        //92, 2 move only, 4 draw, 16 and 17 double buffering off and on
     SetPenWidth(u32),                          //93
     Repaint,                                   //94, shows the off screen buffer of drawing mode 17
-    DrawText(u32, u32, String),                //95
+    DrawText(i32, i32, String),                //95
     GetPenPosition,                            //96
     SetScreenSize(u32, u32),                   //33
     GetScreenSize,                             //33 with D1.L = 0
@@ -331,7 +333,7 @@ pub enum InterruptResult {
     SetPenWidth,
     Repaint,
     DrawText,
-    GetPenPosition(u32, u32),
+    GetPenPosition(i32, i32),
     SetScreenSize,
     GetScreenSize(u32, u32),
     SetScreenMode,

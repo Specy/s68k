@@ -737,8 +737,8 @@ impl Interpreter {
                 );
             }
             InterruptResult::GetPenPosition(x, y) => {
-                self.set_register_value(RegisterOperand::Data(1), x, Size::Word);
-                self.set_register_value(RegisterOperand::Data(2), y, Size::Word);
+                self.set_register_value(RegisterOperand::Data(1), x as u32, Size::Word);
+                self.set_register_value(RegisterOperand::Data(2), y as u32, Size::Word);
             }
             InterruptResult::GetScreenSize(width, height) => {
                 self.set_register_value(
@@ -1757,62 +1757,87 @@ impl Interpreter {
             82 => {
                 let x = self.cpu.d_reg[1].get_word();
                 let y = self.cpu.d_reg[2].get_word();
-                Ok(Interrupt::DrawPixel(x as u32, y as u32))
+                Ok(Interrupt::DrawPixel(x as i16 as i32, y as i16 as i32))
             }
             83 => {
                 let x = self.cpu.d_reg[1].get_word();
                 let y = self.cpu.d_reg[2].get_word();
-                Ok(Interrupt::GetPixelColor(x as u32, y as u32))
+                Ok(Interrupt::GetPixelColor(x as i16 as i32, y as i16 as i32))
             }
             84 => {
                 let x1 = self.cpu.d_reg[1].get_word();
                 let y1 = self.cpu.d_reg[2].get_word();
                 let x2 = self.cpu.d_reg[3].get_word();
                 let y2 = self.cpu.d_reg[4].get_word();
-                Ok(Interrupt::DrawLine(x1 as u32, y1 as u32, x2 as u32, y2 as u32))
+                Ok(Interrupt::DrawLine(
+                    x1 as i16 as i32,
+                    y1 as i16 as i32,
+                    x2 as i16 as i32,
+                    y2 as i16 as i32,
+                ))
             }
             85 => {
                 let x = self.cpu.d_reg[1].get_word();
                 let y = self.cpu.d_reg[2].get_word();
-                Ok(Interrupt::DrawLineTo(x as u32, y as u32))
+                Ok(Interrupt::DrawLineTo(x as i16 as i32, y as i16 as i32))
             }
             86 => {
                 let x = self.cpu.d_reg[1].get_word();
                 let y = self.cpu.d_reg[2].get_word();
-                Ok(Interrupt::MoveTo(x as u32, y as u32))
+                Ok(Interrupt::MoveTo(x as i16 as i32, y as i16 as i32))
             }
             87 => {
                 let left_x = self.cpu.d_reg[1].get_word();
                 let upper_y = self.cpu.d_reg[2].get_word();
                 let right_x = self.cpu.d_reg[3].get_word();
                 let lower_y = self.cpu.d_reg[4].get_word();
-                Ok(Interrupt::DrawRectangle(left_x as u32, upper_y as u32, right_x as u32, lower_y as u32))
+                Ok(Interrupt::DrawRectangle(
+                    left_x as i16 as i32,
+                    upper_y as i16 as i32,
+                    right_x as i16 as i32,
+                    lower_y as i16 as i32,
+                ))
             }
             88 => {
                 let left_x = self.cpu.d_reg[1].get_word();
                 let upper_y = self.cpu.d_reg[2].get_word();
                 let right_x = self.cpu.d_reg[3].get_word();
                 let lower_y = self.cpu.d_reg[4].get_word();
-                Ok(Interrupt::DrawEllipse(left_x as u32, upper_y as u32, right_x as u32, lower_y as u32))
+                Ok(Interrupt::DrawEllipse(
+                    left_x as i16 as i32,
+                    upper_y as i16 as i32,
+                    right_x as i16 as i32,
+                    lower_y as i16 as i32,
+                ))
             }
             89 => {
                 let x = self.cpu.d_reg[1].get_word();
                 let y = self.cpu.d_reg[2].get_word();
-                Ok(Interrupt::FloodFill(x as u32, y as u32))
+                Ok(Interrupt::FloodFill(x as i16 as i32, y as i16 as i32))
             }
             90 => {
                 let left_x = self.cpu.d_reg[1].get_word();
                 let upper_y = self.cpu.d_reg[2].get_word();
                 let right_x = self.cpu.d_reg[3].get_word();
                 let lower_y = self.cpu.d_reg[4].get_word();
-                Ok(Interrupt::DrawUnfilledRectangle(left_x as u32, upper_y as u32, right_x as u32, lower_y as u32))
+                Ok(Interrupt::DrawUnfilledRectangle(
+                    left_x as i16 as i32,
+                    upper_y as i16 as i32,
+                    right_x as i16 as i32,
+                    lower_y as i16 as i32,
+                ))
             }
             91 => {
                 let left_x = self.cpu.d_reg[1].get_word();
                 let upper_y = self.cpu.d_reg[2].get_word();
                 let right_x = self.cpu.d_reg[3].get_word();
                 let lower_y = self.cpu.d_reg[4].get_word();
-                Ok(Interrupt::DrawUnfilledEllipse(left_x as u32, upper_y as u32, right_x as u32, lower_y as u32))
+                Ok(Interrupt::DrawUnfilledEllipse(
+                    left_x as i16 as i32,
+                    upper_y as i16 as i32,
+                    right_x as i16 as i32,
+                    lower_y as i16 as i32,
+                ))
             }
             92 => {
                 let mode = self.cpu.d_reg[1].get_byte();
@@ -1836,7 +1861,7 @@ impl Interpreter {
                 let str = self.read_null_terminated_string(address)?;
                 let x = self.cpu.d_reg[1].get_word();
                 let y = self.cpu.d_reg[2].get_word();
-                Ok(Interrupt::DrawText(x as u32, y as u32, str))
+                Ok(Interrupt::DrawText(x as i16 as i32, y as i16 as i32, str))
             }
             _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
         }

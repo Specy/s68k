@@ -344,6 +344,41 @@ end:",
         }
 
         #[test]
+        fn drawing_tasks_read_their_coordinates_as_signed_words() {
+            //EASy68K casts every drawing coordinate to a short before it draws
+            //(`simIO->rectangle((short)D[1], ...)`), so a shape may start off the left or the top
+            //of the screen and have the part that is on it clipped. Read unsigned, -20 would
+            //arrive as 65516 and the shape would land on the far side of the screen instead.
+            let (_, interrupts) = run_answering(
+                "move.b #87, d0
+    move.w #-20, d1
+    move.w #-10, d2
+    move.w #40, d3
+    move.w #50, d4
+    trap #15",
+                |_| InterruptResult::DrawRectangle,
+            );
+            assert!(matches!(
+                interrupts[0],
+                Interrupt::DrawRectangle(-20, -10, 40, 50)
+            ));
+        }
+
+        #[test]
+        fn trap_96_answers_a_pen_position_off_the_screen() {
+            let (interpreter, _) = run_answering(
+                "move.l #$FFFFFFFF, d1
+    move.l #$FFFFFFFF, d2
+    move.b #96, d0
+    trap #15",
+                |_| InterruptResult::GetPenPosition(-20, 100),
+            );
+            //the low word of each, which is what a signed short leaves in D1.W and D2.W
+            assert_eq!(data_long(&interpreter, 1), 0xFFFFFFEC);
+            assert_eq!(data_long(&interpreter, 2), 0xFFFF0064);
+        }
+
+        #[test]
         fn trap_20_reads_the_number_and_the_field_width() {
             let (_, interrupts) = run_answering(
                 "move.b #20, d0
