@@ -11,7 +11,7 @@ It is part of a family of JavaScript assembly interpreters and simulators:
 - RISC-V: [git repo](https://github.com/Specy/rars), [npm package](https://www.npmjs.com/package/@specy/risc-v)
 - X86: [git repo](https://github.com/Specy/x86-js), [npm package](https://www.npmjs.com/package/@specy/x86)
 - M68K: [git repo](https://github.com/Specy/s68k), [npm package](https://www.npmjs.com/package/@specy/s68k)
-- Z80: [git repo](https://github.com/Specy/trs-80), [npm package](https://www.npmjs.com/package/@specy/z80)
+- Z80: [git repo](https://github.com/Specy/trs80), [npm package](https://www.npmjs.com/package/@specy/z80)
 
 ## Purpose
 s68k is a teaching tool for M68K assembly. Its diagnostics explain invalid
