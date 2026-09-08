@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unclosed_parenthesis.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unclosed_parenthesis",
+    "message": "this `(` is never closed",
+    "hint": "add the `)`",
+    "location": {
+      "file": "unclosed_parenthesis.asm",
+      "line": 1,
+      "column": 12,
+      "endColumn": 13
+    },
+    "related": []
+  }
+]

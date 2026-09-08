@@ -1,0 +1,66 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/malformed_operand.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "malformed_operand",
+    "message": "this looks like an indirect operand, `(a0)`, but `d0` is not an address register",
+    "hint": null,
+    "location": {
+      "file": "malformed_operand.asm",
+      "line": 1,
+      "column": 11,
+      "endColumn": 14
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "malformed_operand",
+    "message": "this looks like a predecrement operand, `-(a0)`, but the `)` is missing",
+    "hint": null,
+    "location": {
+      "file": "malformed_operand.asm",
+      "line": 2,
+      "column": 14,
+      "endColumn": 18
+    },
+    "related": [
+      {
+        "location": {
+          "file": "malformed_operand.asm",
+          "line": 2,
+          "column": 15,
+          "endColumn": 16
+        },
+        "message": "this `(` is never closed"
+      }
+    ]
+  },
+  {
+    "severity": "error",
+    "code": "malformed_operand",
+    "message": "this looks like an indexed operand, `4(a0,d1.w)`, but the `)` is missing",
+    "hint": null,
+    "location": {
+      "file": "malformed_operand.asm",
+      "line": 3,
+      "column": 8,
+      "endColumn": 17
+    },
+    "related": [
+      {
+        "location": {
+          "file": "malformed_operand.asm",
+          "line": 3,
+          "column": 9,
+          "endColumn": 10
+        },
+        "message": "this `(` is never closed"
+      }
+    ]
+  }
+]

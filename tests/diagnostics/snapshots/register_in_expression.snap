@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/register_in_expression.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "register_in_expression",
+    "message": "`a0` is a register; an expression holds no registers",
+    "hint": "an expression is computed while assembling, when no register has a value yet",
+    "location": {
+      "file": "register_in_expression.asm",
+      "line": 1,
+      "column": 12,
+      "endColumn": 14
+    },
+    "related": []
+  }
+]

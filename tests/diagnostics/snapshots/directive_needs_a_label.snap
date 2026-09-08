@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/directive_needs_a_label.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "directive_needs_a_label",
+    "message": "`equ` gives a name to something, and this line has no name",
+    "hint": "write the name in the first column, `count equ …`",
+    "location": {
+      "file": "directive_needs_a_label.asm",
+      "line": 1,
+      "column": 4,
+      "endColumn": 7
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "directive_needs_a_label",
+    "message": "`section` with no number sets a name to the number of the section in force, and this line has no name",
+    "hint": "write the name in the first column, `here section`, or write the number, `section 1`",
+    "location": {
+      "file": "directive_needs_a_label.asm",
+      "line": 4,
+      "column": 4,
+      "endColumn": 11
+    },
+    "related": []
+  }
+]

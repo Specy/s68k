@@ -1,0 +1,4 @@
+* The file the first line above meant.
+print:
+    trap #15
+    rts

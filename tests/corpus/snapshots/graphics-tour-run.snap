@@ -1,0 +1,32 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "status": "terminated",
+  "steps": 156,
+  "d": [
+    "$9",
+    "$2800000",
+    "$0",
+    "$276",
+    "$1b8",
+    "$0",
+    "$0",
+    "$28001e0"
+  ],
+  "a": [
+    "$0",
+    "$1297",
+    "$0",
+    "$0",
+    "$0",
+    "$0",
+    "$0",
+    "$1000000"
+  ],
+  "pc": "$1270",
+  "flags": "X:0 N:0 Z:0 V:0 C:0",
+  "output": "pixel color $00BBGGRR = 0screen width:height = 41943520",
+  "memory": "356b97ded0af5a30"
+}

@@ -1,0 +1,90 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 0,
+      "text": "move.l #$b6,d0"
+    },
+    {
+      "address": "$1004",
+      "line": 2,
+      "text": "btst #$0,d0"
+    },
+    {
+      "address": "$1008",
+      "line": 3,
+      "text": "sne d1"
+    },
+    {
+      "address": "$100c",
+      "line": 5,
+      "text": "move.l d0,d2"
+    },
+    {
+      "address": "$1010",
+      "line": 6,
+      "text": "lsl.l #$3,d2"
+    },
+    {
+      "address": "$1014",
+      "line": 8,
+      "text": "move.l d0,d3"
+    },
+    {
+      "address": "$1018",
+      "line": 9,
+      "text": "andi.l #$f,d3"
+    },
+    {
+      "address": "$101c",
+      "line": 11,
+      "text": "clr.l d4"
+    },
+    {
+      "address": "$1020",
+      "line": 12,
+      "text": "move.l d0,d5"
+    },
+    {
+      "address": "$1024",
+      "line": 13,
+      "text": "move.w #$1f,d6"
+    },
+    {
+      "address": "$1028",
+      "line": 15,
+      "text": "lsr.l #$1,d5"
+    },
+    {
+      "address": "$102c",
+      "line": 16,
+      "text": "bcc $1034"
+    },
+    {
+      "address": "$1030",
+      "line": 17,
+      "text": "addq.l #$1,d4"
+    },
+    {
+      "address": "$1034",
+      "line": 19,
+      "text": "dbf d6,$1028"
+    }
+  ],
+  "memory": [],
+  "labels": {
+    "count": {
+      "address": "$1028",
+      "line": 14
+    },
+    "no_bit": {
+      "address": "$1034",
+      "line": 18
+    }
+  }
+}

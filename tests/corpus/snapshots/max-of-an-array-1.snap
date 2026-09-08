@@ -1,0 +1,89 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 2,
+      "text": "lea $2000,a0"
+    },
+    {
+      "address": "$1004",
+      "line": 3,
+      "text": "move.w (a0)+,d0"
+    },
+    {
+      "address": "$1008",
+      "line": 4,
+      "text": "clr.w d3"
+    },
+    {
+      "address": "$100c",
+      "line": 5,
+      "text": "clr.w d4"
+    },
+    {
+      "address": "$1010",
+      "line": 6,
+      "text": "move.w #$6,d1"
+    },
+    {
+      "address": "$1014",
+      "line": 8,
+      "text": "addq.w #$1,d4"
+    },
+    {
+      "address": "$1018",
+      "line": 9,
+      "text": "move.w (a0)+,d2"
+    },
+    {
+      "address": "$101c",
+      "line": 10,
+      "text": "cmp.w d0,d2"
+    },
+    {
+      "address": "$1020",
+      "line": 11,
+      "text": "ble $102c"
+    },
+    {
+      "address": "$1024",
+      "line": 12,
+      "text": "move.w d2,d0"
+    },
+    {
+      "address": "$1028",
+      "line": 13,
+      "text": "move.w d4,d3"
+    },
+    {
+      "address": "$102c",
+      "line": 15,
+      "text": "dbf d1,$1014"
+    }
+  ],
+  "memory": [
+    {
+      "address": "$2000",
+      "bytes": "000cfffc00250008006300290002003c"
+    }
+  ],
+  "labels": {
+    "loop": {
+      "address": "$1014",
+      "line": 7
+    },
+    "not_bigger": {
+      "address": "$102c",
+      "line": 14
+    },
+    "numbers": {
+      "address": "$2000",
+      "line": 18
+    }
+  }
+}

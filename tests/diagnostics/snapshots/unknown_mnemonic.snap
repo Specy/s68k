@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unknown_mnemonic.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unknown_mnemonic",
+    "message": "`mvoe` is not an instruction or a directive",
+    "hint": "did you mean `move`?",
+    "location": {
+      "file": "unknown_mnemonic.asm",
+      "line": 1,
+      "column": 4,
+      "endColumn": 8
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unknown_mnemonic",
+    "message": "`frobnicate` is not an instruction or a directive",
+    "hint": "start it in column 1, or end it with a colon, if `frobnicate` is a label",
+    "location": {
+      "file": "unknown_mnemonic.asm",
+      "line": 2,
+      "column": 4,
+      "endColumn": 14
+    },
+    "related": []
+  }
+]

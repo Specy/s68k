@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/double_quoted_string.asm
+---
+[
+  {
+    "severity": "suggestion",
+    "code": "double_quoted_string",
+    "message": "EASy68K writes strings in single quotes",
+    "hint": "`'Hello'` assembles in both",
+    "location": {
+      "file": "double_quoted_string.asm",
+      "line": 1,
+      "column": 15,
+      "endColumn": 22
+    },
+    "related": []
+  }
+]

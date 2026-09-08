@@ -1,0 +1,46 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unreadable_file
+---
+[
+  {
+    "severity": "error",
+    "code": "unreadable_file",
+    "message": "there is no file named `io.m68k` in this project",
+    "hint": "did you mean `lib/io.m68k`?",
+    "location": {
+      "file": "main.asm",
+      "line": 2,
+      "column": 12,
+      "endColumn": 19
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unreadable_file",
+    "message": "there is no file named `data/pixels.bin` in this project",
+    "hint": null,
+    "location": {
+      "file": "main.asm",
+      "line": 3,
+      "column": 12,
+      "endColumn": 27
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unreadable_file",
+    "message": "`sprite.bin` holds bytes, not source",
+    "hint": "`incbin` inserts the bytes of a binary file; `include` assembles source",
+    "location": {
+      "file": "main.asm",
+      "line": 4,
+      "column": 12,
+      "endColumn": 22
+    },
+    "related": []
+  }
+]

@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/bare_number_as_address.asm
+---
+[
+  {
+    "severity": "suggestion",
+    "code": "bare_number_as_address",
+    "message": "`5` here means the contents of address 5, not the number 5",
+    "hint": "write `#5` for the number itself",
+    "location": {
+      "file": "bare_number_as_address.asm",
+      "line": 1,
+      "column": 11,
+      "endColumn": 12
+    },
+    "related": []
+  }
+]

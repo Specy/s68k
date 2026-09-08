@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/odd_origin.asm
+---
+[
+  {
+    "severity": "warning",
+    "code": "odd_origin",
+    "message": "`$2001` is an odd address, and an instruction or a word starts on an even one",
+    "hint": "the next item is laid out at `$2002`",
+    "location": {
+      "file": "odd_origin.asm",
+      "line": 1,
+      "column": 8,
+      "endColumn": 13
+    },
+    "related": []
+  }
+]

@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/division_by_zero.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "division_by_zero",
+    "message": "this expression divides by zero",
+    "hint": null,
+    "location": {
+      "file": "division_by_zero.asm",
+      "line": 2,
+      "column": 12,
+      "endColumn": 20
+    },
+    "related": []
+  }
+]

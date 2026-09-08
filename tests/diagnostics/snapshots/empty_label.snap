@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/empty_label.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "empty_label",
+    "message": "there is no name before this `:`",
+    "hint": "a label is a name, then the colon",
+    "location": {
+      "file": "empty_label.asm",
+      "line": 1,
+      "column": 0,
+      "endColumn": 1
+    },
+    "related": []
+  }
+]

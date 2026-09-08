@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/plus_is_not_a_unary_operator.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "plus_is_not_a_unary_operator",
+    "message": "`+` is not a unary operator",
+    "hint": "write `5`; the unary operators are `-` and `~`",
+    "location": {
+      "file": "plus_is_not_a_unary_operator.asm",
+      "line": 1,
+      "column": 12,
+      "endColumn": 13
+    },
+    "related": []
+  }
+]

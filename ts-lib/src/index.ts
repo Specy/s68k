@@ -1,7 +1,8 @@
 import {
-    Compiler as RawCompiler,
+    Breakpoint,
     Condition,
     Cpu as RawCpu,
+    Diagnostic,
     ExecutionStep,
     Flags,
     InstructionLine,
@@ -12,23 +13,71 @@ import {
     InterruptResult,
     KeyStateRequest,
     KeyStateResult,
-    Label,
-    StackFrame,
-    LexedLine,
-    LexedOperand,
-    LexedRegisterType,
+    LineSpan,
+    Location,
     MutationOperation,
+    ParsedComment,
+    ParsedLabel,
     ParsedLine,
+    ParsedLineKind,
+    ParsedOperand,
+    ParsedOperation,
+    ParsedText,
+    ProgramInfo,
+    ProgramSymbol,
     Register as RawRegister,
     RegisterOperand,
+    RelatedLocation,
     RuntimeError,
-    S68k as RawS68k,
-    SemanticError as RawSemanticError,
+    Severity,
     Size,
-    Step
+    StackFrame,
+    WasmAssembly as RawAssembly,
+    wasm_assemble,
+    wasm_parse_line
 } from './pkg/s68k.js'
 
-export type CompilationResult = { ok: false, errors: SemanticError[] } | { ok: true, interpreter: Interpreter }
+/** The path a bare source string is filed under, and the entry file's default. */
+export const DEFAULT_ENTRY_PATH = 'main.m68k'
+
+/**
+ * The files of a project: a root-relative path with `/` separators, to the text
+ * of a source file or to the bytes of a binary one.
+ *
+ * `include` reads a source file and `incbin` either kind, so the bytes of a
+ * sprite or a table go in as a `Uint8Array` under the path the program names.
+ */
+export type SourceFiles = Record<string, string | Uint8Array>
+
+/**
+ * What to assemble: one source string, or the files of a project and the path
+ * of the entry file to start from.
+ *
+ * Every other file is reached from the entry file through `include` or `incbin`
+ * or is not read at all.
+ */
+export type AssemblySource = string | { files: SourceFiles, entry: string }
+
+export type AssembleOptions = {
+    /**
+     * The path of the entry file. It names the file every diagnostic points at,
+     * so pass the real name of the buffer when assembling one string. Defaults
+     * to the project's own `entry`, or to `main.m68k` for a bare string.
+     */
+    entry?: string
+}
+
+/**
+ * What the assembler made of a project: everything it found, and the program
+ * when there is one.
+ *
+ * `program` is present exactly when no diagnostic is an error, so live checking
+ * reads `diagnostics` and ignores the rest.
+ */
+export type AssemblyResult = {
+    diagnostics: Diagnostic[]
+    program?: Program
+}
 
 export enum RegisterType {
     Data,
@@ -79,42 +128,114 @@ export class Cpu {
     getRegisterValue(register: number, type: RegisterType): number {
         return this.getRegister(register, type).getLong()
     }
+
+    /**
+     * The whole status register as it was when the snapshot was taken; see
+     * {@link Interpreter.getSr}.
+     */
+    getSr(): number {
+        return this.cpu.wasm_get_sr()
+    }
 }
 
 export type InterruptHandler = (interrupt: Interrupt) => Promise<InterruptResult> | void
 
+/**
+ * A program ready to run: the instructions with their addresses, the initial
+ * contents of memory, the symbols and the entry point.
+ *
+ * It is a handle on the WebAssembly side and holds memory there, so call
+ * {@link Program.dispose} when it is no longer needed. The same program can
+ * build any number of interpreters, which is what restarting a run does.
+ */
+export class Program {
+    private assembly: RawAssembly
+    private info: ProgramInfo | null = null
+
+    /** Wraps what {@link S68k.assemble} built; not meant to be called directly. */
+    constructor(assembly: RawAssembly) {
+        this.assembly = assembly
+    }
+
+    /** The handle the interpreter is built from. */
+    getRaw(): RawAssembly {
+        return this.assembly
+    }
+
+    /** Entry point, end address, instruction count and every symbol. */
+    getInfo(): ProgramInfo {
+        if (this.info === null) {
+            this.info = this.assembly.wasm_get_program_info() as ProgramInfo
+        }
+        return this.info
+    }
+
+    /** The address the program starts running at. */
+    getEntryPoint(): number {
+        return this.getInfo().entryPoint
+    }
+
+    /** One past the last byte of the last instruction. */
+    getEndAddress(): number {
+        return this.getInfo().endAddress
+    }
+
+    getInstructionCount(): number {
+        return this.getInfo().instructionCount
+    }
+
+    /** Every symbol of the program, by full name. */
+    getSymbols(): Record<string, ProgramSymbol> {
+        return this.getInfo().symbols
+    }
+
+    /** Give back the memory the program holds on the WebAssembly side. */
+    dispose() {
+        this.assembly.free()
+    }
+}
 
 export class Interpreter {
     private interpreter: RawInterpreter
 
-    constructor(interpreter: RawInterpreter) {
-        this.interpreter = interpreter
+    /**
+     * An interpreter over `program`, ready to run from its entry point.
+     *
+     * `options` defaults to a history of 100 steps, which is what undo needs;
+     * pass `{ keep_history: false, history_size: 0 }` to run without one.
+     */
+    constructor(program: Program, options: InterpreterOptions = {keep_history: true, history_size: 100}) {
+        this.interpreter = new RawInterpreter(program.getRaw(), options)
     }
 
     answerInterrupt(interruptResult: InterruptResult) {
         this.interpreter.wasm_answer_interrupt(interruptResult)
     }
 
-    step(): Step {
+    /** Run one instruction and answer the status it leaves the program in. */
+    step(): InterpreterStatus {
         return this.interpreter.wasm_step()
     }
 
+    /** @deprecated the same call as {@link Interpreter.step}, which answers the status too. */
     stepGetStatus(): InterpreterStatus {
-        return this.interpreter.wasm_step_only_status()
+        return this.interpreter.wasm_step()
     }
 
     writeMemoryBytes(address: number, data: Uint8Array) {
         return this.interpreter.wasm_write_memory_bytes(address, data)
     }
-    getLastInstruction(): InstructionLine {
-        return this.interpreter.wasm_get_last_instruction()
+
+    /** The instruction that has just run, or null before the first step. */
+    getLastInstruction(): InstructionLine | null {
+        return this.interpreter.wasm_get_last_instruction() as InstructionLine | null
     }
 
     undo(): ExecutionStep {
         return internalExecutionStepToExecutionStep(this.interpreter.wasm_undo())
     }
 
-    getPreviousMutations() {
+    getPreviousMutations(): MutationOperation[] | null {
         return this.interpreter.wasm_get_previous_mutations() as MutationOperation[] | null
     }
 
@@ -123,14 +244,13 @@ export class Interpreter {
         return this.interpreter.wasm_get_last_step_id()
     }
 
-    async stepWithInterruptHandler(onInterrupt: InterruptHandler): Promise<Step> {
-        const step = this.interpreter.wasm_step() as Step
-        const [_, status] = step
+    async stepWithInterruptHandler(onInterrupt: InterruptHandler): Promise<InterpreterStatus> {
+        const status = this.interpreter.wasm_step() as InterpreterStatus
         if (status == InterpreterStatus.Interrupt) {
             let result = await onInterrupt(this.getCurrentInterrupt()!)
             if (result) this.answerInterrupt(result)
         }
-        return step
+        return status
     }
 
     getConditionValue(condition: Condition): boolean {
@@ -161,6 +281,20 @@ export class Interpreter {
         return this.interpreter.wasm_get_flags_as_number()
     }
 
+    /**
+     * The whole status register, `0x2700` before the program has run.
+     *
+     * Its high byte — trace, supervisor and the interrupt mask — is stored and
+     * readable and has no effect: s68k runs every program as supervisor, as
+     * EASy68K's simulator does. Its low byte is the condition codes as the
+     * processor numbers them (extend 16, negative 8, zero 4, overflow 2,
+     * carry 1), which is not the bitfield {@link Interpreter.getFlagsAsBitfield}
+     * answers.
+     */
+    getSr(): number {
+        return this.interpreter.wasm_get_sr()
+    }
+
     readMemoryBytes(address: number, length: number): Uint8Array {
         return this.interpreter.wasm_read_memory_bytes(address, length)
     }
@@ -169,8 +303,18 @@ export class Interpreter {
         return this.interpreter.wasm_get_flag(flag)
     }
 
-    getCurrentLineIndex(): number {
-        return this.interpreter.wasm_get_current_line_index()
+    /**
+     * Where the instruction the program counter is on was written, or null when
+     * it is on none. Replaces 1.4.2's `getCurrentLineIndex`, which could only
+     * ever answer a line of one file.
+     */
+    getCurrentLocation(): Location | null {
+        return this.interpreter.wasm_get_current_location() as Location | null
+    }
+
+    /** The address of the instruction being executed, or 0 before the first step. */
+    getCurrentInstructionAddress(): number {
+        return this.interpreter.wasm_get_last_line_address()
     }
 
     canUndo(): boolean {
@@ -221,7 +365,15 @@ export class Interpreter {
         return this.interpreter.wasm_run_with_limit(limit)
     }
 
-    runWithBreakpoints(breakpoints: Uint32Array, limit?: number): InterpreterStatus {
+    /**
+     * Run until one of `breakpoints` is reached, the program ends, or `limit`
+     * instructions have run.
+     *
+     * A breakpoint is a line of a file: a breakpoint on a comment, a directive
+     * or a label alone stops nothing, and neither does one on a line of a file
+     * this program was not assembled from.
+     */
+    runWithBreakpoints(breakpoints: Breakpoint[], limit?: number): InterpreterStatus {
         return this.interpreter.wasm_run_with_breakpoints(breakpoints, limit)
     }
 
@@ -234,103 +386,66 @@ export class Interpreter {
         return status
     }
 
-}
-
-export class SemanticError {
-    error: RawSemanticError
-
-    constructor(error: RawSemanticError) {
-        this.error = error
-    }
-
-    getMessage() {
-        return this.error.wasm_get_message()
-    }
-
-    getLineIndex(): number {
-        return this.error.wasm_get_line_index()
-    }
-
-    getMessageWithLine() {
-        return this.error.wasm_get_message_with_line()
-    }
-
-    getLine(): ParsedLine {
-        return this.error.wasm_get_line()
-    }
-
-    getError(): string {
-        return this.error.wasm_get_error()
+    /** Give back the memory the interpreter holds on the WebAssembly side. */
+    dispose() {
+        this.interpreter.free()
     }
 }
 
-export class CompiledProgram {
-    private program: RawCompiler
-
-    constructor(compiler: RawCompiler) {
-        this.program = compiler
-    }
-
-    getCompiledProgram(): RawCompiler {
-        return this.program
-    }
-}
-
+/**
+ * The assembler: the front end that turns source files into a program and
+ * diagnostics.
+ *
+ * Both entry points are static; there is nothing to construct.
+ */
 export class S68k {
-    private _s68k: RawS68k
-
-    constructor(code: string) {
-        this._s68k = new RawS68k(code)
+    private constructor() {
     }
 
-    static compile(code: string, options?: InterpreterOptions): CompilationResult {
-        const s68k = new S68k(code)
-        const errors = s68k.semanticCheck()
-        if (errors.length > 0) return {errors, ok: false}
-        options = options ?? {
-            history_size: 100,
-            keep_history: true,
+    /**
+     * Assemble a project and answer everything found, with the program when the
+     * source builds one.
+     *
+     * ```ts
+     * const {diagnostics, program} = S68k.assemble('    move.w #1,d0')
+     * const withFiles = S68k.assemble({
+     *     files: {'main.x68': source, 'lib/io.x68': library, 'data/sprite.bin': bytes},
+     *     entry: 'main.x68'
+     * })
+     * ```
+     *
+     * A project is assembled from its entry file down: `include` assembles
+     * another file of the project where the line is, `incbin` puts a file's
+     * bytes in memory, and a file the project has not got is a diagnostic
+     * naming the closest one it has. Nothing here reads a disk — the files are
+     * the whole of what the assembler can see.
+     */
+    static assemble(source: AssemblySource, options: AssembleOptions = {}): AssemblyResult {
+        const isText = typeof source === 'string'
+        const entry = options.entry ?? (isText ? DEFAULT_ENTRY_PATH : source.entry)
+        const files: SourceFiles = isText ? {[entry]: source} : source.files
+        const assembly = wasm_assemble(files, entry)
+        const diagnostics = assembly.wasm_get_diagnostics() as Diagnostic[]
+        if (!assembly.wasm_has_program()) {
+            // Nothing to run and nothing to hold on to: free the handle here so
+            // that live checking, which calls this on every keystroke, leaks
+            // nothing.
+            assembly.free()
+            return {diagnostics}
         }
-        const interpreter = s68k.createInterpreter(options)
-        return {interpreter, ok: true}
+        return {diagnostics, program: new Program(assembly)}
     }
 
-    static semanticCheck(code: string): SemanticError[] {
-        let s68k = new S68k(code)
-        return s68k.semanticCheck()
-    }
-
-    static lex(code: string): ParsedLine[] {
-        let s68k = new S68k(code)
-        return s68k.getLexedLines()
-    }
-
-    static lexOne(code: string): ParsedLine {
-        return S68k.lex(code)[0]
-    }
-
-    getLexedLines(): ParsedLine[] {
-        return this._s68k.wasm_get_lexed_lines()
-    }
-
-    semanticCheck(): SemanticError[] {
-        const errorWrapper = this._s68k.wasm_semantic_check()
-        const errors: SemanticError[] = []
-        for (let i = 0; i < errorWrapper.get_length(); i++) {
-            errors.push(new SemanticError(errorWrapper.get_error_at_index(i)))
-        }
-        return errors
-    }
-
-    compile(): CompiledProgram {
-        return new CompiledProgram(this._s68k.wasm_compile())
-    }
-
-    createInterpreter(options: InterpreterOptions, program?: CompiledProgram): Interpreter {
-        if (program) {
-            return new Interpreter(this._s68k.wasm_create_interpreter(program.getCompiledProgram(), options))
-        }
-        return new Interpreter(this._s68k.wasm_create_interpreter(this.compile().getCompiledProgram(), options))
+    /**
+     * Read one source line into its four fields, for hover and highlighting.
+     *
+     * It never throws and never reports anything: a line out of its file cannot
+     * know a symbol, an address or an instruction's operand rules, so what comes
+     * back is what was written, each part with the columns it covers. Replaces
+     * 1.4.2's `lexOne`.
+     */
+    static parseLine(text: string): ParsedLine {
+        return wasm_parse_line(text) as ParsedLine
     }
 }
 
@@ -369,7 +484,11 @@ export type ExecutionStepInternal = {
     pc: number,
     old_ccr: string,
     new_ccr: string
-    line: number
+    /** The whole status register before the step; a number, not a bitfield name. */
+    old_sr: number,
+    /** The whole status register after it. */
+    new_sr: number,
+    location?: Location
 }
 
 
@@ -398,30 +517,38 @@ function stringCCRBitfieldToNumber(bitfield: string): number {
 }
 
 export {
-    RawS68k,
+    RawAssembly,
     RawInterpreter,
-    RawSemanticError,
-    RawCompiler,
     RawCpu,
     RawRegister,
+    Breakpoint,
+    Condition,
+    Diagnostic,
+    ExecutionStep,
+    Flags,
+    InstructionLine,
+    InterpreterOptions,
+    InterpreterStatus,
     Interrupt,
     InterruptResult,
     KeyStateRequest,
     KeyStateResult,
-    InterpreterStatus,
-    Size,
-    Condition,
-    Step,
-    ParsedLine,
-    LexedLine,
-    LexedOperand,
-    LexedRegisterType,
-    RegisterOperand,
-    InstructionLine,
-    ExecutionStep,
+    LineSpan,
+    Location,
     MutationOperation,
-    InterpreterOptions,
+    ParsedComment,
+    ParsedLabel,
+    ParsedLine,
+    ParsedLineKind,
+    ParsedOperand,
+    ParsedOperation,
+    ParsedText,
+    ProgramInfo,
+    ProgramSymbol,
+    RegisterOperand,
+    RelatedLocation,
     RuntimeError,
-    Label,
+    Severity,
+    Size,
     StackFrame,
 }

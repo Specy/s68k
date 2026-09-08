@@ -1,0 +1,85 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/missing_comma_between_operands.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "wrong_operand_count",
+    "message": "`move` takes two operands, and this line has one",
+    "hint": null,
+    "location": {
+      "file": "missing_comma_between_operands.asm",
+      "line": 2,
+      "column": 4,
+      "endColumn": 14
+    },
+    "related": []
+  },
+  {
+    "severity": "suggestion",
+    "code": "bare_comment",
+    "message": "this is EASy68K's comment field; s68k reads it as a comment",
+    "hint": "start comments with `;` to say so",
+    "location": {
+      "file": "missing_comma_between_operands.asm",
+      "line": 2,
+      "column": 15,
+      "endColumn": 17
+    },
+    "related": []
+  },
+  {
+    "severity": "warning",
+    "code": "missing_comma_between_operands",
+    "message": "the operand field ended at the space before `d1`, and `d1` was read as a comment",
+    "hint": "write `d0,d1`",
+    "location": {
+      "file": "missing_comma_between_operands.asm",
+      "line": 2,
+      "column": 15,
+      "endColumn": 17
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "wrong_operand_count",
+    "message": "`add` takes two operands, and this line has one",
+    "hint": null,
+    "location": {
+      "file": "missing_comma_between_operands.asm",
+      "line": 3,
+      "column": 4,
+      "endColumn": 14
+    },
+    "related": []
+  },
+  {
+    "severity": "warning",
+    "code": "missing_comma_between_operands",
+    "message": "the operand field ended at the space before `d1`, and `d1` was read as a comment",
+    "hint": "write `d0,d1`",
+    "location": {
+      "file": "missing_comma_between_operands.asm",
+      "line": 3,
+      "column": 15,
+      "endColumn": 17
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "wrong_operand_count",
+    "message": "`move` takes two operands, and this line has one",
+    "hint": null,
+    "location": {
+      "file": "missing_comma_between_operands.asm",
+      "line": 6,
+      "column": 4,
+      "endColumn": 14
+    },
+    "related": []
+  }
+]

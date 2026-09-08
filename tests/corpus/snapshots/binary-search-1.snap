@@ -1,0 +1,152 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 2,
+      "text": "lea $2000,a0"
+    },
+    {
+      "address": "$1004",
+      "line": 3,
+      "text": "move.l #$5b,d0"
+    },
+    {
+      "address": "$1008",
+      "line": 4,
+      "text": "clr.l d1"
+    },
+    {
+      "address": "$100c",
+      "line": 5,
+      "text": "move.l #$b,d2"
+    },
+    {
+      "address": "$1010",
+      "line": 6,
+      "text": "moveq #$ff,d3"
+    },
+    {
+      "address": "$1014",
+      "line": 8,
+      "text": "cmp.l d2,d1"
+    },
+    {
+      "address": "$1018",
+      "line": 9,
+      "text": "bgt $105c"
+    },
+    {
+      "address": "$101c",
+      "line": 10,
+      "text": "move.l d1,d4"
+    },
+    {
+      "address": "$1020",
+      "line": 11,
+      "text": "add.l d2,d4"
+    },
+    {
+      "address": "$1024",
+      "line": 12,
+      "text": "lsr.l #$1,d4"
+    },
+    {
+      "address": "$1028",
+      "line": 13,
+      "text": "move.l d4,d5"
+    },
+    {
+      "address": "$102c",
+      "line": 14,
+      "text": "add.l d5,d5"
+    },
+    {
+      "address": "$1030",
+      "line": 15,
+      "text": "move.w 0(a0,d5.w),d6"
+    },
+    {
+      "address": "$1034",
+      "line": 16,
+      "text": "cmp.w d0,d6"
+    },
+    {
+      "address": "$1038",
+      "line": 17,
+      "text": "beq $1058"
+    },
+    {
+      "address": "$103c",
+      "line": 18,
+      "text": "bgt $104c"
+    },
+    {
+      "address": "$1040",
+      "line": 19,
+      "text": "move.l d4,d1"
+    },
+    {
+      "address": "$1044",
+      "line": 20,
+      "text": "addq.l #$1,d1"
+    },
+    {
+      "address": "$1048",
+      "line": 21,
+      "text": "bra $1014"
+    },
+    {
+      "address": "$104c",
+      "line": 23,
+      "text": "move.l d4,d2"
+    },
+    {
+      "address": "$1050",
+      "line": 24,
+      "text": "subq.l #$1,d2"
+    },
+    {
+      "address": "$1054",
+      "line": 25,
+      "text": "bra $1014"
+    },
+    {
+      "address": "$1058",
+      "line": 27,
+      "text": "move.l d4,d3"
+    }
+  ],
+  "memory": [
+    {
+      "address": "$2000",
+      "bytes": "000200050008000c00100017002600380048005b0064007f"
+    }
+  ],
+  "labels": {
+    "found": {
+      "address": "$1058",
+      "line": 26
+    },
+    "numbers": {
+      "address": "$2000",
+      "line": 31
+    },
+    "search": {
+      "address": "$1014",
+      "line": 7
+    },
+    "search_done": {
+      "address": "$105c",
+      "line": 28
+    },
+    "too_big": {
+      "address": "$104c",
+      "line": 22
+    }
+  }
+}

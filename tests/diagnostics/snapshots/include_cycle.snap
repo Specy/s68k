@@ -1,0 +1,30 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/include_cycle
+---
+[
+  {
+    "severity": "error",
+    "code": "include_cycle",
+    "message": "`main.asm` is already being included: main.asm -> a.asm -> main.asm",
+    "hint": "a file may be included more than once, but not inside itself: move the shared lines into a third file",
+    "location": {
+      "file": "a.asm",
+      "line": 1,
+      "column": 12,
+      "endColumn": 20
+    },
+    "related": [
+      {
+        "location": {
+          "file": "main.asm",
+          "line": 1,
+          "column": 12,
+          "endColumn": 17
+        },
+        "message": "included from `main.asm`"
+      }
+    ]
+  }
+]

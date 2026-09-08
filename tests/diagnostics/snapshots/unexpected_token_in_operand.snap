@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unexpected_token_in_operand.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unexpected_token_in_operand",
+    "message": "`)` was not expected here",
+    "hint": "there is no `(` for this `)`",
+    "location": {
+      "file": "unexpected_token_in_operand.asm",
+      "line": 1,
+      "column": 13,
+      "endColumn": 14
+    },
+    "related": []
+  }
+]

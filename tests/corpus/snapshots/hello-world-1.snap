@@ -1,0 +1,74 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 0,
+      "text": "lea $2000,a1"
+    },
+    {
+      "address": "$1004",
+      "line": 1,
+      "text": "move.b #$d,d0"
+    },
+    {
+      "address": "$1008",
+      "line": 2,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$100c",
+      "line": 4,
+      "text": "lea $200e,a1"
+    },
+    {
+      "address": "$1010",
+      "line": 5,
+      "text": "move.l #$2a,d1"
+    },
+    {
+      "address": "$1014",
+      "line": 6,
+      "text": "move.b #$11,d0"
+    },
+    {
+      "address": "$1018",
+      "line": 7,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$101c",
+      "line": 9,
+      "text": "move.b #$9,d0"
+    },
+    {
+      "address": "$1020",
+      "line": 10,
+      "text": "trap #$f"
+    }
+  ],
+  "memory": [
+    {
+      "address": "$2000",
+      "bytes": "48656c6c6f2c20776f726c642100"
+    },
+    {
+      "address": "$200e",
+      "bytes": "54686520616e737765722069732000"
+    }
+  ],
+  "labels": {
+    "greeting": {
+      "address": "$2000",
+      "line": 13
+    },
+    "question": {
+      "address": "$200e",
+      "line": 14
+    }
+  }
+}

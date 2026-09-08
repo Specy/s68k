@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/invalid_size.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "invalid_size",
+    "message": "`.b` is not a size for `movea`",
+    "hint": "`movea` takes `.w` or `.l`",
+    "location": {
+      "file": "invalid_size.asm",
+      "line": 1,
+      "column": 9,
+      "endColumn": 11
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "invalid_size",
+    "message": "`.b` is not a size for `lea`",
+    "hint": "`lea` takes `.l`",
+    "location": {
+      "file": "invalid_size.asm",
+      "line": 2,
+      "column": 7,
+      "endColumn": 9
+    },
+    "related": []
+  }
+]

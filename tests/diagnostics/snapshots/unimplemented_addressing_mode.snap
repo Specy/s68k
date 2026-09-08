@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unimplemented_addressing_mode.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unimplemented_addressing_mode",
+    "message": "`usp` is the user stack pointer, which s68k does not assemble",
+    "hint": "s68k runs one program with one stack pointer, `a7`",
+    "location": {
+      "file": "unimplemented_addressing_mode.asm",
+      "line": 1,
+      "column": 11,
+      "endColumn": 14
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_addressing_mode",
+    "message": "`usp` is the user stack pointer, which s68k does not assemble",
+    "hint": "s68k runs one program with one stack pointer, `a7`",
+    "location": {
+      "file": "unimplemented_addressing_mode.asm",
+      "line": 2,
+      "column": 14,
+      "endColumn": 17
+    },
+    "related": []
+  }
+]

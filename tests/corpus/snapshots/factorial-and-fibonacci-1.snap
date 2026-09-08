@@ -1,0 +1,236 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 0,
+      "text": "move.l #$8,-(a7)"
+    },
+    {
+      "address": "$1004",
+      "line": 1,
+      "text": "bsr $1024"
+    },
+    {
+      "address": "$1008",
+      "line": 2,
+      "text": "addi.l #$4,a7"
+    },
+    {
+      "address": "$100c",
+      "line": 3,
+      "text": "move.l d0,d6"
+    },
+    {
+      "address": "$1010",
+      "line": 4,
+      "text": "move.l #$a,-(a7)"
+    },
+    {
+      "address": "$1014",
+      "line": 5,
+      "text": "bsr $105c"
+    },
+    {
+      "address": "$1018",
+      "line": 6,
+      "text": "addi.l #$4,a7"
+    },
+    {
+      "address": "$101c",
+      "line": 7,
+      "text": "move.l d0,d7"
+    },
+    {
+      "address": "$1020",
+      "line": 8,
+      "text": "bra $10a0"
+    },
+    {
+      "address": "$1024",
+      "line": 12,
+      "text": "link a6,#$0"
+    },
+    {
+      "address": "$1028",
+      "line": 13,
+      "text": "move.l 8(a6),d0"
+    },
+    {
+      "address": "$102c",
+      "line": 14,
+      "text": "cmpi.l #$1,d0"
+    },
+    {
+      "address": "$1030",
+      "line": 15,
+      "text": "ble $1050"
+    },
+    {
+      "address": "$1034",
+      "line": 16,
+      "text": "subq.l #$1,d0"
+    },
+    {
+      "address": "$1038",
+      "line": 17,
+      "text": "move.l d0,-(a7)"
+    },
+    {
+      "address": "$103c",
+      "line": 18,
+      "text": "bsr $1024"
+    },
+    {
+      "address": "$1040",
+      "line": 19,
+      "text": "addi.l #$4,a7"
+    },
+    {
+      "address": "$1044",
+      "line": 20,
+      "text": "move.l 8(a6),d1"
+    },
+    {
+      "address": "$1048",
+      "line": 21,
+      "text": "mulu d1,d0"
+    },
+    {
+      "address": "$104c",
+      "line": 22,
+      "text": "bra $1054"
+    },
+    {
+      "address": "$1050",
+      "line": 24,
+      "text": "move.l #$1,d0"
+    },
+    {
+      "address": "$1054",
+      "line": 26,
+      "text": "unlk a6"
+    },
+    {
+      "address": "$1058",
+      "line": 27,
+      "text": "rts"
+    },
+    {
+      "address": "$105c",
+      "line": 31,
+      "text": "link a6,#$fffffffc"
+    },
+    {
+      "address": "$1060",
+      "line": 32,
+      "text": "move.l 8(a6),d0"
+    },
+    {
+      "address": "$1064",
+      "line": 33,
+      "text": "cmpi.l #$2,d0"
+    },
+    {
+      "address": "$1068",
+      "line": 34,
+      "text": "blt $1098"
+    },
+    {
+      "address": "$106c",
+      "line": 35,
+      "text": "subq.l #$1,d0"
+    },
+    {
+      "address": "$1070",
+      "line": 36,
+      "text": "move.l d0,-(a7)"
+    },
+    {
+      "address": "$1074",
+      "line": 37,
+      "text": "bsr $105c"
+    },
+    {
+      "address": "$1078",
+      "line": 38,
+      "text": "addi.l #$4,a7"
+    },
+    {
+      "address": "$107c",
+      "line": 39,
+      "text": "move.l d0,-4(a6)"
+    },
+    {
+      "address": "$1080",
+      "line": 40,
+      "text": "move.l 8(a6),d0"
+    },
+    {
+      "address": "$1084",
+      "line": 41,
+      "text": "subq.l #$2,d0"
+    },
+    {
+      "address": "$1088",
+      "line": 42,
+      "text": "move.l d0,-(a7)"
+    },
+    {
+      "address": "$108c",
+      "line": 43,
+      "text": "bsr $105c"
+    },
+    {
+      "address": "$1090",
+      "line": 44,
+      "text": "addi.l #$4,a7"
+    },
+    {
+      "address": "$1094",
+      "line": 45,
+      "text": "add.l -4(a6),d0"
+    },
+    {
+      "address": "$1098",
+      "line": 47,
+      "text": "unlk a6"
+    },
+    {
+      "address": "$109c",
+      "line": 48,
+      "text": "rts"
+    }
+  ],
+  "memory": [],
+  "labels": {
+    "end": {
+      "address": "$10a0",
+      "line": 50
+    },
+    "factorial": {
+      "address": "$1024",
+      "line": 11
+    },
+    "factorial_done": {
+      "address": "$1054",
+      "line": 25
+    },
+    "fib": {
+      "address": "$105c",
+      "line": 30
+    },
+    "fib_done": {
+      "address": "$1098",
+      "line": 46
+    },
+    "one": {
+      "address": "$1050",
+      "line": 23
+    }
+  }
+}

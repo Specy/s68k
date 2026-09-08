@@ -1,0 +1,30 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/symbol_already_defined.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "symbol_already_defined",
+    "message": "`count` is already defined",
+    "hint": "a name is defined once; `set` defines a symbol that may be redefined",
+    "location": {
+      "file": "symbol_already_defined.asm",
+      "line": 2,
+      "column": 0,
+      "endColumn": 5
+    },
+    "related": [
+      {
+        "location": {
+          "file": "symbol_already_defined.asm",
+          "line": 1,
+          "column": 0,
+          "endColumn": 5
+        },
+        "message": "`count` is a constant defined here"
+      }
+    ]
+  }
+]

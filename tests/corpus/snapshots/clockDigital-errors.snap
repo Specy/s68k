@@ -1,0 +1,211 @@
+---
+source: src/test/corpus.rs
+expression: diagnostics
+---
+[
+  {
+    "severity": "suggestion",
+    "code": "bare_comment",
+    "message": "this is EASy68K's comment field; s68k reads it as a comment",
+    "hint": "start comments with `;` to say so",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 16,
+      "column": 31,
+      "endColumn": 56
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`macro` is not implemented: macros are not assembled",
+    "hint": "write the lines of the macro where it is used instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 19,
+      "column": 9,
+      "endColumn": 14
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`repeat` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 44,
+      "column": 4,
+      "endColumn": 10
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`if` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 47,
+      "column": 8,
+      "endColumn": 10
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`endi` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 49,
+      "column": 8,
+      "endColumn": 12
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled",
+    "hint": "write the lines of the macro here instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 66,
+      "column": 8,
+      "endColumn": 13
+    },
+    "related": [
+      {
+        "location": {
+          "file": "clockDigital.X68",
+          "line": 19,
+          "column": 0,
+          "endColumn": 5
+        },
+        "message": "`DELAY` is defined here"
+      }
+    ]
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`until` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 67,
+      "column": 4,
+      "endColumn": 9
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`if` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 73,
+      "column": 4,
+      "endColumn": 6
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`endi` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 75,
+      "column": 4,
+      "endColumn": 8
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`if` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 77,
+      "column": 4,
+      "endColumn": 6
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`endi` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 80,
+      "column": 4,
+      "endColumn": 8
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`if` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 93,
+      "column": 4,
+      "endColumn": 6
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`endi` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 96,
+      "column": 4,
+      "endColumn": 8
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`if` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 111,
+      "column": 4,
+      "endColumn": 6
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`endi` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 114,
+      "column": 4,
+      "endColumn": 8
+    },
+    "related": []
+  }
+]

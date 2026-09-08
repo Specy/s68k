@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/user_defined_error.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "user_defined_error",
+    "message": "ERROR, Argument missing in call to foo macro.",
+    "hint": "this is the message of the `fail` directive on this line, and not something the assembler found",
+    "location": {
+      "file": "user_defined_error.asm",
+      "line": 2,
+      "column": 9,
+      "endColumn": 54
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "user_defined_error",
+    "message": "Unspecified user defined error",
+    "hint": "`fail` reports the rest of its line as an error; write the message after it, as in `fail the buffer is too small`",
+    "location": {
+      "file": "user_defined_error.asm",
+      "line": 4,
+      "column": 4,
+      "endColumn": 8
+    },
+    "related": []
+  }
+]

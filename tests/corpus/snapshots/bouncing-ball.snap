@@ -1,0 +1,285 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 13,
+      "text": "move.b #$5c,d0"
+    },
+    {
+      "address": "$1004",
+      "line": 14,
+      "text": "move.b #$11,d1"
+    },
+    {
+      "address": "$1008",
+      "line": 15,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$100c",
+      "line": 17,
+      "text": "move.l #$ffffff,d1"
+    },
+    {
+      "address": "$1010",
+      "line": 18,
+      "text": "move.b #$50,d0"
+    },
+    {
+      "address": "$1014",
+      "line": 19,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1018",
+      "line": 22,
+      "text": "move.b #$b,d0"
+    },
+    {
+      "address": "$101c",
+      "line": 23,
+      "text": "move.w #$ff00,d1"
+    },
+    {
+      "address": "$1020",
+      "line": 24,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1024",
+      "line": 26,
+      "text": "move.l #$ffff,d1"
+    },
+    {
+      "address": "$1028",
+      "line": 27,
+      "text": "move.b #$51,d0"
+    },
+    {
+      "address": "$102c",
+      "line": 28,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1030",
+      "line": 30,
+      "text": "move.w $10b0,d1"
+    },
+    {
+      "address": "$1034",
+      "line": 31,
+      "text": "move.w $10b2,d2"
+    },
+    {
+      "address": "$1038",
+      "line": 32,
+      "text": "move.w d1,d3"
+    },
+    {
+      "address": "$103c",
+      "line": 33,
+      "text": "addi.w #$30,d3"
+    },
+    {
+      "address": "$1040",
+      "line": 34,
+      "text": "move.w d2,d4"
+    },
+    {
+      "address": "$1044",
+      "line": 35,
+      "text": "addi.w #$30,d4"
+    },
+    {
+      "address": "$1048",
+      "line": 36,
+      "text": "move.b #$58,d0"
+    },
+    {
+      "address": "$104c",
+      "line": 37,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1050",
+      "line": 39,
+      "text": "move.b #$5e,d0"
+    },
+    {
+      "address": "$1054",
+      "line": 40,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1058",
+      "line": 42,
+      "text": "move.b #$17,d0"
+    },
+    {
+      "address": "$105c",
+      "line": 43,
+      "text": "move.l #$2,d1"
+    },
+    {
+      "address": "$1060",
+      "line": 44,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1064",
+      "line": 47,
+      "text": "move.w $10b0,d5"
+    },
+    {
+      "address": "$1068",
+      "line": 48,
+      "text": "add.w $10b4,d5"
+    },
+    {
+      "address": "$106c",
+      "line": 49,
+      "text": "cmpi.w #$0,d5"
+    },
+    {
+      "address": "$1070",
+      "line": 50,
+      "text": "blt $1084"
+    },
+    {
+      "address": "$1074",
+      "line": 51,
+      "text": "cmpi.w #$250,d5"
+    },
+    {
+      "address": "$1078",
+      "line": 52,
+      "text": "bgt $1084"
+    },
+    {
+      "address": "$107c",
+      "line": 53,
+      "text": "move.w d5,$10b0"
+    },
+    {
+      "address": "$1080",
+      "line": 54,
+      "text": "bra $1088"
+    },
+    {
+      "address": "$1084",
+      "line": 56,
+      "text": "neg.w $10b4"
+    },
+    {
+      "address": "$1088",
+      "line": 59,
+      "text": "move.w $10b2,d5"
+    },
+    {
+      "address": "$108c",
+      "line": 60,
+      "text": "add.w $10b6,d5"
+    },
+    {
+      "address": "$1090",
+      "line": 61,
+      "text": "cmpi.w #$0,d5"
+    },
+    {
+      "address": "$1094",
+      "line": 62,
+      "text": "blt $10a8"
+    },
+    {
+      "address": "$1098",
+      "line": 63,
+      "text": "cmpi.w #$1b0,d5"
+    },
+    {
+      "address": "$109c",
+      "line": 64,
+      "text": "bgt $10a8"
+    },
+    {
+      "address": "$10a0",
+      "line": 65,
+      "text": "move.w d5,$10b2"
+    },
+    {
+      "address": "$10a4",
+      "line": 66,
+      "text": "bra $1018"
+    },
+    {
+      "address": "$10a8",
+      "line": 68,
+      "text": "neg.w $10b6"
+    },
+    {
+      "address": "$10ac",
+      "line": 69,
+      "text": "bra $1018"
+    }
+  ],
+  "memory": [
+    {
+      "address": "$10b0",
+      "bytes": "0064"
+    },
+    {
+      "address": "$10b2",
+      "bytes": "0050"
+    },
+    {
+      "address": "$10b4",
+      "bytes": "0005"
+    },
+    {
+      "address": "$10b6",
+      "bytes": "0003"
+    }
+  ],
+  "labels": {
+    "ballDx": {
+      "address": "$10b4",
+      "line": 74
+    },
+    "ballDy": {
+      "address": "$10b6",
+      "line": 75
+    },
+    "ballx": {
+      "address": "$10b0",
+      "line": 72
+    },
+    "bally": {
+      "address": "$10b2",
+      "line": 73
+    },
+    "flipx": {
+      "address": "$1084",
+      "line": 55
+    },
+    "flipy": {
+      "address": "$10a8",
+      "line": 67
+    },
+    "frame": {
+      "address": "$1018",
+      "line": 21
+    },
+    "movey": {
+      "address": "$1088",
+      "line": 58
+    },
+    "start": {
+      "address": "$1000",
+      "line": 12
+    }
+  }
+}

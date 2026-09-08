@@ -1,0 +1,261 @@
+---
+source: src/test/corpus.rs
+expression: fixture
+---
+{
+  "entry": "$1000",
+  "instructions": [
+    {
+      "address": "$1000",
+      "line": 13,
+      "text": "move.b #$e,d0"
+    },
+    {
+      "address": "$1004",
+      "line": 14,
+      "text": "lea $10b0,a1"
+    },
+    {
+      "address": "$1008",
+      "line": 15,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$100c",
+      "line": 18,
+      "text": "move.b #$3d,d0"
+    },
+    {
+      "address": "$1010",
+      "line": 19,
+      "text": "move.b #$0,d1"
+    },
+    {
+      "address": "$1014",
+      "line": 20,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1018",
+      "line": 22,
+      "text": "move.l d1,d5"
+    },
+    {
+      "address": "$101c",
+      "line": 23,
+      "text": "move.l d0,d6"
+    },
+    {
+      "address": "$1020",
+      "line": 25,
+      "text": "btst #$1,d6"
+    },
+    {
+      "address": "$1024",
+      "line": 26,
+      "text": "bne $1094"
+    },
+    {
+      "address": "$1028",
+      "line": 28,
+      "text": "btst #$0,d6"
+    },
+    {
+      "address": "$102c",
+      "line": 29,
+      "text": "beq $1084"
+    },
+    {
+      "address": "$1030",
+      "line": 31,
+      "text": "move.l #$ffff00,d1"
+    },
+    {
+      "address": "$1034",
+      "line": 32,
+      "text": "btst #$4,d6"
+    },
+    {
+      "address": "$1038",
+      "line": 33,
+      "text": "beq $1040"
+    },
+    {
+      "address": "$103c",
+      "line": 34,
+      "text": "move.l #$ff,d1"
+    },
+    {
+      "address": "$1040",
+      "line": 36,
+      "text": "move.b #$51,d0"
+    },
+    {
+      "address": "$1044",
+      "line": 37,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1048",
+      "line": 38,
+      "text": "move.b #$50,d0"
+    },
+    {
+      "address": "$104c",
+      "line": 39,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1050",
+      "line": 41,
+      "text": "move.l d5,d1"
+    },
+    {
+      "address": "$1054",
+      "line": 42,
+      "text": "and.l #$ffff,d1"
+    },
+    {
+      "address": "$1058",
+      "line": 43,
+      "text": "move.l d5,d2"
+    },
+    {
+      "address": "$105c",
+      "line": 44,
+      "text": "lsr.l #$8,d2"
+    },
+    {
+      "address": "$1060",
+      "line": 45,
+      "text": "lsr.l #$8,d2"
+    },
+    {
+      "address": "$1064",
+      "line": 46,
+      "text": "move.w d1,d3"
+    },
+    {
+      "address": "$1068",
+      "line": 47,
+      "text": "addi.w #$6,d3"
+    },
+    {
+      "address": "$106c",
+      "line": 48,
+      "text": "move.w d2,d4"
+    },
+    {
+      "address": "$1070",
+      "line": 49,
+      "text": "addi.w #$6,d4"
+    },
+    {
+      "address": "$1074",
+      "line": 50,
+      "text": "subi.w #$6,d1"
+    },
+    {
+      "address": "$1078",
+      "line": 51,
+      "text": "subi.w #$6,d2"
+    },
+    {
+      "address": "$107c",
+      "line": 52,
+      "text": "move.b #$58,d0"
+    },
+    {
+      "address": "$1080",
+      "line": 53,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1084",
+      "line": 56,
+      "text": "move.b #$17,d0"
+    },
+    {
+      "address": "$1088",
+      "line": 57,
+      "text": "move.l #$1,d1"
+    },
+    {
+      "address": "$108c",
+      "line": 58,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$1090",
+      "line": 59,
+      "text": "bra $100c"
+    },
+    {
+      "address": "$1094",
+      "line": 62,
+      "text": "move.b #$b,d0"
+    },
+    {
+      "address": "$1098",
+      "line": 63,
+      "text": "move.w #$ff00,d1"
+    },
+    {
+      "address": "$109c",
+      "line": 64,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$10a0",
+      "line": 65,
+      "text": "move.b #$e,d0"
+    },
+    {
+      "address": "$10a4",
+      "line": 66,
+      "text": "lea $10b0,a1"
+    },
+    {
+      "address": "$10a8",
+      "line": 67,
+      "text": "trap #$f"
+    },
+    {
+      "address": "$10ac",
+      "line": 68,
+      "text": "bra $1084"
+    }
+  ],
+  "memory": [
+    {
+      "address": "$10b0",
+      "bytes": "4472616720746f207061696e742c20536869667420666f72207265642c20726967687420627574746f6e20636c6561727300"
+    }
+  ],
+  "labels": {
+    "frame": {
+      "address": "$100c",
+      "line": 17
+    },
+    "hascolor": {
+      "address": "$1040",
+      "line": 35
+    },
+    "start": {
+      "address": "$1000",
+      "line": 12
+    },
+    "title": {
+      "address": "$10b0",
+      "line": 70
+    },
+    "wait": {
+      "address": "$1084",
+      "line": 55
+    },
+    "wipe": {
+      "address": "$1094",
+      "line": 61
+    }
+  }
+}

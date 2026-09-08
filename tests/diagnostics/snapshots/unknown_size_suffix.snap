@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unknown_size_suffix.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unknown_size_suffix",
+    "message": "`.q` is not a size",
+    "hint": "sizes are `.b`, `.w`, `.l`, and `.s` on branches",
+    "location": {
+      "file": "unknown_size_suffix.asm",
+      "line": 1,
+      "column": 8,
+      "endColumn": 10
+    },
+    "related": []
+  }
+]
