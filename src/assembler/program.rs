@@ -31,7 +31,11 @@ use super::source::Location;
 use super::symbols::{SymbolKind, SymbolTable, SymbolValue};
 
 /// One assembled instruction: what it is, where it goes and where it came from.
+///
+/// It is serialised camelCase, like every other shape of the Assembler (the
+/// design record, "Public API"); only `includeChain` has two words in it.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AssembledInstruction {
     /// The address it is laid out at, always even.
     pub address: usize,
@@ -44,6 +48,14 @@ pub struct AssembledInstruction {
     pub instruction: Instruction,
     /// The Source line it was written on.
     pub location: Location,
+    /// The `include` lines it was reached through, innermost first, empty for
+    /// an instruction of the Entry file.
+    ///
+    /// It is what lets the editor answer "through which `include` line did this
+    /// instruction get here" (the design record, "Files, `include`, `incbin`"),
+    /// which a Location alone cannot say once a File may be included twice: the
+    /// two copies share a Location and differ only in this.
+    pub include_chain: Vec<Location>,
     /// That line, as it was written, for a debugger to show.
     pub source: String,
 }
@@ -108,7 +120,7 @@ impl MemoryRun {
 /// It is the flattened [`Symbol`](super::symbols::Symbol) of the symbol table:
 /// a Register list's `value` is its `movem` mask, and a Variable's is the value
 /// of its last definition. The name is the full name, so a Local label appears
-/// as `start:.loop`.
+/// as `start:loop`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProgramSymbol {
     /// The full name.
@@ -254,6 +266,7 @@ mod tests {
             size: 4,
             instruction: Instruction::NOP,
             location: location(line),
+            include_chain: Vec::new(),
             source: "    nop".to_string(),
         }
     }

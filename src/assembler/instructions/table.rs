@@ -774,8 +774,10 @@ const MOVE_FORMS: &[Form] = &[
 ];
 /// The three Forms of `andi`, `ori` and `eori`: the ordinary one, then the two
 /// the help adds — "Operations that uses the status register (SR) and the flag
-/// register (CCR) can only work with word and byte" (`Reference/68ks6b.htm`),
-/// a byte into `ccr` and a word into `sr`.
+/// register (CCR) can only work with word and byte" (`Reference/68ks6d.htm`,
+/// the `EORI` page, which is the one that carries that sentence;
+/// `Reference/68ks6b.htm` is where the address-method list is) — a byte into
+/// `ccr` and a word into `sr`.
 const IMMEDIATE_LOGICAL_FORMS: &[Form] = &[
     form(&[Modes::IMMEDIATE, Modes::DATA_ALTERABLE], SizeRule::Any),
     form(&[Modes::IMMEDIATE, Modes::CCR], SizeRule::ByteOnly),
@@ -1315,7 +1317,11 @@ pub fn closest_name<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -
 
 /// The Levenshtein distance between two words: how many single-character
 /// insertions, deletions or substitutions turn one into the other.
-fn edit_distance(left: &str, right: &str) -> usize {
+///
+/// It is public because a path is compared the same way: the closest existing
+/// paths of a missing `include` are found with it
+/// ([`include::closest_paths`](super::super::include::closest_paths)).
+pub fn edit_distance(left: &str, right: &str) -> usize {
     let left: Vec<char> = left.chars().collect();
     let right: Vec<char> = right.chars().collect();
     let mut previous: Vec<usize> = (0..=right.len()).collect();

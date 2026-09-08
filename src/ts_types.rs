@@ -151,6 +151,22 @@ export type RegisterOperand = { type: "Address", value: number } |
 {type: "Data", value: number}
 "#;
 
+/// [`Files`](crate::assembler::source::Files): the Project
+/// [`wasm_assemble`](crate::wasm_assemble) is handed.
+///
+/// It is the type of that function's first argument
+/// ([`SourceFiles`](crate::SourceFiles)), so the declarations say what a
+/// project is and not `any`.
+#[wasm_bindgen(typescript_custom_section)]
+pub const ISourceFiles: &'static str = r#"
+/**
+ * The files of a project: a root-relative path with `/` separators, to the
+ * text of a source file or to the bytes of a binary one. `include` reads a
+ * source file, `incbin` either kind.
+ */
+export type SourceFiles = Record<string, string | Uint8Array>
+"#;
+
 /// [`Location`](crate::assembler::source::Location): where in the source
 /// something is.
 #[wasm_bindgen(typescript_custom_section)]
@@ -206,6 +222,12 @@ export type InstructionLine = {
     size: number
     /** The source line it was written on. */
     location: Location
+    /**
+     * The `include` lines it was reached through, innermost first; empty for an
+     * instruction of the entry file. Two copies of a file included twice share
+     * one location and differ only in this.
+     */
+    includeChain: Location[]
     /** That line, as it was written. */
     source: string
 }
@@ -226,7 +248,11 @@ export type Breakpoint = {
 #[wasm_bindgen(typescript_custom_section)]
 pub const IProgramSymbol: &'static str = r#"
 export type ProgramSymbol = {
-    /** The full name, so a local label reads as `start:.loop`. */
+    /**
+     * The full name: a local label is written under the global label above it,
+     * with the dot replaced by a colon, so `.loop` under `start` is
+     * `start:loop`.
+     */
     name: string,
     kind: "label" | "constant" | "variable" | "register_list",
     /** An address for a label, the mask for a register list. */

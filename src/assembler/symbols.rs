@@ -32,11 +32,18 @@
 //! # Position
 //!
 //! Every look-up carries the position it is made at (`at`), the index of the
-//! Source line the Expression is on. Only a Variable reads it — it is what
-//! "the latest definition above it" means — and every other kind answers the
-//! same value wherever it is asked. Phase 4 makes `include` textual, so the
-//! line index has to become a position in the *assembled* order then; the one
-//! place that compares two of them is [`Symbol::value_at`].
+//! line in the **assembled sequence** — the Entry file's lines with every
+//! `include` expanded into them ([`include`](mod@super::include)). It was the
+//! Source line index through phases 1 to 3, and phase 4's textual `include`
+//! made it a position, because a File included twice has one line index and
+//! two places in the program.
+//!
+//! Two things read it, and they are the two the earlier phases said would have
+//! to change together: [`Symbol::value_at`], which is what "each use sees the
+//! latest definition above it" means for a `set` Variable, and
+//! [`Symbol::defined_at`], which is what the Layout compares to refuse a `reg`
+//! list used above the line that defines it. Every other kind of Symbol answers
+//! the same value wherever it is asked.
 
 use std::collections::BTreeMap;
 
@@ -129,6 +136,11 @@ pub struct Symbol {
     /// Where it was defined — the first definition, and for a Variable the
     /// last.
     pub location: Location,
+    /// The position of the first definition, in the assembled sequence.
+    ///
+    /// A `reg` list is the one Symbol that may not be used above its
+    /// definition, and this is the number that says whether it was.
+    pub defined_at: usize,
     /// Every `set` of a Variable, in source order. Empty for the other kinds.
     redefinitions: Vec<Redefinition>,
 }
@@ -251,6 +263,7 @@ impl SymbolTable {
                         kind,
                         value,
                         location,
+                        defined_at: at,
                         redefinitions,
                     },
                 );
@@ -263,7 +276,7 @@ impl SymbolTable {
     ///
     /// A name that starts with a `.` is a Local label and is looked up inside
     /// `scope`; every other name is looked up as it is written, so that a full
-    /// name (`start:.loop`) is found from anywhere.
+    /// name (`start:loop`) is found from anywhere.
     pub fn resolve(&self, name: &str, scope: Option<&str>) -> Option<&Symbol> {
         self.symbols.get(&qualify(name, scope))
     }

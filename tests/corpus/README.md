@@ -238,8 +238,13 @@ never appears, so `move.l sp,a5` prints as `movea.l a7,a5`.
 | Absolute | `$` and the address in hex, with no forced width | `$2000` |
 | PC-relative displacement | signed decimal displacement, then `(pc)` | `18(pc)`, `-6(pc)` |
 | PC-relative index | signed decimal displacement, `pc`, index register and its size | `14(pc,d1.w)`, `0(pc,a2.l)` |
-| The status register | `sr` | `move sr,d0` |
-| The condition codes | `ccr` | `move d0,ccr` |
+
+Two things a line can name are **not** in that table, because they are not
+addressing modes at all: the status register, written `sr`, and the condition
+codes, written `ccr`. They are part of the instruction rather than operands of
+it — `MOVE to SR`, `ANDI to CCR` and the eight others are encodings of their
+own — so the printer has no operand rule for them and the paragraph below is
+where they are specified.
 
 The displacement of a displacement or index Operand is always written, `0`
 included, which is what tells `0(a6)` apart from `(a6)`. An index Operand always
@@ -249,7 +254,12 @@ carries its `.w` or `.l`, the default included.
 not the address the source wrote.** The source writes the address it wants —
 `move.l data(pc),d0` — and the Assembler stores the distance from that
 instruction's extension word to it, which is the address of the instruction plus
-two, since an instruction is four bytes here. So the same line at `$1000` with
+two, since an instruction is four bytes here. That "plus two" is one constant
+for every instruction, which is the hardware's number for every form but
+`movem`, whose register-list mask *is* the first extension word and so pushes
+the real one to instruction plus four: s68k encodes no words, so a printed
+`movem` displacement is two less than a real assembler's, and the single
+constant is the deliberate simplification. So the same line at `$1000` with
 `data` at `$1014` prints as `move.l 18(pc),d0`, and a `data` *behind* the
 instruction prints as a negative displacement. The displacement is signed
 decimal, like every other displacement, and it is what the Interpreter adds back
@@ -358,15 +368,15 @@ are snapshotted as.
 ```json
 [
   {
-    "severity": "error",
-    "code": "unimplemented_operation",
-    "message": "`simhalt` is not implemented: halting the simulator is not implemented yet",
-    "hint": "write `move.b #9,d0` and `trap #15` to end the program instead",
+    "severity": "suggestion",
+    "code": "bare_comment",
+    "message": "this is EASy68K's comment field; s68k reads it as a comment",
+    "hint": "start comments with `;` to say so",
     "location": {
       "file": "graphicSound.X68",
-      "line": 205,
-      "column": 4,
-      "endColumn": 11
+      "line": 15,
+      "column": 28,
+      "endColumn": 41
     },
     "related": []
   }
@@ -480,6 +490,13 @@ fixture, and are here so that the next one to move is recognised:
   specify and what 1.4.2 did not do at all. No corpus program writes an odd
   number of bytes before a word one, so nothing moved; a program that does will
   see its data move up by a byte, and every Label after it with it.
+* **An `org` that moves nothing says nothing.** The `odd_origin` warning is
+  about an address the `org` *moves* to, so `ORG $1001` warns and rounds up to
+  `$1002` when the counter is at `$1000` and is silent when the counter is
+  already at `$1001`. The same line therefore reads two ways in two places,
+  which is deliberate: the alternative would warn about `org *` after a `dc.b`,
+  the one documented way to end an `offset` region, and move the code a byte.
+  No corpus program writes an odd `org` at all.
 * **Constants are Symbols.** `equ` is no longer a text substitution, so
   `x equ 5` no longer rewrites `next` into `ne5t`; the Constants are in the
   Program's symbol table and out of `labels`, as above. Every corpus program's
@@ -990,3 +1007,47 @@ order and not a picture of a terminal.
   "nothing was typed, nothing was clicked" for ever, so `limit` is the honest
   outcome rather than a fault. If a change makes one of them terminate, that is
   a change worth reading, not a snapshot to update blindly.
+
+### What phase 4 changed in these fixtures, and why
+
+Phase 4 is `include` and `incbin` over a Project of Files. **No fixture moved,
+in either direction**: the 30 assembly fixtures, the 30 execution fixtures and
+the three `-errors.snap` are byte for byte what phase 3 left them, at **15, 3
+and 19** entries. Nothing here touches single-file assembly, which is the
+property this whole directory exists to hold, and the three `-errors.snap` said
+nothing about `include` or `incbin`: no corpus program writes either.
+
+Two things about the fixture format are worth knowing now that a Program may
+come from several Files.
+
+* **The format still names no File.** An `instructions` entry carries a `line`
+  and no path, and so does a `labels` entry, which is what makes the new test
+  below possible: a program and the same program split across Files produce the
+  same fixture. If a later version wants to tell them apart, the field to add is
+  the file, not the line — the Program itself carries a whole Location on every
+  instruction, and the include chain beside it.
+* **`editor_programs_split_across_files_assemble_the_same`** in
+  `src/test/corpus.rs` is the new test, and it is a fixture test without a
+  fixture file: it cuts three `editor/` programs into an Entry file and one or
+  two included Files — `hello-world-1`'s two strings, the whole of
+  `subroutine-with-register-arguments-1`'s `gcd`, and
+  `max-of-an-array-1`'s constant and data — assembles both shapes, and asserts
+  that the two fixtures are identical, serialised. The cut **keeps every line
+  number**: the lines that move out are replaced by one `include` line and then
+  blank lines, and the File they move into is padded with as many blank lines as
+  there are lines above them, so the `n`th line of the program is still the
+  `n`th line of whichever File now holds it. That is what lets the comparison
+  include the `line` of every instruction and Label rather than only the
+  addresses and the bytes.
+
+In `tests/diagnostics/`, **a case may now be a directory**: `<code>/` is a
+Project, every file under it is a File named by its path inside the directory,
+`main.asm` is the Entry file and a `.bin` file is a binary one. Four cases are
+new and all four are directories, because no single File of source can name
+another File to fail to read: `unreadable_file` (the last code that had no case
+at all), `include_cycle`, `include_too_deep` and `end_in_an_included_file`. Two
+older cases changed on purpose, and neither is about `include`:
+`directive_needs_a_label.asm` gained a bare `section`, which is the shape whose
+hint used to offer `count section …` — an operand that would have removed the
+requirement — and now has one of its own; `invalid_address_width.asm` has a
+comment that counts its own lines correctly.

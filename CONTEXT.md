@@ -57,7 +57,13 @@ The insertion of a File's lines at the `include` line of another, as if pasted t
 The insertion of a File's bytes, untouched, at the current address, as if written with `dc.b`.
 
 **Include chain**:
-The sequence of `include` lines that led to a given line, from the Entry file down. Every Diagnostic in an included File carries it.
+The sequence of `include` lines that led to a given line, from the Entry file down. Every Diagnostic in an included File carries it, and so does every instruction assembled from one.
+
+**Assembled sequence**:
+The lines the Assembler assembles, in order: the Entry file's, with every `include` line followed by the lines of the File it names, recursively. It is what a textual Include means, written down.
+
+**Position**:
+An index into the Assembled sequence, which is what "above" and "below" mean in a Project of several Files: a Variable sees the latest definition above it by Position, and a Register list has to be defined above the `movem` that reads it by Position. A line index alone cannot say it, since a File may be included twice.
 
 ### Symbols and expressions
 
@@ -122,8 +128,8 @@ A finding about the source made while assembling, of a stable kind, at a Locatio
 _Avoid_: SemanticError, compile error, lexer error, linter message
 
 **Location**:
-Where in the source something is: a file, a line and the range of columns of the token or operand concerned.
-_Avoid_: line index (a Location is more than a line), position
+Where in the source something is: a file, a line and the range of columns of the token or operand concerned. Two lines of a File included twice share one Location and are told apart by their Include chain.
+_Avoid_: line index (a Location is more than a line), position (that is the index in the Assembled sequence, which is a different thing)
 
 **Runtime error**:
 A failure of the running program, produced by the interpreter and attributed to the instruction's Location. Not a Diagnostic.

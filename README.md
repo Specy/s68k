@@ -76,6 +76,8 @@ Every one the 68000 has: `d0`, `a0`, `(a0)`, `(a0)+`, `-(a0)`, `4(a6)`, `4(a6,d1
 | `simhalt` | ends the run where it stands, modifying no register |
 | `section` | switches between the sixteen location counters, 0 to 15, each going on from where it was left |
 | `offset` | opens a region that produces no bytes, where `ds` names the fields of a structure by their offsets; `org *` ends it |
+| `include` | assembles another file of the project here, as if its lines had been pasted at this line |
+| `incbin` | puts another file's bytes in memory here, as a `dc.b` of the whole file would |
 | `opt`, `list`, `nolist`, `page` | accepted and ignored: they are about the listing file, which there is none of |
 
 Without `end`, the entry point is a label named `START`, and failing that the first instruction. There is no `even`: `ds.w 0` is EASy68K's idiom for it, and word and long data align on their own anyway.
@@ -84,7 +86,24 @@ Without `end`, the entry point is a label named `START`, and failing that the fi
 
 A program starts in section 0 at the default origin `$1000`; the other fifteen sections start at 0, as in EASy68K. A name defined inside an `offset` region is a constant and not a label: it stands for an offset, which may be negative, and no line of the program is laid out at it. Anything that would produce bytes inside a region — an instruction, a `dc`, a `simhalt` — is an error saying so.
 
-`include` and `incbin` are recognised and refused with a diagnostic naming the feature and what to write instead; they are the next piece of work. `memory`, the macro directives and conditional assembly are refused the same way, and macros are the one feature that may come back later.
+`memory`, the macro directives and conditional assembly are refused with a diagnostic naming the feature, and macros are the one feature that may come back later.
+
+## Projects of several files
+
+A **project** is a map from a root-relative path to a file's text or to its bytes, plus the path of the **entry file** to assemble. Every other file is reached from the entry file through `include` or `incbin`, or is not read at all; nothing on a disk is ever opened by the assembler, which is what lets the same code run in a browser over the editor's buffers.
+
+```ts
+S68k.assemble({
+    files: {'main.x68': source, 'lib/io.x68': library, 'data/sprite.bin': bytes},
+    entry: 'main.x68'
+})
+```
+
+`include` is **textual**: the included file's lines are assembled where the `include` line is, in the same section, at the same address, in one symbol namespace, with the local label scopes running across the boundary. The file name may be quoted with either quote or not quoted at all, `\` is a separator like `/`, and the path is looked for beside the file that wrote it first and at the project root second. A file may be included more than once — a name it defines is then defined twice, and the error says which two `include` lines did it — but not inside itself, which is an error showing the chain. A file the project has not got is an error naming the closest paths it does have. `end` belongs in the entry file and nowhere else.
+
+`incbin` takes either kind of file: a binary one contributes its bytes and a text one its Latin-1 bytes. It aligns nothing and a label on it names its first byte.
+
+Every location carries the file it is in, so a diagnostic, a breakpoint (`{file, line}`), the current line and a call-stack frame all name one file of the project. A diagnostic raised in an included file carries the `include` lines it was reached through as related locations, and so does every assembled instruction (`includeChain`, innermost first): a file included twice has one location per line and two addresses, and the chain is the only thing that tells the two copies apart.
 
 ## Todo
 - The directives above that are still refused
@@ -99,7 +118,9 @@ A program starts in section 0 at the default origin `$1000`; the other fifteen s
 # How to run rust
 Firstly make sure you have rust installed, [you can download it here](https://www.rust-lang.org/tools/install), once done, clone the repository on your machine and run `cargo run` in the root folder of the project. This will assemble and run the code inside of the `code-to-run.asm` file; name another file to run that one instead, `cargo run -- my-program.asm`.
 
-Every diagnostic is printed as `file:line:column: severity: message`, with its hint under it, and a program with an error in it is not run. `--step` steps through it (D, A, S and Q for step, undo, print and quit), `--show-program` prints the assembled instructions, `--benchmark` runs it with no undo history and times it, and `--no-debug` leaves out the registers at the end.
+The **directory the named file is in is the project**: every file under it is one file of it, named by its path inside it, so `cargo run -- dir/main.asm` assembles `dir/main.asm`'s `include 'lib/io.x68'` from `dir/lib/io.x68`. A file named `.asm`, `.x68`, `.m68k`, `.s` or `.inc` is read as source and every other file as bytes, for `incbin`; a directory whose name starts with `.`, and `target` and `node_modules`, are not read at all; and no more than 1000 files and 32 MiB are read, source first, with a message when something is left out — a directory is not really a project.
+
+Every diagnostic is printed as `file:line:column: severity: message`, with its hint and its related locations under it — the `include` lines a file was reached through among them — and a program with an error in it is not run. `--step` steps through it (D, A, S and Q for step, undo, print and quit), `--show-program` prints the assembled instructions, `--benchmark` runs it with no undo history and times it, and `--no-debug` leaves out the registers at the end.
 
 # How to build WASM binary
 The interpreter was made for WASM in mind, to build it you need [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) installed.

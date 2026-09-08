@@ -1,0 +1,93 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/include_too_deep
+---
+[
+  {
+    "severity": "error",
+    "code": "include_too_deep",
+    "message": "`deep9.asm` would be included more than 8 files deep",
+    "hint": "s68k stops there; include the files side by side rather than one inside the next",
+    "location": {
+      "file": "deep8.asm",
+      "line": 0,
+      "column": 12,
+      "endColumn": 21
+    },
+    "related": [
+      {
+        "location": {
+          "file": "deep7.asm",
+          "line": 0,
+          "column": 12,
+          "endColumn": 21
+        },
+        "message": "included from `deep7.asm`"
+      },
+      {
+        "location": {
+          "file": "deep6.asm",
+          "line": 0,
+          "column": 12,
+          "endColumn": 21
+        },
+        "message": "included from `deep6.asm`"
+      },
+      {
+        "location": {
+          "file": "deep5.asm",
+          "line": 0,
+          "column": 12,
+          "endColumn": 21
+        },
+        "message": "included from `deep5.asm`"
+      },
+      {
+        "location": {
+          "file": "deep4.asm",
+          "line": 0,
+          "column": 12,
+          "endColumn": 21
+        },
+        "message": "included from `deep4.asm`"
+      },
+      {
+        "location": {
+          "file": "deep3.asm",
+          "line": 0,
+          "column": 12,
+          "endColumn": 21
+        },
+        "message": "included from `deep3.asm`"
+      },
+      {
+        "location": {
+          "file": "deep2.asm",
+          "line": 0,
+          "column": 12,
+          "endColumn": 21
+        },
+        "message": "included from `deep2.asm`"
+      },
+      {
+        "location": {
+          "file": "deep1.asm",
+          "line": 0,
+          "column": 12,
+          "endColumn": 21
+        },
+        "message": "included from `deep1.asm`"
+      },
+      {
+        "location": {
+          "file": "main.asm",
+          "line": 1,
+          "column": 12,
+          "endColumn": 21
+        },
+        "message": "included from `main.asm`"
+      }
+    ]
+  }
+]

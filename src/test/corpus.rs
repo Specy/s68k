@@ -96,7 +96,13 @@ fn hex(value: usize) -> String {
 /// Assembles `source` with the Assembler, panicking with `name` and the first
 /// Diagnostics in the message if it does not assemble.
 fn assemble(name: &str, source: &str) -> Program {
-    let assembly = crate::assembler::assemble_source(source);
+    assemble_project(name, &Files::from_source(source), "main.m68k")
+}
+
+/// The same over a Project of several Files, which is what the split-file
+/// fixture test assembles.
+fn assemble_project(name: &str, files: &Files, entry: &str) -> Program {
+    let assembly = crate::assembler::assemble(files, entry);
     match assembly.program {
         Some(program) => program,
         None => {
@@ -123,8 +129,15 @@ fn assemble(name: &str, source: &str) -> Program {
 ///
 /// `name` only names the program in the panic messages.
 fn dump(name: &str, source: &str) -> Fixture {
-    let program = assemble(name, source);
+    fixture_of(assemble(name, source))
+}
 
+/// The fixture of a Program, whether it came from one File or from a Project.
+///
+/// The format names no File at all (`tests/corpus/README.md`, "Fixture
+/// format"), which is what lets a program and the same program split across
+/// several Files be compared byte for byte.
+fn fixture_of(program: Program) -> Fixture {
     let instructions: Vec<FixtureInstruction> = program
         .instructions()
         .iter()
@@ -1024,6 +1037,78 @@ fn easy68k_programs_do_not_assemble() {
             insta::assert_json_snapshot!(format!("{}-errors", name), diagnostics);
         }
     });
+}
+
+/// Three editor programs split across Files assemble to exactly what they
+/// assemble to whole.
+///
+/// The design record's "Tests" for phase 4, and the strongest evidence there is
+/// that `include` is **textual** (CONTEXT.md, "Include"): the same section, the
+/// same current address, one Symbol namespace and Local label scopes running
+/// across the boundary. Each program is cut into an Entry file and one or two
+/// included Files — the data in one, the subroutines in another — and its
+/// fixture, which names no File at all, has to come out identical to the whole
+/// program's, which [`editor_programs`] pins against the snapshot on disk.
+///
+/// **The cut keeps the line numbers**, and that is what makes the two fixtures
+/// comparable down to the `line` of every instruction and Label: the lines that
+/// move out are replaced by one `include` line and then blank lines, and the
+/// File they move into is padded with as many blank lines as there are lines
+/// above them. So the `n`th line of the program is still the `n`th line of
+/// whichever File now holds it. A blank line assembles to nothing, in either
+/// File.
+#[test]
+fn editor_programs_split_across_files_assemble_the_same() {
+    // The file the lines move into, and the 0-based range of lines that moves.
+    type Cut<'a> = (&'a str, std::ops::Range<usize>);
+    let cases: [(&str, &[Cut]); 3] = [
+        // The two strings and the `org` that places them.
+        ("hello-world-1", &[("data.m68k", 12..15)]),
+        // The whole of `gcd`, its comment header included.
+        (
+            "subroutine-with-register-arguments-1",
+            &[("lib/subroutines.m68k", 6..20)],
+        ),
+        // A constant in one file and the data in another, and the entry file
+        // keeps only the code between them.
+        (
+            "max-of-an-array-1",
+            &[("constants.m68k", 0..1), ("data.m68k", 17..19)],
+        ),
+    ];
+    for (name, cuts) in cases {
+        let path = corpus_dir("editor").join(format!("{name}.asm"));
+        let whole = read(&path);
+        let (files, entry) = split(&whole, cuts);
+        let together = fixture_of(assemble(name, &whole));
+        let apart = fixture_of(assemble_project(name, &files, &entry));
+        assert_eq!(
+            serde_json::to_string_pretty(&apart).expect("a fixture serialises"),
+            serde_json::to_string_pretty(&together).expect("a fixture serialises"),
+            "{name} assembles differently once it is split across files"
+        );
+    }
+}
+
+/// Cut a program into an Entry file and the Files named by `cuts`.
+///
+/// Every line keeps its index, as
+/// [`editor_programs_split_across_files_assemble_the_same`] explains: the first
+/// line of a cut becomes the `include`, the rest of it becomes blank lines, and
+/// the File the lines move to is padded up to the index they had.
+fn split(source: &str, cuts: &[(&str, std::ops::Range<usize>)]) -> (Files, String) {
+    let mut lines: Vec<String> = source.lines().map(str::to_string).collect();
+    let mut files = Files::new();
+    for (path, range) in cuts {
+        let mut moved: Vec<String> = vec![String::new(); range.start];
+        for line in range.clone() {
+            moved.push(std::mem::take(&mut lines[line]));
+        }
+        files.insert_text(path, moved.join("\n") + "\n");
+        lines[range.start] = format!("    include '{path}'");
+    }
+    files.insert_text("main.m68k", lines.join("\n") + "\n");
+    (files, "main.m68k".to_string())
 }
 
 /// The printer rules the corpus does not exercise, spelled out.

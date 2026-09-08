@@ -3,4 +3,5 @@
 
 mod corpus;
 mod diagnostics;
+mod include;
 mod test;

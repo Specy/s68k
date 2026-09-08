@@ -123,6 +123,140 @@ located_run.dispose()
 located.program.dispose()
 
 // ---------------------------------------------------------------------------
+// A project of several files: include, incbin and the include chain
+// ---------------------------------------------------------------------------
+
+// The entry file holds the program; the numbers it adds up are in a data file
+// and the routine that adds them is in another, both pasted in by `include`.
+// The bytes of `sprite.bin` are a binary file, which is what `incbin` reads and
+// what the program reads back out of memory.
+const MAIN = [
+    '    ORG $1000',
+    'START:',
+    '    LEA     VALUES,A0',
+    '    MOVE.W  COUNT,D1',
+    '    BSR     SUM             ; defined in lib/sum.x68',
+    '    MOVE.L  D0,D2           ; the sum, out of the way of the terminate task',
+    '    MOVE.B  SPRITE+2,D3     ; the third byte of the binary file',
+    '    MOVE.B  #9,D0',
+    '    TRAP    #15',
+    "    INCLUDE 'data/values.x68'",
+    "    INCLUDE 'lib/sum.x68'",
+    'SPRITE:',
+    "    INCBIN  'data/sprite.bin'",
+    '    END     START'
+].join('\n')
+
+const VALUES = ['COUNT:  DC.W    4', 'VALUES: DC.W    1,2,3,4'].join('\n')
+
+// A local label inside an included file: its scope is the global label above
+// it, which is in the same file, and the whole of it is assembled where the
+// `include` line is.
+const SUM = [
+    'SUM:',
+    '    CLR.L   D0',
+    '.loop:',
+    '    ADD.W   (A0)+,D0',
+    '    SUBQ.W  #1,D1',
+    '    BNE     .loop',
+    '    RTS'
+].join('\n')
+
+const project = S68k.assemble({
+    files: {
+        'main.x68': MAIN,
+        'data/values.x68': VALUES,
+        'lib/sum.x68': SUM,
+        'data/sprite.bin': new Uint8Array([1, 2, 3, 4])
+    },
+    entry: 'main.x68'
+})
+assert.deepEqual(project.diagnostics, [], 'a project of four files assembles')
+
+const symbols = project.program.getInfo().symbols
+assert.equal(symbols['COUNT'].location.file, 'data/values.x68', 'one namespace, every file in it')
+assert.equal(symbols['SUM'].location.file, 'lib/sum.x68')
+assert.equal(symbols['SUM:loop'].location.file, 'lib/sum.x68', 'a local label keeps its scope')
+assert.equal(symbols['SPRITE'].kind, 'label', 'the name on an incbin line is a label like any other')
+
+const projectRun = new Interpreter(project.program)
+projectRun.run()
+assert.ok(projectRun.hasTerminated(), 'the program ran to the end')
+const registers = projectRun.getCpuSnapshot()
+assert.equal(registers.getRegisterValue(2, RegisterType.Data), 10, 'the included routine added the included data')
+assert.equal(registers.getRegisterValue(3, RegisterType.Data), 3, 'the program read a byte of the binary file')
+assert.equal(
+    Array.from(projectRun.readMemoryBytes(symbols['SPRITE'].value, 4)).join(),
+    '1,2,3,4',
+    'incbin put the whole file in memory, untouched, with the label on its first byte'
+)
+
+// An instruction of an included file carries the `include` line it was reached
+// through: its location says where it was written, the chain how it got there.
+const summing = projectRun.getInstructionAt(symbols['SUM'].value)
+assert.equal(summing.source.trim(), 'CLR.L   D0')
+assert.equal(summing.location.file, 'lib/sum.x68')
+assert.equal(summing.includeChain.length, 1, 'reached through one include line')
+assert.equal(summing.includeChain[0].file, 'main.x68')
+assert.equal(summing.includeChain[0].line, 10, 'the INCLUDE line of main.x68')
+assert.deepEqual(
+    projectRun.getInstructionAt(0x1000).includeChain,
+    [],
+    'an instruction of the entry file was reached through none'
+)
+
+// A breakpoint is a line of a file, and now of any file of the project.
+const stopping = new Interpreter(project.program)
+assert.equal(
+    stopping.runWithBreakpoints([{file: 'lib/sum.x68', line: 3}]),
+    InterpreterStatus.Running,
+    'the run stops inside the included file'
+)
+assert.equal(stopping.getCurrentLocation().file, 'lib/sum.x68')
+stopping.dispose()
+projectRun.dispose()
+project.program.dispose()
+
+// A mistake in an included file is reported there, with the include line beside
+// it: the location names the file the mistake is in, `related` how it got read.
+const brokenProject = S68k.assemble({
+    files: {
+        'main.x68': ['    ORG $1000', "    INCLUDE 'lib/io.x68'"].join('\n'),
+        'lib/io.x68': ['* the library', '    MOVE.W  D0,#1'].join('\n')
+    },
+    entry: 'main.x68'
+})
+assert.equal(brokenProject.program, undefined, 'an error anywhere in the project builds no program')
+assert.equal(brokenProject.diagnostics.length, 1)
+const [inIncluded] = brokenProject.diagnostics
+assert.equal(inIncluded.severity, 'error')
+assert.equal(inIncluded.code, 'invalid_addressing_mode')
+assert.equal(inIncluded.location.file, 'lib/io.x68', 'reported where it is written')
+assert.equal(inIncluded.location.line, 1)
+assert.equal(inIncluded.related.length, 1)
+assert.equal(inIncluded.related[0].location.file, 'main.x68', 'and how the file was reached')
+assert.equal(inIncluded.related[0].location.line, 1)
+assert.equal(typeof inIncluded.related[0].location.endColumn, 'number', 'a related location is a location')
+assert.equal(inIncluded.related[0].message, 'included from `main.x68`')
+
+// A file the project has not got names the closest one it has.
+const missing = S68k.assemble({
+    files: {'main.x68': "    INCLUDE 'io.x68'\n", 'lib/io.x68': '    NOP\n'},
+    entry: 'main.x68'
+})
+assert.equal(missing.program, undefined)
+assert.equal(missing.diagnostics.length, 1)
+const [notFound] = missing.diagnostics
+assert.equal(notFound.severity, 'error')
+assert.equal(notFound.code, 'unreadable_file')
+assert.equal(notFound.message, 'there is no file named `io.x68` in this project')
+assert.equal(notFound.hint, 'did you mean `lib/io.x68`?')
+assert.equal(notFound.location.file, 'main.x68')
+assert.equal(notFound.location.line, 0)
+assert.equal(notFound.location.column, 12, 'it points at the file name')
+assert.equal(notFound.location.endColumn, 20)
+
+// ---------------------------------------------------------------------------
 // Diagnostics
 // ---------------------------------------------------------------------------
 

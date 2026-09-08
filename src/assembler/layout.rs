@@ -47,13 +47,13 @@ use super::ast::{
 };
 use super::diagnostics::{Diagnostic, DiagnosticKind};
 use super::expr::{self, Site};
+use super::include::{self, Expansion, Resolved};
 use super::instructions::encoded::Instruction;
 use super::instructions::lowering;
 use super::instructions::table;
 use super::names;
-use super::parser::ParsedFile;
 use super::program::{AssembledInstruction, MemoryContent, MemoryRun, Program};
-use super::source::{Location, SourceFile, Span};
+use super::source::{self, SourceFile, Span};
 use super::symbols::{self, SymbolKind, SymbolTable, SymbolValue};
 
 /// The whole of the 68000's address space as s68k simulates it, 16 MB.
@@ -85,13 +85,17 @@ pub const SECTION_COUNT: usize = 16;
 /// [`Severity`]: super::diagnostics::Severity
 pub const UNSPECIFIED_FAILURE: &str = "Unspecified user defined error";
 
-/// Lay one File out and assemble it.
+/// Lay the assembled sequence out and assemble it.
+///
+/// `found` is what the expansion already found — the parser's Diagnostics and
+/// the `include` Directive's own — each with the position it was found at, so
+/// that everything comes back in one list in the order a student reads.
 ///
 /// The Program is always built, from whatever the two passes could make of the
 /// lines; the caller ([`assemble`](super::assemble)) is what decides whether it
 /// may be handed out, which is only when no Diagnostic is an error.
-pub fn lay_out(source: &SourceFile, parsed: &ParsedFile) -> (Program, Vec<Diagnostic>) {
-    let mut layout = Layout::new(source, parsed);
+pub fn lay_out(unit: &Expansion, found: Vec<(usize, Diagnostic)>) -> (Program, Vec<Diagnostic>) {
+    let mut layout = Layout::new(unit, found);
     layout.pass_one();
     layout.pass_two();
     layout.finish()
@@ -142,13 +146,19 @@ struct Placement {
 }
 
 /// The two passes, and everything they work out on the way.
+///
+/// Everything is indexed by **position**, an index into the assembled sequence
+/// (`include`'s own module says why): a line index would name two lines at once
+/// as soon as a File is included twice.
 struct Layout<'a> {
-    source: &'a SourceFile<'a>,
-    parsed: &'a ParsedFile,
-    diagnostics: Vec<Diagnostic>,
+    unit: &'a Expansion<'a>,
+    /// Every Diagnostic with the position it was found at, which is what sorts
+    /// them into the order a student reads and what attaches the Include chain
+    /// to each of them ([`Layout::finish`]).
+    diagnostics: Vec<(usize, Diagnostic)>,
     symbols: SymbolTable,
-    /// Every full name the File defines, collected before pass 1, which is what
-    /// tells a forward reference from a name that is defined nowhere.
+    /// Every full name the assembly defines, collected before pass 1, which is
+    /// what tells a forward reference from a name that is defined nowhere.
     declared: HashSet<String>,
     plans: Vec<LinePlan>,
     placements: Vec<Placement>,
@@ -181,14 +191,13 @@ struct Layout<'a> {
 }
 
 impl<'a> Layout<'a> {
-    fn new(source: &'a SourceFile<'a>, parsed: &'a ParsedFile) -> Self {
+    fn new(unit: &'a Expansion<'a>, found: Vec<(usize, Diagnostic)>) -> Self {
         Self {
-            source,
-            parsed,
-            diagnostics: Vec::new(),
+            unit,
+            diagnostics: found,
             symbols: SymbolTable::new(),
-            declared: declared_names(parsed),
-            plans: Vec::with_capacity(parsed.lines.len()),
+            declared: declared_names(unit),
+            plans: Vec::with_capacity(unit.len()),
             placements: Vec::new(),
             sections: sections_at_the_start(),
             section: 0,
@@ -208,7 +217,7 @@ impl<'a> Layout<'a> {
     /// Pass 1: the Symbols, the addresses, and everything the Layout depends
     /// on.
     fn pass_one(&mut self) {
-        for index in 0..self.parsed.lines.len() {
+        for index in 0..self.unit.len() {
             let plan = self.plan_line(index);
             let plan = self.hold_back_in_an_offset_region(index, plan);
             self.plans.push(plan);
@@ -218,12 +227,23 @@ impl<'a> Layout<'a> {
 
     /// Pass 2: the values, the checks and the encoded instructions.
     fn pass_two(&mut self) {
-        for index in 0..self.parsed.lines.len() {
+        for index in 0..self.unit.len() {
             self.assemble_line(index);
         }
     }
 
-    /// The Program and every Diagnostic of both passes, in source order.
+    /// The Program and every Diagnostic of both passes, in the order of the
+    /// assembled sequence.
+    ///
+    /// Sorting by **position** and then by column is what keeps the order a
+    /// student reads once a Project has several Files: an included File's
+    /// Diagnostics sit where its lines sit, between the two halves of the File
+    /// that includes it. For one File a position *is* the line index, so
+    /// nothing about a single-File assembly moved.
+    ///
+    /// This is also the one place the Include chain is attached, so that every
+    /// Diagnostic raised in an included File carries it and no phase has to
+    /// remember to (the design record, "Files, `include`, `incbin`").
     fn finish(mut self) -> (Program, Vec<Diagnostic>) {
         let entry = self.entry_point();
         let program = Program::new(
@@ -232,9 +252,18 @@ impl<'a> Layout<'a> {
             &self.symbols,
             entry,
         );
-        let mut diagnostics = self.diagnostics;
-        diagnostics
-            .sort_by_key(|diagnostic| (diagnostic.location.line, diagnostic.location.column));
+        let mut found = self.diagnostics;
+        found.sort_by_key(|(at, diagnostic)| (*at, diagnostic.location.column));
+        let diagnostics = found
+            .into_iter()
+            .map(|(at, mut diagnostic)| {
+                for site in self.unit.chain(at) {
+                    let message = format!("included from `{}`", site.file);
+                    diagnostic = diagnostic.with_related(site, message);
+                }
+                diagnostic
+            })
+            .collect();
         (program, diagnostics)
     }
 
@@ -250,9 +279,11 @@ impl<'a> Layout<'a> {
             // nothing.
             if !self.warned_after_end && (line.label.is_some() || line.operation.is_some()) {
                 self.warned_after_end = true;
-                let location = Location::whole_line(self.source.path(), index, self.text(index));
-                self.diagnostics
-                    .push(Diagnostic::new(DiagnosticKind::CodeAfterEnd, location));
+                let location = self.unit.whole_line(index);
+                self.report(
+                    index,
+                    Diagnostic::new(DiagnosticKind::CodeAfterEnd, location),
+                );
             }
             return self.nothing();
         }
@@ -300,6 +331,8 @@ impl<'a> Layout<'a> {
             "simhalt" => self.plan_simhalt(index),
             "offset" => self.plan_offset(index),
             "section" => self.plan_section(index),
+            "include" => self.plan_include(index),
+            "incbin" => self.plan_incbin(index),
             // `opt`, `list`, `nolist` and `page` are display settings and are
             // accepted with nothing to say (the design record, "Directives").
             "opt" | "list" | "nolist" | "page" => {
@@ -467,6 +500,23 @@ impl<'a> Layout<'a> {
     /// `end [expr]`: the Entry point, and the last line that is assembled.
     fn plan_end(&mut self, index: usize) -> LinePlan {
         self.no_size(index, "end");
+        if !self.unit.is_in_the_entry_file(index) {
+            // EASy68K stops assembling here and drops the rest of the entry
+            // file; s68k refuses the line and carries on (ADR 0001), because
+            // the lines below it are the ones the student meant to assemble
+            // and stopping would answer one mistake with a file of
+            // consequences.
+            let span = self.operation_name_span(index);
+            self.raise(
+                index,
+                span,
+                DiagnosticKind::EndInAnIncludedFile {
+                    entry: self.unit.entry().to_string(),
+                },
+            );
+            self.define_label(index);
+            return self.nothing();
+        }
         // `end` ends an open `offset` region as `org` does. The help says only
         // that an `org` ends one, but nothing after `end` is assembled anyway,
         // and a Label on the `end` line itself is an address and not an offset.
@@ -768,6 +818,126 @@ impl<'a> Layout<'a> {
         }
     }
 
+    /// `[label] include file`: the line the expansion has already followed.
+    ///
+    /// The File's lines are in the assembled sequence already
+    /// ([`include`](mod@super::include)), so all that is left here is the line
+    /// itself: its size, its Label, and the one mistake the expansion says
+    /// nothing about, an `include` that names no File at all. A Label on it
+    /// names the current address, which is where the first byte of the
+    /// included File goes — the same rule a Label on a line of its own
+    /// follows.
+    fn plan_include(&mut self, index: usize) -> LinePlan {
+        self.no_size(index, "include");
+        // The Label is defined whether or not there was a File to read: the
+        // address it names is the address this line sits at either way, and an
+        // undefined name would be reported again at every use of it, which is
+        // the rule `plan_equate` follows for a value it cannot work out.
+        self.file_name(index, "include");
+        self.define_label(index);
+        self.nothing()
+    }
+
+    /// `[label] incbin file`: a File's bytes at the current address.
+    ///
+    /// "Inserts the specified binary file… The data from the included file is
+    /// not processed in any way" (`Directives/incbin.htm`), which is a `dc.b`
+    /// of the whole File: no alignment, the Label on the first byte, and a text
+    /// File contributing its Latin-1 bytes ([ADR
+    /// 0004](../../../docs/adr/0004-characters-are-latin-1-bytes.md)). Pass 1
+    /// takes the room and pass 2 reads the bytes
+    /// ([`included_bytes`](Layout::included_bytes)), which is how `dc` already
+    /// splits its length from its values.
+    fn plan_incbin(&mut self, index: usize) -> LinePlan {
+        self.no_size(index, "incbin");
+        self.define_label(index);
+        let address = self.address();
+        let Some(written) = self.file_name(index, "incbin") else {
+            return self.plan(address, Item::Data(0));
+        };
+        let length = match self.unit.resolve(index, &written) {
+            Resolved::Text { text, .. } => source::latin1_bytes(text).0.len(),
+            Resolved::Bytes { bytes, .. } => bytes.len(),
+            Resolved::Missing { path } => {
+                let kind = self.unit.miss(&path, "incbin");
+                let span = self.file_name_span(index);
+                self.raise(index, span, kind);
+                return self.plan(address, Item::Data(0));
+            }
+        };
+        self.place(index, length);
+        self.plan(address, Item::Data(length))
+    }
+
+    /// The bytes an `incbin` inserts, read again in pass 2.
+    ///
+    /// Pass 1 has already said whatever there was to say about the File, so a
+    /// miss here is silent: the length it planned was 0 and there is nothing to
+    /// insert. A character above Latin-1 in a text File has no byte at all and
+    /// is reported **where it is**, in the File that holds it, with this line
+    /// as the related Location — one message per `incbin`, however many such
+    /// characters the File holds.
+    fn included_bytes(&mut self, index: usize) -> Vec<u8> {
+        let Some(written) = self.file_name_quietly(index) else {
+            return Vec::new();
+        };
+        match self.unit.resolve(index, &written) {
+            Resolved::Bytes { bytes, .. } => bytes.to_vec(),
+            Resolved::Missing { .. } => Vec::new(),
+            Resolved::Text { path, text } => {
+                let (bytes, refused) = source::latin1_bytes(text);
+                if let Some((offset, character)) = refused {
+                    let location = SourceFile::new(path, text).location_of(offset);
+                    let here = self.unit.location(index, self.file_name_span(index));
+                    self.report(
+                        index,
+                        Diagnostic::new(
+                            DiagnosticKind::CharacterAboveLatin1 { character },
+                            location,
+                        )
+                        .with_related(here, "read into memory by this `incbin`"),
+                    );
+                }
+                bytes
+            }
+        }
+    }
+
+    /// The file name a `file_specification` Directive writes, quotes taken off.
+    ///
+    /// A line with no name at all is `wrong_operand_count`: `include` and
+    /// `incbin` take exactly one file name (`docs/grammar.md` 2.6), and the
+    /// count is the only thing wrong with the line.
+    fn file_name(&mut self, index: usize, directive: &str) -> Option<String> {
+        match self.file_name_quietly(index) {
+            Some(name) => Some(name),
+            None => {
+                self.wrong_operand_count(index, directive, 0, vec![1]);
+                None
+            }
+        }
+    }
+
+    /// The same, with nothing to say about a line that has none.
+    fn file_name_quietly(&self, index: usize) -> Option<String> {
+        let field = self.line(index).operation.as_ref()?.text.as_ref()?;
+        let written = include::written_path(&field.text);
+        match written.is_empty() {
+            true => None,
+            false => Some(written),
+        }
+    }
+
+    /// Where the file name was written, for a Diagnostic to point at.
+    fn file_name_span(&self, index: usize) -> Span {
+        self.line(index)
+            .operation
+            .as_ref()
+            .and_then(|operation| operation.text.as_ref())
+            .map(|field| field.span)
+            .unwrap_or_else(|| self.operation_name_span(index))
+    }
+
     /// How a Diagnostic names what a line inside an `offset` region would have
     /// put there: the Directive as it is written, or "an instruction".
     fn offset_item_name(&self, index: usize) -> String {
@@ -856,7 +1026,8 @@ impl<'a> Layout<'a> {
                         address: plan.address as usize,
                         size: INSTRUCTION_SIZE,
                         instruction,
-                        location: Location::whole_line(self.source.path(), index, self.text(index)),
+                        location: self.unit.whole_line(index),
+                        include_chain: self.unit.chain(index),
                         source: self.text(index).to_string(),
                     });
                 }
@@ -869,18 +1040,19 @@ impl<'a> Layout<'a> {
                     .unwrap_or_default();
                 let bytes = match name.as_str() {
                     "dcb" => self.block_bytes(index, &plan, length),
+                    "incbin" => self.included_bytes(index),
                     _ => self.constant_bytes(index, &plan),
                 };
                 self.memory.push(MemoryRun {
                     address: plan.address as usize,
                     content: MemoryContent::Bytes { bytes },
-                    location: Location::whole_line(self.source.path(), index, self.text(index)),
+                    location: self.unit.whole_line(index),
                 });
             }
             Item::Reserved(length) => self.memory.push(MemoryRun {
                 address: plan.address as usize,
                 content: MemoryContent::Reserved { length },
-                location: Location::whole_line(self.source.path(), index, self.text(index)),
+                location: self.unit.whole_line(index),
             }),
             Item::Nothing => {}
         }
@@ -905,11 +1077,7 @@ impl<'a> Layout<'a> {
                 _ => None,
             };
         }
-        let mut parser_reported_an_error = self
-            .parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.location.line == index && diagnostic.is_error());
+        let mut parser_reported_an_error = self.unit.parser_found_an_error(index);
         // A `reg` Symbol standing where `movem` wants a register list is read
         // before anything else looks at the Operand: it is not an Expression
         // and must not be evaluated as one.
@@ -951,13 +1119,22 @@ impl<'a> Layout<'a> {
                 symbols: &symbols,
                 current_address: plan.address,
                 origin: self.origin.unwrap_or(DEFAULT_ORIGIN),
-                macros: &self.parsed.macros,
+                macros: self.unit.macros(),
             };
-            let mut analyzer = Analyzer::new(self.source.path(), index, self.text(index), &context);
+            // The analyzer builds Locations, so it is given the *line* of the
+            // position and not the position itself.
+            let mut analyzer = Analyzer::new(
+                self.path(index),
+                self.unit.line_index(index),
+                self.text(index),
+                &context,
+            );
             let instruction = analyzer.analyze_line(line, parser_reported_an_error);
             (instruction, analyzer.finish())
         };
-        self.diagnostics.extend(found);
+        for diagnostic in found {
+            self.report(index, diagnostic);
+        }
         instruction
     }
 
@@ -1012,6 +1189,7 @@ impl<'a> Layout<'a> {
                 continue;
             };
             let (kind, definition) = (symbol.kind, symbol.location.clone());
+            let defined_at = symbol.defined_at;
             let mask = match symbol.value {
                 SymbolValue::RegisterList(mask) => mask,
                 SymbolValue::Number(_) if must_be_a_list => {
@@ -1033,10 +1211,10 @@ impl<'a> Layout<'a> {
             // A name that *is* a register list can be nothing else, wherever
             // it stands: it has no value at all, so `must_be_a_list` does not
             // come into it.
-            if definition.line > index {
-                let location =
-                    Location::from_span(self.source.path(), index, self.text(index), span);
-                self.diagnostics.push(
+            if defined_at > index {
+                let location = self.unit.location(index, span);
+                self.report(
+                    index,
                     Diagnostic::new(
                         DiagnosticKind::RegisterListNotDefinedYet {
                             name: name.to_string(),
@@ -1242,14 +1420,19 @@ impl<'a> Layout<'a> {
 
     // -- the pieces both passes use ----------------------------------------
 
-    /// The `index`th parsed line.
+    /// The parsed line at the position.
     fn line(&self, index: usize) -> &'a Line {
-        &self.parsed.lines[index]
+        self.unit.line(index)
     }
 
-    /// The text of the `index`th Source line.
+    /// The text of the Source line at the position.
     fn text(&self, index: usize) -> &'a str {
-        self.source.line(index).unwrap_or("")
+        self.unit.text(index)
+    }
+
+    /// The path of the File the position is in.
+    fn path(&self, index: usize) -> &'a str {
+        self.unit.path(index)
     }
 
     /// The Operands of the `index`th line, cloned so that the line is not
@@ -1324,10 +1507,20 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// Raise a Diagnostic about a span of the `index`th line.
+    /// Raise a Diagnostic about a span of the line at the position.
     fn raise(&mut self, index: usize, span: Span, kind: DiagnosticKind) {
-        let location = Location::from_span(self.source.path(), index, self.text(index), span);
-        self.diagnostics.push(Diagnostic::new(kind, location));
+        let location = self.unit.location(index, span);
+        self.report(index, Diagnostic::new(kind, location));
+    }
+
+    /// Keep a Diagnostic, with the position it was found at.
+    ///
+    /// Everything goes through here, the analyzer's and the evaluator's
+    /// included, which is what lets [`finish`](Layout::finish) sort them into
+    /// the order of the assembled sequence and give every one of them its
+    /// Include chain.
+    fn report(&mut self, at: usize, diagnostic: Diagnostic) {
+        self.diagnostics.push((at, diagnostic));
     }
 
     /// Move the current address up to a multiple of `alignment`.
@@ -1367,17 +1560,20 @@ impl<'a> Layout<'a> {
         }
         let end = self.address() + length as i64;
         if end > ADDRESS_SPACE {
-            let location = Location::whole_line(self.source.path(), index, self.text(index));
-            self.diagnostics.push(Diagnostic::new(
-                DiagnosticKind::ValueOutOfRange {
-                    subject: "the last address of this line".to_string(),
-                    value: end - 1,
-                    min: 0,
-                    max: ADDRESS_SPACE - 1,
-                    advice: Some("s68k has 16 MB of memory".to_string()),
-                },
-                location,
-            ));
+            let location = self.unit.whole_line(index);
+            self.report(
+                index,
+                Diagnostic::new(
+                    DiagnosticKind::ValueOutOfRange {
+                        subject: "the last address of this line".to_string(),
+                        value: end - 1,
+                        min: 0,
+                        max: ADDRESS_SPACE - 1,
+                        advice: Some("s68k has 16 MB of memory".to_string()),
+                    },
+                    location,
+                ),
+            );
             return;
         }
         if self.origin.is_none() {
@@ -1431,12 +1627,33 @@ impl<'a> Layout<'a> {
             true => self.scope.clone(),
             false => None,
         };
-        let location = Location::from_span(self.source.path(), index, self.text(index), span);
+        let location = self.unit.location(index, span);
+        let already = self
+            .symbols
+            .resolve(name, scope.as_deref())
+            .map(|symbol| symbol.defined_at);
         if let Err(diagnostic) =
             self.symbols
                 .define(name, scope.as_deref(), kind, value, location, index)
         {
-            self.diagnostics.push(*diagnostic);
+            let mut diagnostic = *diagnostic;
+            // A File included twice defines every name in it twice, and the
+            // two `include` lines are the mistake — not the two definitions,
+            // which are one line of one File read twice.
+            if let Some((first, second)) =
+                already.and_then(|already| self.unit.included_twice(already, index))
+            {
+                let path = self.path(index).to_string();
+                diagnostic = diagnostic
+                    .with_related(first, format!("`{path}` is included here"))
+                    .with_related(
+                        second,
+                        format!(
+                            "and included again here, so every name in `{path}` is defined twice"
+                        ),
+                    );
+            }
+            self.report(index, diagnostic);
         }
     }
 
@@ -1538,12 +1755,14 @@ impl<'a> Layout<'a> {
             expr::evaluate(&expression, &symbols, star, &mut problems)
         };
         let site = Site {
-            file: self.source.path(),
-            line_index: index,
+            file: self.path(index),
+            line_index: self.unit.line_index(index),
             line_text: self.text(index),
             refused_by: Some(directive),
         };
-        self.diagnostics.extend(expr::diagnose(&problems, &site));
+        for diagnostic in expr::diagnose(&problems, &site) {
+            self.report(index, diagnostic);
+        }
         value
     }
 
@@ -1577,12 +1796,14 @@ impl<'a> Layout<'a> {
             expr::evaluate(expression, &symbols, plan.address, &mut problems)
         };
         let site = Site {
-            file: self.source.path(),
-            line_index: index,
+            file: self.path(index),
+            line_index: self.unit.line_index(index),
             line_text: self.text(index),
             refused_by: None,
         };
-        self.diagnostics.extend(expr::diagnose(&problems, &site));
+        for diagnostic in expr::diagnose(&problems, &site) {
+            self.report(index, diagnostic);
+        }
         value
     }
 
@@ -1731,10 +1952,10 @@ impl<'a> Layout<'a> {
                         true => (earlier, line),
                         false => (line, earlier),
                     };
-                    let location =
-                        Location::whole_line(self.source.path(), second, self.text(second));
-                    let related = Location::whole_line(self.source.path(), first, self.text(first));
-                    self.diagnostics.push(
+                    let location = self.unit.whole_line(second);
+                    let related = self.unit.whole_line(first);
+                    self.report(
+                        second,
                         Diagnostic::new(
                             DiagnosticKind::AddressUsedTwice { address: start },
                             location,
@@ -1752,17 +1973,19 @@ impl<'a> Layout<'a> {
     }
 }
 
-/// Every full name the File defines, whatever pass 1 makes of it.
+/// Every full name the assembly defines, whatever pass 1 makes of it.
 ///
 /// It is collected before pass 1 so that a name used above its definition can
 /// be told from a name that is defined nowhere: the first is
 /// `forward_reference_not_allowed` and the second is `undefined_symbol`, and
-/// only this set tells them apart.
-fn declared_names(parsed: &ParsedFile) -> HashSet<String> {
+/// only this set tells them apart. It walks the assembled sequence and not one
+/// File, so a name defined in an included File is a forward reference from
+/// above it, exactly as if the lines had been pasted in.
+fn declared_names(unit: &Expansion) -> HashSet<String> {
     let mut names = HashSet::new();
     let mut scope: Option<String> = None;
-    for line in &parsed.lines {
-        let Some(label) = line.label.as_ref() else {
+    for at in 0..unit.len() {
+        let Some(label) = unit.line(at).label.as_ref() else {
             continue;
         };
         if symbols::is_local(&label.name) {
@@ -1961,19 +2184,13 @@ fn register_list_operand(mask: u16, span: Span) -> Operand {
 ///
 /// The design record's "Directives" says which bucket each one is in: `memory`,
 /// the Macro and conditional-assembly Directives and the structured-control
-/// keywords are refused, and `include` and `incbin` arrive in phase 4, which is
-/// what "yet" says. Phase 2 has taken every other Directive out of this list. The Operation names that reach this are the ones
-/// [`names::is_directive`] knows and [`Layout::plan_directive`] does not.
+/// keywords are refused, and every other Directive is implemented — phase 2
+/// took the rest of them out of this list and phase 4 took `include` and
+/// `incbin`, so nothing here says "yet" any more. The Operation names that
+/// reach this are the ones [`names::is_directive`] knows and
+/// [`Layout::plan_directive`] does not.
 fn unimplemented_reason(name: &str) -> (&'static str, Option<&'static str>) {
     match name {
-        "include" => (
-            "assembling several files together is not implemented yet",
-            Some("the file's lines here"),
-        ),
-        "incbin" => (
-            "reading a file's bytes into memory is not implemented yet",
-            Some("`dc.b` with the bytes written out"),
-        ),
         "memory" => (
             "s68k has one memory of 16 MB and no access levels in it",
             None,
@@ -2007,20 +2224,22 @@ mod tests {
     use super::*;
     use crate::assembler::instructions::encoded::Operand as EncodedOperand;
     use crate::assembler::instructions::encoded::TargetDirection;
-    use crate::assembler::parser;
     use crate::assembler::source::Files;
 
     /// Lay a program out and give back its Program and its Diagnostics.
+    ///
+    /// It is the whole of [`assemble`](super::super::assemble) but for the last
+    /// step, which is deciding whether the Program may be handed out: these
+    /// tests read a Program that has an error in it on purpose.
     fn assemble(source: &str) -> (Program, Vec<Diagnostic>) {
         let files = Files::from_source(source);
-        let text = files.text("main.m68k").expect("the source");
-        let file = SourceFile::new("main.m68k", text);
-        let parsed = parser::parse_file("main.m68k", text);
-        let (program, mut diagnostics) = lay_out(&file, &parsed);
-        let mut all = parsed.diagnostics.clone();
-        all.append(&mut diagnostics);
-        all.sort_by_key(|diagnostic| (diagnostic.location.line, diagnostic.location.column));
-        (program, all)
+        assemble_project(&files, "main.m68k")
+    }
+
+    /// The same over a Project of several Files.
+    fn assemble_project(files: &Files, entry: &str) -> (Program, Vec<Diagnostic>) {
+        let (unit, found) = super::super::include::expand(files, entry).expect("an entry file");
+        lay_out(&unit, found)
     }
 
     /// The codes a program raises, in source order.
@@ -2477,10 +2696,8 @@ second:
     }
 
     #[test]
-    fn the_directives_of_the_later_phases_name_themselves() {
+    fn the_directives_that_are_refused_name_themselves() {
         for source in [
-            "    include 'io.x68'\n",
-            "    incbin 'sprite.bin'\n",
             "    memory $1000,$2000,ROM\n",
             "    macro foo\n    endm\n",
             "    ifeq 1\n    endc\n",
@@ -2767,7 +2984,7 @@ halt simhalt
     }
 
     #[test]
-    fn simhalt_reads_the_rest_of_its_line_as_a_comment() {
+    fn simhalt_ignores_the_rest_of_its_line() {
         // `Directives/simhalt.htm`'s usage line is `LABEL SIMHALT comment`, and
         // line 206 of `tests/corpus/easy68k/graphicSound.X68` is
         // `SIMHALT                 Halt Simulator`.

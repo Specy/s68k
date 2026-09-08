@@ -21,6 +21,8 @@
 //!   made of.
 //! * [`tokenizer`] — the walk over one line that produces them.
 //! * [`ast`] — the tree one line parses into.
+//! * [`include`](mod@include) — the Project as one assembled sequence of lines, `include`
+//!   expanded and the Include chain of every one of them.
 //! * [`names`] — the two questions the parser asks about an Operation's name,
 //!   and the only two.
 //! * [`parser`] — one line to an [`ast::Line`], against the grammar's sections
@@ -44,20 +46,19 @@
 //!
 //! # What is still to come
 //!
-//! Phase 4 owes `include` and `incbin` and the Files they read, which are the
-//! last two Directives that carry a "not implemented yet". Phase 3 is
-//! finished: every Addressing mode of the language is assembled, the
-//! PC-relative pair included (CONTEXT.md, "Addressing mode"). `rte`, `stop`, `reset`, `move usp,an`,
-//! macros with conditional assembly, `memory` and the structured-control
-//! keywords are the whole of what is refused with no "yet" in the sentence,
-//! each with the reason it carries in the instruction table or in
-//! [`layout`]'s own list. Real instruction sizes are the one decision the
-//! design record leaves open: an instruction is four bytes here.
+//! Every Directive and every Mnemonic of the design record is implemented, and
+//! **nothing in the crate says "yet" any more**: `rte`, `stop`, `reset`,
+//! `move usp,an`, macros with conditional assembly, `memory` and the
+//! structured-control keywords are the whole of what is refused, each with the
+//! reason it carries in the instruction table or in [`layout`]'s own list.
+//! Real instruction sizes are the one decision the design record leaves open:
+//! an instruction is four bytes here.
 
 pub mod analyzer;
 pub mod ast;
 pub mod diagnostics;
 pub mod expr;
+pub mod include;
 pub mod instructions;
 pub mod layout;
 pub mod names;
@@ -68,10 +69,9 @@ pub mod symbols;
 pub mod token;
 pub mod tokenizer;
 
-use diagnostics::{Diagnostic, DiagnosticKind};
-use instructions::table;
+use diagnostics::Diagnostic;
 use program::Program;
-use source::{FileContent, Files, SourceFile};
+use source::Files;
 
 /// What the Assembler makes of a Project: everything it found, and the Program
 /// when there is one.
@@ -96,44 +96,27 @@ impl Assembly {
 
 /// Assemble a Project, starting from the Entry file at `entry`.
 ///
-/// This is the 2.0 API's `S68k.assemble`. It reads the Entry file, parses every
-/// line of it, lays the program out and assembles it; the Diagnostics of every
-/// phase come back in one list, in source order, and the Program comes back
-/// only when none of them is an error.
+/// This is the 2.0 API's `S68k.assemble`. It reads the Entry file and every
+/// File the `include` Directives under it name ([`include::expand`]), parses
+/// each of them once, lays the program out and assembles it; the Diagnostics of
+/// every phase come back in one list, in the order of the assembled sequence,
+/// and the Program comes back only when none of them is an error.
 ///
 /// Assembly carries on after an error as far as it sensibly can (ADR 0003), so
-/// a student sees every mistake of a build and not the first one.
-///
-/// `include` and `incbin` are phase 4's, so only the Entry file is read; a
-/// `include` line is answered with `unimplemented_operation` today.
+/// a student sees every mistake of a build and not the first one. The one
+/// failure that leaves nothing to assemble is an Entry file the Project has not
+/// got, or one that holds bytes: that is one `unreadable_file` and no Program.
 pub fn assemble(files: &Files, entry: &str) -> Assembly {
-    let path = source::normalise_path(entry);
-    let text = match files.get(&path) {
-        Some(FileContent::Text(text)) => text,
-        content => {
-            let kind = DiagnosticKind::UnreadableFile {
-                path: path.clone(),
-                suggestion: match content {
-                    Some(_) => None,
-                    None => table::closest_name(&path, files.paths()).map(str::to_string),
-                },
-                binary: content.is_some(),
-            };
+    let (unit, found) = match include::expand(files, entry) {
+        Ok(expanded) => expanded,
+        Err(diagnostic) => {
             return Assembly {
-                diagnostics: vec![Diagnostic::new(kind, source::Location::new(path, 0, 0, 0))],
+                diagnostics: vec![*diagnostic],
                 program: None,
-            };
+            }
         }
     };
-    let file = SourceFile::new(&path, text);
-    let parsed = parser::parse_file(&path, text);
-    let (program, layout_diagnostics) = layout::lay_out(&file, &parsed);
-    let mut diagnostics = parsed.diagnostics;
-    diagnostics.extend(layout_diagnostics);
-    // Source order, and stable, so that the phases keep their order where two
-    // Diagnostics are about the same columns: the parser's, then the Layout's,
-    // then the analyzer's.
-    diagnostics.sort_by_key(|diagnostic| (diagnostic.location.line, diagnostic.location.column));
+    let (program, diagnostics) = layout::lay_out(&unit, found);
     let program = match diagnostics.iter().any(Diagnostic::is_error) {
         true => None,
         false => Some(program),

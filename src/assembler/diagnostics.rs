@@ -586,15 +586,61 @@ pub enum DiagnosticKind {
         /// word; without one the hint says what a value is.
         advice: Option<String>,
     },
-    /// A File the Assembler was told to read and cannot.
+    /// A File the Assembler was told to read and cannot: the Entry file, or the
+    /// File an `include` or an `incbin` names.
+    ///
+    /// One kind for all of them, as the design record's phase-1 notes have it
+    /// ("phase 4's `include` reuses it"): the finding is the same — a File that
+    /// was asked for is not there, or is not the kind of File the line needs —
+    /// and the sentence changes with [`directive`](Self::UnreadableFile) and
+    /// [`binary`](Self::UnreadableFile) rather than the code.
     UnreadableFile {
-        /// The path that was asked for.
+        /// The path that was asked for, as the source wrote it and normalised.
         path: String,
-        /// The closest path the Project does hold, when there is one.
-        suggestion: Option<String>,
+        /// The Directive that asked for it, `include` or `incbin`; `None` when
+        /// it is the Entry file, which no line named.
+        directive: Option<String>,
+        /// The closest paths the Project does hold, when there are any. Read
+        /// only when the File is missing.
+        suggestions: Vec<String>,
         /// Whether the Project holds a *binary* File at that path, in which
         /// case it is there and holds no source.
         binary: bool,
+        /// Whether the Project holds no other File at all, which is the one
+        /// case where there is nothing the student could have meant. Read only
+        /// when the File is missing.
+        alone: bool,
+    },
+    /// An `include` that would read a File which is already being included:
+    /// `main.m68k` -> `a.m68k` -> `main.m68k`.
+    IncludeCycle {
+        /// The File that would be read a second time.
+        path: String,
+        /// The chain that leads back to it, the Entry file first and the
+        /// repeated File last.
+        chain: Vec<String>,
+    },
+    /// An `include` refused by one of the two backstops: the nesting depth, and
+    /// the number of lines one assembly may take in
+    /// ([`MAX_INCLUDE_DEPTH`](super::include::MAX_INCLUDE_DEPTH),
+    /// [`MAX_ASSEMBLED_LINES`](super::include::MAX_ASSEMBLED_LINES)).
+    IncludeTooDeep {
+        /// The File that was not read.
+        path: String,
+        /// The limit that was reached.
+        limit: usize,
+        /// Whether it was the nesting limit; the other one is the line budget.
+        nesting: bool,
+    },
+    /// An `end` in a File that is not the Entry file.
+    ///
+    /// EASy68K stops assembling there and drops the rest of the Entry file;
+    /// s68k refuses the line instead, which is the one thing [ADR
+    /// 0001](../../../docs/adr/0001-easy68k-is-the-reference-dialect.md) lists
+    /// as stricter about `include`.
+    EndInAnIncludedFile {
+        /// The Entry file, which is where `end` belongs.
+        entry: String,
     },
 }
 
@@ -669,6 +715,9 @@ pub const ALL_CODES: &[&str] = &[
     "no_bytes_in_an_offset_region",
     "value_expected",
     "unreadable_file",
+    "include_cycle",
+    "include_too_deep",
+    "end_in_an_included_file",
 ];
 
 impl DiagnosticKind {
@@ -745,6 +794,9 @@ impl DiagnosticKind {
             DiagnosticKind::NoBytesInAnOffsetRegion { .. } => "no_bytes_in_an_offset_region",
             DiagnosticKind::ValueExpected { .. } => "value_expected",
             DiagnosticKind::UnreadableFile { .. } => "unreadable_file",
+            DiagnosticKind::IncludeCycle { .. } => "include_cycle",
+            DiagnosticKind::IncludeTooDeep { .. } => "include_too_deep",
+            DiagnosticKind::EndInAnIncludedFile { .. } => "end_in_an_included_file",
         }
     }
 
@@ -962,6 +1014,11 @@ impl DiagnosticKind {
             DiagnosticKind::EndWithoutAnAddress => {
                 "`end` says where the program starts, and this one says no address".to_string()
             }
+            DiagnosticKind::DirectiveNeedsALabel { directive } if directive == "section" => {
+                "`section` with no number sets a name to the number of the section in force, \
+                 and this line has no name"
+                    .to_string()
+            }
             DiagnosticKind::DirectiveNeedsALabel { directive } => {
                 format!("`{directive}` gives a name to something, and this line has no name")
             }
@@ -993,6 +1050,23 @@ impl DiagnosticKind {
                 true => format!("`{path}` holds bytes, not source"),
                 false => format!("there is no file named `{path}` in this project"),
             },
+            DiagnosticKind::IncludeCycle { path, chain } => format!(
+                "`{path}` is already being included: {}",
+                chain.join(" -> ")
+            ),
+            DiagnosticKind::IncludeTooDeep {
+                path,
+                limit,
+                nesting,
+            } => match nesting {
+                true => format!("`{path}` would be included more than {limit} files deep"),
+                false => {
+                    format!("including `{path}` would take this assembly past {limit} lines")
+                }
+            },
+            DiagnosticKind::EndInAnIncludedFile { entry } => {
+                format!("`end` belongs in the entry file, `{entry}`")
+            }
         }
     }
 
@@ -1202,6 +1276,16 @@ impl DiagnosticKind {
                  label named `START`, or at the first instruction"
                     .to_string(),
             ),
+            // `section` is the one Directive here whose label is required only
+            // because the line writes no number: `section 1` needs none, which
+            // is the rule `plan_section` implements, so the generic "write the
+            // name, `count section …`" would offer the shape that removes the
+            // requirement.
+            DiagnosticKind::DirectiveNeedsALabel { directive } if directive == "section" => Some(
+                "write the name in the first column, `here section`, or write the number, \
+                 `section 1`"
+                    .to_string(),
+            ),
             DiagnosticKind::DirectiveNeedsALabel { directive } => Some(format!(
                 "write the name in the first column, `count {directive} …`"
             )),
@@ -1238,12 +1322,49 @@ impl DiagnosticKind {
                 },
             )),
             DiagnosticKind::UnreadableFile {
-                suggestion, binary, ..
-            } => match (binary, suggestion) {
-                (true, _) => Some("`incbin` reads a binary file; source is read with `include`".to_string()),
-                (false, Some(suggestion)) => Some(format!("did you mean `{suggestion}`?")),
-                (false, None) => None,
+                directive,
+                suggestions,
+                binary,
+                alone,
+                ..
+            } => match (binary, directive.as_deref()) {
+                (true, Some("include")) => Some(
+                    "`incbin` inserts the bytes of a binary file; `include` assembles source"
+                        .to_string(),
+                ),
+                (true, _) => {
+                    Some("the entry file is where the assembler starts, and it has to be \
+                          source"
+                        .to_string())
+                }
+                (false, _) if !suggestions.is_empty() => {
+                    let quoted: Vec<String> = suggestions
+                        .iter()
+                        .map(|path| format!("`{path}`"))
+                        .collect();
+                    Some(format!("did you mean {}?", list(&quoted)))
+                }
+                (false, _) if *alone => Some("this project has no other file to read".to_string()),
+                (false, _) => None,
             },
+            DiagnosticKind::IncludeCycle { .. } => Some(
+                "a file may be included more than once, but not inside itself: move the shared \
+                 lines into a third file"
+                    .to_string(),
+            ),
+            DiagnosticKind::IncludeTooDeep { nesting: true, .. } => Some(
+                "s68k stops there; include the files side by side rather than one inside the next"
+                    .to_string(),
+            ),
+            DiagnosticKind::IncludeTooDeep { .. } => Some(
+                "s68k stops there; a file included many times over is assembled every time"
+                    .to_string(),
+            ),
+            DiagnosticKind::EndInAnIncludedFile { .. } => Some(
+                "delete it: an included file ends where its lines end, and the entry point is \
+                 the entry file's own `end`"
+                    .to_string(),
+            ),
             DiagnosticKind::WrongOperandCount {
                 mnemonic,
                 at_least: true,
@@ -1342,6 +1463,13 @@ fn operand_count(expected: &[usize]) -> String {
     match expected {
         [] | [0] => "no operands".to_string(),
         [1] => "one operand".to_string(),
+        // A leading 0 is "no operand" and not the word "none" followed by a
+        // plural noun: `end` and `section` both take none or one, and
+        // "takes none or one operands" is not a sentence.
+        [0, rest @ ..] => {
+            let words: Vec<String> = rest.iter().map(|number| count(*number)).collect();
+            format!("no operand or {} of them", list(&words))
+        }
         counts => {
             let words: Vec<String> = counts.iter().map(|number| count(*number)).collect();
             format!("{} operands", list(&words))
@@ -1826,10 +1954,33 @@ mod tests {
             (
                 DiagnosticKind::UnreadableFile {
                     path: "lib/io.x68".to_string(),
-                    suggestion: None,
+                    directive: Some("include".to_string()),
+                    suggestions: Vec::new(),
                     binary: false,
+                    alone: false,
                 },
                 "unreadable_file",
+            ),
+            (
+                DiagnosticKind::IncludeCycle {
+                    path: "main.m68k".to_string(),
+                    chain: vec!["main.m68k".to_string(), "main.m68k".to_string()],
+                },
+                "include_cycle",
+            ),
+            (
+                DiagnosticKind::IncludeTooDeep {
+                    path: "lib/io.x68".to_string(),
+                    limit: 8,
+                    nesting: true,
+                },
+                "include_too_deep",
+            ),
+            (
+                DiagnosticKind::EndInAnIncludedFile {
+                    entry: "main.m68k".to_string(),
+                },
+                "end_in_an_included_file",
             ),
         ]
     }

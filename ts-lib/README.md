@@ -66,16 +66,52 @@ built — a `warning` or a `suggestion` comes back with a program beside it:
 }
 ```
 
-Lines and columns are 0-based, and every location names its file. To assemble a
-project of several files, or to give the source the name the editor knows it by:
+Lines and columns are 0-based, and every location names its file.
+
+### A project of several files
+
+A project is a map from a root-relative path to a file's text, or to the bytes
+of a binary one, plus the path of the entry file to start from. Every other file
+is reached from the entry file through `include` or `incbin`, or is not read at
+all: nothing here opens a disk, so the editor hands over the buffers it has.
 
 ```ts
-S68k.assemble({files: {'main.x68': source, 'lib/io.x68': library}, entry: 'main.x68'})
+const {diagnostics, program} = S68k.assemble({
+    files: {
+        'main.x68': main,                          // the entry file
+        'lib/io.x68': library,                     //   INCLUDE 'lib/io.x68'
+        'data/sprite.bin': new Uint8Array(bytes)   //   INCBIN  'data/sprite.bin'
+    },
+    entry: 'main.x68'
+})
+
+// or one buffer under the name the editor knows it by
 S68k.assemble(source, {entry: 'lecture-1.x68'})
 ```
 
-`include` and `incbin` are not implemented yet, so only the entry file is read
-and the directives are reported; a project of one file works today.
+`include` pastes a file's lines in where the line is — same section, same
+address, one namespace — and `incbin` puts a file's bytes in memory as a `dc.b`
+of the whole file would. A path is looked for beside the file that wrote it
+first and at the project root second, and a file the project has not got is an
+error naming the closest one it has:
+
+```ts
+{
+    severity: "error",
+    code: "unreadable_file",
+    message: "there is no file named `io.x68` in this project",
+    hint: "did you mean `lib/io.x68`?",
+    location: {file: "main.x68", line: 0, column: 12, endColumn: 20},
+    related: []
+}
+```
+
+A diagnostic raised in an included file is reported where it is written, and
+`related` carries the `include` lines it was reached through:
+`{location: {file: 'main.x68', line: 1, ...}, message: 'included from `main.x68`'}`.
+An assembled instruction carries the same chain as `includeChain`, innermost
+first and empty for the entry file — a file included twice has one location per
+line and two addresses, and the chain is what tells the two copies apart.
 
 ### Running, stepping and interrupts
 
@@ -99,15 +135,16 @@ const status = await interpreter.runWithInterruptHandler(async (interrupt) => {
 ### Debugging
 
 ```ts
-interpreter.runWithBreakpoints([{file: 'main.m68k', line: 12}])
+interpreter.runWithBreakpoints([{file: 'lib/io.x68', line: 12}])
 interpreter.getCurrentLocation()      // {file, line, column, endColumn} | null
-interpreter.getNextInstruction()      // {address, size, location, source} | null
+interpreter.getNextInstruction()      // {address, size, location, includeChain, source} | null
 interpreter.getCallStack()            // one frame per subroutine entered
 interpreter.canUndo() && interpreter.undo()
 ```
 
-A breakpoint is a line of a file: one on a comment, a directive or a label alone
-stops nothing. Undo needs a history, which `new Interpreter(program)` keeps by
+A breakpoint is a line of a file, any file of the project: one on a comment, a
+directive or a label alone stops nothing, and one on a line of a file included
+twice stops at both copies. Undo needs a history, which `new Interpreter(program)` keeps by
 default (`{keep_history: true, history_size: 100}`).
 
 ### Reading one line
@@ -152,7 +189,7 @@ live checking on every keystroke leaks nothing.
 | `S68k.lex`, `S68k.lexOne`, `LexedLine`, `ParsedLine` | `S68k.parseLine(text)` |
 | `getCurrentLineIndex(): number` | `getCurrentLocation(): Location \| null` |
 | `runWithBreakpoints(Uint32Array)` (line indexes) | `runWithBreakpoints([{file, line}])` |
-| `getInstructionAt(address)` → an instruction with a parsed line | → `{address, size, location, source}` |
+| `getInstructionAt(address)` → an instruction with a parsed line | → `{address, size, location, includeChain, source}` |
 | `stepGetStatus()` | `step()`, which answers the status (`stepGetStatus` still works) |
 
 Diagnostics are reported where 1.4.2 was silent, and a few programs that
@@ -162,22 +199,24 @@ text.
 ## Supported instructions
 | Type                   | Instructions                                                                                                                                                                                                      |
 |------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu, addq, subq, addi, subi                                                                                                                                              |
+| Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu, addq, subq, addi, subi, addx, subx, negx                                                                                                                            |
 | Comparison             | tst, cmp, cmpi, cmpa, cmpm                                                                                                                                                                                        |
-| Branching and jumping  | bcc, bcs, beq, bne, blt, ble, bgt, bge, bls, bhi, bpl, bmi, blo, bhs, bvc, bvs, bsr, bra, jsr, rts, dbcc, dbcs, dbeq, dbne, dbge, dbgt, dble, dbls, dblt, dbhi, dbmi, dbpl, dbvc, dbvs, dbf, dbt, dbhs, dblo dbra |
-| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st, shs, slo                                                                                                                            |
-| Bitwise                | not, or, and, eor, lsl, lsr, asr, asl, rol, ror, btst, bclr, bchg, bset                                                                                                                                           |
-| Other                  | clr, exg, neg, ext, swap, move, link, unl, lea, pea, moveq, movea, movem                                                                                                                                          |
-| Interrupt              | trap #15, with implemented interrupts from 0 to 7                                                                                                                                                                 |
+| Branching and jumping  | bcc, bcs, beq, bne, blt, ble, bgt, bge, bls, bhi, bpl, bmi, blo, bhs, bvc, bvs, bsr, bra, jmp, jsr, rts, dbcc, dbcs, dbeq, dbne, dbge, dbgt, dble, dbls, dblt, dbhi, dbmi, dbpl, dbvc, dbvs, dbf, dbt, dbhs, dblo, dbra |
+| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st, shs, slo, and `move`/`andi`/`ori`/`eori` with `sr` or `ccr` as an operand                                                           |
+| Bitwise                | not, or, ori, and, andi, eor, eori, lsl, lsr, asr, asl, rol, ror, roxl, roxr, btst, bclr, bchg, bset                                                                                                              |
+| Binary coded decimal   | abcd, sbcd, nbcd                                                                                                                                                                                                 |
+| Other                  | clr, exg, neg, ext, extb, swap, move, link, unlk, lea, pea, moveq, movea, movem, movep, tas, nop                                                                                                                  |
+| Exceptions             | chk, trapv, illegal, and rtr, which returns and restores the condition codes                                                                                                                                      |
+| Interrupt              | trap #15, with the I/O, mouse and graphics tasks of EASy68K                                                                                                                                                      |
 
 ## Supported directives
-`org`, `equ`, `set`, `dc`, `dcb`, `ds`, `end`, and `opt`, `list`, `nolist` and
+`org`, `equ`, `set`, `dc`, `dcb`, `ds`, `end`, `reg`, `fail`, `simhalt`,
+`section`, `offset`, `include` and `incbin`, and `opt`, `list`, `nolist` and
 `page`, which are accepted and ignored. Without `end`, the entry point is a
 label named `START`, and failing that the first instruction.
 
-`include`, `incbin`, `reg`, `fail`, `simhalt`, `offset` and `section` are
-recognised and refused with a diagnostic naming the feature; so are the macro and
-conditional-assembly directives and EASy68K's structured control.
+`memory`, the macro and conditional-assembly directives and EASy68K's structured
+control are recognised and refused with a diagnostic naming the feature.
 
 ## Known limitations
 1. Characters are one byte, read and written as Latin-1; a source character with no byte of its own is an assembly error.

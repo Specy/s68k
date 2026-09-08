@@ -40,12 +40,21 @@ import {
 /** The path a bare source string is filed under, and the entry file's default. */
 export const DEFAULT_ENTRY_PATH = 'main.m68k'
 
-/** The files of a project: a root-relative path to its text, or to its bytes. */
+/**
+ * The files of a project: a root-relative path with `/` separators, to the text
+ * of a source file or to the bytes of a binary one.
+ *
+ * `include` reads a source file and `incbin` either kind, so the bytes of a
+ * sprite or a table go in as a `Uint8Array` under the path the program names.
+ */
 export type SourceFiles = Record<string, string | Uint8Array>
 
 /**
  * What to assemble: one source string, or the files of a project and the path
  * of the entry file to start from.
+ *
+ * Every other file is reached from the entry file through `include` or `incbin`
+ * or is not read at all.
  */
 export type AssemblySource = string | { files: SourceFiles, entry: string }
 
@@ -399,11 +408,17 @@ export class S68k {
      *
      * ```ts
      * const {diagnostics, program} = S68k.assemble('    move.w #1,d0')
-     * const withFiles = S68k.assemble({files: {'main.x68': source}, entry: 'main.x68'})
+     * const withFiles = S68k.assemble({
+     *     files: {'main.x68': source, 'lib/io.x68': library, 'data/sprite.bin': bytes},
+     *     entry: 'main.x68'
+     * })
      * ```
      *
-     * `include` and `incbin` are not implemented yet, so a project of more than
-     * one file assembles only its entry file and reports the rest.
+     * A project is assembled from its entry file down: `include` assembles
+     * another file of the project where the line is, `incbin` puts a file's
+     * bytes in memory, and a file the project has not got is a diagnostic
+     * naming the closest one it has. Nothing here reads a disk — the files are
+     * the whole of what the assembler can see.
      */
     static assemble(source: AssemblySource, options: AssembleOptions = {}): AssemblyResult {
         const isText = typeof source === 'string'

@@ -12,6 +12,15 @@
 //! student what to do about the line is a bug in the message, and the diff of
 //! one of these files is where that shows.
 //!
+//! A case is one of two things:
+//!
+//! * `tests/diagnostics/<code>.asm`, one File of source, which is the shape
+//!   every case had before phase 4;
+//! * `tests/diagnostics/<code>/`, a **Project**: every file under it is a File,
+//!   named by its path inside the directory, and `main.asm` is the Entry file.
+//!   A `.bin` file is a binary File. This is what a case about `include` needs,
+//!   since one File cannot raise a Diagnostic about another.
+//!
 //! [`every_diagnostic_kind_has_a_case`] is what keeps the set complete: a new
 //! kind fails it until it is given a program or written into
 //! [`WITHOUT_A_CASE`].
@@ -25,12 +34,12 @@ use crate::assembler::source::Files;
 
 /// The codes no case in this directory can raise, and why.
 ///
-/// One is left: [`assemble`](crate::assembler::assemble) answers an Entry file
-/// it cannot read, and a case here is one File of source that is read by
-/// definition. Phase 4's `include` is what makes it reachable and owes its case
-/// then. `register_list_in_expression` was the other until phase 2's `reg`
-/// made a Register list something a File can define.
-const WITHOUT_A_CASE: [&str; 1] = ["unreadable_file"];
+/// **None**, since phase 4. `unreadable_file` was the last one — no single File
+/// of source could name another File to fail to read — and the Project-shaped
+/// cases below give it one; `register_list_in_expression` was the one before
+/// that, until phase 2's `reg` made a Register list something a File can
+/// define.
+const WITHOUT_A_CASE: [&str; 0] = [];
 
 /// Everything the Assembler finds in one File, in source order.
 ///
@@ -44,6 +53,58 @@ fn diagnostics_of(file: &str, text: &str) -> Vec<Diagnostic> {
     crate::assembler::assemble(&files, file).diagnostics
 }
 
+/// Everything the Assembler finds in a Project-shaped case.
+///
+/// Every file under the case directory is a File of the Project, named by its
+/// path inside it, and `main.asm` — or `main.bin`, which is how the case for an
+/// Entry file that holds bytes is written — is the Entry file.
+fn diagnostics_of_project(directory: &Path) -> Vec<Diagnostic> {
+    let mut files = Files::new();
+    for path in project_files(directory) {
+        let name = path
+            .strip_prefix(directory)
+            .expect("a path inside the case directory")
+            .to_str()
+            .expect("a file name")
+            .replace('\\', "/");
+        match path.extension().and_then(|extension| extension.to_str()) {
+            Some("bin") => {
+                files.insert_bytes(&name, fs::read(&path).expect("a readable case file"));
+            }
+            _ => {
+                files.insert_text(
+                    &name,
+                    fs::read_to_string(&path).expect("a readable case file"),
+                );
+            }
+        }
+    }
+    let entry = match files.contains("main.asm") {
+        true => "main.asm",
+        false => "main.bin",
+    };
+    crate::assembler::assemble(&files, entry).diagnostics
+}
+
+/// Every file under a case directory, in sorted order, subdirectories included.
+fn project_files(directory: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut directories = vec![directory.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(&directory)
+            .unwrap_or_else(|e| panic!("cannot read {}: {}", directory.display(), e))
+        {
+            let path = entry.expect("a readable directory entry").path();
+            match path.is_dir() {
+                true => directories.push(path),
+                false => files.push(path),
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
 /// The `tests/diagnostics` directory.
 fn cases_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -51,14 +112,18 @@ fn cases_dir() -> PathBuf {
         .join("diagnostics")
 }
 
-/// Every case program, by file name, so that the order does not depend on the
-/// file system.
+/// Every case, by name, so that the order does not depend on the file system.
+///
+/// A case is a `.asm` file or a directory; `snapshots/` is neither.
 fn case_files() -> Vec<PathBuf> {
     let directory = cases_dir();
     let mut files: Vec<PathBuf> = fs::read_dir(&directory)
         .unwrap_or_else(|e| panic!("cannot read {}: {}", directory.display(), e))
         .map(|entry| entry.expect("a readable directory entry").path())
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("asm"))
+        .filter(|path| match path.is_dir() {
+            true => path.file_name().and_then(|name| name.to_str()) != Some("snapshots"),
+            false => path.extension().and_then(|e| e.to_str()) == Some("asm"),
+        })
         .collect();
     files.sort();
     files
@@ -86,17 +151,21 @@ fn settings(path: &Path) -> insta::Settings {
 fn diagnostic_cases() {
     for path in case_files() {
         let code = code_of(&path);
-        let text = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
-        let file = format!("{code}.asm");
-        let diagnostics = diagnostics_of(&file, &text);
+        let diagnostics = match path.is_dir() {
+            true => diagnostics_of_project(&path),
+            false => {
+                let text = fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
+                diagnostics_of(&format!("{code}.asm"), &text)
+            }
+        };
         let codes: Vec<&str> = diagnostics
             .iter()
             .map(|diagnostic| diagnostic.code())
             .collect();
         assert!(
             codes.contains(&code.as_str()),
-            "tests/diagnostics/{code}.asm is the case for `{code}` and raises {codes:?}"
+            "tests/diagnostics/{code} is the case for `{code}` and raises {codes:?}"
         );
         settings(&path).bind(|| {
             insta::assert_json_snapshot!(code, diagnostics);
@@ -121,13 +190,14 @@ fn every_diagnostic_kind_has_a_case() {
         }
         assert!(
             cases.contains(&code.to_string()),
-            "`{code}` has no case; write tests/diagnostics/{code}.asm"
+            "`{code}` has no case; write tests/diagnostics/{code}.asm, or a \
+             tests/diagnostics/{code}/ project when one file cannot raise it"
         );
     }
     for case in &cases {
         assert!(
             ALL_CODES.contains(&case.as_str()),
-            "tests/diagnostics/{case}.asm is named after no diagnostic code"
+            "tests/diagnostics/{case} is named after no diagnostic code"
         );
     }
 }

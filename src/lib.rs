@@ -192,6 +192,19 @@ impl<'a> ProgramInfo<'a> {
     }
 }
 
+#[wasm_bindgen]
+extern "C" {
+    /// The Files of a Project as JavaScript hands them over: an object of
+    /// root-relative path to a `string` (a source File) or a `Uint8Array` (a
+    /// binary File).
+    ///
+    /// It is a JavaScript value with a TypeScript name: the declaration is
+    /// `SourceFiles` in `src/ts_types.rs`, so that `wasm_assemble` says in the
+    /// generated `.d.ts` what a Project is instead of taking `any`.
+    #[wasm_bindgen(typescript_type = "SourceFiles")]
+    pub type SourceFiles;
+}
+
 /// Assemble a Project: `files` is an object of path to `string` (a source File)
 /// or `Uint8Array` (a binary File), and `entry` is the path of the Entry file.
 ///
@@ -202,19 +215,25 @@ impl<'a> ProgramInfo<'a> {
 ///
 /// An Entry file that is missing, or that is binary, is itself a Diagnostic
 /// (`unreadable_file`), so the editor's "the file you are looking at has been
-/// renamed" is a message in the list like any other.
+/// renamed" is a message in the list like any other. So is a File named by an
+/// `include` or an `incbin` line that the object has not got: everything the
+/// assembly reads is in `files`, and nothing here touches a disk.
 #[wasm_bindgen]
-pub fn wasm_assemble(files: JsValue, entry: &str) -> Result<WasmAssembly, JsValue> {
+pub fn wasm_assemble(files: &SourceFiles, entry: &str) -> Result<WasmAssembly, JsValue> {
     set_panic_hook();
-    let files = files_from_js(&files)?;
+    let files = files_from_js(files.as_ref())?;
     Ok(WasmAssembly::new(assembler::assemble(&files, entry)))
 }
 
 /// Read a JavaScript object of path to `string | Uint8Array` as the Files of a
 /// Project.
 ///
-/// The paths are taken as they are written and normalised by [`Files`]
-/// (`\` to `/`), so the editor may hand over its own paths.
+/// A `string` becomes a [`FileContent::Text`](assembler::source::FileContent)
+/// and a `Uint8Array` — a Node `Buffer` among them, which is one — becomes a
+/// [`FileContent::Bytes`](assembler::source::FileContent), which is the only
+/// way a File of bytes reaches `incbin`. The paths are taken as they are
+/// written and normalised by [`Files`] (`\` to `/`), so the editor may hand
+/// over its own paths.
 fn files_from_js(value: &JsValue) -> Result<Files, JsValue> {
     let object = value.dyn_ref::<Object>().ok_or_else(|| {
         JsValue::from_str("assemble expects an object of path -> string | Uint8Array")

@@ -792,6 +792,15 @@ reached.
 
 Notes the shapes do not carry:
 
+* `org` sets the current address, forwards or backwards. An **odd** address is
+  EASy68K's warning (`odd_origin`) and is rounded up — but only when the `org`
+  *moves* the address: an `org` to the address already in force moves nothing,
+  so there is nothing to round up and nothing to say, whatever it is written as.
+  So the same line, `ORG $1001`, warns and places at `$1002` after `ORG $1000`
+  and is silent after `ORG $1000` and a `dc.b`. The rule is about the address
+  and not about the text, and it is what keeps `org *` — the one documented way
+  to end an `offset` region (`Directives/offset.htm`) — from warning about an
+  address the program is legitimately at.
 * `dc`, `ds` and `dcb` default to `.w` when no `size_suffix` is written, as the
   help says for `ds` and `dcb`; `dc` without a size is undocumented there and
   takes the same default, which is the only reading that makes `dc` and `dcb`
@@ -814,9 +823,32 @@ Notes the shapes do not carry:
   required only when the path holds spaces
   ("must be enclosed in single (') or double (") quotes if any part of the file
   path or name includes spaces", `Directives/include.htm`), either kind of quote
-  will do, and neither raises the `double_quoted_string` suggestion of 1.9. A
-  backslash inside is a literal character, normalised to `/` when the path is
-  resolved (phase 4), never an escape.
+  will do, neither is part of the name, a doubled quote inside a quoted name is
+  one quote, and neither raises the `double_quoted_string` suggestion of 1.9. A
+  backslash inside is never an escape: it is a path separator, like `/`.
+* **The name is resolved against the Project, beside the including File first
+  and at the project root second**, with `.` and `..` segments resolved on the
+  way and a `..` that would climb above the root dropped, since a Project has no
+  above-the-root. A name that resolves to no File of the Project is
+  `unreadable_file`, whose hint is the closest existing paths — a File of the
+  same *name* in another directory before any spelling distance — and which says
+  so plainly when the Project holds no other File at all. An `include` of a
+  binary File is the same kind, pointing at `incbin`; `incbin` takes either kind
+  of File, a text one contributing its Latin-1 bytes (ADR 0004).
+* **`include` is textual**: the included File's lines are assembled where the
+  `include` line is, in the same section, at the same current address, in one
+  Symbol namespace, with the Local label scopes running across the boundary
+  (CONTEXT.md, "Include"). A Label on the `include` line names the current
+  address, which is where the first included byte goes, exactly as a Label on a
+  line of its own does. A File may be included more than once; one that would be
+  included inside itself is `include_cycle`, and `include_too_deep` is the
+  backstop under the nesting depth and the number of lines an assembly may take
+  in. `incbin` places the File's bytes at the current address, aligning nothing,
+  as a `dc.b` of the whole File would.
+* **`end` belongs in the Entry file.** In an included File it is
+  `end_in_an_included_file`, an error, where EASy68K would stop assembling there
+  and drop the rest of the Entry file (ADR 0001); the line is refused and the
+  lines below it are assembled as they would have been.
 * `page` takes neither a Label nor Operands ("no label is permitted and any
   comments are ignored").
 * `reg` takes a `register_list`, and a single `register` is a list of one, as it
@@ -837,14 +869,16 @@ Notes the shapes do not carry:
   `movem.l table,d0-d2` reads `table` as the address it is and says nothing.
   A name that *is* a `reg` Symbol is read as the list wherever it stands, since
   it has no value that could be an address.
-* `simhalt` takes no Operand field: whatever follows it on the line is a
-  Comment, which is the help's own usage line, `LABEL SIMHALT comment`
-  (`Directives/simhalt.htm`), and what `page`, `list` and `nolist` already do.
-  Without that rule `SIMHALT                 Halt Simulator` (line 206 of
-  `tests/corpus/easy68k/graphicSound.X68`) would be the Operand `Halt` and the
-  Comment `Simulator`, since rule 4 of 1.5 ends the Operand field at the first
-  whitespace and no rule of the parser may consult the Directive's arity
-  (ADR 0003). It is the one Directive that produces an executable item: four
+* **The Layout ignores `simhalt`'s Operand field**, which is the help's own
+  usage line, `LABEL SIMHALT comment` (`Directives/simhalt.htm`), and what
+  `page`, `list` and `nolist` already do. The field is still *read* by the
+  parser, as every field of every line but a `text_operation`'s is (2.5), so
+  what follows `simhalt` is tokenized and a mistake inside it — an unclosed
+  quote, a bad number — is still reported; what the Directive does is never ask
+  for the Operands, so `SIMHALT                 Halt Simulator` (line 206 of
+  `tests/corpus/easy68k/graphicSound.X68`) is not a `wrong_operand_count`
+  although rule 4 of 1.5 makes `Halt` an Operand and `Simulator` a Comment, and
+  no rule of the parser may consult the Directive's arity (ADR 0003). It is the one Directive that produces an executable item: four
   bytes at an even address, like an instruction, and a Label on it names that
   address.
 * `section` takes a number 0–15, which may be written as a Symbol — the help's
@@ -1142,7 +1176,9 @@ that one, "this `(` is never closed".
 
 ### 3.12 Lines after `end`
 
-`end` ends the assembly of the Entry file; lines after it are ignored. Only a
+`end` ends the assembly of the Entry file; lines after it are ignored, wherever
+they come from — an `include` below an `end` is still read, and a mistake in the
+File it names is still reported, but nothing it brings in is assembled. Only a
 line that *carries a Label or an Operation* raises the one `code_after_end`
 warning, which the Directives phase raises and not the parser. Blank lines and
 Comment lines never do, because all three `tests/corpus/easy68k/` programs close
@@ -1165,8 +1201,11 @@ instruction table knows an Operand is missing), from
 the evaluator's (undefined Symbol, division by zero, constant over 32 bits,
 character literal over four characters, a `reg` Symbol used in an Expression —
 EASy68K's "Register list symbol used in an expression", whose counterpart for a
-bare register name is the parser's `register_in_expression` below) and from the
-Directives' "not implemented". Codes are stable snake_case; `DiagnosticKind`
+bare register name is the parser's `register_in_expression` below), from the
+Directives' "not implemented", and from the four the Assembler raises about the
+Files a Project is made of rather than about any line of one
+(`unreadable_file`, `include_cycle`, `include_too_deep` and
+`end_in_an_included_file`; 2.6). Codes are stable snake_case; `DiagnosticKind`
 carries the data each message needs.
 
 | Code | Severity | When | Message sketch | Hint sketch |
@@ -1265,11 +1304,11 @@ decides. The map, so that a rule can be found from its name:
 | `opt_directive`, `list_directive`, `page_directive` | `the_ignored_directives_are_ignored_in_silence` |
 | `reg_directive` | `reg_names_a_register_list_and_movem_reads_it_in_both_directions`, `reg_takes_a_single_register_as_a_list_of_one`, `reg_without_a_name_says_so`, `reg_takes_a_register_list_and_nothing_else`, `a_register_list_in_an_expression_is_refused`, `a_register_list_has_to_be_defined_above_the_movem_that_reads_it`, `a_name_that_is_not_a_register_list_says_so`, `a_name_that_is_defined_nowhere_keeps_its_own_message` |
 | `fail_directive` | `fail_reports_its_message_word_for_word_and_the_assembly_carries_on`, `fail_without_a_message_uses_easy68ks_default`, `a_label_on_a_fail_names_the_address_of_the_line` |
-| `simhalt_directive` | `simhalt_is_an_instruction_of_four_bytes`, `simhalt_reads_the_rest_of_its_line_as_a_comment`, and `simhalt_ends_the_run_where_it_stands_and_touches_no_register` in `src/test/test.rs` |
+| `simhalt_directive` | `simhalt_is_an_instruction_of_four_bytes`, `simhalt_ignores_the_rest_of_its_line`, and `simhalt_ends_the_run_where_it_stands_and_touches_no_register` in `src/test/test.rs` |
 | the label field of every rule above | `the_directives_that_give_a_name_to_something_need_a_label`, `the_directives_that_take_no_label_say_so`, `every_other_directive_takes_a_label_or_no_label` |
 | `section_directive` | `a_program_starts_in_section_zero_at_the_default_origin`, `a_label_on_a_section_names_the_address_it_goes_on_from`, `section_switches_between_sixteen_location_counters`, `org_inside_a_section_moves_that_sections_counter`, `a_section_that_is_used_for_the_first_time_starts_at_zero`, `two_sections_over_one_address_are_still_an_overlap`, `a_section_number_may_be_a_symbol_and_may_not_be_a_forward_reference`, `a_section_number_outside_the_sixteen_says_so`, `section_with_no_number_names_the_section_in_force`, `section_with_no_number_needs_a_label`, and `the_section_example_of_the_help` in `src/test/corpus.rs` |
 | `offset_directive` | `offset_moves_an_address_and_places_nothing`, `a_name_defined_in_an_offset_region_is_a_constant`, `org_star_restores_the_address_the_offset_region_shadowed`, `an_org_with_an_address_ends_an_offset_region_too`, `a_section_ends_an_offset_region_as_an_org_does`, `end_closes_an_offset_region`, `a_line_that_would_produce_bytes_in_an_offset_region_says_so`, `an_offset_region_opens_whatever_its_expression_says`, `a_negative_offset_is_the_stack_frame_of_the_help`, `a_word_in_an_offset_region_aligns_up_from_a_negative_offset`, and `the_offset_stack_frame_example_of_the_help` in `src/test/corpus.rs` |
-| `include_directive`, `incbin_directive` | `the_directives_of_the_later_phases_name_themselves` (each raises `unimplemented_operation` until phase 4) |
+| `include_directive`, `incbin_directive` | `src/test/include.rs` whole, and `the_included_lines_are_assembled_where_the_include_line_is`, `there_is_one_symbol_namespace_and_it_reaches_both_ways`, `local_label_scopes_run_across_the_boundary`, `a_label_on_an_include_line_names_the_first_included_byte`, `end_belongs_in_the_entry_file`, `incbin_is_a_dc_b_of_the_whole_file` in particular; the resolution, the cycle and the two backstops are in `src/assembler/include.rs` |
 | `macro_definition` | `macro_definition_is_skipped_whole`, `macro_definition_ends_on_an_operation_named_endm`, `unterminated_macro_definition_is_reported_against_the_macro_line` (in `src/assembler/parser.rs`), and `a_macro_invocation_names_the_macro_and_not_a_label` |
 | every one of them, on the shapes they share | `a_directive_given_an_addressing_mode_says_a_value_was_expected`, `a_directive_with_the_wrong_number_of_operands_says_so`, `a_directive_that_carries_no_size_says_so`, `a_forward_reference_is_refused_where_the_value_decides_the_layout` |
 

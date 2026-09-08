@@ -195,8 +195,8 @@ fn column_of(line: &str, offset: usize) -> usize {
 /// Text Files are what `include` reads and what the Assembler assembles; byte
 /// Files are what `incbin` reads. A text File can also be read by `incbin`,
 /// which contributes its Latin-1 bytes ([ADR
-/// 0004](../../../docs/adr/0004-characters-are-latin-1-bytes.md)); the
-/// conversion is the `incbin` Directive's, in phase 4, and not this module's.
+/// 0004](../../../docs/adr/0004-characters-are-latin-1-bytes.md)) through
+/// [`latin1_bytes`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileContent {
     /// A source File, as text.
@@ -234,10 +234,11 @@ impl FileContent {
 ///
 /// Paths are root-relative, with `/` separators, the same notion as the
 /// asm-editor's File. A `\` is normalised to `/` and `.` segments are dropped
-/// when a path goes in or is looked up ([`normalise_path`]), so a program that
-/// writes `include "..\lib\io.x68"` finds `../lib/io.x68`. Paths are kept
-/// sorted, which is what makes "the closest existing paths" of a missing
-/// `include` reproducible.
+/// when a path goes in or is looked up ([`normalise_path`]), so the same File
+/// is spelled one way however a Project writes it; a `..` in an `include` is
+/// resolved a step earlier, against the directory of the File that wrote it
+/// ([`include`](mod@super::include)). Paths are kept sorted, which is what
+/// makes "the closest existing paths" of a missing `include` reproducible.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Files {
     files: BTreeMap<String, FileContent>,
@@ -275,6 +276,18 @@ impl Files {
         self.files.get(&normalise_path(path))
     }
 
+    /// The File at `path` **and the path as the Project spells it**.
+    ///
+    /// The spelling matters because every Location of an included File names
+    /// it: `include LIB.M68K` finds nothing, `include ./lib.m68k` finds
+    /// `lib.m68k`, and it is the Project's own key that a Diagnostic and a
+    /// breakpoint have to agree on ([`include`](mod@super::include)).
+    pub fn entry(&self, path: &str) -> Option<(&str, &FileContent)> {
+        self.files
+            .get_key_value(&normalise_path(path))
+            .map(|(path, content)| (path.as_str(), content))
+    }
+
     /// The text of the File at `path`, if it is there and is text.
     pub fn text(&self, path: &str) -> Option<&str> {
         self.get(path).and_then(FileContent::as_text)
@@ -301,12 +314,37 @@ impl Files {
     }
 }
 
+/// The Latin-1 bytes of a text File, and the first character that has none.
+///
+/// One character is one byte ([ADR
+/// 0004](../../../docs/adr/0004-characters-are-latin-1-bytes.md)), so a
+/// character above 255 has no byte at all. `incbin` is the one caller — it is
+/// what turns a whole text File into bytes — and it reports that character at
+/// the place it sits; a `0` is written for it so that every byte after it keeps
+/// the address it will have once the character is fixed.
+pub fn latin1_bytes(text: &str) -> (Vec<u8>, Option<(usize, char)>) {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut refused = None;
+    for (offset, character) in text.char_indices() {
+        match u8::try_from(character as u32) {
+            Ok(byte) => bytes.push(byte),
+            Err(_) => {
+                refused.get_or_insert((offset, character));
+                bytes.push(0);
+            }
+        }
+    }
+    (bytes, refused)
+}
+
 /// The canonical spelling of a path: `\` becomes `/`, empty and `.` segments
 /// are dropped, and no leading `/` survives.
 ///
 /// `..` segments are **kept**: resolving a path against the including File's
-/// directory is the `include` Directive's business (phase 4), and this function
-/// only settles how the same File is spelled twice.
+/// directory is the `include` Directive's business
+/// ([`include::resolve`](super::include::Expansion::resolve), which is where a
+/// `..` climbs a segment), and this function only settles how the same File is
+/// spelled twice.
 pub fn normalise_path(path: &str) -> String {
     let mut normalised = String::with_capacity(path.len());
     for segment in path.split(['/', '\\']) {
@@ -399,6 +437,34 @@ impl<'a> SourceFile<'a> {
             .iter()
             .enumerate()
             .map(move |(index, span)| (index, span.text(text)))
+    }
+
+    /// The Location of the character at `offset`, counted in bytes from the
+    /// start of the whole File.
+    ///
+    /// `incbin` is the one caller: it reads a text File as one run of bytes and
+    /// has to be able to point at a character that has none
+    /// ([`latin1_bytes`]). Total, like every other conversion here: an offset
+    /// past the end of the File lands on its last line.
+    pub fn location_of(&self, offset: usize) -> Location {
+        let index = self
+            .lines
+            .partition_point(|span| span.start <= offset)
+            .saturating_sub(1);
+        match self.lines.get(index) {
+            Some(span) => {
+                let text = span.text(self.text);
+                let start = offset.saturating_sub(span.start);
+                let width = Span::new(start, text.len())
+                    .text(text)
+                    .chars()
+                    .next()
+                    .map(char::len_utf8)
+                    .unwrap_or(0);
+                Location::from_span(self.path, index, text, Span::new(start, start + width))
+            }
+            None => Location::new(self.path, 0, 0, 0),
+        }
     }
 
     /// The Location of `span` on the `line`th line of this File.

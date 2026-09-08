@@ -105,6 +105,20 @@ Interpreter's 1.4.2 shapes keep their snake_case field names, because 2.0 change
 its surface only where a line index became a Location. The reasons are in step 9's
 implementation notes.
 
+**This section is finished (step 17).** Everything it asks for is implemented and
+the surface is closed. Phase 4 changed it in **one** place, `InstructionLine`
+gaining `includeChain: Location[]` (step 16), and step 17 added no field at all:
+it made the input side say what it already accepted — `wasm_assemble`'s first
+argument is declared `SourceFiles = Record<string, string | Uint8Array>` in the
+generated `.d.ts` instead of `any` — wrote the four cases of a Project into the
+smoke test, and made the command line read a Project rather than a File. The one
+thing the third bullet above understates is the instruction, which is
+`{ address, size, location, includeChain, source }` and not the four fields it
+names; the fourth bullet's `parseLine` is as written. What a Program still does
+not carry is the list of Files a build read: the chains on the instructions are
+the only trace, and the reverse question ("which Files did this build read?") is
+a later step's to add.
+
 ### Tests
 
 1. Golden fixtures of 1.4.2's output for the 30 editor programs (24 lecture playgrounds, 6 runnable `.x68`; all 30 assemble on 1.4.2, baseline run on 2026-09-07), updated only on purpose with a note.
@@ -1704,7 +1718,7 @@ under "What phase 2's first half changed in these fixtures".
 - **`simhalt` modifies no register**, which is the help's own sentence, and the
   Interpreter's arm is one call to `set_status`. The program counter stops one
   past it, which is where the step had already left it.
-- **`simhalt` reads the rest of its line as a Comment**, and that rule was
+- **The Layout ignores `simhalt`'s Operand field**, and that rule was
   forced by an EASy68K original. `Directives/simhalt.htm`'s usage line is `LABEL
   SIMHALT comment` and line 206 of `tests/corpus/easy68k/graphicSound.X68` is
   `SIMHALT                 Halt Simulator`; read as an ordinary Operation that is
@@ -2350,15 +2364,22 @@ and `tests/corpus/README.md` says so.
   case an implementation that sets Z from its own result gets wrong), one whose
   low half comes out zero while the sum is not (Z is cleared again by the high
   half), and one that is zero all through (Z survives).
-- **One typing slip in the help, and it is recorded here.**
+- **Three rows of the help disagree with the rule this group's arithmetic
+  needs, and they are recorded here.** *(This bullet said "one typing slip" and
+  named only the first of the three; the other two were found by the review of
+  phase 3 and are added here, which is the correction.)*
   `Reference/68ks5q.htm` gives `NEGX`'s Z flag as "Set if the result is not
-  zero, else unaffected", which is neither what the 68000 does nor what its two
-  neighbours say: `SUBX` on `68ks5v.htm` reads "Cleared if the result is not
-  zero, else unaffected" and `ABCD` on `68ks8e.htm` "Cleared if the result is
-  NOT zero. Unaffected else". s68k implements the rule those two state, for all
-  of them; the design record is silent, the reference contradicts itself, and
-  the reading that makes the instruction useful wins. The reason is a comment on
-  the `NEGX` arm as well, where somebody comparing it with the help will look.
+  zero, else unaffected"; `ADDX`'s own flag table on `68ks5e.htm` gives it as
+  "Z - S", set from the result, while the prose two paragraphs above it on that
+  same page says the opposite ("You must set the zero flag before making the
+  addition"); and `NBCD` on `68ks8f.htm` reads "Cleared if the result was 0,
+  else unaffected", the inverse of `ABCD`'s and `SBCD`'s. What the other pages
+  state — `SUBX` on `68ks5v.htm`, "Cleared if the result is not zero, else
+  unaffected", and `ABCD` on `68ks8e.htm`, "Cleared if the result is NOT zero.
+  Unaffected else" — is the rule `ADDX`'s own prose describes and the only one
+  that makes a multi-precision sum testable, and s68k implements it for all
+  six. The reason is a comment on the `NEGX` arm as well, where somebody
+  comparing it with the help will look.
 - **X and C are set alike, always** ("C - Same as X" on all eight pages), and N
   and V are the result's for `addx`, `subx` and `negx` —
   `set_extended_arithmetic_flags` is those five bits in one place. The overflow
@@ -2709,3 +2730,593 @@ message lines, which are the "yet" sweep below and not the modes.
 * **The two places that read a line index as a position are unchanged**
   (`Symbol::value_at` for `set`, and the register-list forward-reference check),
   so phase 2's handover to phase 4 stands word for word.
+
+## Implementation notes (phase 4)
+
+The running record of phase 4, kept the way phases 1 to 3 are: one bullet a
+choice, so that the next step can read the state of the work from the
+repository. Nothing above this heading is rewritten except to fix a factual
+error, and such a fix says so here — this phase made two, both listed under
+"The twelve findings" below. **The step numbers carry on**, so that a reference
+to "step 15" means one thing in this document.
+
+### Step 16 — `include`, `incbin`, and the assembled sequence
+
+The last phase of the plan. `src/assembler/` gains `include.rs`, which turns a
+Project into the one sequence of lines the Layout walks; `layout.rs` is indexed
+by **position** in that sequence rather than by Source line, and grows
+`plan_include` and `plan_incbin`; `program.rs` carries the Include chain on
+every assembled instruction; `src/main.rs` reads a Project from disk;
+`src/test/include.rs` is new. `cargo test` is **472 green** (44 new since step
+15's 428: 16 in `include.rs`, 27 in `src/test/include.rs`, and the split-file
+fixture test in `src/test/corpus.rs`), `cargo fmt --check` is clean, `cargo
+build --all-targets` raises no warning, `cargo clippy --all-targets` no new one
+(the same 4, all older than phase 1's step 10) and `RUSTDOCFLAGS=-D warnings
+cargo doc --no-deps` is clean. The `ts-lib` chain was run — `wasm-pack build`,
+`npm run build-lib`, `npm test` — because `src/ts_types.rs` and the smoke test
+both changed. **No corpus fixture moved**, in either direction, and
+`tests/corpus/README.md` says so with the reason.
+
+#### The assembled sequence, and the position that replaces a line index
+
+- **The Assembler does not assemble a File; it assembles the assembled
+  sequence.** `include::expand(files, entry)` reads the Entry file, walks its
+  parsed lines, and after each `include` line pushes the lines of the File it
+  names, recursively; the result is a `Vec<Position>`, one entry per line the
+  Assembler will lay out, each carrying `{ file, line, chain }`. `lay_out` takes
+  that `Expansion` where it used to take a `SourceFile` and a `ParsedFile`, and
+  every `index` in `layout.rs` is now an index into it. That is the whole shape
+  of the change: nothing in the Layout knows that a File was included, only that
+  line *n* of the program is line *l* of File *f*.
+- **A position is what "above" and "below" mean, and it is the two comparisons
+  the earlier phases named.** Phase 1 (step 7) wrote that `Symbol::value_at` was
+  "the Source line index today; phase 4 makes `include` textual and has to make
+  it a position in the assembled order instead", and phase 2 (step 11) added the
+  register-list forward-reference check as the second. Both are changed here and
+  neither needed a new mechanism: `SymbolTable::define` already took an `at`,
+  and the Layout now passes the position; `Symbol` gained `defined_at`, the
+  position of its first definition, which is what `resolve_register_lists`
+  compares instead of `symbol.location.line`. A File included twice therefore
+  has two `set` values and two `reg` definitions in the right order, which
+  `a_set_variable_sees_the_latest_definition_above_it_in_the_assembled_sequence`
+  and `a_register_list_has_to_be_defined_above_the_movem_in_the_assembled_sequence`
+  hold.
+- **A line index and a position had to be told apart everywhere a Location is
+  built**, and the one place that got it wrong was caught by a test: the
+  analyzer takes `(file, line_index, line_text)` and was handed the position,
+  so every Diagnostic of an included File named a line of the entry file's
+  numbering. `Expansion::location`, `Expansion::whole_line` and
+  `Expansion::line_index` are the three accessors, and `Layout::raise` goes
+  through the first, so no phase builds a Location out of an index by hand any
+  more.
+- **CONTEXT.md gained two terms**, because the glossary's "Location" entry
+  already said to *avoid* the word "position" for it and phase 4 needed the word
+  for something else: **Assembled sequence** ("the Entry file's lines with every
+  `include` expanded into them") and **Position** ("an index into the Assembled
+  sequence"). The "Location" entry now says which is which. That is a change to
+  the domain model and it is recorded here rather than made silently.
+- **A File is parsed once however many times it is included**, memoised by path,
+  and its parser Diagnostics are reported once, at the positions of the first
+  inclusion. A mistake in the *text* of a File is one mistake however often the
+  File is pasted in; the two once-a-File suggestions (`bare_comment`,
+  `double_quoted_string`) are defined that way in `docs/grammar.md` 1.9 and 1.6;
+  and `tests/corpus/editor/bad-apple.x68` is 3.3 MB, which is a reason of its
+  own not to parse a File twice.
+- **Everything else about a File *is* assembled twice**, which is what textual
+  means: two copies of its lines, two sets of addresses, two definitions of
+  every name it defines. `the_same_file_may_be_included_twice` holds the memory
+  and `a_file_included_twice_stops_at_both_copies` holds the consequence for
+  breakpoints.
+- **Diagnostics are sorted by position and then by column.** They were sorted by
+  `(line, column)`, which in a Project would interleave two Files at random;
+  they are collected as `(position, Diagnostic)` and sorted on that, so an
+  included File's messages sit between the two halves of the File that includes
+  it, which is the order a student reads. For a Project of one File a position
+  *is* the line index, so no single-File ordering moved — which is what the 63
+  unchanged `tests/corpus/` snapshots and 62 of the 63 `tests/diagnostics/` ones
+  say, the one that moved being finding 8's.
+- **The `include` line stays in the sequence.** It is not deleted and replaced;
+  it is a line that produces nothing, followed by the included lines. That is
+  what makes `label include file` work with no rule of its own: the Label is
+  defined at the current address, exactly as a Label on a line of its own is,
+  and the current address is where the first included byte goes. It also means
+  the line still gets its size check (`include.b` is `invalid_size`) and its
+  label rule.
+- **An `include` after `end` is still read.** The expansion is textual and knows
+  nothing about `end`, so the File is read and a mistake in it is reported,
+  while the lines it brings in are held back by the same rule that holds back
+  every line after `end` and the first of them raises the one `code_after_end`
+  warning. The alternative — teaching the expansion about `end` — would have put
+  a Directive's meaning in the phase that has no Symbols, no addresses and no
+  sections. `an_include_after_end_is_still_read_and_its_lines_are_not_assembled`.
+
+#### Resolving a file name
+
+- **Beside the including File first, then the project root**, which is the
+  design record's own order, and `\` is a separator like `/`
+  (`Directives/include.htm`'s example is `"C:\EASy68K\macros\input output
+  macros.x68"`). `include::join` resolves `.` and `..` on the way and drops a
+  `..` that would climb above the root, because a Project has no above-the-root
+  (CONTEXT.md, "File"). `Files::normalise_path`, which phase 1 wrote and which
+  deliberately kept `..` "for phase 4's resolution to deal with", is unchanged
+  and still settles how one File is spelled twice; this is the step that deals
+  with `..`.
+- **The quotes are not part of the name**, either kind will do, and a doubled
+  quote inside a quoted name is one quote — which is the rule the parser's
+  `file_specification_extent` already reads the field by, so the two agree.
+  `written_path` is the whole of it, and an empty name is treated as no name at
+  all.
+- **`Files::entry` is new and answers the path as the Project spells it.** Every
+  Location of an included File carries that path, and a breakpoint has to match
+  it, so the spelling that reaches the editor is the Project's own key and never
+  the one the `include` line happened to write.
+- **A miss lists the closest existing paths, and the first rule is the name.**
+  `include io.m68k` against a Project holding `lib/io.m68k` is the case the
+  design record names, and no edit distance over whole paths would find it: the
+  first rule is "a File whose *name* is the name that was written", the written
+  name with no extension included, and only when that finds nothing does the
+  ordinary did-you-mean over the whole path run (`table::edit_distance`, made
+  public for it). At most three are offered.
+- **A Project with no other File says so.** "did you mean" has nothing to offer
+  when there is nothing to have meant, and "there is no file named `io.m68k` in
+  this project" with no hint at all would leave a student who has one buffer
+  open wondering what they typed wrong. The hint is "this project has no other
+  file to read".
+- **The command line reads a Project from disk.** `src/main.rs` used to file one
+  File and assemble it, which would have made every `include` in a program run
+  from the command line a missing file. It now reads the Entry file, scans its
+  lines with the Assembler's own `parse_line` for `include` and `incbin` names,
+  resolves each with `include::join` — the same function the Assembler resolves
+  with, so the two cannot disagree — and reads those Files too, transitively. It
+  reads **only the Files the program names**: walking the directory would read
+  `target/` and everything else that happens to sit beside the program. A File
+  that is not valid UTF-8 goes in as bytes, which is what `incbin` wants. The
+  map back to the paths on disk is what every message prints, since a Project
+  path has no leading `/` and an absolute command-line path is not one.
+  *(**Superseded by step 17**, which reads the Entry file's whole directory
+  instead: a scan of the `include` lines can follow only the first of the two
+  places a name resolves to, and it can never offer the File that was meant.
+  This bullet stays as the record of what step 16 built; step 17's notes have
+  the reason and the rules that keep `target/` out.)*
+
+#### The Include chain
+
+- **A chain is a linked list of links, not a list per line.** One link per
+  *followed* `include`, `{ site, parent }`, and a position carries the index of
+  its innermost link; `Expansion::chain` walks the parents back. A File of six
+  thousand lines included twice costs two links.
+- **The `site` is the file name, not the whole line**, so an editor underlines
+  the thing that pulled the File in.
+- **Every Diagnostic gets its chain in one place.** `Layout::finish` walks the
+  collected `(position, Diagnostic)` pairs and appends the chain of each as
+  related Locations, innermost first, with the message "included from
+  `main.m68k`". No phase has to remember to do it, and the expansion's own
+  Diagnostics — a missing File named by an included File — get it too.
+- **The related message names the File the `include` line is in, and the
+  Location says where.** Naming the line number in the message as well was the
+  alternative; the message would then have had to choose between the 0-based
+  number every Location in this crate carries and the 1-based number a person
+  reads, which is a choice `tests/corpus/README.md` spent a paragraph on once
+  already.
+- **An assembled instruction carries its chain**, `AssembledInstruction::include_chain`,
+  because a Location cannot answer "through which `include` line did this
+  instruction get here" once a File may be included twice: the two copies share
+  one Location and differ only in this. It is the design record's own
+  requirement for phase 4, and `the_two_copies_of_a_file_differ_only_in_their_chain`
+  is the test that shows why a Location alone would not do. A `MemoryRun`
+  deliberately carries none: the editor shows memory by address, and no view of
+  it asks where the bytes were written.
+- **`AssembledInstruction` is serialised camelCase now**, `#[serde(rename_all =
+  "camelCase")]`, which changes nothing but the new field's name
+  (`includeChain`): every other field is one word. The rule at the top of
+  `src/ts_types.rs` is that the Assembler's shapes are camelCase, and this is the
+  first field of one that has two words in it.
+- **A File included twice is named in the duplicate-symbol error.** When
+  `symbol_already_defined` is raised and the previous definition is at another
+  position of the *same* File, `Expansion::included_twice` answers the two
+  `include` lines and the Diagnostic gets them as related Locations: "`lib.m68k`
+  is included here" and "and included again here, so every name in `lib.m68k` is
+  defined twice". It answers the **outermost** pair of chains that differ, not
+  the innermost, because a File included once by a File that is itself included
+  twice is the outer line's doing and the inner one would name the same line
+  twice. Two definitions in one copy of one File say nothing about `include`.
+
+#### `incbin`
+
+- **`incbin` is a `dc.b` of the whole File**, and the test says so as a
+  comparison: `incbin_is_a_dc_b_of_the_whole_file` assembles the same bytes
+  written out by hand and asserts the same memory and the same Label. No
+  alignment, the Label on the first byte, the bytes at the current address.
+- **Pass 1 takes the room and pass 2 reads the bytes**, which is how `dc`
+  already splits its length from its values; the File is resolved twice and the
+  second time silently, since pass 1 has already said whatever there was to say.
+  Storing the bytes in the `LinePlan` was the alternative and would have put a
+  megabyte in a structure that is cloned once a line.
+- **A text File contributes its Latin-1 bytes** (ADR 0004), through the new
+  `source::latin1_bytes`. A character above 255 has no byte at all and is
+  reported **where it is** — in the File that holds it, at its own line and
+  column, through the new `SourceFile::location_of` — with the `incbin` line as
+  a related Location. One message per `incbin`, however many such characters the
+  File holds, and a `0` is written for each so that every byte after it keeps
+  the address it will have once the character is fixed.
+- **`incbin` inside an `offset` region is `no_bytes_in_an_offset_region`**, like
+  a `dc`, and needed no code: the region rule is applied to the plan and an
+  `incbin` plans `Item::Data`.
+- **EASy68K's `incbin` "inserts the specified binary file into the S-Record
+  output file"; s68k has no S-Record and puts the bytes in memory**, which is
+  the same thing for a program that then reads them. Written down because the
+  help's sentence is about a file format this assembler does not have.
+
+#### The Diagnostics
+
+- **`unreadable_file` grew to cover the whole family**, as phase 1 said it would
+  ("the Entry file is missing, or holds bytes; phase 4's `include` reuses it").
+  It carries `directive` (`include`, `incbin`, or `None` for the Entry file),
+  `suggestions` (a list now, where it was one), `binary` and `alone`, and it has
+  four sentences: a missing File, a missing File with somewhere to look, a File
+  that holds bytes where `include` wanted source, and the Entry file itself
+  holding bytes. One code, because the finding is one — a File that was asked
+  for is not the File that was needed — and because a student's fix is in the
+  message rather than in the code an editor matches on.
+- **Three new kinds.** `include_cycle` (the chain written out, `main.m68k ->
+  a.m68k -> main.m68k`), `include_too_deep` (the two backstops, one kind with a
+  sentence each, the way `unreadable_file` has always had two) and
+  `end_in_an_included_file` ("`end` belongs in the entry file, `main.m68k`"),
+  which ADR 0001 has listed since phase 0 as the one place `include` is stricter
+  than EASy68K. All three are errors.
+- **`end` in an included File is refused and the line is then ignored.** EASy68K
+  stops assembling there and drops the rest of the entry file; stopping here
+  would answer one mistake with a file of consequences, so the lines below it
+  are laid out where they would have been and the Entry point still comes from
+  the Entry file. The Program is not built either way, since the line is an
+  error.
+- **Two backstops, and ADR 0001 now lists them**: eight Files of nesting, and
+  200,000 lines in one assembly. A cycle is caught exactly, by path, so nesting
+  is already bounded by the number of Files a Project holds and neither limit
+  can be reached by a program anybody meant to write; they are there because
+  this assembler runs in a browser on every keystroke, and a File that includes
+  two others which each include two more *multiplies*. Eight is deep enough that
+  a chain that reaches it is one nobody can read, and the message says to
+  include the files side by side instead. The line budget is thirty times the
+  longest program the editor ships. The budget is reported once however many
+  `include` lines are left.
+- **An `include` with no file name at all is `wrong_operand_count`**, not a kind
+  of its own: `include` and `incbin` take exactly one file name, the count is the
+  only thing wrong with the line, and the expansion says nothing about a line
+  that names no File.
+- **`unimplemented_reason` in `layout.rs` is down to `memory`, the macro
+  Directives, conditional assembly and structured control**, and **nothing in
+  the crate says "yet" any more**: `include` and `incbin` were the last two
+  sentences that promised anything, which is what step 15 said they were.
+
+#### The tests
+
+- **`src/test/include.rs` is the rule-by-rule module**, 27 tests: the lines
+  assembled where the `include` line is, the section and the address, the one
+  Symbol namespace both ways, the Local label scopes across the boundary in both
+  directions, `set` and `reg` by position, the Label on the `include` line, a
+  File included twice and the duplicate-name error that names the two lines,
+  `end`, an `include` after `end`, the chain on a Diagnostic and on an
+  instruction, a breakpoint in an included File and one that stops at both
+  copies, and nine on `incbin`. The rules about the *shape* of the sequence —
+  resolution, cycles, the backstops, the chain itself — are tested beside the
+  code that builds them, in `include.rs`'s own 16.
+- **`editor_programs_split_across_files_assemble_the_same` is the corpus-scale
+  version**, and it is a fixture test with no fixture file: it cuts three
+  `editor/` programs into an Entry file and one or two included Files — the two
+  strings of `hello-world-1`, the whole of `subroutine-with-register-arguments-1`'s
+  `gcd`, and `max-of-an-array-1`'s constant and data — and asserts that the
+  fixture of the split program is identical, serialised, to the fixture of the
+  whole one, which `editor_programs` pins against the snapshot on disk. **The
+  cut keeps every line number**: the lines that move out are replaced by one
+  `include` line and then blank lines, and the File they move into is padded
+  with as many blank lines as there are lines above them, so the `n`th line of
+  the program is still the `n`th line of whichever File now holds it. That is
+  what lets the comparison cover the `line` of every instruction and Label and
+  not only the addresses and the bytes. The fixture format names no File, which
+  is what makes the comparison possible at all, and `tests/corpus/README.md`
+  says so.
+- **A `tests/diagnostics` case may now be a directory**, which is a Project:
+  every file under it is a File named by its path inside the directory,
+  `main.asm` is the Entry file, and a `.bin` file is a binary one. No single
+  File of source can name another File to fail to read, which is why
+  `unreadable_file` had no case for three phases; it has one now, and so do the
+  three new kinds. **`WITHOUT_A_CASE` in `src/test/diagnostics.rs` is empty**:
+  every `DiagnosticKind` the Assembler can raise has a program that raises it
+  and a snapshot to read.
+- **The `unreadable_file` case holds three of its four sentences** — a missing
+  File with a suggestion, a missing File with nothing to suggest, and an
+  `include` of a binary File — and says in its own comment that the fourth, the
+  Entry file itself, is `an_entry_file_that_is_missing_or_binary_is_the_one_failure`
+  in `include.rs`, because a case is a Project whose Entry file is read by
+  definition.
+- **The smoke test grows the multi-file case the design record's "Tests" item 6
+  asks for**: a Project of three Files across two directories, `include` and
+  `incbin` and a binary `Uint8Array`, run to the end, the `includeChain` of an
+  instruction of the included File read back, a mistake in an included File with
+  its chain, and a missing File with its suggestion.
+
+#### The twelve findings of the phase 3 review
+
+Ten of the twelve are answered here; the two that are not are analyzer
+semantics, and both say why.
+
+1. **Not done: `move sr,sr` and `movep 0(a0),0(a1)` still get a per-position
+   message that is false of the instruction.** The fix is the right one — a
+   whole-shape check, as `addx` has — but it is not cheap: `invalid_operand_pair`
+   hard-codes "two data registers or two predecrement operands" in its message,
+   so it needs a `shapes` field filled from the `Family`, `check_operand_pair`
+   needs a per-Family guard (`move` only when *both* Operands name a half of the
+   register, or `move a0,sr` would stop being told which half is wrong), and
+   `movep`'s existing good message for `movep.w d0,(a1)` moves too. It is a
+   change to the analyzer's shape in a phase about Files, and it is carried:
+   **the next person to open `analyzer.rs` should do it**, and this bullet is
+   the design.
+2. **Not done: `chk d0,#5` is still told that "nothing can be written to" an
+   immediate.** The suggestion is right wherever the position is written and
+   wrong wherever it is read, and the table has no "this position is written"
+   flag to gate it on — `chk <ea>,Dn` reads its register and `tst <ea>` reads its
+   operand, so it is not one Mnemonic's special case. Adding the flag is a
+   `Form`-wide change to a 125-row table, which is not this phase's. Carried
+   with the same note as 1.
+3. **Done: ADR 0001's odd-`org` consequence is corrected in place** and marked as
+   a correction — the rule is "an odd `org` that *moves* the address warns and
+   rounds up", which step 12 established and which `docs/grammar.md` already had.
+4. **Done: the "an `org` that moves nothing says nothing" rule is written down**
+   in `docs/grammar.md` 2.6, with the two readings of `ORG $1001` side by side,
+   and in `tests/corpus/README.md`. The rule is kept as it is rather than
+   restricted to `org *`: it is about the address and not about the text, and an
+   `org` that moves nothing has nothing to round up whatever it is written as.
+5. **Done: the citation is `Reference/68ks6d.htm`**, the `EORI` page, which is
+   the one carrying "can only work with word and byte"; `68ks6b.htm` stays for
+   the address-method list.
+6. **Done: the design record's "one typing slip in the help" is three**, and the
+   bullet in step 14 now names all three rows (`68ks5q.htm`'s `NEGX`,
+   `68ks5e.htm`'s `ADDX` table against its own prose, `68ks8f.htm`'s inverted
+   `NBCD` sentence) and says which reading is implemented and why. It is marked
+   as the correction it is.
+7. **Done: "takes none or one operands" is gone.** `operand_count` has an arm
+   for a list that starts with 0 — "no operand or one of them" — which `end` and
+   `section` both reach. No snapshot held the old sentence.
+8. **Done: `section` has its own message and its own hint.** "`section` with no
+   number sets a name to the number of the section in force, and this line has
+   no name", hinted "write the name in the first column, `here section`, or
+   write the number, `section 1`" — where the generic hint offered `count
+   section …`, an operand that would have removed the requirement. The golden
+   case `directive_needs_a_label.asm` gained the bare `section` line, and its
+   snapshot moved for it.
+9. **Done, the honest half: the records say what the code does.** `docs/grammar.md`
+   2.6 and step 11's bullet above now read "the Layout ignores `simhalt`'s
+   Operand field" and say that the field is still tokenized, so a mistake inside
+   it is still reported; the test is `simhalt_ignores_the_rest_of_its_line`. The
+   other half of the finding — making it true by giving `simhalt` a
+   `RawOperandField` — is a **grammar change** (ADR 0002: the document first) and
+   would move what the parser accepts on `rts`, `nop`, `page` and `nolist` too if
+   it were done consistently. It is not done, and it is the better student
+   experience: whoever takes it should read this bullet and 2.5 together.
+10. **Done: `invalid_address_width.asm`'s comment counts its own lines.**
+11. **Done: `sr` and `ccr` are out of the corpus README's Operand table**, which
+    mirrors `encoded::Operand` one row per variant, and into a paragraph under
+    it saying they are part of the instruction and not operands of it.
+12. **Done: the corpus README says what the `+2` of a PC-relative displacement
+    is.** It is the hardware's number for every form but `movem`, whose mask word
+    is the first extension word; s68k encodes no words, so the single constant is
+    a deliberate simplification and a printed `movem` displacement is two less
+    than a real assembler's.
+
+**What the surface step must know.**
+
+* **The public surface changed in exactly one place**: `InstructionLine` gained
+  `includeChain: Location[]`, empty for an instruction of the Entry file. The
+  input side did not change at all — `assemble(source, options?)` has taken
+  `{ files, entry }` since step 9, and a binary File has always crossed as a
+  `Uint8Array` — and neither did `Diagnostic`, whose `related` is where the
+  chain arrives. `Breakpoint` is still `{ file, line }` and now stops in an
+  included File; a File included twice has one line and two addresses, and
+  `get_breakpoint_addresses` answers both.
+* **What the editor can now ask.** Where an instruction came from (`location`),
+  through which `include` lines (`includeChain`, innermost first), where a
+  Diagnostic is and what it was reached through (`location` and `related`), and
+  which Files a Project is made of, which it already knew because it wrote them.
+  What it cannot ask, and what a later step would have to add, is the reverse
+  direction — "which Files did this build read?" — since a Program carries no
+  list of them; the chains on the instructions are the only trace.
+* **Four codes are new or changed shape**: `unreadable_file` (now raised by
+  `include` and `incbin` as well as by the Entry file), `include_cycle`,
+  `include_too_deep` and `end_in_an_included_file`. An editor that lists codes
+  has four more to know about; one that matches on `code` and shows `message`
+  and `hint` needs nothing.
+* **Nothing in the crate promises a feature any more.** The `unimplemented_*`
+  sentences are `rte`, `stop`, `reset`, `move usp,an`, `memory`, macros,
+  conditional assembly and structured control, and none of them says "yet".
+  Real instruction sizes are the one decision the design record still leaves
+  open, and `INSTRUCTION_SIZE` is still 4.
+* **Two findings of the phase 3 review are carried** (1 and 2 above), both in
+  `analyzer.rs`, both about a message that says something untrue of the
+  instruction. Neither is about Files, and both have their fix written out.
+
+### Step 17 — the 2.0 surface for a Project: the declarations, the wrapper, the command line
+
+The last step of phase 4 and of the plan. It adds no field and no diagnostic:
+step 16 built the Project and this step makes the three places that face
+outwards say so — the WebAssembly declarations (`src/lib.rs`,
+`src/ts_types.rs`), the TypeScript wrapper and its smoke test
+(`ts-lib/src/index.ts`, `ts-lib/test/smoke.mjs`), and the command line
+(`src/main.rs`) — and finishes the documents. `cargo test` is **476 green**
+(4 new, all in `src/main.rs`, which had none: 472 in the library and 4 in the
+binary), `cargo fmt --check` is clean, `cargo build --all-targets` raises no
+warning, `cargo clippy --all-targets` no new one (the same 4, all older than
+phase 1's step 10) and `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` is clean.
+The chain was run from a rebuilt `pkg`: `wasm-pack build --out-dir
+ts-lib/src/pkg --out-name s68k`, then `npm run build-lib` and `npm test` in
+`ts-lib`. No `tests/corpus/` fixture and no `tests/diagnostics/` snapshot moved,
+in either direction: nothing here changes what is assembled.
+
+#### The boundary
+
+- **The input side did not change and now says so.** `wasm_assemble`'s first
+  argument was declared `any`, which was the last shape crossing the boundary
+  that the generated `.d.ts` did not describe. It is now a `SourceFiles`: a
+  `#[wasm_bindgen(typescript_type = "SourceFiles")]` extern type in
+  `src/lib.rs` and the declaration itself — `Record<string, string |
+  Uint8Array>` — beside the other custom sections in `src/ts_types.rs`, so
+  `wasm_assemble(files: SourceFiles, entry: string)` is what the package ships.
+  It is a name for what step 9 already accepted and not a change to it; the
+  wrapper keeps its own `SourceFiles` alias, structurally the same type, so
+  nothing imports across.
+- **A `Uint8Array` is the only way `FileContent::Bytes` is built, and the smoke
+  test is what proves it.** `files_from_js` reads a `string` into
+  `FileContent::Text` and anything that `dyn_ref`s to a `Uint8Array` — a Node
+  `Buffer` is one — into `FileContent::Bytes`, and it cannot be exercised by
+  `cargo test`, because a native build has no JavaScript values to hand it. The
+  `incbin` case of the smoke test assembles a `Uint8Array` and has the *program*
+  read one of its bytes back, which is the whole path in one assertion.
+- **Everything else this step was asked to check was already true.**
+  `Diagnostic.related` crosses as `[{ location, message }]` and not as a tuple
+  (`SerializedRelatedList` in `diagnostics.rs` is why, since phase 1), the
+  Include chain crosses as `includeChain: Location[]` (step 16), and a Location
+  is camelCase wherever it appears. The only thing that was wrong was a comment:
+  see the corrections below.
+
+#### The wrapper
+
+- **One sentence deleted, and no type added.** `S68k.assemble`'s documentation
+  still said that "`include` and `incbin` are not implemented yet, so a project
+  of more than one file assembles only its entry file" — the last "yet" in the
+  repository, and step 16's claim that there is none was true only of the crate.
+  It is now the paragraph a caller needs: a project is assembled from its entry
+  file down, a missing File is a diagnostic naming the closest one, and nothing
+  reads a disk. `SourceFiles`, `AssemblySource`, `AssembleOptions`,
+  `AssemblyResult`, `Location`, `RelatedLocation`, `Diagnostic` and
+  `InstructionLine` were already the wrapper's exported types, which is what
+  "add nothing the design record does not name" left to do.
+
+#### The smoke test
+
+- **Four cases, and they are the four questions an editor asks of a Project.** A
+  Project of four Files — an entry file, a data File and a subroutine File it
+  `include`s, and a `Uint8Array` it `incbin`s — assembled, run to the end, with
+  `D2` holding the sum the included routine computed over the included data and
+  `D3` a byte the program read out of the binary File; the `includeChain` of an
+  instruction of the subroutine File, and the empty chain of one of the entry
+  file; a breakpoint inside an included File; a mistake in an included File,
+  whose Location names that File and whose `related` names the `include` line
+  with "included from `main.x68`"; and a missing File, with its code, its
+  Location, its columns and "did you mean `lib/io.x68`?" in the hint. The
+  symbols of both included Files are read back through `getInfo`, one of them a
+  Local label, which is where a wrong comment was caught.
+
+#### The command line reads a directory as a Project
+
+- **The Project is the directory the Entry file is in**, read as far down as it
+  goes: every File under it is one File of the Project, named by its path inside
+  it, with the Entry file's own path relative to it. `cargo run --
+  dir/main.asm` assembles `dir/main.asm` as `main.asm` and resolves its
+  `include 'lib/io.x68'` to `dir/lib/io.x68`. A File named `.asm`, `.x68`,
+  `.m68k`, `.s` or `.inc` goes in as text and every other File as bytes, which
+  is the only thing a directory says about which is which.
+- **It replaces step 16's scan of the `include` lines, for two reasons that are
+  both about the Assembler and not about disks.** A written name resolves
+  *beside the including File first and at the project root second*, and a scan
+  can follow only one of the two: `lib/a.asm` including `b.asm` that sits at the
+  root read nothing, and the Assembler then said the File was missing. And
+  `unreadable_file`'s suggestions are the closest paths **of the Project**, so a
+  Project made of the names that failed can never offer the File that was meant
+  — the message the whole diagnostic exists for. `cargo run` now prints "there
+  is no file named `lib/oi.x68` in this project" with "hint: did you mean
+  `lib/io.x68`?" under it, which the scan could not have said, because the File
+  that was meant was never read.
+- **What it costs is three rules of the walk's own**, because a directory on
+  disk is not a Project and nothing promises that it is small: a directory whose
+  name starts with `.` is not entered, `target` and `node_modules` are not
+  entered, and no more than 1000 Files and 32 MiB are read, one line on standard
+  error saying so when something is left out. The numbers are not arbitrary:
+  this repository is 326 Files and 11.3 MiB with those two names skipped, which
+  `cargo run` with no argument reads in 0.1 s, and `target/` alone is 3.6 GB —
+  the default Entry file `code-to-run.asm` sits beside it, so a walk without
+  that rule would read a disk image to assemble twelve lines.
+- **Source Files are read first and everything else with what is left**, and a
+  File that does not fit is left out while the walk goes on. The budget is a
+  backstop and it should never decide which File a program gets: a directory of
+  1100 assets beside `main.asm` and its `lib.asm` reads both of them, reports
+  that some Files were left out, and assembles. Reading in the directory's own
+  order would have spent the budget on the assets and then told the student
+  that `lib.asm` is not in the project, which is a message about the walk
+  pretending to be a message about the program.
+- **The Entry file is read as source whatever it is called**, before the walk,
+  so `cargo run -- notes.txt` assembles it rather than reporting that the Entry
+  file holds bytes. The command line named it: it is the program.
+- **A source File that is not UTF-8 is read as Latin-1** (ADR 0004), where step
+  16's reader put it in as bytes. A File written by EASy68K holds bytes and not
+  code points, so `dc.b 'é'` is the single byte `$E9` on disk; read as Latin-1
+  it is the one character the Assembler then writes back as `$E9`, and read as
+  UTF-8 (when it is UTF-8) it is the same character. The conversion is total, so
+  no File on disk can stop the command line from assembling.
+- **`src/main.rs` no longer resolves anything**, so `include::join`'s
+  documentation no longer says it is public "because `src/main.rs` reads a
+  Project ... with it"; it says the general reason instead, that a caller
+  outside the Assembler which has to resolve a written file name has no second
+  implementation of the rule to use. Marked below as the correction it is.
+- **Four tests, in a binary that had none.** The walk over a directory of six
+  Files (with `target/` and a dot directory among them), the Entry file's
+  extension not mattering, `is_source` over nine names, and the Latin-1
+  fallback. They write into the system's temporary directory under a name of
+  their own, so they do not collide.
+
+#### The three factual corrections
+
+1. **A Local label's full name has no dot in it**, and three doc comments said
+   it did: `src/ts_types.rs`'s `ProgramSymbol` (the one that is published, which
+   an editor writing a symbol list would have believed), `program.rs`'s
+   `ProgramSymbol` and `symbols.rs`'s `SymbolTable::resolve`. `qualify` builds
+   `start:loop` — EASy68K's own rule, "replacing the dot with a colon", which
+   step 7's bullet states correctly and `symbols.rs`'s own module comment
+   repeats — and the smoke test now asserts `SUM:loop` through the whole chain,
+   which is how the three comments were caught.
+2. **Step 16's "The command line reads a Project from disk" bullet is marked
+   superseded**, in place, with a sentence naming this step and the reason. The
+   bullet itself is left as the record of what step 16 built, which is what the
+   implementation notes are for.
+3. **`tests/corpus/README.md`'s example of a diagnostics fixture** showed a
+   `simhalt` "not implemented yet" entry, which phase 2 removed from the
+   snapshots — the same README says so further down, where it records that the
+   `unimplemented_operation` on `SIMHALT` is gone from `clockDigital-errors`.
+   The example is now the first entry `graphicSound-errors.snap` actually
+   holds, a `bare_comment`.
+
+**What is left.**
+
+* **The public surface is closed**, and the design record's "Public API" section
+  now says so. Nothing in the repository — crate, wrapper or document — promises
+  an unimplemented feature any more; the `unimplemented_*` sentences name
+  `rte`, `stop`, `reset`, `move usp,an`, `memory`, macros, conditional assembly
+  and structured control, and none of them says "yet".
+* **What an editor gains, and what it does not.** `InstructionLine.includeChain`
+  and `Diagnostic.related` are the two places a chain arrives; a Program still
+  carries no list of the Files a build read, which is step 16's note and is
+  still true. Four codes are new since 1.4.2's editor was written
+  (`unreadable_file`, `include_cycle`, `include_too_deep`,
+  `end_in_an_included_file`).
+* **The two carried findings of the phase 3 review are still carried** (`move
+  sr,sr` and `movep 0(a0),0(a1)`'s per-position message, and `chk d0,#5`'s
+  "nothing can be written to it"), both in `analyzer.rs`, both with their fix
+  written out in step 16's notes. They are the only work of phases 1 to 4 that
+  is known and not done.
+* **`web/`** still calls 1.4.2's `new S68k(code)` against a committed `pkg/`
+  that no longer exists, and is in no CI job; `README.md` has said so since step
+  9 and this step did not change it.
+
+### Phase 4 review: nine minor findings left open (2026-09-08)
+
+The s68k side of phase 4 was reviewed and passed with no blocker or major finding. The nine minor ones were not fixed, because the work was stopped before the asm-editor step to save usage; they are listed here for whoever continues.
+
+- **`unreadable_file` loses its suggestions exactly when the miss is written from a subdirectory** — Project `main.m68k` -> `include lib/a.m68k`, `lib/a.m68k` -> `include oi.m68k`, with `lib/io.m68k` present: `error unreadable_file lib/a.m68k:0 | there is no file named `oi.m68k` in this project | hint: None`. The same misspelling written from the root (`include lib/oi.m68k`) does get `hint: did you mean `lib/io.m68k`?`. Cause: `include.rs` `resolve_in` throws the candidate list away and reports ` Fix: Hand `candidates(written, from)` (or the including File's directory) to `closest_paths` and take the best suggestion over all of the paths that were actually tried, rather than over `join("", written)` alone; that turns this case into `did you mean `lib/io.m68k`?` with no new rule.
+- **An `include` after `end` can stop the build, which is a new strictness ADR 0001 does not list** — `    nop\n    end\n    include gone.m68k\n` gives `warning code_after_end main.m68k:2 | this line comes after `end` and is not assembled` immediately followed by `error unreadable_file main.m68k:2 | there is no file named `gone.m68k` in this project`, and no Program. EASy68K stops assembling at END and never reads the line, so this is a program that assembles there and not here. Step 16 records th Fix: Add one bullet to ADR 0001's stricter-than-EASy68K list naming this consequence; or, if the EASy68K behaviour is preferred, have `Expander::expand_file` stop following `include` lines after a line whose operation is `end` in the same File, and say so in step 16's bullet instead.
+- **An unquoted file name containing a space gives a message about a fragment, with no hint** — `    include my lib.m68k` with `my lib.m68k` in the project: `error unreadable_file main.m68k:0 | there is no file named `my` in this project | hint: None`, plus a `bare_comment` suggestion on the trailing `lib.m68k`. `Directives/include.htm` states the rule this student broke ("must be enclosed in single (') or double (\") quotes if any part of the file path or name includes spaces"), so this is Fix: When the written name has no extension and the line's Comment field is bare, add the hint "quote a file name that holds spaces, `include 'my lib.m68k'`"; the two facts are already on hand in `plan_include`/`file_name_span`.
+- **A suggestion can point at a File of the kind the Directive cannot read** — `    include io` with a binary `io.bin` in the project: `there is no file named `io` in this project | hint: did you mean `io.bin`?`; following the hint then gives `` `io.bin` holds bytes, not source ``. Symmetrically `    incbin sprite` with `sprite.m68k` present suggests `sprite.m68k`, which `incbin` can read, so only the `include` direction is a dead end. It comes from `closest_paths`'s stem ru Fix: Pass the Directive (already carried as `directive` on the kind) into `closest_paths` and, for `include`, rank or filter to text Files; a binary File is still worth naming last, since "it is there but it is bytes" is itself the answer.
+- **`include ''` is reported as a line that writes no operand** — `    include ''` and `    incbin ''` give `` `include` takes one operand, and this line has none `` / `` `incbin` takes one operand, and this line has none ``. The line does write an operand — an empty quoted name — so the sentence describes a line the student did not write. `include_of` and `file_name_quietly` both map an empty `written_path` to `None`, and step 16 records only "an empty name is Fix: Either give the empty name its own sentence ("the file name between the quotes is empty"), or keep the reduction and add the rendered message to step 16's bullet so the record says what a student sees.
+- **`UnreadableFile`'s `alone` and `suggestions` are hardcoded on the binary-`include` path** — `src/assembler/include.rs`, `Expander::follow`, the `Resolved::Bytes` arm builds `DiagnosticKind::UnreadableFile { suggestions: Vec::new(), binary: true, alone: false }` with `alone` written as a literal rather than `files.len() <= 1`. It is invisible today because `hint()`'s `(true, _)` arms read neither field, but it is a field of a public kind carrying a value that is not a fact about the Proje Fix: Build the kind through `missing_file`-style construction, or set `alone: files.len() <= 1` there too, so every `UnreadableFile` describes the Project it was raised against.
+- **The command line prints a related `include` location's file twice, two different ways** — `cargo run -- /abs/path/proj/main.asm` on a diagnostic inside an included File prints `/abs/path/proj/main.asm:3:13: included from `main.asm``: the Location half is mapped back through `on_disk` to the path on disk, and the message half is the Project path the Assembler wrote. Both halves name the same file and neither is wrong, but the line reads as if two files were involved. Fix: In `print_diagnostic`, drop the file name from the related message when it equals the related Location's own file (print just "included from here"), or map the message's name through `on_disk` as well.
+- **One unwrapped line in the rewritten `simhalt` bullet of docs/grammar.md** — §2.6's rewritten bullet ends `...and\n  no rule of the parser may consult the Directive's arity (ADR 0003). It is the one Directive that produces an executable item: four` — about 115 columns where every other line of the file wraps near 80. It is the seam where finding 9's replacement text was spliced onto the old sentence. Fix: Re-wrap that paragraph to the file's width.
+- **The line budget still assembles 200,000 lines before it fires** — A deliberately multiplying Project (a chain of eight Files each including the next twice, bottoming out in a 3,000-line File) assembles for 1.86 s in a debug build before reporting one `include_too_deep` ("including `a7.m68k` would take this assembly past 200000 lines") and no Program. The backstop bounds the work, as ADR 0001 now says, but the bound is a full 200,000-line layout, and the stated m Fix: Nothing required. If it is ever measured to matter, the cheap half is to check the budget against the target's *transitive* size rather than its own line count, so a runaway is refused before the lines are laid out.
+

@@ -2895,7 +2895,7 @@ mod tests {
             // "Later" is the phase order of the design record, not the
             // calendar: the analyzer, the Directives and the Layout all raise
             // Diagnostics of their own, and none of them is the parser's.
-            const LATER_PHASES: [&str; 37] = [
+            const LATER_PHASES: [&str; 40] = [
                 "unknown_mnemonic",
                 "mnemonic_used_as_label",
                 "wrong_operand_count",
@@ -2933,6 +2933,9 @@ mod tests {
                 "no_bytes_in_an_offset_region",
                 "value_expected",
                 "unreadable_file",
+                "include_cycle",
+                "include_too_deep",
+                "end_in_an_included_file",
             ];
             let expected: Vec<&str> = ALL_CODES
                 .iter()
