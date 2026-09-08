@@ -1,0 +1,6 @@
+# Assembly fixtures are test inputs, not production source. Keep them out of
+# GitHub's language statistics while preserving normal syntax highlighting.
+tests/**/*.asm linguist-detectable=false
+tests/**/*.x68 linguist-detectable=false
+tests/**/*.X68 linguist-detectable=false
+tests/**/*.m68k linguist-detectable=false
