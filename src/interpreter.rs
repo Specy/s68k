@@ -39,8 +39,9 @@ use crate::instructions::TargetDirection;
 use crate::{
     debugger::{Debugger, ExecutionStep, MutationOperation},
     instructions::{
-        Condition, Instruction, Interrupt, InterruptResult, KeyStateRequest, KeyStateResult,
-        Operand, RegisterOperand, ShiftDirection, Sign, Size,
+        Condition, IndexRegister, Instruction, Interrupt, InterruptResult, KeyStateRequest,
+        KeyStateResult, Operand, RegisterOperand, ShiftDirection, Sign, Size,
+        EXTENSION_WORD_OFFSET,
     },
     math::*,
 };
@@ -74,6 +75,45 @@ impl Flags {
     }
     pub fn clear(&mut self) {
         *self = Flags::empty();
+    }
+    /// The five flags as the 68000's own condition code byte: extend 16,
+    /// negative 8, zero 4, overflow 2, carry 1.
+    ///
+    /// The bits of this type are s68k's own and are one place to the left of
+    /// the processor's; the editor reads them
+    /// ([`Interpreter::wasm_get_flags_as_number`]) and they are not moved. This
+    /// is the conversion the status register needs, and the one every
+    /// instruction that reads or writes `ccr` goes through.
+    pub fn to_ccr_byte(&self) -> u8 {
+        let mut byte = 0u8;
+        if self.contains(Flags::Extend) {
+            byte |= 0b1_0000;
+        }
+        if self.contains(Flags::Negative) {
+            byte |= 0b1000;
+        }
+        if self.contains(Flags::Zero) {
+            byte |= 0b100;
+        }
+        if self.contains(Flags::Overflow) {
+            byte |= 0b10;
+        }
+        if self.contains(Flags::Carry) {
+            byte |= 0b1;
+        }
+        byte
+    }
+    /// The flags a condition code byte names, the inverse of
+    /// [`Flags::to_ccr_byte`]. Bits 5 to 7 of the byte are not condition codes
+    /// and are dropped.
+    pub fn from_ccr_byte(byte: u8) -> Flags {
+        let mut flags = Flags::empty();
+        flags.set(Flags::Extend, byte & 0b1_0000 != 0);
+        flags.set(Flags::Negative, byte & 0b1000 != 0);
+        flags.set(Flags::Zero, byte & 0b100 != 0);
+        flags.set(Flags::Overflow, byte & 0b10 != 0);
+        flags.set(Flags::Carry, byte & 0b1 != 0);
+        flags
     }
     pub fn get_status(&self) -> String {
         format!(
@@ -342,12 +382,25 @@ impl Register {
     }
 }
 
+/// The status register a program starts with: `$2700`, EASy68K's own
+/// (`SIMHELP/Exceptions.htm`, "the supervisor bit is set on") — supervisor,
+/// interrupt mask 7, no trace and no condition code set.
+pub const INITIAL_STATUS_REGISTER: u16 = 0x2700;
+
 #[derive(Debug, Clone, Copy)]
 #[wasm_bindgen]
 pub struct Cpu {
     d_reg: [Register; 8],
     a_reg: [Register; 8],
     ccr: Flags,
+    /// The high byte of the status register: trace, supervisor and the
+    /// interrupt mask.
+    ///
+    /// It is stored and readable and has no effect at all — s68k runs every
+    /// program as supervisor, which is what EASy68K's simulator starts in (the
+    /// design record, "Instructions"). The low byte is [`Cpu::ccr`], so the
+    /// whole register is [`Cpu::get_sr`].
+    system_byte: u8,
 }
 
 impl Default for Cpu {
@@ -361,8 +414,32 @@ impl Cpu {
         Self {
             d_reg: [Register::new(); 8],
             a_reg: [Register::new(); 8],
-            ccr: Flags::new(),
+            ccr: Flags::from_ccr_byte(INITIAL_STATUS_REGISTER as u8),
+            system_byte: (INITIAL_STATUS_REGISTER >> 8) as u8,
         }
+    }
+
+    /// The whole status register: the system byte, then the condition codes as
+    /// the processor numbers them.
+    pub fn get_sr(&self) -> u16 {
+        ((self.system_byte as u16) << 8) | self.ccr.to_ccr_byte() as u16
+    }
+
+    /// Sets the whole status register, condition codes included.
+    pub fn set_sr(&mut self, value: u16) {
+        self.system_byte = (value >> 8) as u8;
+        self.ccr = Flags::from_ccr_byte(value as u8);
+    }
+
+    /// The condition codes as the low byte of the status register.
+    pub fn get_ccr_byte(&self) -> u8 {
+        self.ccr.to_ccr_byte()
+    }
+
+    /// Sets the condition codes from a byte, leaving the system byte where it
+    /// is.
+    pub fn set_ccr_byte(&mut self, byte: u8) {
+        self.ccr = Flags::from_ccr_byte(byte);
     }
 
     pub fn get_register_values(&self) -> Vec<u32> {
@@ -392,18 +469,43 @@ impl Cpu {
     pub fn wasm_get_ccr(&self) -> Flags {
         self.ccr
     }
+    /// The whole status register, `$2700` before a program has run.
+    pub fn wasm_get_sr(&self) -> u16 {
+        self.get_sr()
+    }
 }
 
+/// What stopped a running program.
+///
+/// The three exception variants below are the instructions that end a run on
+/// purpose (`SIMHELP/Exceptions.htm`, group 2 and the Illegal exception): s68k
+/// keeps no exception vectors and no supervisor stack frame, so the run ends
+/// with [`InterpreterStatus::TerminatedWithException`] where a 68000 would jump
+/// through a vector, and the error names the instruction and its cause.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", content = "value")]
 pub enum RuntimeError {
     Raw(String),
     ExecutionLimit(usize),
     OutOfBounds(String),
-    AddressError { address: usize, size: Size },
+    AddressError {
+        address: usize,
+        size: Size,
+    },
     DivisionByZero,
     IncorrectAddressingMode(String),
     Unimplemented,
+    /// `chk` found the register outside 0 to the bound it was given.
+    ChkOutOfBounds {
+        /// The low word of the register, read as a signed number.
+        value: i32,
+        /// The bound the operand held, read as a signed number.
+        bound: i32,
+    },
+    /// `trapv` with the overflow flag set.
+    OverflowException,
+    /// The `illegal` instruction, which always ends the run.
+    IllegalInstruction,
 }
 
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
@@ -575,6 +677,33 @@ impl Interpreter {
             _ => self.status = status,
         }
     }
+    /// The whole status register: the system byte, then the condition codes.
+    ///
+    /// It is `$2700` before a program has run, as in EASy68K, and its high byte
+    /// has no effect on anything (the design record, "Instructions").
+    #[inline(always)]
+    pub fn get_sr(&self) -> u16 {
+        self.cpu.get_sr()
+    }
+
+    /// Sets the whole status register, condition codes included.
+    pub fn set_sr(&mut self, value: u16) {
+        self.cpu.set_sr(value);
+    }
+
+    /// Ends the run with an exception and answers the error that says why.
+    ///
+    /// A 68000 would push a stack frame and jump through the vector of
+    /// `SIMHELP/Exceptions.htm`; s68k has neither, so `chk`, `trapv` and
+    /// `illegal` stop the program where an address error already stopped it —
+    /// [`InterpreterStatus::TerminatedWithException`] and a
+    /// [`RuntimeError`] naming the instruction — and the Location of the line
+    /// is the one the step recorded.
+    fn end_with_an_exception(&mut self, error: RuntimeError) -> RuntimeError {
+        self.set_status(InterpreterStatus::TerminatedWithException);
+        error
+    }
+
     pub fn get_flags_as_array(&self) -> Vec<u8> {
         vec![
             self.cpu.ccr.contains(Flags::Carry) as u8,
@@ -601,7 +730,7 @@ impl Interpreter {
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
         if self.keep_history {
             self.debugger
-                .add_step(ExecutionStep::new(self.pc, self.cpu.ccr));
+                .add_step(ExecutionStep::new(self.pc, self.cpu.ccr, self.cpu.get_sr()));
         }
         self.current_instruction_address = self.pc;
         let instruction = self
@@ -635,6 +764,7 @@ impl Interpreter {
                 }
                 if self.keep_history {
                     self.debugger.set_new_ccr(self.cpu.ccr);
+                    self.debugger.set_new_sr(self.cpu.get_sr());
                 }
                 Ok(self.status)
             }
@@ -658,7 +788,9 @@ impl Interpreter {
         match self.debugger.pop_step() {
             Some(step) => {
                 self.pc = step.get_pc();
-                self.cpu.ccr = step.get_ccr();
+                //the whole status register, which is the condition codes and the system byte
+                //`move #n,sr` and its kind can have changed
+                self.cpu.set_sr(step.get_sr());
                 //doing from right to left because mutations are added from left to right
                 for mutation in step.get_mutations().iter().rev() {
                     match mutation {
@@ -837,6 +969,13 @@ impl Interpreter {
         self.program.instruction_at(address)
     }
 
+    /// The address of the instruction being executed, and after the step, of
+    /// the one that has just run. It is 0 before the first step.
+    #[inline(always)]
+    pub fn get_current_instruction_address(&self) -> usize {
+        self.current_instruction_address
+    }
+
     /// Where in the source the instruction about to run was written, if the
     /// program counter is on one.
     ///
@@ -987,6 +1126,31 @@ impl Interpreter {
                 self.set_compare_flags(result, *size, carry, overflow);
                 self.set_flag(Flags::Extend, carry);
                 self.store_operand_value(dest, result, *size, Used::Twice)?;
+            }
+            // `addx` and `subx` add or subtract the extend flag as well, and
+            // their flags are the multi-precision ones: X and C alike, N and V
+            // from the result, and Z cleared when the result is not zero and
+            // left alone when it is (`Reference/68ks5e.htm`,
+            // `Reference/68ks5v.htm`). The source is read before the
+            // destination, so `addx -(a0),-(a1)` decrements `a0` first, as the
+            // 68000 does.
+            Instruction::ADDX(source, dest, size) => {
+                let source_value = self.get_operand_value(source, *size, Used::Once)?;
+                let dest_value = self.get_operand_value(dest, *size, Used::Twice)?;
+                let extend = self.cpu.ccr.contains(Flags::Extend);
+                let (result, carry) = add_with_extend(dest_value, source_value, extend, *size);
+                let overflow = has_add_overflowed(dest_value, source_value, result, *size);
+                self.store_operand_value(dest, result, *size, Used::Twice)?;
+                self.set_extended_arithmetic_flags(result, *size, carry, overflow);
+            }
+            Instruction::SUBX(source, dest, size) => {
+                let source_value = self.get_operand_value(source, *size, Used::Once)?;
+                let dest_value = self.get_operand_value(dest, *size, Used::Twice)?;
+                let extend = self.cpu.ccr.contains(Flags::Extend);
+                let (result, borrow) = sub_with_extend(dest_value, source_value, extend, *size);
+                let overflow = has_sub_overflowed(dest_value, source_value, result, *size);
+                self.store_operand_value(dest, result, *size, Used::Twice)?;
+                self.set_extended_arithmetic_flags(result, *size, borrow, overflow);
             }
             Instruction::ADDA(source, dest, size) => {
                 let source_value =
@@ -1242,6 +1406,24 @@ impl Interpreter {
                 }
             }
 
+            // A rotation through the extend flag: nine, seventeen or
+            // thirty-three bits wide, so the bit that leaves the operand goes
+            // to X and the bit X held comes in at the other end. With a count
+            // of zero X is left alone and C answers it, which is the one place
+            // a rotate's carry is not the bit it moved
+            // (`Reference/68ks7g.htm`, `Reference/68ks7h.htm`).
+            Instruction::ROXd(amount, dest, direction, size) => {
+                let count = self.get_operand_value(amount, *size, Used::Once)? % 64;
+                let mut value = self.get_operand_value(dest, *size, Used::Twice)?;
+                let mut extend = self.cpu.ccr.contains(Flags::Extend);
+                for _ in 0..count {
+                    (value, extend) = rotate_with_extend(direction, value, *size, extend);
+                }
+                self.store_operand_value(dest, value, *size, Used::Twice)?;
+                self.set_logic_flags(value, *size);
+                self.set_flag(Flags::Extend, extend);
+                self.set_flag(Flags::Carry, extend);
+            }
             Instruction::AND(source, dest, size) => {
                 let source_value = self.get_operand_value(source, *size, Used::Once)?;
                 let dest_value = self.get_operand_value(dest, *size, Used::Twice)?;
@@ -1295,6 +1477,52 @@ impl Interpreter {
                 self.store_operand_value(source, result, *size, Used::Twice)?;
                 self.set_compare_flags(result, *size, carry, overflow);
                 self.set_flag(Flags::Extend, carry);
+            }
+            // `negx` is `neg` with the extend flag taken away as well, and it
+            // carries the same multi-precision Z rule
+            // (`Reference/68ks5q.htm`, whose flag table reads "Z - Set if the
+            // result is not zero, else unaffected": that sentence is the one
+            // typing slip of the three pages, and `SUBX`'s own table on
+            // `68ks5v.htm` — "Cleared if the result is not zero, else
+            // unaffected" — is the rule the 68000 has and the one implemented
+            // here).
+            Instruction::NEGX(destination, size) => {
+                let value = self.get_operand_value(destination, *size, Used::Twice)?;
+                let extend = self.cpu.ccr.contains(Flags::Extend);
+                let (result, borrow) = sub_with_extend(0, value, extend, *size);
+                let overflow = has_sub_overflowed(0, value, result, *size);
+                self.store_operand_value(destination, result, *size, Used::Twice)?;
+                self.set_extended_arithmetic_flags(result, *size, borrow, overflow);
+            }
+            // The three binary coded decimal instructions. Each works on one
+            // byte, carries the extend flag in, and leaves N and V exactly
+            // where they were, because the help calls both of them undefined
+            // (`Reference/68ks8e.htm`, `68ks8g.htm`, `68ks8f.htm`).
+            Instruction::ABCD(source, dest) => {
+                let source_value = self.get_operand_value(source, Size::Byte, Used::Once)?;
+                let dest_value = self.get_operand_value(dest, Size::Byte, Used::Twice)?;
+                let extend = self.cpu.ccr.contains(Flags::Extend);
+                let (result, carry) = add_decimal(dest_value, source_value, extend);
+                self.store_operand_value(dest, result, Size::Byte, Used::Twice)?;
+                self.set_decimal_flags(result, carry);
+            }
+            Instruction::SBCD(source, dest) => {
+                let source_value = self.get_operand_value(source, Size::Byte, Used::Once)?;
+                let dest_value = self.get_operand_value(dest, Size::Byte, Used::Twice)?;
+                let extend = self.cpu.ccr.contains(Flags::Extend);
+                let (result, borrow) = subtract_decimal(dest_value, source_value, extend);
+                self.store_operand_value(dest, result, Size::Byte, Used::Twice)?;
+                self.set_decimal_flags(result, borrow);
+            }
+            // The tens complement is zero less the value, which is the
+            // subtraction `sbcd` does from a destination of zero: "The tens
+            // complement to 01 is 99" (`Reference/68ks8f.htm`).
+            Instruction::NBCD(destination) => {
+                let value = self.get_operand_value(destination, Size::Byte, Used::Twice)?;
+                let extend = self.cpu.ccr.contains(Flags::Extend);
+                let (result, borrow) = subtract_decimal(0, value, extend);
+                self.store_operand_value(destination, result, Size::Byte, Used::Twice)?;
+                self.set_decimal_flags(result, borrow);
             }
             Instruction::DIVx(source, dest, sign) => {
                 let source_value = self.get_operand_value(source, Size::Word, Used::Once)?;
@@ -1439,6 +1667,12 @@ impl Interpreter {
                 self.set_sp(new_sp);
             }
             Instruction::NOP => {}
+            // `simhalt` is the EASy68K directive that halts the simulator
+            // (`Directives/simhalt.htm`): the run ends where the Terminate task
+            // ends it and no register is touched. EASy68K's Pause button lets a
+            // run carry on from the instruction after it; s68k does not offer
+            // that, and a terminated Interpreter stays terminated.
+            Instruction::SIMHALT => self.set_status(InterpreterStatus::Terminated),
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
                 if self.keep_history {
@@ -1470,6 +1704,127 @@ impl Interpreter {
                     )));
                 }
             },
+            Instruction::MOVEP {
+                direction,
+                size,
+                register,
+                target,
+            } => {
+                //the bytes of the register go to every second address, most significant first
+                //(`Reference/68ks4g.htm`); the displacement operand is the only mode `movep` takes
+                let address = self.get_operand_address(target)? as usize;
+                let count = size.to_bytes();
+                match direction {
+                    TargetDirection::ToMemory => {
+                        let value = self.get_register_value(*register, *size);
+                        for index in 0..count {
+                            let byte = (value >> (8 * (count - 1 - index))) & 0xFF;
+                            self.set_memory_value(address + index * 2, Size::Byte, byte)?;
+                        }
+                    }
+                    TargetDirection::FromMemory => {
+                        let mut value = 0u32;
+                        for index in 0..count {
+                            value =
+                                (value << 8) | self.memory.read_byte(address + index * 2)? as u32;
+                        }
+                        self.set_register_value(*register, value, *size);
+                    }
+                }
+            }
+            //`move <ea>,ccr` reads a word and keeps its low byte; the flags are the byte moved
+            //and not the result of moving it (`Reference/68ks4d.htm`)
+            Instruction::MOVEtoCCR(source) => {
+                let value = self.get_operand_value(source, Size::Word, Used::Once)?;
+                self.cpu.set_ccr_byte(value as u8);
+            }
+            Instruction::MOVEtoSR(source) => {
+                let value = self.get_operand_value(source, Size::Word, Used::Once)?;
+                self.cpu.set_sr(value as u16);
+            }
+            Instruction::MOVEfromSR(destination) => {
+                let value = self.cpu.get_sr() as u32;
+                self.store_operand_value(destination, value, Size::Word, Used::Once)?;
+            }
+            Instruction::MOVEfromCCR(destination) => {
+                let value = self.cpu.get_ccr_byte() as u32;
+                self.store_operand_value(destination, value, Size::Word, Used::Once)?;
+            }
+            Instruction::ANDItoCCR(value) => {
+                let byte = self.cpu.get_ccr_byte() & value;
+                self.cpu.set_ccr_byte(byte);
+            }
+            Instruction::ORItoCCR(value) => {
+                let byte = self.cpu.get_ccr_byte() | value;
+                self.cpu.set_ccr_byte(byte);
+            }
+            Instruction::EORItoCCR(value) => {
+                let byte = self.cpu.get_ccr_byte() ^ value;
+                self.cpu.set_ccr_byte(byte);
+            }
+            Instruction::ANDItoSR(value) => {
+                let word = self.cpu.get_sr() & value;
+                self.cpu.set_sr(word);
+            }
+            Instruction::ORItoSR(value) => {
+                let word = self.cpu.get_sr() | value;
+                self.cpu.set_sr(word);
+            }
+            Instruction::EORItoSR(value) => {
+                let word = self.cpu.get_sr() ^ value;
+                self.cpu.set_sr(word);
+            }
+            Instruction::TAS(destination) => {
+                //the flags are the byte *before* the operation, and bit 7 is set after
+                //(`Reference/68ks5w.htm`); `set_logic_flags` is N and Z with V and C cleared
+                //and X kept, which is the help's table
+                let value = self.get_operand_value(destination, Size::Byte, Used::Twice)?;
+                self.set_logic_flags(value, Size::Byte);
+                self.store_operand_value(destination, value | 0x80, Size::Byte, Used::Twice)?;
+            }
+            Instruction::RTR => {
+                //a word first, of which the low byte is the condition codes, then the return
+                //address (`Reference/68ks9f.htm`); the stack pointer goes up by six
+                let (status, sp) = self.memory.pop(Size::Word, self.get_sp())?;
+                let (address, sp) = self.memory.pop(Size::Long, sp)?;
+                if self.keep_history {
+                    self.debugger.add_mutation(MutationOperation::PopCall {
+                        to: address.get_long() as usize,
+                        from: self.current_instruction_address,
+                    })
+                }
+                self.cpu.set_ccr_byte(status.get_word() as u8);
+                self.set_sp(sp);
+                self.pc = address.get_long() as usize;
+                self.debugger.pop_call();
+            }
+            Instruction::CHK(source, register) => {
+                //the low word of the register against the operand, both signed
+                //(`Reference/68ks10a.htm`)
+                let bound = sign_extend_to_long(
+                    self.get_operand_value(source, Size::Word, Used::Once)?,
+                    Size::Word,
+                );
+                let value =
+                    sign_extend_to_long(self.get_register_value(*register, Size::Word), Size::Word);
+                if value < 0 || value > bound {
+                    //"N - Set if the data register is less than zero, cleared if the data
+                    //register is greater than the higher limit"; the other flags the help
+                    //leaves undefined and s68k leaves alone
+                    self.set_flag(Flags::Negative, value < 0);
+                    return Err(
+                        self.end_with_an_exception(RuntimeError::ChkOutOfBounds { value, bound })
+                    );
+                }
+            }
+            Instruction::TRAPV => {
+                if self.get_flag(Flags::Overflow) {
+                    return Err(self.end_with_an_exception(RuntimeError::OverflowException));
+                }
+            }
+            Instruction::ILLEGAL => {
+                return Err(self.end_with_an_exception(RuntimeError::IllegalInstruction));
+            }
         };
         Ok(())
     }
@@ -1494,6 +1849,7 @@ impl Interpreter {
         println!("A6: {:#010X} ({})", self.cpu.a_reg[6].get_long(), self.cpu.a_reg[6].get_long());
         println!("A7: {:#010X} ({})", self.cpu.a_reg[7].get_long(), self.cpu.a_reg[7].get_long());
         let ccr = self.cpu.ccr.get_status();
+        println!("SR: {:#06X}", self.cpu.get_sr());
         println!("{}", ccr);
     }
 
@@ -1996,6 +2352,34 @@ impl Interpreter {
                 let final_address = base_value.wrapping_add(*offset).wrapping_add(index_value);
                 Ok(self.memory.read_size(final_address as usize, size)?)
             }
+            Operand::PcDisplacement { offset } => {
+                let address = self.pc_relative_address(*offset, None);
+                Ok(self.memory.read_size(address as usize, size)?)
+            }
+            Operand::PcIndex { offset, index } => {
+                let address = self.pc_relative_address(*offset, Some(*index));
+                Ok(self.memory.read_size(address as usize, size)?)
+            }
+        }
+    }
+    /// The address a PC-relative Operand names, which is the other half of the
+    /// round trip the Assembler started.
+    ///
+    /// The Assembler stored `label - (address of this instruction +
+    /// EXTENSION_WORD_OFFSET)`, so adding the two back gives the label again —
+    /// whatever the instruction is and wherever the program counter has got
+    /// to, because the address used is the instruction being executed and not
+    /// the one after it.
+    fn pc_relative_address(&self, offset: i32, index: Option<IndexRegister>) -> u32 {
+        let base = (self.current_instruction_address as u32)
+            .wrapping_add(EXTENSION_WORD_OFFSET as u32)
+            .wrapping_add(offset as u32);
+        match index {
+            None => base,
+            Some(index) => {
+                let value = self.get_register_value(index.register, index.size);
+                base.wrapping_add(sign_extend_to_long(value, index.size) as u32)
+            }
         }
     }
     fn get_operand_address(&mut self, op: &Operand) -> RuntimeResult<u32> {
@@ -2023,6 +2407,10 @@ impl Interpreter {
                 Ok(final_address as u32)
             }
             Operand::Absolute(address) => Ok(*address as u32),
+            Operand::PcDisplacement { offset } => Ok(self.pc_relative_address(*offset, None)),
+            Operand::PcIndex { offset, index } => {
+                Ok(self.pc_relative_address(*offset, Some(*index)))
+            }
             _ => Err(RuntimeError::IncorrectAddressingMode(
                 "Attempted to get address of non address addressing mode".to_string(),
             )),
@@ -2088,6 +2476,16 @@ impl Interpreter {
                 let index_value = sign_extend_to_long(index_value, index.size);
                 let final_address = base_value.wrapping_add(*offset).wrapping_add(index_value);
                 Ok(self.set_memory_value(final_address as usize, size, value)?)
+            }
+            // Nothing is written through the program counter: the analyzer
+            // refuses a PC-relative Operand wherever the instruction writes
+            // one (`Modes::ALTERABLE` holds neither of them), so this is
+            // unreachable from any assembled Program and is an error rather
+            // than a store to the address it names.
+            Operand::PcDisplacement { .. } | Operand::PcIndex { .. } => {
+                Err(RuntimeError::IncorrectAddressingMode(
+                    "Attempted to store through a PC-relative operand".to_string(),
+                ))
             }
         }
     }
@@ -2225,6 +2623,56 @@ impl Interpreter {
             flags |= Flags::Extend;
         }
         self.cpu.ccr = flags;
+    }
+
+    /// The flags of the three instructions that carry the extend flag into
+    /// their arithmetic: `addx`, `subx` and `negx`.
+    ///
+    /// N and V are the result's, as they are for `add` and `sub`, and X and C
+    /// are the one carry, set alike. **Z is the multi-precision rule**
+    /// ([`Interpreter::clear_zero_if_the_result_is_not_zero`]).
+    fn set_extended_arithmetic_flags(
+        &mut self,
+        result: u32,
+        size: Size,
+        carry: bool,
+        overflow: bool,
+    ) {
+        self.set_flag(Flags::Negative, get_sign(result, size));
+        self.clear_zero_if_the_result_is_not_zero(result, size);
+        self.set_flag(Flags::Overflow, overflow);
+        self.set_flag(Flags::Extend, carry);
+        self.set_flag(Flags::Carry, carry);
+    }
+
+    /// The flags of `abcd`, `sbcd` and `nbcd`: the decimal carry in X and C,
+    /// the same Z rule, and **N and V left exactly as they were**.
+    ///
+    /// The help calls both of those undefined for all three instructions, and
+    /// s68k leaves an undefined flag alone rather than inventing a value for
+    /// it, which is what `chk` already does with the flags its own page calls
+    /// undefined.
+    fn set_decimal_flags(&mut self, result: u32, carry: bool) {
+        self.clear_zero_if_the_result_is_not_zero(result, Size::Byte);
+        self.set_flag(Flags::Extend, carry);
+        self.set_flag(Flags::Carry, carry);
+    }
+
+    /// The Z flag of every instruction that carries the extend flag: **cleared
+    /// when the result is not zero, and left exactly as it was when it is**.
+    ///
+    /// It is what makes a multi-precision number testable in one go: the
+    /// program sets Z, adds or subtracts the pieces from the least significant
+    /// up, and Z is still set at the end only if every piece came out zero
+    /// ("The Z flag works in another way now, making it possible to check if a
+    /// big number (much bigger than 32 bits) is zero. You must set the zero
+    /// flag before making the addition though", `Reference/68ks5e.htm`). An
+    /// instruction that set Z from its own result would lose the answer of the
+    /// piece below it, which is the mistake this rule exists to prevent.
+    fn clear_zero_if_the_result_is_not_zero(&mut self, result: u32, size: Size) {
+        if get_value_sized(result, size) != 0 {
+            self.set_flag(Flags::Zero, false);
+        }
     }
 
     pub fn get_condition_value(&self, cond: &Condition) -> bool {
@@ -2375,6 +2823,15 @@ impl Interpreter {
     pub fn wasm_get_flags_as_number(&self) -> u16 {
         self.cpu.ccr.bits()
     }
+    /// The whole status register, `$2700` before a program has run.
+    ///
+    /// Its low byte is the condition codes as the processor numbers them
+    /// (extend 16, negative 8, zero 4, overflow 2, carry 1), which is **not**
+    /// the bitfield [`Interpreter::wasm_get_flags_as_number`] answers: that one
+    /// is this crate's own and the editor has always read it.
+    pub fn wasm_get_sr(&self) -> u16 {
+        self.get_sr()
+    }
     pub fn wasm_undo(&mut self) -> Result<JsValue, JsValue> {
         match self.undo() {
             Ok(step) => Ok(serde_wasm_bindgen::to_value(&step).unwrap()),
@@ -2394,7 +2851,7 @@ impl Interpreter {
         self.get_condition_value(&cond)
     }
     pub fn wasm_get_last_line_address(&self) -> usize {
-        self.current_instruction_address
+        self.get_current_instruction_address()
     }
     pub fn wasm_get_last_instruction(&self) -> JsValue {
         self.wasm_get_instruction_at(self.current_instruction_address)

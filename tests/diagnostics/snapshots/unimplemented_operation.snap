@@ -20,8 +20,8 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`movep` is not implemented: s68k has no byte-interleaved transfer yet",
-    "hint": "write `move.b` for each byte instead",
+    "message": "`reset` is not implemented: s68k has no external hardware to reset",
+    "hint": null,
     "location": {
       "file": "unimplemented_operation.asm",
       "line": 2,
@@ -46,7 +46,7 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`macro` is not implemented: macros are not assembled yet",
+    "message": "`macro` is not implemented: macros are not assembled",
     "hint": "write the lines of the macro where it is used instead",
     "location": {
       "file": "unimplemented_operation.asm",
@@ -59,7 +59,7 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled yet",
+    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled",
     "hint": "write the lines of the macro here instead",
     "location": {
       "file": "unimplemented_operation.asm",

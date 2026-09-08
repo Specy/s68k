@@ -25,7 +25,7 @@ There are two halves, and one thing between them.
 
 - **Program**: what the assembler produces — the assembled instructions with their addresses, sizes and source locations, the initial contents of memory, the symbols, and the entry point. It is the only thing the interpreter reads, and it holds no source: an instruction reaches its line through its location, which is a file, a line and a range of columns.
 
-- **Interpreter** (`src/interpreter.rs`): fed a program, it runs it — registers, memory, flags, one step at a time or to the end, with an undo history, breakpoints given as `{ file, line }`, and a call stack that names the routine each frame is in. It never reads source and never parses anything.
+- **Interpreter** (`src/interpreter.rs`): fed a program, it runs it — registers, memory, the status register, one step at a time or to the end, with an undo history, breakpoints given as `{ file, line }`, and a call stack that names the routine each frame is in. It never reads source and never parses anything.
 
 A **diagnostic** carries a severity (error, warning or suggestion), a stable code, a message, often a hint saying what to write instead, and related locations; it is what the editor draws and what this project is really about.
 
@@ -40,13 +40,26 @@ A **diagnostic** carries a severity (error, warning or suggestion), a stable cod
 ## Supported instructions
 | Type                   | Instructions                                                                                                                                                                                                      |
 |------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu, addq, subq, addi, subi                                                                                                                                              |
+| Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu, addq, subq, addi, subi, addx, subx, negx                                                                                                                            |
 | Comparison             | tst, cmp, cmpi, cmpa, cmpm                                                                                                                                                                                        |
 | Branching and jumping  | bcc, bcs, beq, bne, blt, ble, bgt, bge, bls, bhi, bpl, bmi, blo, bhs, bvc, bvs, bsr, bra, jmp, jsr, rts, dbcc, dbcs, dbeq, dbne, dbge, dbgt, dble, dbls, dblt, dbhi, dbmi, dbpl, dbvc, dbvs, dbf, dbt, dbhs, dblo, dbra |
-| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st, shs, slo                                                                                                                            |
-| Bitwise                | not, or, ori, and, andi, eor, eori, lsl, lsr, asr, asl, rol, ror, btst, bclr, bchg, bset                                                                                                                          |
-| Other                  | clr, exg, neg, ext, extb, swap, move, link, unlk, lea, pea, moveq, movea, movem, nop                                                                                                                              |
+| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st, shs, slo, and `move`/`andi`/`ori`/`eori` with `sr` or `ccr` as an operand                                                           |
+| Bitwise                | not, or, ori, and, andi, eor, eori, lsl, lsr, asr, asl, rol, ror, roxl, roxr, btst, bclr, bchg, bset                                                                                                              |
+| Binary coded decimal   | abcd, sbcd, nbcd                                                                                                                                                                                                 |
+| Other                  | clr, exg, neg, ext, extb, swap, move, link, unlk, lea, pea, moveq, movea, movem, movep, tas, nop                                                                                                                  |
+| Exceptions             | chk, trapv, illegal, and rtr, which returns and restores the condition codes                                                                                                                                      |
 | Interrupt              | trap #15, with the I/O tasks 0-9, 11, 13-15, 17-20, 23, 24 and 33 in `d0`, the mouse task 61 and the graphics tasks 80-96 (the `Interrupt` enum of `src/instructions.rs` is the list)                             |
+
+`move <ea>,ccr`, `move <ea>,sr` and `andi`/`ori`/`eori` into either take the modes and the sizes of the 68000: a data operand and a word into `sr` or `ccr`, a byte for the immediate into `ccr`. `move sr,<ea>` writes any data alterable operand. `move ccr,<ea>` is the one instruction here a real 68000 does not have — it belongs to the 68010 — and s68k assembles it because reading the condition codes back is worth more to a student than the distinction.
+
+`addx`, `subx`, `abcd` and `sbcd` take two data registers or two predecrement operands and nothing else, which is what the 68000 gives them; `negx` and `nbcd` take one data alterable operand, and `roxl` and `roxr` the three shapes of the other shifts. The three decimal instructions work on one byte. All eight carry the extend flag, and the six that do arithmetic with it — `addx`, `subx`, `negx`, `abcd`, `sbcd` and `nbcd` — carry the Z flag rule that makes a number of any width testable: **Z is cleared when the result is not zero and left alone when it is**, so a program sets Z, works up from the least significant piece and reads Z at the end. `roxl` and `roxr` set Z from the result, as every other shift does. `abcd`, `sbcd` and `nbcd` leave N and V exactly where they were, which is what the reference calls undefined for them.
+
+## Supported addressing modes
+Every one the 68000 has: `d0`, `a0`, `(a0)`, `(a0)+`, `-(a0)`, `4(a6)`, `4(a6,d1.w)`, `label(pc)`, `label(pc,d1.w)`, an absolute address (`$2000`, `label`, and `label.w` or `label.l` to force a width), `#5`, and `sr` and `ccr` where an instruction reaches the status register. Both spellings of every displaced mode are accepted, `4(a6)` and `(4,a6)` alike, and `(a0,d1.w)` and `(pc,d1.w)` are a displacement of zero. Which modes an instruction takes where is the instruction table's answer, and a rejection names what was found, what is allowed there and, where the mistake has a name, what was probably meant.
+
+**A PC-relative operand is written as the address it reaches**, as in EASy68K: `move.l data(pc),d0` reads `data`. The assembler works out the distance from the instruction to it — from the extension word, which is the instruction's address plus two — and the interpreter adds the two back, so the operand reaches the same place wherever it is written. The distance is a signed word for `label(pc)` and a signed byte for `label(pc,xn)`, and a label too far away is an error saying how far it is. Nothing is written through the program counter: a PC-relative operand is refused as a destination, with the reason.
+
+**`label.w` and `label.l` name the same address here.** s68k stores addresses and encodes no instruction words, so forcing a width says nothing about the program, and `.l` is accepted in silence; `.w` is a claim that the address fits the sixteen bits of an absolute short reference, and it is checked (EASy68K's "Absolute address exceeds 16 bits"). Unlike EASy68K, s68k does not sign extend a short address, which is why the check is an error rather than the warning EASy68K gives — `$8000.w` reads `$ff8000` there and would read `$8000` here. A `.b` or `.s` after an address is refused with the reminder that the size the instruction works at goes after the mnemonic.
 
 ## Supported directives
 | Directive | What it does |
@@ -58,22 +71,30 @@ A **diagnostic** carries a severity (error, warning or suggestion), a stable cod
 | `dcb` | puts a value in memory a given number of times |
 | `ds` | reserves room and writes nothing to it |
 | `end` | ends the program and, with an operand, sets the entry point |
+| `reg` | names a `movem` register list, `AllRegs reg d0-d7/a0-a6`, for `movem.l AllRegs,-(sp)` |
+| `fail` | reports the rest of the line as an error of the program's own; the assembly carries on |
+| `simhalt` | ends the run where it stands, modifying no register |
+| `section` | switches between the sixteen location counters, 0 to 15, each going on from where it was left |
+| `offset` | opens a region that produces no bytes, where `ds` names the fields of a structure by their offsets; `org *` ends it |
 | `opt`, `list`, `nolist`, `page` | accepted and ignored: they are about the listing file, which there is none of |
 
 Without `end`, the entry point is a label named `START`, and failing that the first instruction. There is no `even`: `ds.w 0` is EASy68K's idiom for it, and word and long data align on their own anyway.
 
-`include`, `incbin`, `reg`, `fail`, `simhalt`, `offset` and `section` are recognised and refused with a diagnostic naming the feature and, where there is one, what to write instead; they are the next piece of work. `memory`, the macro directives and conditional assembly are refused the same way, and macros are the one feature that may come back later.
+`equ`, `set` and `reg` need a label, and so does a `section` with no number, which it sets to the number of the section in force; `page` and the conditional directives take none. A `reg` list has to be defined above the `movem` that reads it, and it may not appear in an expression. Unlike EASy68K, s68k offers no way to resume a run after a `simhalt`.
+
+A program starts in section 0 at the default origin `$1000`; the other fifteen sections start at 0, as in EASy68K. A name defined inside an `offset` region is a constant and not a label: it stands for an offset, which may be negative, and no line of the program is laid out at it. Anything that would produce bytes inside a region — an instruction, a `dc`, a `simhalt` — is an error saying so.
+
+`include` and `incbin` are recognised and refused with a diagnostic naming the feature and what to write instead; they are the next piece of work. `memory`, the macro directives and conditional assembly are refused the same way, and macros are the one feature that may come back later.
 
 ## Todo
 - The directives above that are still refused
-- The instructions the table carries a "not implemented" reason for: `movep`, `addx`, `subx`, `negx`, `abcd`, `sbcd`, `nbcd`, `roxl`, `roxr`, `tas`, `rtr`, `chk`, `trapv`, `illegal`
-- `sr`, `ccr` and `usp`, and the PC-relative addressing modes
 - Real instruction sizes
 
 ## Known limitations
 1. Characters are one byte, read and written as Latin-1; a source character with no byte of its own is an assembly error. This is a decision and not a bug — a program that writes `dc.b 'é'` has to put one byte in memory.
-2. Every instruction is four bytes wide whatever it encodes to on a real 68000, so an address computed from instruction sizes will not match the hardware.
-3. The program runs as supervisor, always: the status register is stored and readable, and its trace, supervisor and interrupt-mask bits have no effect.
+2. Every instruction is four bytes wide whatever it encodes to on a real 68000, so an address computed from instruction sizes will not match the hardware. It is also why a PC-relative operand is resolved while the program is assembled: there is no extension word in memory to read the displacement from, so the assembler stores it and the interpreter adds it to the address of the instruction being executed.
+3. The program runs as supervisor, always. The status register is a 16-bit register whose low byte is the condition codes and whose high byte — trace, supervisor and the interrupt mask — is stored, readable (`getSr()`, and the `SR:` line of the command line) and of no effect at all. It starts at `$2700`, as in EASy68K, so `andi #$00,sr` "puts the CPU in user mode" and changes nothing that runs. `move usp,an` and `move an,usp` are refused for the same reason: there is one stack pointer, `a7`.
+4. `chk`, `trapv` and `illegal` raise their exception by ending the run, as an address error does: there are no exception vectors, no supervisor stack frame and no `rte`, so a program cannot handle one. The runtime error names the instruction and its cause.
 
 # How to run rust
 Firstly make sure you have rust installed, [you can download it here](https://www.rust-lang.org/tools/install), once done, clone the repository on your machine and run `cargo run` in the root folder of the project. This will assemble and run the code inside of the `code-to-run.asm` file; name another file to run that one instead, `cargo run -- my-program.asm`.

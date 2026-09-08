@@ -1,4 +1,3 @@
-* The modes phase 3 adds, named rather than called invalid.
-    move.w sr,d0
-    move.l greeting(pc),d0
-greeting: dc.b 'hello',0
+* The one operand s68k does not assemble, named rather than called invalid.
+    move.l usp,a0
+    move.l a0,usp

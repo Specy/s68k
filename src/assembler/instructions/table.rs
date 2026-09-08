@@ -26,7 +26,7 @@
 use bitflags::bitflags;
 
 use super::encoded::{Condition, Sign, Size};
-use crate::assembler::ast::{Operand, SizeSuffix};
+use crate::assembler::ast::{Operand, SizeSuffix, SpecialRegister};
 
 bitflags! {
     /// The Addressing modes an Operand position accepts.
@@ -34,12 +34,19 @@ bitflags! {
     /// The names are the ones a Diagnostic prints ([`Modes::names`]), which are
     /// the notation the old checker used and the one the asm-editor's
     /// documentation writes: `Dn`, `An`, `(An)`, `(An)+`, `-(An)`, `d(An)`,
-    /// `d(An,Xn)`, `Ea/<label>`, `Im`.
+    /// `d(An,Xn)`, `Ea/<label>`, `d(PC)`, `d(PC,Xn)`, `Im`.
     ///
-    /// The PC-relative modes are deliberately absent: the parser reads them,
-    /// and the analyzer answers them with "not implemented yet" rather than
-    /// offering them as an alternative (see the implementation notes, phase 1
-    /// step 6).
+    /// Every Addressing mode of the language is here since phase 3 (CONTEXT.md,
+    /// "Addressing mode"): the
+    /// PC-relative pair were deliberately absent while the analyzer answered
+    /// them with "not implemented yet", and they are ordinary modes now, in
+    /// the groups the reference puts them in — data, memory and control, and
+    /// never alterable, because nothing is written through the program
+    /// counter. `usp` is still not a mode: `move usp,an` is not implemented
+    /// (the design record, "Scope") and a mode that is allowed nowhere would
+    /// only turn up in "there it takes …" lists as an offer that is a lie.
+    /// `sr` and `ccr` are modes of their own, because an instruction that
+    /// takes one takes nothing else in that position.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Modes: u16 {
         /// `d0` to `d7`.
@@ -62,6 +69,14 @@ bitflags! {
         const IMMEDIATE = 1 << 8;
         /// `d0-d3/a0-a2`, which only `movem` takes.
         const REGISTER_LIST = 1 << 9;
+        /// `sr`, the status register.
+        const SR = 1 << 10;
+        /// `ccr`, the condition codes.
+        const CCR = 1 << 11;
+        /// `label(pc)`
+        const PC_DISPLACEMENT = 1 << 12;
+        /// `label(pc,d1.w)`
+        const PC_INDEX = 1 << 13;
     }
 }
 
@@ -71,33 +86,46 @@ impl Modes {
         .union(Modes::AN)
         .union(Modes::MEMORY)
         .union(Modes::IMMEDIATE);
-    /// The six modes that name a place in memory.
+    /// The two PC-relative modes, which are read and never written.
+    pub const PC_RELATIVE: Modes = Modes::PC_DISPLACEMENT.union(Modes::PC_INDEX);
+    /// The eight modes that name a place in memory.
     pub const MEMORY: Modes = Modes::INDIRECT
         .union(Modes::POSTINCREMENT)
         .union(Modes::PREDECREMENT)
         .union(Modes::DISPLACEMENT)
         .union(Modes::INDEX)
-        .union(Modes::ABSOLUTE);
+        .union(Modes::ABSOLUTE)
+        .union(Modes::PC_RELATIVE);
     /// The 68000's "data addressing modes": everything but an address register.
     pub const DATA: Modes = Modes::ALL.difference(Modes::AN);
     /// The 68000's "alterable addressing modes": everything that can be
-    /// written, which is everything but an immediate.
-    pub const ALTERABLE: Modes = Modes::ALL.difference(Modes::IMMEDIATE);
+    /// written, which is everything but an immediate and the two PC-relative
+    /// modes — the program counter is read, and a program does not write
+    /// through it.
+    pub const ALTERABLE: Modes = Modes::ALL
+        .difference(Modes::IMMEDIATE)
+        .difference(Modes::PC_RELATIVE);
     /// Data and alterable at once: the destination of `clr`, `neg`, `not`,
     /// `Scc` and the immediate instructions.
     pub const DATA_ALTERABLE: Modes = Modes::DATA.intersection(Modes::ALTERABLE);
     /// In memory and alterable: the destination of a memory shift, and of the
     /// `<ea>` half of `add`, `and` and `or`.
-    pub const MEMORY_ALTERABLE: Modes = Modes::MEMORY;
+    pub const MEMORY_ALTERABLE: Modes = Modes::MEMORY.difference(Modes::PC_RELATIVE);
     /// The "control addressing modes": a place in memory that is not walked
     /// over, so neither `(An)+` nor `-(An)`. `lea`, `pea`, `jmp` and `jsr` take
-    /// these.
+    /// these, the PC-relative pair included.
     pub const CONTROL: Modes = Modes::INDIRECT
         .union(Modes::DISPLACEMENT)
         .union(Modes::INDEX)
-        .union(Modes::ABSOLUTE);
-    /// Where `movem` may put registers: control, plus `-(An)`.
-    pub const MOVEM_TO_MEMORY: Modes = Modes::CONTROL.union(Modes::PREDECREMENT);
+        .union(Modes::ABSOLUTE)
+        .union(Modes::PC_RELATIVE);
+    /// Control and alterable: control without the two modes nothing writes
+    /// through.
+    pub const CONTROL_ALTERABLE: Modes = Modes::CONTROL.difference(Modes::PC_RELATIVE);
+    /// Where `movem` may put registers: control alterable, plus `-(An)`. The
+    /// PC-relative modes are not among them, which is the one place the two
+    /// directions of `movem` differ by more than the side the list is on.
+    pub const MOVEM_TO_MEMORY: Modes = Modes::CONTROL_ALTERABLE.union(Modes::PREDECREMENT);
     /// Where `movem` may read them back from: control, plus `(An)+`.
     pub const MOVEM_FROM_MEMORY: Modes = Modes::CONTROL.union(Modes::POSTINCREMENT);
     /// A register list, or the single register that stands for a list of one.
@@ -107,10 +135,15 @@ impl Modes {
     pub const COUNT: Modes = Modes::DN.union(Modes::IMMEDIATE);
     /// Either bank of general registers, which is what `exg` swaps.
     pub const ANY_REGISTER: Modes = Modes::DN.union(Modes::AN);
+    /// The two halves of the status register, which are the only Operands a
+    /// position holding one accepts: a Form that names either of them names no
+    /// ordinary Addressing mode beside it, which is what
+    /// `Analyzer::choose_form` reads.
+    pub const STATUS: Modes = Modes::SR.union(Modes::CCR);
 
     /// The mode one parsed Operand is, or `None` when the Operand is not an
-    /// Addressing mode this table can talk about — a special register or a
-    /// PC-relative mode, both of which the analyzer answers separately.
+    /// Addressing mode this table can talk about, which is `usp` alone: the
+    /// analyzer answers that one before it looks at any Form.
     pub fn of(operand: &Operand) -> Option<Modes> {
         Some(match operand {
             Operand::Immediate { .. } => Modes::IMMEDIATE,
@@ -123,8 +156,24 @@ impl Modes {
             Operand::Index { .. } => Modes::INDEX,
             Operand::Absolute { .. } => Modes::ABSOLUTE,
             Operand::RegisterList { .. } => Modes::REGISTER_LIST,
-            Operand::SpecialRegister { .. } | Operand::PcDisplacement { .. } => return None,
-            Operand::PcIndex { .. } => return None,
+            Operand::SpecialRegister {
+                register: SpecialRegister::Sr,
+                ..
+            } => Modes::SR,
+            Operand::SpecialRegister {
+                register: SpecialRegister::Ccr,
+                ..
+            } => Modes::CCR,
+            // `usp` has no mode of its own: `move usp,An` is not implemented
+            // (the design record, "Scope"), the analyzer says so before it
+            // looks at any Form, and offering it as an alternative would be a
+            // lie.
+            Operand::SpecialRegister {
+                register: SpecialRegister::Usp,
+                ..
+            } => return None,
+            Operand::PcDisplacement { .. } => Modes::PC_DISPLACEMENT,
+            Operand::PcIndex { .. } => Modes::PC_INDEX,
         })
     }
 
@@ -143,7 +192,7 @@ impl Modes {
 
 /// Every mode with the name a message gives it, in the order a message lists
 /// them: registers, then the ways of reaching memory, then an immediate.
-const MODE_NAMES: [(Modes, &str); 10] = [
+const MODE_NAMES: [(Modes, &str); 14] = [
     (Modes::DN, "Dn"),
     (Modes::AN, "An"),
     (Modes::INDIRECT, "(An)"),
@@ -152,8 +201,12 @@ const MODE_NAMES: [(Modes, &str); 10] = [
     (Modes::DISPLACEMENT, "d(An)"),
     (Modes::INDEX, "d(An,Xn)"),
     (Modes::ABSOLUTE, "Ea/<label>"),
+    (Modes::PC_DISPLACEMENT, "d(PC)"),
+    (Modes::PC_INDEX, "d(PC,Xn)"),
     (Modes::IMMEDIATE, "Im"),
     (Modes::REGISTER_LIST, "<register list>"),
+    (Modes::SR, "sr"),
+    (Modes::CCR, "ccr"),
 ];
 
 /// The sizes a [`Form`] accepts.
@@ -260,6 +313,21 @@ impl Form {
     pub fn arity(&self) -> usize {
         self.operands.len()
     }
+
+    /// Whether these Operands fit the shape, position by position.
+    ///
+    /// A mode this phase does not assemble ([`Modes::of`] answers `None` for
+    /// one) decides nothing here: the analyzer has already reported it.
+    pub fn fits(&self, operands: &[Operand]) -> bool {
+        self.arity() == operands.len()
+            && operands
+                .iter()
+                .enumerate()
+                .all(|(index, operand)| match Modes::of(operand) {
+                    Some(mode) => self.operands[index].contains(mode),
+                    None => true,
+                })
+    }
 }
 
 /// A form with no rule about the Operands together.
@@ -341,6 +409,16 @@ pub enum Family {
         /// `true` for `sub`, `false` for `add`.
         subtract: bool,
     },
+    /// `addx` and `subx`, which carry the extend flag in as well.
+    AddSubExtended {
+        /// `true` for `subx`, `false` for `addx`.
+        subtract: bool,
+    },
+    /// `abcd` and `sbcd`, the same two shapes in decimal.
+    AddSubDecimal {
+        /// `true` for `sbcd`, `false` for `abcd`.
+        subtract: bool,
+    },
     /// `adda` and `suba`, written out.
     AddSubAddress {
         /// `true` for `suba`, `false` for `adda`.
@@ -370,6 +448,10 @@ pub enum Family {
     Clr,
     /// `neg`.
     Neg,
+    /// `negx`: `neg` with the extend flag subtracted as well.
+    NegExtended,
+    /// `nbcd`: the tens complement, which is `negx` in decimal.
+    NegDecimal,
     /// `not`.
     Not,
     /// `tst`.
@@ -414,6 +496,18 @@ pub enum Family {
     Rts,
     /// `nop`.
     Nop,
+    /// `movep`, either direction.
+    Movep,
+    /// `tas`.
+    Tas,
+    /// `rtr`.
+    Rtr,
+    /// `chk`.
+    Chk,
+    /// `trapv`.
+    Trapv,
+    /// `illegal`.
+    Illegal,
 }
 
 /// Which of the six immediate instructions a [`Family::Immediate`] is.
@@ -453,6 +547,9 @@ pub enum ShiftKind {
     Logical,
     /// `rol`, `ror`: the bits come round.
     Rotate,
+    /// `roxl`, `roxr`: the bits come round through the extend flag, which makes
+    /// the rotation 9, 17 or 33 bits wide (`Reference/68ks7g.htm`).
+    RotateExtend,
 }
 
 /// Which way a shift moves its bits. The same thing as
@@ -531,6 +628,38 @@ impl InstructionSpec {
         arities.sort_unstable();
         arities.dedup();
         arities
+    }
+
+    /// Whether some Form of the instruction fits these Operands as they stand.
+    ///
+    /// The Layout asks it before it reads a bare name as a `reg` Symbol: in
+    /// `movem.l table,d0-d2` the first Operand is an address and the *second*
+    /// is the register list, so a `table` that is no register list is no
+    /// mistake. Only when nothing fits is a name in a register-list position
+    /// answered by name.
+    pub fn has_a_form_that_fits(&self, operands: &[Operand]) -> bool {
+        self.forms.iter().any(|form| form.fits(operands))
+    }
+
+    /// Whether some Form of the instruction accepts a register list at
+    /// `position`.
+    ///
+    /// It is what tells a bare name that stands for a `reg` Symbol from one
+    /// that stands for an address: `movem AllRegs,-(a7)` reads position 0 as a
+    /// register list, `move AllRegs,d0` reads it as an Expression and gets
+    /// EASy68K's "Register list symbol used in an expression". Today only
+    /// `movem` answers `true`, and it answers it for both of its positions,
+    /// because either of them holds the list depending on the direction.
+    ///
+    /// The Operand count is deliberately not part of the question: a `movem`
+    /// with the wrong number of Operands should be told about the count and not
+    /// also about a name it would have read as a list.
+    pub fn takes_a_register_list(&self, position: usize) -> bool {
+        self.forms.iter().any(|form| {
+            form.operands
+                .get(position)
+                .is_some_and(|modes| modes.contains(Modes::REGISTER_LIST))
+        })
     }
 
     /// Every size any of its forms accepts, in the order a message lists them.
@@ -626,6 +755,62 @@ const BIT_NUMBER: ValueRule = ValueRule {
     hint: Some("a data register has 32 bits, numbered from 0; a byte in memory has 8"),
 };
 
+/// The five Forms of `move`: the general one first, so that a `move` that fits
+/// none is judged against it, then the four that name a half of the status
+/// register.
+///
+/// `move <ea>,ccr` and `move <ea>,sr` take any **data** Addressing mode, an
+/// immediate included, and `move sr,<ea>` writes any **data alterable** one;
+/// all four are a word (`Reference/68ks4d.htm`). `move ccr,<ea>` is the one the
+/// 68000 does not have — it is the 68010's — and s68k assembles it because the
+/// design record asks for `move` "to and from SR and CCR" (the implementation
+/// notes, phase 3).
+const MOVE_FORMS: &[Form] = &[
+    form(&[Modes::ALL, Modes::ALTERABLE], SizeRule::Any),
+    form(&[Modes::DATA, Modes::CCR], SizeRule::WordOnly),
+    form(&[Modes::DATA, Modes::SR], SizeRule::WordOnly),
+    form(&[Modes::SR, Modes::DATA_ALTERABLE], SizeRule::WordOnly),
+    form(&[Modes::CCR, Modes::DATA_ALTERABLE], SizeRule::WordOnly),
+];
+/// The three Forms of `andi`, `ori` and `eori`: the ordinary one, then the two
+/// the help adds — "Operations that uses the status register (SR) and the flag
+/// register (CCR) can only work with word and byte" (`Reference/68ks6b.htm`),
+/// a byte into `ccr` and a word into `sr`.
+const IMMEDIATE_LOGICAL_FORMS: &[Form] = &[
+    form(&[Modes::IMMEDIATE, Modes::DATA_ALTERABLE], SizeRule::Any),
+    form(&[Modes::IMMEDIATE, Modes::CCR], SizeRule::ByteOnly),
+    form(&[Modes::IMMEDIATE, Modes::SR], SizeRule::WordOnly),
+];
+/// The two Forms of `addx` and `subx`, which are the whole of what they take:
+/// two data registers, or two predecrement Operands and nothing else
+/// ("ADDRESS METHODS: Dn, -(An)", `Reference/68ks5e.htm` and `68ks5v.htm`).
+///
+/// The register form adds the two registers; the memory form is the one that
+/// walks a multi-precision number down through memory, which is why the 68000
+/// offers `-(An)` and no other way of reaching it. A mixture of the two is not
+/// an instruction, and the analyzer answers one by naming both shapes and
+/// `add`.
+const EXTENDED_PAIR_FORMS: &[Form] = &[
+    form(&[Modes::DN, Modes::DN], SizeRule::Any),
+    form(&[Modes::PREDECREMENT, Modes::PREDECREMENT], SizeRule::Any),
+];
+/// The same two Forms for `abcd` and `sbcd`, which work on one byte and take no
+/// other size ("DATA LENGTH: Byte", `Reference/68ks8e.htm` and `68ks8g.htm`).
+const DECIMAL_PAIR_FORMS: &[Form] = &[
+    form(&[Modes::DN, Modes::DN], SizeRule::ByteOnly),
+    form(
+        &[Modes::PREDECREMENT, Modes::PREDECREMENT],
+        SizeRule::ByteOnly,
+    ),
+];
+/// The two Forms of `movep`, one a direction: a data register and a
+/// displacement Operand, which is the only Addressing mode it takes
+/// (`Reference/68ks4g.htm`).
+const MOVEP_FORMS: &[Form] = &[
+    form(&[Modes::DN, Modes::DISPLACEMENT], SizeRule::WordOrLong),
+    form(&[Modes::DISPLACEMENT, Modes::DN], SizeRule::WordOrLong),
+];
+
 /// A `Bcc` row.
 const fn branch(mnemonic: &'static str, condition: Condition) -> InstructionSpec {
     implemented(mnemonic, Family::Bcc(condition), BRANCH_FORM)
@@ -673,11 +858,7 @@ const fn bit(
 /// is [`lookup`] and does not depend on the order.
 pub const TABLE: &[InstructionSpec] = &[
     // ---- data movement ----
-    implemented(
-        "move",
-        Family::Move,
-        &[form(&[Modes::ALL, Modes::ALTERABLE], SizeRule::Any)],
-    ),
+    implemented("move", Family::Move, MOVE_FORMS),
     implemented(
         "movea",
         Family::Movea,
@@ -697,11 +878,7 @@ pub const TABLE: &[InstructionSpec] = &[
             ),
         ],
     ),
-    not_implemented(
-        "movep",
-        "s68k has no byte-interleaved transfer yet",
-        Some("`move.b` for each byte"),
-    ),
+    implemented("movep", Family::Movep, MOVEP_FORMS),
     implemented_with_value(
         "moveq",
         Family::Moveq,
@@ -811,9 +988,21 @@ pub const TABLE: &[InstructionSpec] = &[
             Some("`sub #n,<ea>` has no such limit"),
         ),
     ),
-    not_implemented("addx", "s68k has no extend-flag arithmetic yet", None),
-    not_implemented("subx", "s68k has no extend-flag arithmetic yet", None),
-    not_implemented("negx", "s68k has no extend-flag arithmetic yet", None),
+    implemented(
+        "addx",
+        Family::AddSubExtended { subtract: false },
+        EXTENDED_PAIR_FORMS,
+    ),
+    implemented(
+        "subx",
+        Family::AddSubExtended { subtract: true },
+        EXTENDED_PAIR_FORMS,
+    ),
+    implemented(
+        "negx",
+        Family::NegExtended,
+        &[form(&[Modes::DATA_ALTERABLE], SizeRule::Any)],
+    ),
     implemented(
         "clr",
         Family::Clr,
@@ -893,9 +1082,21 @@ pub const TABLE: &[InstructionSpec] = &[
         &[form(&[Modes::DATA_ALTERABLE], SizeRule::Any)],
     ),
     // ---- binary coded decimal ----
-    not_implemented("abcd", "s68k has no binary coded decimal yet", None),
-    not_implemented("sbcd", "s68k has no binary coded decimal yet", None),
-    not_implemented("nbcd", "s68k has no binary coded decimal yet", None),
+    implemented(
+        "abcd",
+        Family::AddSubDecimal { subtract: false },
+        DECIMAL_PAIR_FORMS,
+    ),
+    implemented(
+        "sbcd",
+        Family::AddSubDecimal { subtract: true },
+        DECIMAL_PAIR_FORMS,
+    ),
+    implemented(
+        "nbcd",
+        Family::NegDecimal,
+        &[form(&[Modes::DATA_ALTERABLE], SizeRule::ByteOnly)],
+    ),
     // ---- logical ----
     implemented(
         "and",
@@ -921,26 +1122,17 @@ pub const TABLE: &[InstructionSpec] = &[
     implemented(
         "andi",
         Family::Immediate(ImmediateKind::And),
-        &[form(
-            &[Modes::IMMEDIATE, Modes::DATA_ALTERABLE],
-            SizeRule::Any,
-        )],
+        IMMEDIATE_LOGICAL_FORMS,
     ),
     implemented(
         "ori",
         Family::Immediate(ImmediateKind::Or),
-        &[form(
-            &[Modes::IMMEDIATE, Modes::DATA_ALTERABLE],
-            SizeRule::Any,
-        )],
+        IMMEDIATE_LOGICAL_FORMS,
     ),
     implemented(
         "eori",
         Family::Immediate(ImmediateKind::Eor),
-        &[form(
-            &[Modes::IMMEDIATE, Modes::DATA_ALTERABLE],
-            SizeRule::Any,
-        )],
+        IMMEDIATE_LOGICAL_FORMS,
     ),
     implemented(
         "not",
@@ -954,16 +1146,8 @@ pub const TABLE: &[InstructionSpec] = &[
     shift("lsr", ShiftKind::Logical, ShiftWay::Right),
     shift("rol", ShiftKind::Rotate, ShiftWay::Left),
     shift("ror", ShiftKind::Rotate, ShiftWay::Right),
-    not_implemented(
-        "roxl",
-        "s68k has no rotate through the extend flag yet",
-        Some("`rol`"),
-    ),
-    not_implemented(
-        "roxr",
-        "s68k has no rotate through the extend flag yet",
-        Some("`ror`"),
-    ),
+    shift("roxl", ShiftKind::RotateExtend, ShiftWay::Left),
+    shift("roxr", ShiftKind::RotateExtend, ShiftWay::Right),
     // ---- bit manipulation ----
     bit("btst", BitOperation::Test, BIT_TEST_FORM),
     bit("bset", BitOperation::Set, BIT_WRITE_FORM),
@@ -1003,32 +1187,24 @@ pub const TABLE: &[InstructionSpec] = &[
             Some("s68k simulates `trap #15`, the input and output trap"),
         ),
     ),
-    not_implemented(
-        "rtr",
-        "s68k does not restore the condition codes on return yet",
-        Some("`rts`"),
-    ),
+    implemented("rtr", Family::Rtr, &[form(&[], SizeRule::Unsized)]),
     not_implemented(
         "rte",
         "s68k runs every program in supervisor mode and keeps no exception frames",
         Some("`rts`"),
     ),
-    not_implemented(
+    implemented(
         "tas",
-        "s68k has no read-modify-write test yet",
-        Some("`tst` and `bset`"),
+        Family::Tas,
+        &[form(&[Modes::DATA_ALTERABLE], SizeRule::ByteOnly)],
     ),
-    not_implemented("trapv", "s68k raises no exception on overflow yet", None),
-    not_implemented(
+    implemented("trapv", Family::Trapv, &[form(&[], SizeRule::Unsized)]),
+    implemented(
         "chk",
-        "s68k raises no exception for a bounds check yet",
-        Some("`cmp` and a branch"),
+        Family::Chk,
+        &[form(&[Modes::DATA, Modes::DN], SizeRule::WordOnly)],
     ),
-    not_implemented(
-        "illegal",
-        "s68k raises no illegal-instruction exception yet",
-        Some("`simhalt`"),
-    ),
+    implemented("illegal", Family::Illegal, &[form(&[], SizeRule::Unsized)]),
     not_implemented(
         "stop",
         "s68k has no interrupts to wake a stopped processor",
@@ -1203,10 +1379,10 @@ mod tests {
 
     #[test]
     fn a_refused_instruction_is_in_the_table_with_its_reason() {
-        for mnemonic in [
-            "movep", "addx", "subx", "negx", "abcd", "sbcd", "nbcd", "roxl", "roxr", "tas", "rtr",
-            "rte", "trapv", "chk", "illegal", "stop", "reset",
-        ] {
+        // The three that are out for good (the design record, "Scope"). The
+        // extend-flag and binary-coded-decimal group was here until phase 3's
+        // second half implemented it.
+        for mnemonic in ["rte", "stop", "reset"] {
             let spec = lookup(mnemonic).unwrap_or_else(|| panic!("`{mnemonic}` is in the table"));
             match spec.implementation {
                 Implementation::NotImplemented { reason, .. } => {
@@ -1217,6 +1393,66 @@ mod tests {
                 }
             }
             assert!(spec.forms.is_empty(), "`{mnemonic}` is never form checked");
+        }
+    }
+
+    /// The shapes of the extend-flag and binary-coded-decimal group, read
+    /// straight off the reference pages.
+    ///
+    /// `addx`, `subx`, `abcd` and `sbcd` take two data registers or two
+    /// predecrements and nothing else; `negx` and `nbcd` take one data
+    /// alterable Operand; `roxl` and `roxr` take the three shapes of the other
+    /// shifts. The sizes are byte, word and long except for the three decimal
+    /// ones, which are a byte, and for the memory form of a rotate, which is a
+    /// word (`Reference/68ks5e.htm`, `68ks5v.htm`, `68ks5q.htm`, `68ks8e.htm`,
+    /// `68ks8g.htm`, `68ks8f.htm`, `68ks7g.htm`, `68ks7h.htm`).
+    #[test]
+    fn the_extend_flag_group_takes_what_the_reference_gives_it() {
+        for mnemonic in ["addx", "subx", "abcd", "sbcd"] {
+            let spec = lookup(mnemonic).expect("a row");
+            assert!(spec.is_implemented(), "`{mnemonic}` is implemented");
+            let shapes: Vec<&[Modes]> = spec.forms.iter().map(|form| form.operands).collect();
+            assert_eq!(
+                shapes,
+                vec![
+                    &[Modes::DN, Modes::DN][..],
+                    &[Modes::PREDECREMENT, Modes::PREDECREMENT][..]
+                ],
+                "`{mnemonic}` takes Dy,Dx or -(Ay),-(Ax) and nothing else"
+            );
+        }
+        for (mnemonic, sizes) in [
+            ("addx", SizeRule::Any),
+            ("subx", SizeRule::Any),
+            ("negx", SizeRule::Any),
+            ("abcd", SizeRule::ByteOnly),
+            ("sbcd", SizeRule::ByteOnly),
+            ("nbcd", SizeRule::ByteOnly),
+        ] {
+            let spec = lookup(mnemonic).expect("a row");
+            for form in spec.forms {
+                assert_eq!(form.sizes, sizes, "the sizes of `{mnemonic}`");
+            }
+        }
+        for mnemonic in ["negx", "nbcd"] {
+            let spec = lookup(mnemonic).expect("a row");
+            assert_eq!(
+                spec.forms.iter().map(Form::arity).collect::<Vec<usize>>(),
+                vec![1],
+                "`{mnemonic}` takes one operand"
+            );
+            assert_eq!(spec.forms[0].operands[0], Modes::DATA_ALTERABLE);
+        }
+        for mnemonic in ["roxl", "roxr"] {
+            let spec = lookup(mnemonic).expect("a row");
+            assert_eq!(
+                spec.forms, SHIFT_FORMS,
+                "`{mnemonic}` has the shapes of the other shifts"
+            );
+            assert!(
+                spec.value_rule.is_some(),
+                "`{mnemonic}` counts from 1 to 8 like them"
+            );
         }
     }
 
@@ -1289,12 +1525,49 @@ mod tests {
         assert!(!Modes::MOVEM_FROM_MEMORY.contains(Modes::PREDECREMENT));
     }
 
+    /// The PC-relative modes belong to data, memory and control, and to no
+    /// group that is written to (`Reference/68ks1e.htm`, and the manual's
+    /// four groups). Every row of the table takes them exactly where its
+    /// groups do, which is why implementing them changed no row.
+    #[test]
+    fn the_pc_relative_modes_are_read_and_never_written() {
+        assert!(Modes::DATA.contains(Modes::PC_RELATIVE));
+        assert!(Modes::MEMORY.contains(Modes::PC_RELATIVE));
+        assert!(Modes::CONTROL.contains(Modes::PC_RELATIVE));
+        assert!(Modes::ALL.contains(Modes::PC_RELATIVE));
+        assert!(!Modes::ALTERABLE.intersects(Modes::PC_RELATIVE));
+        assert!(!Modes::DATA_ALTERABLE.intersects(Modes::PC_RELATIVE));
+        assert!(!Modes::MEMORY_ALTERABLE.intersects(Modes::PC_RELATIVE));
+        assert!(!Modes::CONTROL_ALTERABLE.intersects(Modes::PC_RELATIVE));
+        // `movem` reads registers back through a PC-relative operand and never
+        // writes them out through one, which is the one place its two
+        // directions differ by more than the side the list is on.
+        assert!(Modes::MOVEM_FROM_MEMORY.contains(Modes::PC_RELATIVE));
+        assert!(!Modes::MOVEM_TO_MEMORY.intersects(Modes::PC_RELATIVE));
+        // The four that take a control operand take them: `lea`, `pea`, `jmp`
+        // and `jsr` are the reason the group exists.
+        for mnemonic in ["lea", "pea", "jmp", "jsr"] {
+            let spec = lookup(mnemonic).expect("a row");
+            assert!(
+                spec.forms[0].operands[0].contains(Modes::PC_RELATIVE),
+                "`{mnemonic}` takes a PC-relative operand"
+            );
+        }
+    }
+
     #[test]
     fn a_mode_set_names_itself_the_way_the_old_checker_did() {
         assert_eq!(Modes::DN.names(), vec!["Dn"]);
         assert_eq!(
             Modes::CONTROL.names(),
-            vec!["(An)", "d(An)", "d(An,Xn)", "Ea/<label>"]
+            vec![
+                "(An)",
+                "d(An)",
+                "d(An,Xn)",
+                "Ea/<label>",
+                "d(PC)",
+                "d(PC,Xn)"
+            ]
         );
         assert_eq!(
             Modes::ALL.names(),
@@ -1307,6 +1580,8 @@ mod tests {
                 "d(An)",
                 "d(An,Xn)",
                 "Ea/<label>",
+                "d(PC)",
+                "d(PC,Xn)",
                 "Im"
             ]
         );
@@ -1355,12 +1630,39 @@ mod tests {
             let arities = spec.arities();
             if arities.len() != spec.forms.len() {
                 assert!(
-                    matches!(spec.mnemonic, "cmp" | "movem"),
+                    matches!(
+                        spec.mnemonic,
+                        "cmp"
+                            | "movem"
+                            | "move"
+                            | "movep"
+                            | "andi"
+                            | "ori"
+                            | "eori"
+                            | "addx"
+                            | "subx"
+                            | "abcd"
+                            | "sbcd"
+                    ),
                     "`{}` has two forms of one arity; `Analyzer::choose_form` picks the \
                      first that fits and falls back to the first, so the order has to be \
                      deliberate",
                     spec.mnemonic
                 );
+            }
+            // A Form that names `sr` or `ccr` names nothing else in that
+            // position, which is what `Analyzer::choose_form` rests on when it
+            // keeps the Forms that agree with the special register that was
+            // written.
+            for form in spec.forms {
+                for modes in form.operands {
+                    assert!(
+                        !modes.intersects(Modes::STATUS) || Modes::STATUS.contains(*modes),
+                        "`{}` has a position that takes `sr` or `ccr` beside an ordinary \
+                         addressing mode; `Analyzer::choose_form` cannot tell its Forms apart",
+                        spec.mnemonic
+                    );
+                }
             }
         }
     }

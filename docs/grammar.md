@@ -713,6 +713,29 @@ as an `absolute` whose Expression is one `string_literal`). The one part of this
 section the parser does enforce is `text_operation`, because it decides how the
 Operand field is tokenized (2.4, 2.5).
 
+**The label field is a rule of three values**, and the productions below carry
+it: `label` requires one, `[label]` accepts one, and a production written with
+no label field at all forbids one. The two that are not the default are
+EASy68K's own errors and its own lists:
+
+| Rule | Directives | EASy68K |
+| --- | --- | --- |
+| Required | `equ`, `set`, `reg`, and `section` with no number | "Label required with this directive" |
+| Forbidden | `page`, and `ifeq`, `ifne`, `iflt`, `ifle`, `ifgt`, `ifge`, `ifc`, `ifnc`, `ifarg`, `endc` | "Label is not allowed" |
+| Accepted | every other Directive; the Label names the address the line sits at | — |
+
+`page` is "No label is permitted" (`Directives/page.htm`) and the conditional
+ones are "IFxx and ENDC directives may not be labeled"
+(`Directives/conditional.htm`); the help says nothing about `macro` — whose
+label field holds the Macro's name and which is therefore not in the list — nor
+about the structured-control keywords, and silence is answered the lenient way
+(ADR 0001). A Directive s68k refuses whole is checked all the same, so
+`skip ifeq debug` is answered twice: the label rule is about the shape of the
+line and holds whether or not the feature is implemented, and the two
+Diagnostics point at two different fields. A Label that is not allowed is
+**still defined** at the address the line sits at, because the line is already
+an error and an undefined name would be reported again at every use of it.
+
 ```
 org_directive     = [ label_field ] "org" whitespace expression ;
 equ_directive     =   label_field   whitespace "equ" whitespace expression ;
@@ -796,8 +819,72 @@ Notes the shapes do not carry:
   resolved (phase 4), never an escape.
 * `page` takes neither a Label nor Operands ("no label is permitted and any
   comments are ignored").
-* `section` takes a number 0–15 or a Symbol; with no Operand it requires a Label,
-  which it sets to the current section.
+* `reg` takes a `register_list`, and a single `register` is a list of one, as it
+  is for `movem` (1.12). The Symbol it defines holds the `movem` mask and not a
+  value: a Register list may not appear in an Expression, which is EASy68K's
+  "Register list symbol used in an expression" and this document's
+  `register_list_in_expression`. A bare name where `movem` expects a list is
+  read as the Symbol it names (1.12): a `reg` Symbol defined **above** the line
+  becomes exactly the list it stands for, one defined below is "Register list
+  symbol not previously defined" — the one forward reference refused in an
+  instruction Operand, because a register list is not a value the second pass
+  can fill in but part of how the instruction is encoded — and a Symbol of
+  another kind is "Symbol is not a register list symbol". A name that is
+  defined nowhere is left to `undefined_symbol` and to the analyzer's
+  "what `movem` takes here", which between them are the diagnosis of a missing
+  `reg` line. The last two are said only where **nothing else fits**: both of
+  `movem`'s positions hold the list in one of its two directions, so
+  `movem.l table,d0-d2` reads `table` as the address it is and says nothing.
+  A name that *is* a `reg` Symbol is read as the list wherever it stands, since
+  it has no value that could be an address.
+* `simhalt` takes no Operand field: whatever follows it on the line is a
+  Comment, which is the help's own usage line, `LABEL SIMHALT comment`
+  (`Directives/simhalt.htm`), and what `page`, `list` and `nolist` already do.
+  Without that rule `SIMHALT                 Halt Simulator` (line 206 of
+  `tests/corpus/easy68k/graphicSound.X68`) would be the Operand `Halt` and the
+  Comment `Simulator`, since rule 4 of 1.5 ends the Operand field at the first
+  whitespace and no rule of the parser may consult the Directive's arity
+  (ADR 0003). It is the one Directive that produces an executable item: four
+  bytes at an even address, like an instruction, and a Label on it names that
+  address.
+* `section` takes a number 0–15, which may be written as a Symbol — the help's
+  own example is `SECTION DATA` against `DATA EQU 1` — and switches to that
+  section's location counter. A program has sixteen of them, each "restored to
+  the address following the last location allocated in the indicated section (or
+  to zero if used for the first time)" (`Directives/section.htm`). It begins in
+  section 0, whose counter starts at s68k's default origin `$1000`; the other
+  fifteen start at zero, as the help says, so a program that writes `section 1`
+  and no `org` lays its data out from 0. An `org` inside a section sets that
+  section's counter and no other. The number decides the Layout, so a forward
+  reference is refused in it, and a number outside 0–15 is `value_out_of_range`
+  naming `section`, the kind the address of an `org` and the count of a `ds` are
+  already answered with. Two sections laid out over one address are the ordinary
+  `address_used_twice`: EASy68K "does not check for overlapping sections" and
+  s68k's check is a deliberate deviation (ADR 0001), and an address is an address
+  whichever section wrote it. With no Operand `section` requires a Label and sets
+  it to the number of the section in force — a **Constant**, because a section
+  number is a value and not an address — which is the one label rule that depends
+  on the Operand rather than on the name of the Directive.
+* `offset` takes an Expression and opens a region that produces nothing: "no
+  machine code is generated by instructions or directives following an OFFSET
+  directive" (`Directives/offset.htm`). Inside it a `ds` moves a temporary
+  counter that starts at the Expression, so the names in the label fields below
+  are the offsets of the fields of a structure. They are **Constants** and not
+  Labels: no line of the program is laid out at them and the value may be
+  negative, the help's own stack frame counting from `-3*4`. Nothing is placed,
+  so a line that would have produced bytes — an instruction, a `simhalt`, a `dc`
+  — is `no_bytes_in_an_offset_region`, while a `ds` is what the region is made of
+  and is silent. The Expression decides the Layout, so a forward reference is
+  refused in it. An `org` ends the region; so does `end`, and so does a
+  `section`, which sets the current address as an `org` does and about which the
+  help is silent (ADR 0001's lenient reading). **`org *` inside a region is the
+  address the region shadowed** — "ORG * restores the code to the address in use
+  prior to the OFFSET" — and it is the one place where `*` is not the current
+  address: every other `*` inside a region, `here equ *` included, is the
+  region's own counter. An `org` that lands where the address already is moves
+  nothing and is therefore neither rounded up nor answered with `odd_origin`,
+  which is what keeps `org *` silent when a `dc.b` above the `offset` left the
+  address odd.
 * The refused Directives — `refused_operation` above — parse as
   `unimplemented_operation`, an `operation` followed by a `raw_operand_field`
   that is **not** tokenized. That is what keeps one "not implemented" diagnostic
@@ -1168,7 +1255,7 @@ decides. The map, so that a rule can be found from its name:
 
 | Rule | Test in `src/assembler/layout.rs` |
 | --- | --- |
-| `org_directive` | `org_moves_the_address_anywhere`, `an_odd_origin_warns_and_rounds_up`, `org_reads_the_current_address_before_it_moves` |
+| `org_directive` | `org_moves_the_address_anywhere`, `an_odd_origin_warns_and_rounds_up`, `an_org_that_moves_nothing_says_nothing_about_an_odd_address`, `org_reads_the_current_address_before_it_moves` |
 | `equ_directive` | `equ_names_a_value_and_the_program_keeps_it`, `equ_without_a_name_says_so`, `a_constant_is_defined_even_when_its_value_cannot_be_worked_out` |
 | `set_directive` | `a_set_variable_may_be_redefined` |
 | `dc_directive`, `dc_item` | `dc_lays_strings_out_in_latin_1_and_pads_them_to_its_size`, `a_character_above_latin_1_in_data_is_an_error`, `a_data_item_that_does_not_fit_its_size_says_so` |
@@ -1176,7 +1263,13 @@ decides. The map, so that a rule can be found from its name:
 | `dcb_directive` | `dcb_fills_its_block`, `a_count_that_does_not_fit_in_memory_says_so` |
 | `end_directive` | `the_entry_point_is_end_then_start_then_the_first_instruction`, `end_without_an_address_warns_and_falls_back`, `end_finds_a_label_that_differs_only_in_case_and_warns`, `a_line_after_end_is_not_assembled_and_says_so_once`, `a_comment_after_end_is_what_every_easy68k_program_has` |
 | `opt_directive`, `list_directive`, `page_directive` | `the_ignored_directives_are_ignored_in_silence` |
-| `include_directive`, `incbin_directive`, `reg_directive`, `fail_directive`, `simhalt_directive`, `offset_directive`, `section_directive` | `the_directives_of_the_later_phases_name_themselves` (each raises `unimplemented_operation` until its phase) |
+| `reg_directive` | `reg_names_a_register_list_and_movem_reads_it_in_both_directions`, `reg_takes_a_single_register_as_a_list_of_one`, `reg_without_a_name_says_so`, `reg_takes_a_register_list_and_nothing_else`, `a_register_list_in_an_expression_is_refused`, `a_register_list_has_to_be_defined_above_the_movem_that_reads_it`, `a_name_that_is_not_a_register_list_says_so`, `a_name_that_is_defined_nowhere_keeps_its_own_message` |
+| `fail_directive` | `fail_reports_its_message_word_for_word_and_the_assembly_carries_on`, `fail_without_a_message_uses_easy68ks_default`, `a_label_on_a_fail_names_the_address_of_the_line` |
+| `simhalt_directive` | `simhalt_is_an_instruction_of_four_bytes`, `simhalt_reads_the_rest_of_its_line_as_a_comment`, and `simhalt_ends_the_run_where_it_stands_and_touches_no_register` in `src/test/test.rs` |
+| the label field of every rule above | `the_directives_that_give_a_name_to_something_need_a_label`, `the_directives_that_take_no_label_say_so`, `every_other_directive_takes_a_label_or_no_label` |
+| `section_directive` | `a_program_starts_in_section_zero_at_the_default_origin`, `a_label_on_a_section_names_the_address_it_goes_on_from`, `section_switches_between_sixteen_location_counters`, `org_inside_a_section_moves_that_sections_counter`, `a_section_that_is_used_for_the_first_time_starts_at_zero`, `two_sections_over_one_address_are_still_an_overlap`, `a_section_number_may_be_a_symbol_and_may_not_be_a_forward_reference`, `a_section_number_outside_the_sixteen_says_so`, `section_with_no_number_names_the_section_in_force`, `section_with_no_number_needs_a_label`, and `the_section_example_of_the_help` in `src/test/corpus.rs` |
+| `offset_directive` | `offset_moves_an_address_and_places_nothing`, `a_name_defined_in_an_offset_region_is_a_constant`, `org_star_restores_the_address_the_offset_region_shadowed`, `an_org_with_an_address_ends_an_offset_region_too`, `a_section_ends_an_offset_region_as_an_org_does`, `end_closes_an_offset_region`, `a_line_that_would_produce_bytes_in_an_offset_region_says_so`, `an_offset_region_opens_whatever_its_expression_says`, `a_negative_offset_is_the_stack_frame_of_the_help`, `a_word_in_an_offset_region_aligns_up_from_a_negative_offset`, and `the_offset_stack_frame_example_of_the_help` in `src/test/corpus.rs` |
+| `include_directive`, `incbin_directive` | `the_directives_of_the_later_phases_name_themselves` (each raises `unimplemented_operation` until phase 4) |
 | `macro_definition` | `macro_definition_is_skipped_whole`, `macro_definition_ends_on_an_operation_named_endm`, `unterminated_macro_definition_is_reported_against_the_macro_line` (in `src/assembler/parser.rs`), and `a_macro_invocation_names_the_macro_and_not_a_label` |
 | every one of them, on the shapes they share | `a_directive_given_an_addressing_mode_says_a_value_was_expected`, `a_directive_with_the_wrong_number_of_operands_says_so`, `a_directive_that_carries_no_size_says_so`, `a_forward_reference_is_refused_where_the_value_decides_the_layout` |
 

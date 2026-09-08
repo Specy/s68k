@@ -134,7 +134,13 @@ export type RuntimeError = { type: "Raw", value: string } |
 { type: "DivisionByZero" } |
 { type: "IncorrectAddressingMode", value: string } |
 { type: "Unimplemented" } |
-{ type: "AddressError", value : { address: number, size: Size } }
+{ type: "AddressError", value : { address: number, size: Size } } |
+/** `chk` found the register outside 0 to the bound it was given. */
+{ type: "ChkOutOfBounds", value: { value: number, bound: number } } |
+/** `trapv` with the overflow flag set. */
+{ type: "OverflowException" } |
+/** The `illegal` instruction, which always ends the run. */
+{ type: "IllegalInstruction" }
 
 
 "#;
@@ -347,6 +353,15 @@ export type ExecutionStep = {
     new_ccr: {
         bits: number,
     },
+    /**
+     * The whole status register before the step, as the processor numbers it:
+     * the system byte, then the condition codes (extend 16, negative 8, zero 4,
+     * overflow 2, carry 1). It is what undo puts back, and it overlaps
+     * `old_ccr`, which is the same flags in this crate's own bits.
+     */
+    old_sr: number,
+    /** The whole status register after the step. */
+    new_sr: number,
     /** Where the instruction that ran was written; absent when it ran on none. */
     location?: Location
 }

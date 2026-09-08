@@ -29,7 +29,7 @@ use s68k::assembler::program::Program;
 use s68k::assembler::source::{normalise_path, Files};
 use s68k::{
     instructions::{Interrupt, InterruptResult},
-    interpreter::{Interpreter, InterpreterOptions, InterpreterStatus},
+    interpreter::{Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError},
 };
 use std::env;
 use std::fs;
@@ -132,8 +132,8 @@ fn main() -> ExitCode {
     let start = Instant::now();
     let mut interpreter = Interpreter::new(program, Some(options));
     match mode {
-        Mode::Run | Mode::Benchmark => run_to_the_end(&mut interpreter),
-        Mode::Step => step_through(&mut interpreter),
+        Mode::Run | Mode::Benchmark => run_to_the_end(&mut interpreter, &entry, &path),
+        Mode::Step => step_through(&mut interpreter, &entry, &path),
     }
     if !flags.contains(&"--no-debug") {
         interpreter.debug_status();
@@ -192,13 +192,41 @@ fn print_program(program: &Program) {
     }
 }
 
+/// A runtime error, with the line the instruction that raised it was written
+/// on.
+///
+/// A runtime error is not a Diagnostic (CONTEXT.md, "Runtime error"): it is
+/// attributed to the instruction, and the instruction knows where it came from,
+/// which is what makes `chk`, `trapv` and `illegal` readable on a command line.
+fn print_runtime_error(
+    interpreter: &Interpreter,
+    error: &RuntimeError,
+    entry: &str,
+    on_disk: &str,
+) {
+    println!("Runtime error: {:?}", error);
+    let address = interpreter.get_current_instruction_address();
+    if let Some(instruction) = interpreter.get_instruction_at(address) {
+        let file = match instruction.location.file == entry {
+            true => on_disk,
+            false => instruction.location.file.as_str(),
+        };
+        println!(
+            "    at {}:{}: {}",
+            file,
+            instruction.location.line + 1,
+            instruction.source.trim()
+        );
+    }
+}
+
 /// Runs until the program terminates, answering every interrupt on the way.
-fn run_to_the_end(interpreter: &mut Interpreter) {
+fn run_to_the_end(interpreter: &mut Interpreter, entry: &str, on_disk: &str) {
     while !interpreter.has_terminated() {
         let status = match interpreter.run() {
             Ok(status) => status,
             Err(e) => {
-                println!("Runtime error: {:?}", e);
+                print_runtime_error(interpreter, &e, entry, on_disk);
                 return;
             }
         };
@@ -218,13 +246,13 @@ fn run_to_the_end(interpreter: &mut Interpreter) {
 }
 
 /// One instruction at a time, until the program terminates or the input ends.
-fn step_through(interpreter: &mut Interpreter) {
+fn step_through(interpreter: &mut Interpreter, entry: &str, on_disk: &str) {
     println!("D for step, A for undo, S for print, Q for quit");
     while !interpreter.has_terminated() {
         match ask_step_kind() {
             StepKind::Step => {
                 if let Err(e) = interpreter.step() {
-                    println!("Runtime error: {:?}", e);
+                    print_runtime_error(interpreter, &e, entry, on_disk);
                     return;
                 }
                 match interpreter.get_next_instruction() {

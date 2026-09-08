@@ -13,8 +13,8 @@
 //! 1. the name is a Mnemonic — a near miss gets a "did you mean", an indented
 //!    word gets the Label hint, a real 68000 instruction s68k does not
 //!    assemble gets the reason;
-//! 2. every Operand is a mode this phase assembles — the PC-relative modes and
-//!    the special registers are not, and say so;
+//! 2. every Operand is one this phase assembles — `usp` is the only one that is
+//!    not, and it says so;
 //! 3. the number of Operands picks the Form;
 //! 4. the size suffix against that Form, and the byte rule for address
 //!    registers;
@@ -22,8 +22,9 @@
 //! 6. the two Operands together, where the instruction has only one memory
 //!    access;
 //! 7. the values it can already work out: the count of a quick form, a shift
-//!    count, a bit number, a displacement, an immediate against its size, and a
-//!    bare number that is probably a missing `#`.
+//!    count, a bit number, a displacement, how far a PC-relative Operand has to
+//!    reach, the width an absolute address is forced to, an immediate against
+//!    its size, and a bare number that is probably a missing `#`.
 //!
 //! # Where it sits
 //!
@@ -43,7 +44,9 @@ use super::diagnostics::{Diagnostic, DiagnosticKind};
 use super::expr;
 use super::instructions::encoded::{Instruction, Size};
 use super::instructions::lowering::{self, Values};
-use super::instructions::table::{self, Combination, Form, Implementation, InstructionSpec, Modes};
+use super::instructions::table::{
+    self, Combination, Family, Form, Implementation, InstructionSpec, Modes,
+};
 use super::names;
 use super::parser::MacroDefinition;
 use super::source::{Location, Span};
@@ -133,6 +136,10 @@ impl<'a> Context<'a> {
 impl Values for Context<'_> {
     fn value_of(&self, expression: &ast::Expr) -> Option<i64> {
         self.evaluate(expression)
+    }
+
+    fn instruction_address(&self) -> i64 {
+        self.current_address
     }
 }
 
@@ -286,9 +293,10 @@ impl<'a> Analyzer<'a> {
         let size = self.check_size(spec, form, operation, operands);
         // An Operand that is not allowed where it stands is not asked about its
         // value as well: one mistake, one message.
+        let judged_as_a_pair = self.check_operand_pair(spec, operands);
         let mut fits = vec![true; operands.len()];
         for (index, operand) in operands.iter().enumerate() {
-            if unimplemented[index] {
+            if judged_as_a_pair || unimplemented[index] {
                 fits[index] = false;
                 continue;
             }
@@ -310,11 +318,7 @@ impl<'a> Analyzer<'a> {
             return None;
         }
         let family = spec.family()?;
-        let lowered: Vec<_> = operands
-            .iter()
-            .map(|operand| lowering::lower_operand(operand, self.context))
-            .collect::<Option<Vec<_>>>()?;
-        lowering::lower(family, size, &lowered)
+        lowering::lower_operation(family, size, operands, self.context)
     }
 
     // -- the name ----------------------------------------------------------
@@ -339,7 +343,7 @@ impl<'a> Analyzer<'a> {
             let diagnostic = Diagnostic::new(
                 DiagnosticKind::UnimplementedOperation {
                     name,
-                    reason: "it is a macro, and macros are not assembled yet".to_string(),
+                    reason: "it is a macro, and macros are not assembled".to_string(),
                     alternative: Some("the lines of the macro here".to_string()),
                 },
                 self.location(operation.name_span),
@@ -443,49 +447,32 @@ impl<'a> Analyzer<'a> {
 
     // -- the operands ------------------------------------------------------
 
-    /// Whether the Operand is a mode this phase does not assemble, in which
-    /// case it says so and answers `true`.
+    /// Whether the Operand is one this phase does not assemble, in which case
+    /// it says so and answers `true`.
     ///
-    /// The PC-relative modes and the three special registers are read by the
-    /// parser and arrive with phase 3 (the design record, "Instructions"); a
-    /// student writing one is told that and what to write meanwhile, rather
-    /// than that the mode is invalid, which would be a lie.
+    /// One is left, and it is not an Addressing mode at all: `usp`. s68k runs
+    /// one program in supervisor mode and has one stack pointer (the design
+    /// record, "Scope"), so a student writing `move usp,a0` is told that and
+    /// what to write instead, rather than that the mode is invalid, which would
+    /// be a lie. There is no "yet" in the sentence, because there is nothing to
+    /// wait for.
+    ///
+    /// `sr` and `ccr` were here until the first half of phase 3 and the
+    /// PC-relative modes until its last: all four are ordinary [`Modes`] now
+    /// and the instruction table says which position takes them.
     fn check_operand_is_implemented(&mut self, operand: &Operand) -> bool {
-        let (description, advice) = match operand {
-            Operand::PcDisplacement { .. } | Operand::PcIndex { .. } => (
-                "a PC-relative operand",
-                Some(
-                    "write the label on its own: `label` reads the same place while the program \
-                     stays where it is laid out",
-                ),
-            ),
-            Operand::SpecialRegister { register, .. } => match register {
-                ast::SpecialRegister::Sr => (
-                    "the status register",
-                    Some(
-                        "the condition codes are set by the instructions themselves; `seq d0` \
-                         puts one of them in a register",
-                    ),
-                ),
-                ast::SpecialRegister::Ccr => (
-                    "the condition code register",
-                    Some(
-                        "the condition codes are set by the instructions themselves; `seq d0` \
-                         puts one of them in a register",
-                    ),
-                ),
-                ast::SpecialRegister::Usp => (
-                    "the user stack pointer",
-                    Some("s68k runs one program with one stack pointer, `a7`"),
-                ),
-            },
-            _ => return false,
+        let Operand::SpecialRegister {
+            register: ast::SpecialRegister::Usp,
+            ..
+        } = operand
+        else {
+            return false;
         };
         self.raise(
             DiagnosticKind::UnimplementedAddressingMode {
                 operand: self.text_of(operand.span()),
-                description: description.to_string(),
-                advice: advice.map(str::to_string),
+                description: "the user stack pointer".to_string(),
+                advice: Some("s68k runs one program with one stack pointer, `a7`".to_string()),
             },
             operand.span(),
         );
@@ -496,33 +483,46 @@ impl<'a> Analyzer<'a> {
     /// that they all fit, and, when they fit none, the first one of that
     /// number.
     ///
-    /// Only `cmp` and `movem` have two Forms of the same arity, and the
+    /// Several Mnemonics have more than one Form of the same arity, and the
     /// fallback is what makes their messages the right ones: `cmp (a0)+,(a1)`
-    /// fits neither, and is judged against the general Form ("there it takes
-    /// Dn or An") rather than against the `cmpm` shape it half resembles.
+    /// fits neither of `cmp`'s, and is judged against the general Form ("there
+    /// it takes Dn or An") rather than against the `cmpm` shape it half
+    /// resembles.
+    ///
+    /// **A written `sr` or `ccr` narrows the candidates first.** `move` has
+    /// five Forms of two Operands and four of them name a half of the status
+    /// register, so the fallback alone would answer `move a0,sr` with "the
+    /// second operand of `move` cannot be the status register", which is the
+    /// wrong half of the line: the mistake is that `move <ea>,sr` takes no
+    /// address register. Only the Forms that agree with every `sr` and `ccr`
+    /// that was written are candidates, and a Form that names one in a position
+    /// names nothing else there (a test in `table.rs` holds it to that), so the
+    /// agreement is exact. When nothing agrees — `move sr,ccr` — every Form of
+    /// that arity is a candidate again and the fallback answers as it always
+    /// did.
     fn choose_form(
         &self,
         spec: &'static InstructionSpec,
         operands: &[Operand],
     ) -> Option<&'static Form> {
-        let fits = |form: &&'static Form| {
-            operands.iter().enumerate().all(|(index, operand)| {
-                match Modes::of(operand) {
-                    Some(mode) => form.operands[index].contains(mode),
-                    // A mode this phase does not assemble has already been
-                    // reported; it decides nothing here.
-                    None => true,
-                }
-            })
-        };
-        let candidates: Vec<&'static Form> = spec
+        let of_that_arity: Vec<&'static Form> = spec
             .forms
             .iter()
             .filter(|form| form.arity() == operands.len())
             .collect();
+        let agreeing: Vec<&'static Form> = of_that_arity
+            .iter()
+            .filter(|form| agrees_about_the_status_register(form, operands))
+            .copied()
+            .collect();
+        let candidates = if agreeing.is_empty() {
+            &of_that_arity
+        } else {
+            &agreeing
+        };
         candidates
             .iter()
-            .find(|form| fits(form))
+            .find(|form| form.fits(operands))
             .or(candidates.first())
             .copied()
     }
@@ -582,7 +582,75 @@ impl<'a> Analyzer<'a> {
         if found == Modes::REGISTER_LIST && !allowed.contains(Modes::REGISTER_LIST) {
             return Some("only `movem` takes a register list".to_string());
         }
+        if found.intersects(Modes::STATUS) && !takes_the_status_register(spec) {
+            // Only for a Mnemonic that reaches the status register nowhere:
+            // `move ccr,ccr` is a `move` written wrong and is told what `move`
+            // takes there, not that `move` is one of the four.
+            return Some(
+                "only `move`, `andi`, `ori` and `eori` reach the status register".to_string(),
+            );
+        }
+        if found.intersects(Modes::PC_RELATIVE)
+            && !allowed.intersects(Modes::PC_RELATIVE)
+            && allowed.intersects(Modes::MEMORY)
+        {
+            // The position does reach memory, so the mistake is not the place
+            // but the direction: nothing is written through the program
+            // counter (`Reference/68ks1e.htm`, and the manual's "alterable"
+            // group, which is the one PC-relative is not in). Said only where
+            // the position reaches memory at all, so `lea label(pc),a0` is
+            // told that its second operand takes An and nothing else.
+            return Some(
+                "a PC-relative operand is read and never written; write the label on its own"
+                    .to_string(),
+            );
+        }
+        if spec.mnemonic == "movep" && found == Modes::INDIRECT {
+            // `movep` reaches memory through a displacement and nothing else
+            // (`Reference/68ks4g.htm`); the displacement of `(a1)` is 0 and
+            // writing it is the whole fix.
+            return Some("write the displacement, `0(a1)`".to_string());
+        }
         None
+    }
+
+    /// The two Operands of `addx`, `subx`, `abcd` and `sbcd` against both of
+    /// the instruction's shapes at once, which is the only way they can be
+    /// judged.
+    ///
+    /// These four take two data registers *or* two predecrement Operands
+    /// ("ADDRESS METHODS: Dn, -(An)", `Reference/68ks5e.htm` and its three
+    /// neighbours), so `addx d0,-(a1)` is wrong in neither Operand on its own
+    /// and `addx (a0),(a1)` is wrong in both. A per-position message would say
+    /// "the second operand of `addx` cannot be a predecrement operand" of a
+    /// line whose fix is to make the *first* one a predecrement too, which is
+    /// the wrong sentence twice over. One Diagnostic over the pair says what
+    /// was found, what the two shapes are and what was probably meant, which is
+    /// ADR 0003 read literally.
+    ///
+    /// Answers `true` when it has said something, in which case the Operands
+    /// are not judged one by one as well.
+    fn check_operand_pair(&mut self, spec: &'static InstructionSpec, operands: &[Operand]) -> bool {
+        let Some(advice) = the_advice_of_a_pair(spec) else {
+            return false;
+        };
+        let [first, second] = operands else {
+            // The count is already wrong, and `wrong_operand_count` has said
+            // so.
+            return false;
+        };
+        if spec.has_a_form_that_fits(operands) {
+            return false;
+        }
+        self.raise(
+            DiagnosticKind::InvalidOperandPair {
+                mnemonic: spec.mnemonic.to_string(),
+                found: format!("{} and {}", first.description(), second.description()),
+                advice: Some(advice.to_string()),
+            },
+            first.span().join(second.span()),
+        );
+        true
     }
 
     /// The rule no position can state: `add`, `sub`, `and` and `or` reach
@@ -622,11 +690,16 @@ impl<'a> Analyzer<'a> {
     ) -> Option<Size> {
         if let (Some(written), Some(span)) = (operation.size, operation.size_span) {
             if !form.sizes.accepts(written) {
+                // The sizes named are the **chosen Form's** and not every size
+                // the Mnemonic has: `move.b d0,ccr` is answered with "`move`
+                // takes `.w`", because that is the shape being judged, and the
+                // union over the Forms would have offered the `.b` it has just
+                // refused.
                 self.raise(
                     DiagnosticKind::InvalidSize {
                         mnemonic: spec.mnemonic.to_string(),
                         size: written.suffix().to_string(),
-                        allowed: spec.sizes().iter().map(quoted_size).collect(),
+                        allowed: form.sizes.allowed().iter().map(quoted_size).collect(),
                     },
                     span,
                 );
@@ -732,7 +805,9 @@ impl<'a> Analyzer<'a> {
     }
 
     /// The displacement of a displaced Operand, which the 68000 encodes in a
-    /// word, and of an indexed one, which it encodes in a byte.
+    /// word, and of an indexed one, which it encodes in a byte; the distance a
+    /// PC-relative Operand reaches; and the width an absolute address is
+    /// forced to.
     fn check_operand_values(&mut self, operand: &Operand) {
         match operand {
             Operand::Displacement { displacement, .. } => {
@@ -748,8 +823,105 @@ impl<'a> Analyzer<'a> {
                 }
                 self.check_index_size(index);
             }
+            Operand::PcDisplacement { displacement, .. } => {
+                self.check_pc_distance(displacement, "d(PC)", -32768, 32767);
+            }
+            Operand::PcIndex {
+                displacement,
+                index,
+                ..
+            } => {
+                if let Some(displacement) = displacement {
+                    self.check_pc_distance(displacement, "d(PC,Xn)", -128, 127);
+                }
+                self.check_index_size(index);
+            }
+            Operand::Absolute { value, size, .. } => self.check_address_width(value, *size),
             _ => {}
         }
+    }
+
+    /// How far a PC-relative Operand has to reach, against the field the 68000
+    /// encodes that distance in.
+    ///
+    /// The source writes the address it wants and the Assembler works out the
+    /// distance from this instruction's extension word to it
+    /// ([`lowering::pc_relative_offset`], the same arithmetic the lowering
+    /// stores), so the number the range is about is one the student never
+    /// wrote: the message says what it is and the hint says that a plain label
+    /// has no such limit.
+    fn check_pc_distance(&mut self, address: &ast::Expr, notation: &str, min: i64, max: i64) {
+        let Some(distance) = lowering::pc_relative_offset(self.context, address) else {
+            return;
+        };
+        if distance >= min && distance <= max {
+            return;
+        }
+        let text = self.text_of(address.span());
+        self.raise(
+            DiagnosticKind::ValueOutOfRange {
+                subject: format!("the distance a `{notation}` operand reaches"),
+                value: distance,
+                min,
+                max,
+                advice: Some(format!(
+                    "write `{text}` on its own: an absolute address reaches anywhere in memory"
+                )),
+            },
+            address.span(),
+        );
+    }
+
+    /// The width an absolute address is forced to: `label.w` and `label.l`,
+    /// and nothing else (`Reference/68ks1e.htm`, "Forcing Absolute Short
+    /// Addressing").
+    ///
+    /// The two name the same address here — s68k stores addresses and encodes
+    /// no words — so `.l` says nothing and is accepted in silence, while `.w`
+    /// is a claim about the address that can be false and is checked.
+    fn check_address_width(&mut self, value: &ast::Expr, size: Option<SizeSuffix>) {
+        match size {
+            None | Some(SizeSuffix::Long) => {}
+            Some(SizeSuffix::Word) => self.check_short_address(value),
+            Some(size) => self.raise(
+                DiagnosticKind::InvalidAddressWidth {
+                    address: self.text_of(value.span()),
+                    size: size.suffix().to_string(),
+                },
+                value.span(),
+            ),
+        }
+    }
+
+    /// An address forced to `.w` against the sixteen bits an absolute short
+    /// reference holds, which is EASy68K's own range: "Absolute short
+    /// addressing must be in the range -32768 through 32767" (`errors.htm`).
+    ///
+    /// EASy68K warns that forcing the width *disables* this check and encodes
+    /// the low word sign extended, so its `$8000.w` reads `$ff8000`. s68k has
+    /// no encoding and reads the address as written, so an address the field
+    /// cannot name would quietly mean a different place here: refusing it is
+    /// the deviation ADR 0001 records.
+    fn check_short_address(&mut self, value: &ast::Expr) {
+        let Some(address) = self.context.evaluate(value) else {
+            return;
+        };
+        if (-32768..=32767).contains(&address) {
+            return;
+        }
+        let text = self.text_of(value.span());
+        self.raise(
+            DiagnosticKind::ValueOutOfRange {
+                subject: "an address forced to `.w`".to_string(),
+                value: address,
+                min: -32768,
+                max: 32767,
+                advice: Some(format!(
+                    "write `{text}.l`, or `{text}` on its own: both reach the same address here"
+                )),
+            },
+            value.span(),
+        );
     }
 
     /// An index register is read as a word or as a long, never as a byte.
@@ -902,6 +1074,56 @@ impl<'a> Analyzer<'a> {
     }
 }
 
+/// What to write instead of a badly shaped `addx`, `subx`, `abcd` or `sbcd`,
+/// and `None` for every other Mnemonic.
+///
+/// It is what tells the four apart from the rest of the table — an instruction
+/// whose two Forms are two whole shapes — as well as being the last clause of
+/// the message.
+fn the_advice_of_a_pair(spec: &'static InstructionSpec) -> Option<&'static str> {
+    match spec.family()? {
+        Family::AddSubExtended { subtract: false } => Some("`add` takes every addressing mode"),
+        Family::AddSubExtended { subtract: true } => Some("`sub` takes every addressing mode"),
+        // `abcd` and `sbcd` have no counterpart that reaches memory: decimal
+        // arithmetic is these two and `nbcd`, so the advice is how to get the
+        // byte where they can see it.
+        Family::AddSubDecimal { .. } => Some("move the byte into a data register first"),
+        _ => None,
+    }
+}
+
+/// Whether any Form of the instruction names `sr` or `ccr` anywhere, which is
+/// what tells "this Mnemonic never reaches the status register" from "it does,
+/// but not like that".
+fn takes_the_status_register(spec: &'static InstructionSpec) -> bool {
+    spec.forms.iter().any(|form| {
+        form.operands
+            .iter()
+            .any(|modes| modes.intersects(Modes::STATUS))
+    })
+}
+
+/// Whether a Form names `sr` or `ccr` in exactly the positions the Operands
+/// wrote one, which is what [`Analyzer::choose_form`] narrows the candidates
+/// by.
+///
+/// A position that takes a half of the status register takes nothing else, so
+/// "the Form's modes at this position mention one" and "this Operand is one"
+/// answer the same question from the two sides. An Operand that is neither —
+/// an ordinary Addressing mode, and `usp`, whose [`Modes::of`] is `None` —
+/// agrees with a position that names no half of the register, which is every
+/// position of every Form but the four of `move` and the two each of `andi`,
+/// `ori` and `eori`.
+fn agrees_about_the_status_register(form: &Form, operands: &[Operand]) -> bool {
+    operands.iter().enumerate().all(|(index, operand)| {
+        let allowed = form.operands[index].intersection(Modes::STATUS);
+        match Modes::of(operand).map(|mode| mode.intersection(Modes::STATUS)) {
+            Some(written) if !written.is_empty() => allowed == written,
+            _ => allowed.is_empty(),
+        }
+    })
+}
+
 /// The first word of a Comment field, and where it was written, when that word
 /// is the whole field.
 ///
@@ -975,11 +1197,24 @@ mod tests {
         analyze(text).0
     }
 
+    /// A symbol table of name and value pairs.
+    fn symbols<const N: usize>(values: [(&str, i64); N]) -> Symbols {
+        Symbols(
+            values
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), *value))
+                .collect(),
+        )
+    }
+
     /// The messages one line raises, hint included, for reading them as a
     /// student would.
     fn messages(text: &str) -> Vec<String> {
+        messages_with(text, Symbols(HashMap::new()))
+    }
+
+    fn messages_with(text: &str, symbols: Symbols) -> Vec<String> {
         let (line, parser_diagnostics) = parser::parse_line(text, "main.m68k", 0);
-        let symbols = Symbols(HashMap::new());
         let context = Context::new(&symbols);
         let mut analyzer = Analyzer::new("main.m68k", 0, text, &context);
         analyzer.analyze_line(&line, parser_diagnostics.iter().any(|d| d.is_error()));
@@ -1091,7 +1326,7 @@ mod tests {
 
     #[test]
     fn an_instruction_that_is_not_assembled_says_why() {
-        assert_eq!(codes("    movep.w d0,4(a0)"), ["unimplemented_operation"]);
+        assert_eq!(codes("    stop #$2700"), ["unimplemented_operation"]);
         assert_eq!(
             messages("    rte"),
             [
@@ -1103,16 +1338,325 @@ mod tests {
         assert_eq!(codes("    trap #16"), ["value_out_of_range"]);
     }
 
+    /// The extend-flag and binary-coded-decimal group: two shapes, judged
+    /// together, and the sizes of the reference.
     #[test]
-    fn the_modes_this_phase_does_not_assemble_say_so() {
-        assert_eq!(codes("    move.w sr,d0"), ["unimplemented_addressing_mode"]);
+    fn the_extend_flag_group_is_judged_against_both_of_its_shapes() {
+        assert!(codes("    addx.l d0,d1").is_empty());
+        assert!(codes("    addx.b -(a0),-(a1)").is_empty());
+        assert!(codes("    subx.w d0,d1").is_empty());
+        assert!(codes("    abcd d0,d1").is_empty());
+        assert!(codes("    sbcd -(a0),-(a1)").is_empty());
+        assert!(codes("    negx.l (a0)").is_empty());
+        assert!(codes("    nbcd d0").is_empty());
+        assert!(codes("    roxl.l #3,d0").is_empty());
+        assert!(codes("    roxr d1,d0").is_empty());
+        assert!(codes("    roxl (a0)").is_empty());
+        // One message about the pair, and never one about a position: the fix
+        // for `addx d0,-(a1)` is in the operand the position message would not
+        // have named.
         assert_eq!(
-            codes("    move.l label(pc),d0"),
-            ["unimplemented_addressing_mode"]
+            messages("    addx.l #1,d0"),
+            [
+                "`addx` takes two data registers or two predecrement operands, and this line has \
+                 an immediate and a data register — write `addx d0,d1` or `addx -(a0),-(a1)`; \
+                 `add` takes every addressing mode"
+            ]
         );
         assert_eq!(
-            codes("    move.l usp,a0"),
+            messages("    addx.l d0,-(a1)"),
+            [
+                "`addx` takes two data registers or two predecrement operands, and this line has \
+                 a data register and a predecrement operand — write `addx d0,d1` or \
+                 `addx -(a0),-(a1)`; `add` takes every addressing mode"
+            ]
+        );
+        assert_eq!(
+            codes("    addx.l (a0),(a1)"),
+            ["invalid_operand_pair"],
+            "two wrong operands are still one mistake"
+        );
+        assert_eq!(
+            messages("    abcd (a0),d1"),
+            [
+                "`abcd` takes two data registers or two predecrement operands, and this line has \
+                 an indirect operand and a data register — write `abcd d0,d1` or \
+                 `abcd -(a0),-(a1)`; move the byte into a data register first"
+            ]
+        );
+        // The three decimal instructions are a byte and nothing else, and the
+        // memory form of a rotate is a word, as every other shift's is.
+        assert_eq!(
+            messages("    abcd.w d0,d1"),
+            ["`.w` is not a size for `abcd` — `abcd` takes `.b`"]
+        );
+        assert_eq!(
+            messages("    nbcd.l d0"),
+            ["`.l` is not a size for `nbcd` — `nbcd` takes `.b`"]
+        );
+        assert_eq!(
+            messages("    roxl.b (a0)"),
+            ["`.b` is not a size for `roxl` — `roxl` takes `.w`"]
+        );
+        // `negx` and `nbcd` write one data alterable operand, so an address
+        // register is answered the way `clr`'s and `neg`'s is.
+        assert_eq!(
+            codes("    negx.l a0"),
+            ["invalid_addressing_mode"],
+            "`negx` is judged position by position, as `neg` is"
+        );
+        assert_eq!(
+            codes("    roxl.l #9,d0"),
+            ["value_out_of_range"],
+            "a written count is 1 to 8, as it is for every other shift"
+        );
+    }
+
+    /// `usp` is the one Operand left that the Assembler does not assemble:
+    /// s68k runs one program with one stack pointer (the design record,
+    /// "Scope"), so `move usp,a0` and `move a0,usp` say so where `sr`, `ccr`
+    /// and the PC-relative modes are all assembled.
+    #[test]
+    fn the_user_stack_pointer_is_the_one_operand_that_is_not_assembled() {
+        assert_eq!(
+            messages("    move.l usp,a0"),
+            [
+                "`usp` is the user stack pointer, which s68k does not assemble — s68k runs one \
+                 program with one stack pointer, `a7`"
+            ]
+        );
+        assert_eq!(
+            codes("    move.l a0,usp"),
             ["unimplemented_addressing_mode"]
+        );
+    }
+
+    /// The PC-relative modes, which the reference puts in data, memory and
+    /// control and in no group anything is written to
+    /// (`Reference/68ks1e.htm`).
+    #[test]
+    fn a_pc_relative_operand_is_read_where_the_reference_allows_one() {
+        for line in [
+            "    move.l data(pc),d0",
+            "    move.l (data,pc),d0",
+            "    add.w data(pc),d1",
+            "    cmp.l data(pc,d1.w),d2",
+            "    lea data(pc),a0",
+            "    pea data(pc)",
+            "    jmp data(pc)",
+            "    jsr data(pc,a1.l)",
+            "    movem.l data(pc),d0-d2",
+            "    btst #3,data(pc)",
+            "    chk.w data(pc),d0",
+            "    move.w (pc,d1.w),d0",
+        ] {
+            assert_eq!(
+                analyze_with(line, symbols([("data", 0x1010)])).0,
+                Vec::<String>::new(),
+                "{line}"
+            );
+        }
+        // Nothing is written through the program counter, and the sentence
+        // says which half of the line is the mistake.
+        assert_eq!(
+            messages_with("    move.l d0,data(pc)", symbols([("data", 0x1010)])),
+            [
+                "the second operand of `move` cannot be a PC-relative operand — a PC-relative \
+                 operand is read and never written; write the label on its own; there it takes \
+                 Dn, An, (An), (An)+, -(An), d(An), d(An,Xn) or Ea/<label>"
+            ]
+        );
+        for line in [
+            "    clr.l data(pc)",
+            "    asl.w data(pc)",
+            "    movem.l d0-d2,data(pc)",
+            "    tst.b data(pc)",
+        ] {
+            assert_eq!(
+                analyze_with(line, symbols([("data", 0x1010)])).0,
+                ["invalid_addressing_mode"],
+                "{line}"
+            );
+        }
+        // A position that takes no place in memory is told what it takes and
+        // not lectured about the program counter.
+        assert_eq!(
+            messages_with("    lea (a0),data(pc)", symbols([("data", 0x1010)])),
+            ["the second operand of `lea` cannot be a PC-relative operand — there it takes An"]
+        );
+    }
+
+    /// The Operand is written as the address it reaches and stored as the
+    /// distance to it, so the range is about a number the student never wrote
+    /// and the message says what it is.
+    #[test]
+    fn a_pc_relative_operand_reaches_as_far_as_its_field() {
+        // The line is laid out at the default origin, `$1000`, so its
+        // extension word is at `$1002`: `$9001` is 32767 bytes away and fits,
+        // and one byte further does not.
+        assert!(
+            analyze_with("    move.l far(pc),d0", symbols([("far", 0x9001)]))
+                .0
+                .is_empty()
+        );
+        assert_eq!(
+            messages_with("    move.l far(pc),d0", symbols([("far", 0x9002)])),
+            [
+                "the distance a `d(PC)` operand reaches is -32768 to 32767, and `32768` is \
+                 outside it — write `far` on its own: an absolute address reaches anywhere in \
+                 memory"
+            ]
+        );
+        // The indexed form holds a byte, and the same address is far too far
+        // for it.
+        assert!(
+            analyze_with("    move.l near(pc,d1.w),d0", symbols([("near", 0x1080)]))
+                .0
+                .is_empty()
+        );
+        assert_eq!(
+            messages_with("    move.l far(pc,d1.w),d0", symbols([("far", 0x2000)])),
+            [
+                "the distance a `d(PC,Xn)` operand reaches is -128 to 127, and `4094` is outside \
+                 it — write `far` on its own: an absolute address reaches anywhere in memory"
+            ]
+        );
+    }
+
+    /// The width an absolute address is forced to (`Reference/68ks1e.htm`,
+    /// "Forcing Absolute Short Addressing").
+    #[test]
+    fn an_address_is_forced_to_a_width_that_can_name_it() {
+        assert!(codes("    move.l $1000.l,d0").is_empty());
+        assert!(codes("    move.l $1000.w,d0").is_empty());
+        assert!(
+            codes("    move.l $18000.l,d0").is_empty(),
+            "`.l` says nothing here"
+        );
+        assert_eq!(
+            messages("    move.l $18000.w,d0"),
+            [
+                "an address forced to `.w` is -32768 to 32767, and `98304` is outside it — write \
+                 `$18000.l`, or `$18000` on its own: both reach the same address here"
+            ]
+        );
+        assert_eq!(
+            messages("    move.l table.b,d0"),
+            [
+                "`.b` after `table` forces the width of the address, and an address is forced to \
+                 `.w` or `.l` — write `table.w` or `table.l`, or `table` on its own; the size the \
+                 instruction works at goes after the mnemonic"
+            ]
+        );
+        assert_eq!(
+            codes("    bra done.s"),
+            ["invalid_address_width"],
+            "a branch's own size goes on the mnemonic, `bra.s done`"
+        );
+    }
+
+    /// The status register and the condition codes, in every shape the table
+    /// takes them in.
+    #[test]
+    fn the_status_register_and_the_condition_codes_are_assembled() {
+        for line in [
+            "    move.w d0,ccr",
+            "    move.w #$1f,ccr",
+            "    move.w (a0),ccr",
+            "    move.w d0,sr",
+            "    move.w #$2700,sr",
+            "    move.w sr,d0",
+            "    move.w sr,(a0)",
+            "    move.w ccr,d0",
+            "    move d0,ccr",
+            "    andi.b #$1f,ccr",
+            "    ori.b #$1,ccr",
+            "    eori.b #$4,ccr",
+            "    andi.w #$00,sr",
+            "    ori.w #$700,sr",
+            "    eori.w #$2000,sr",
+        ] {
+            assert_eq!(codes(line), Vec::<String>::new(), "{line}");
+        }
+    }
+
+    /// A `move` that names a half of the status register is judged against the
+    /// Form that names the same half, so the message is about the operand that
+    /// is wrong and not about the one that is right.
+    #[test]
+    fn a_status_register_operand_chooses_the_form_that_names_it() {
+        assert_eq!(
+            messages("    move.w a0,sr"),
+            [
+                "the first operand of `move` cannot be an address register — an address \
+                 register holds an address; move it into a data register first; there it takes \
+                 Dn, (An), (An)+, -(An), d(An), d(An,Xn), Ea/<label>, d(PC), d(PC,Xn) or Im"
+            ]
+        );
+        assert_eq!(
+            messages("    move.w sr,#5"),
+            [
+                "the second operand of `move` cannot be an immediate — an immediate is a value, \
+                 and nothing can be written to it; there it takes Dn, (An), (An)+, -(An), d(An), \
+                 d(An,Xn) or Ea/<label>"
+            ]
+        );
+        assert_eq!(
+            messages("    move.b d0,ccr"),
+            ["`.b` is not a size for `move` — `move` takes `.w`"],
+            "the sizes named are the chosen form's, not every size `move` has"
+        );
+        assert_eq!(
+            codes("    andi.w #$1f,ccr"),
+            ["invalid_size"],
+            "`andi` to the condition codes is a byte"
+        );
+        assert_eq!(
+            codes("    andi.b #$1f,sr"),
+            ["invalid_size"],
+            "`andi` to the status register is a word"
+        );
+        assert_eq!(
+            codes("    addi.w #1,sr"),
+            ["invalid_addressing_mode"],
+            "only `andi`, `ori` and `eori` reach the status register"
+        );
+        assert_eq!(
+            codes("    move.w ccr,ccr"),
+            ["invalid_addressing_mode", "invalid_addressing_mode"],
+            "a `move` that fits no form of its own is judged against the general one,              operand by operand"
+        );
+        assert!(
+            !messages("    move.w ccr,ccr")[0].contains("only `move`"),
+            "and is not told that `move` reaches the status register, which it does"
+        );
+        assert_eq!(
+            messages("    tst.w ccr"),
+            [
+                "the first operand of `tst` cannot be the condition codes — only `move`, `andi`, \
+                 `ori` and `eori` reach the status register; there it takes Dn, (An), (An)+, \
+                 -(An), d(An), d(An,Xn) or Ea/<label>"
+            ]
+        );
+    }
+
+    /// `movep` reaches memory through a displacement and nothing else, and the
+    /// mistake that has a name is writing `(a1)` for `0(a1)`.
+    #[test]
+    fn movep_takes_a_displacement_and_says_so() {
+        assert_eq!(codes("    movep.w d0,4(a1)"), Vec::<String>::new());
+        assert_eq!(codes("    movep.l 4(a1),d0"), Vec::<String>::new());
+        assert_eq!(
+            messages("    movep.w d0,(a1)"),
+            [
+                "the second operand of `movep` cannot be an indirect operand — write the \
+                 displacement, `0(a1)`; there it takes d(An)"
+            ]
+        );
+        assert_eq!(
+            codes("    movep.b d0,4(a1)"),
+            ["invalid_size"],
+            "`movep` moves a word or a long"
         );
     }
 

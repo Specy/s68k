@@ -2895,15 +2895,17 @@ mod tests {
             // "Later" is the phase order of the design record, not the
             // calendar: the analyzer, the Directives and the Layout all raise
             // Diagnostics of their own, and none of them is the parser's.
-            const LATER_PHASES: [&str; 29] = [
+            const LATER_PHASES: [&str; 37] = [
                 "unknown_mnemonic",
                 "mnemonic_used_as_label",
                 "wrong_operand_count",
                 "missing_comma_between_operands",
                 "invalid_addressing_mode",
+                "invalid_operand_pair",
                 "both_operands_in_memory",
                 "address_register_byte_size",
                 "unimplemented_addressing_mode",
+                "invalid_address_width",
                 "value_out_of_range",
                 "bare_number_as_address",
                 "star_is_the_current_address",
@@ -2923,6 +2925,12 @@ mod tests {
                 "entry_point_case_mismatch",
                 "end_without_an_address",
                 "directive_needs_a_label",
+                "label_not_allowed",
+                "register_list_expected",
+                "not_a_register_list",
+                "register_list_not_defined_yet",
+                "user_defined_error",
+                "no_bytes_in_an_offset_region",
                 "value_expected",
                 "unreadable_file",
             ];

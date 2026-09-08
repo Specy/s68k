@@ -271,6 +271,17 @@ fn print_operand(operand: &Operand) -> String {
             size_suffix(index.size)
         ),
         Operand::Absolute(address) => hex(*address),
+        // A PC-relative Operand prints the displacement the Assembler worked
+        // out and not the address the source wrote: the address is where it
+        // came from and the displacement is what the Program holds
+        // (`tests/corpus/README.md`, "Operands").
+        Operand::PcDisplacement { offset } => format!("{}(pc)", offset),
+        Operand::PcIndex { offset, index } => format!(
+            "{}(pc,{}.{})",
+            offset,
+            register(&index.register),
+            size_suffix(index.size)
+        ),
     }
 }
 
@@ -458,6 +469,36 @@ fn print_instruction(instruction: &Instruction) -> String {
             format!("lea {},{}", print_operand(source), register(destination))
         }
         Instruction::PEA(source) => format!("pea {}", print_operand(source)),
+        // The extend-flag pair: two data registers or two predecrements, and
+        // the size is written because all three are a choice.
+        Instruction::ADDX(source, destination, size) => format!(
+            "addx.{} {},{}",
+            size_suffix(*size),
+            print_operand(source),
+            print_operand(destination)
+        ),
+        Instruction::SUBX(source, destination, size) => format!(
+            "subx.{} {},{}",
+            size_suffix(*size),
+            print_operand(source),
+            print_operand(destination)
+        ),
+        Instruction::NEGX(destination, size) => {
+            format!("negx.{} {}", size_suffix(*size), print_operand(destination))
+        }
+        // The three binary coded decimal instructions carry no size: a byte is
+        // the only one they have, the way `tas` has only a byte.
+        Instruction::ABCD(source, destination) => format!(
+            "abcd {},{}",
+            print_operand(source),
+            print_operand(destination)
+        ),
+        Instruction::SBCD(source, destination) => format!(
+            "sbcd {},{}",
+            print_operand(source),
+            print_operand(destination)
+        ),
+        Instruction::NBCD(destination) => format!("nbcd {}", print_operand(destination)),
         Instruction::NEG(destination, size) => {
             format!("neg.{} {}", size_suffix(*size), print_operand(destination))
         }
@@ -551,6 +592,13 @@ fn print_instruction(instruction: &Instruction) -> String {
             print_operand(amount),
             print_operand(destination)
         ),
+        Instruction::ROXd(amount, destination, direction, size) => format!(
+            "rox{}.{} {},{}",
+            shift(direction),
+            size_suffix(*size),
+            print_operand(amount),
+            print_operand(destination)
+        ),
         Instruction::BTST(bit, destination) => {
             format!("btst {},{}", print_operand(bit), print_operand(destination))
         }
@@ -568,6 +616,46 @@ fn print_instruction(instruction: &Instruction) -> String {
         Instruction::TRAP(vector) => format!("trap #${:x}", vector),
         Instruction::RTS => "rts".to_string(),
         Instruction::NOP => "nop".to_string(),
+        Instruction::SIMHALT => "simhalt".to_string(),
+        Instruction::MOVEP {
+            direction,
+            size,
+            register: data,
+            target,
+        } => {
+            let (data, target) = (register(data), print_operand(target));
+            match direction {
+                TargetDirection::ToMemory => {
+                    format!("movep.{} {},{}", size_suffix(*size), data, target)
+                }
+                TargetDirection::FromMemory => {
+                    format!("movep.{} {},{}", size_suffix(*size), target, data)
+                }
+            }
+        }
+        // The four `move`s and the six immediates that name a half of the
+        // status register carry no size: `ccr` is a byte and `sr` a word by
+        // definition, so the operand says the width and the fixture does not
+        // repeat it.
+        Instruction::MOVEtoCCR(source) => format!("move {},ccr", print_operand(source)),
+        Instruction::MOVEfromCCR(destination) => {
+            format!("move ccr,{}", print_operand(destination))
+        }
+        Instruction::MOVEtoSR(source) => format!("move {},sr", print_operand(source)),
+        Instruction::MOVEfromSR(destination) => format!("move sr,{}", print_operand(destination)),
+        Instruction::ANDItoCCR(value) => format!("andi #${:x},ccr", value),
+        Instruction::ORItoCCR(value) => format!("ori #${:x},ccr", value),
+        Instruction::EORItoCCR(value) => format!("eori #${:x},ccr", value),
+        Instruction::ANDItoSR(value) => format!("andi #${:x},sr", value),
+        Instruction::ORItoSR(value) => format!("ori #${:x},sr", value),
+        Instruction::EORItoSR(value) => format!("eori #${:x},sr", value),
+        Instruction::TAS(destination) => format!("tas {}", print_operand(destination)),
+        Instruction::RTR => "rtr".to_string(),
+        Instruction::CHK(bound, destination) => {
+            format!("chk {},{}", print_operand(bound), register(destination))
+        }
+        Instruction::TRAPV => "trapv".to_string(),
+        Instruction::ILLEGAL => "illegal".to_string(),
     }
 }
 
@@ -944,6 +1032,7 @@ fn easy68k_programs_do_not_assemble() {
 #[test]
 fn printer_rules() {
     let source = "\
+regs reg d0-d2/a0/a6
     movem.l d0-d2/a0/a6,-(sp)
     movem.l (sp)+,d0-d2/a0/a6
     movem.w d3,(a0)
@@ -1002,6 +1091,48 @@ loop:
     bmi loop
     moveq #-1,d0
     move.l #-1,d1
+    movem.l regs,-(sp)
+    movem.l (sp)+,regs
+    simhalt
+    movep.w d0,4(a1)
+    movep.l 4(a1),d0
+    move.w d0,ccr
+    move.w #$1f,ccr
+    move.w ccr,d0
+    move.w d0,sr
+    move.w sr,d0
+    andi.b #$1f,ccr
+    ori.b #$1,ccr
+    eori.b #$4,ccr
+    andi.w #$00,sr
+    ori.w #$700,sr
+    eori.w #$2000,sr
+    tas (a0)
+    tas d0
+    rtr
+    chk #$a,d0
+    chk (a0),d1
+    trapv
+    illegal
+    addx.l d0,d1
+    addx.b -(a0),-(a1)
+    subx.w d0,d1
+    negx.l (a0)
+    abcd d0,d1
+    abcd -(a0),-(a1)
+    sbcd.b d0,d1
+    nbcd (a0)
+    roxl.b #1,d0
+    roxr.l d1,d0
+    roxl (a0)
+    move.l here(pc),d0
+    lea here(pc),a0
+    move.l here(pc,d1.w),d1
+    move.l (pc,d1.w),d2
+    move.l $1000.w,d3
+    move.l $1000.l,d4
+here: dc.l 1
+    move.l here(pc),d5
 ";
     let expected = [
         "movem.l d0-d2/a0/a6,-(a7)",
@@ -1066,6 +1197,64 @@ loop:
         // operand sign extends. `addq`, `subq` and `trap` truncate the same way.
         "moveq #$ff,d0",
         "move.l #$ffffffff,d1",
+        // A `reg` symbol is lowered exactly as the list it stands for, in both
+        // directions, so these two read as the first two lines of the source.
+        "movem.l d0-d2/a0/a6,-(a7)",
+        "movem.l (a7)+,d0-d2/a0/a6",
+        "simhalt",
+        // Phase 3's first group. `movep` carries its size, because a word and
+        // a long are a real choice; the four `move`s and the six immediates
+        // that name a half of the status register carry none, because `ccr` is
+        // a byte and `sr` a word by definition.
+        "movep.w d0,4(a1)",
+        "movep.l 4(a1),d0",
+        "move d0,ccr",
+        "move #$1f,ccr",
+        "move ccr,d0",
+        "move d0,sr",
+        "move sr,d0",
+        "andi #$1f,ccr",
+        "ori #$1,ccr",
+        "eori #$4,ccr",
+        "andi #$0,sr",
+        "ori #$700,sr",
+        "eori #$2000,sr",
+        "tas (a0)",
+        "tas d0",
+        "rtr",
+        "chk #$a,d0",
+        "chk (a0),d1",
+        "trapv",
+        "illegal",
+        // Phase 3's second group. `addx`, `subx`, `negx` and the rotates carry
+        // their size, because all three are a real choice; the three decimal
+        // instructions carry none, because a byte is the only size they have,
+        // the way `tas` has only a byte.
+        "addx.l d0,d1",
+        "addx.b -(a0),-(a1)",
+        "subx.w d0,d1",
+        "negx.l (a0)",
+        "abcd d0,d1",
+        "abcd -(a0),-(a1)",
+        "sbcd d0,d1",
+        "nbcd (a0)",
+        "roxl.b #$1,d0",
+        "roxr.l d1,d0",
+        "roxl.w #$1,(a0)",
+        // Phase 3's last group. A PC-relative operand is written as the
+        // address it reaches and printed as the displacement the Assembler
+        // stored: `here` is 22 bytes past the extension word of the first of
+        // these lines, 18 past the second's, and 6 bytes *behind* the last
+        // one's. `(pc,d1.w)` writes no address, so its displacement is zero.
+        "move.l 22(pc),d0",
+        "lea 18(pc),a0",
+        "move.l 14(pc,d1.w),d1",
+        "move.l 0(pc,d1.w),d2",
+        // A forced width is not printed: `.w` and `.l` name the same address
+        // here and the Program holds the address alone.
+        "move.l $1000,d3",
+        "move.l $1000,d4",
+        "move.l -6(pc),d5",
     ];
     let fixture = dump("printer_rules", source);
     let texts: Vec<&str> = fixture
@@ -1130,6 +1319,125 @@ fn printer_rules_out_of_reach() {
     // d7 and a0 are neighbours in the mask but never make one range.
     assert_eq!(print_register_list(0b0000_0001_1000_0000), "d7/a0");
     assert_eq!(print_register_list(0b1000_0000_0000_0011), "d0-d1/a7");
+}
+
+/// `Directives/section.htm`'s own example, as a fixture.
+///
+/// Sixteen location counters, each going on from where it was left: the data of
+/// section 1 is one run in the fixture's `memory` and not two, because `msg2`
+/// carries on from where `msg1` stopped while the code of section 0 was being
+/// laid out in between. Every address below is worked out by hand from the help
+/// and from the default origin, and none of it is read back from the Assembler.
+#[test]
+fn the_section_example_of_the_help() {
+    // The help's `<code>` is two instructions here, so that section 0 has
+    // something to lay out; everything else is its own.
+    let source = "\
+CODE    EQU     0
+DATA    EQU     1
+        SECTION DATA
+        ORG     $2000
+msg1    DC.B    'Hello World',$d,$a,0
+        SECTION CODE
+        ORG     $1000
+        MOVE.L  #1,D0
+        NOP
+        SECTION DATA
+msg2    DC.B    'EASy68K Rules!',$d,$a,0
+";
+    let fixture = dump("section_example", source);
+    // `msg1` is 'Hello World' (11) + $d + $a + 0 = 14 bytes from $2000, so
+    // section 1 has reached $200e when the program comes back to it, and `msg2`
+    // is 'EASy68K Rules!' (14) + 3 = 17 bytes from there.
+    let memory: Vec<(&str, usize)> = fixture
+        .memory
+        .iter()
+        .map(|run| match run {
+            FixtureMemory::Bytes { address, bytes } => (address.as_str(), bytes.len() / 2),
+            FixtureMemory::Reserved { address, reserved } => (address.as_str(), *reserved),
+        })
+        .collect();
+    assert_eq!(memory, vec![("$2000", 14), ("$200e", 17)]);
+    // Section 0 starts at the default origin, which is where its `ORG` puts it
+    // anyway; the two instructions are four bytes each.
+    let instructions: Vec<(&str, &str)> = fixture
+        .instructions
+        .iter()
+        .map(|instruction| (instruction.address.as_str(), instruction.text.as_str()))
+        .collect();
+    assert_eq!(
+        instructions,
+        vec![("$1000", "move.l #$1,d0"), ("$1004", "nop")]
+    );
+    // The two Labels are Labels, with the addresses above.
+    assert_eq!(fixture.labels["msg1"].address, "$2000");
+    assert_eq!(fixture.labels["msg2"].address, "$200e");
+    // `CODE` and `DATA` are Constants and no more in the fixture than any other
+    // `equ` is.
+    assert_eq!(fixture.labels.len(), 2);
+    // The program starts at its first instruction, which is in section 0.
+    assert_eq!(fixture.entry, "$1000");
+}
+
+/// `Directives/offset.htm`'s stack-frame example, as a fixture.
+///
+/// The whole of an `offset` region is names: nothing is placed, so the fixture's
+/// `memory` is empty and its `labels` hold none of the three fields — they are
+/// Constants, because an offset into a stack frame is a value and there is no
+/// line of the program at it. What the region did is visible in the
+/// instructions, which carry the offsets as their displacements.
+#[test]
+fn the_offset_stack_frame_example_of_the_help() {
+    let source = "\
+SIZE    EQU -3*4
+        OFFSET  SIZE
+num1    DS.L    1
+num2    DS.L    1
+num3    DS.L    1
+        ORG     *
+        LINK    A0,#SIZE
+        MOVEM.L A0-A1,-(A7)
+        MOVE.L  #$11111111,(num1,A0)
+        MOVE.L  #$22222222,(num2,A0)
+        MOVE.L  #$33333333,(num3,A0)
+";
+    let fixture = dump("offset_example", source);
+    // Three long words counting up from -12: -12, -8, -4. `ORG *` comes back to
+    // the address the region shadowed, which is the default origin, and the
+    // five instructions are four bytes each from there.
+    let instructions: Vec<(&str, &str)> = fixture
+        .instructions
+        .iter()
+        .map(|instruction| (instruction.address.as_str(), instruction.text.as_str()))
+        .collect();
+    assert_eq!(
+        instructions,
+        vec![
+            ("$1000", "link a0,#$fffffff4"),
+            ("$1004", "movem.l a0-a1,-(a7)"),
+            ("$1008", "move.l #$11111111,-12(a0)"),
+            ("$100c", "move.l #$22222222,-8(a0)"),
+            ("$1010", "move.l #$33333333,-4(a0)"),
+        ]
+    );
+    assert!(
+        fixture.memory.is_empty(),
+        "an offset region places nothing: {:?}",
+        fixture.memory.len()
+    );
+    assert!(
+        fixture.labels.is_empty(),
+        "the three fields are Constants and not Labels: {:?}",
+        fixture.labels.keys().collect::<Vec<_>>()
+    );
+    // The symbol listing is where they are, and it says what they are.
+    let program = assemble("offset_example", source);
+    for (name, value) in [("num1", -12), ("num2", -8), ("num3", -4)] {
+        let symbol = &program.symbols()[name];
+        assert_eq!(symbol.value, value, "{name}");
+        assert_eq!(symbol.kind, SymbolKind::Constant, "{name}");
+    }
+    assert_eq!(fixture.entry, "$1000");
 }
 
 /// The Entry point: `end`'s operand, else a Label named `START` whatever its

@@ -29,5 +29,31 @@ input_file: tests/diagnostics/value_out_of_range.asm
       "endColumn": 12
     },
     "related": []
+  },
+  {
+    "severity": "error",
+    "code": "value_out_of_range",
+    "message": "the distance a `d(PC)` operand reaches is -32768 to 32767, and `192502` is outside it",
+    "hint": "write `far` on its own: an absolute address reaches anywhere in memory",
+    "location": {
+      "file": "value_out_of_range.asm",
+      "line": 5,
+      "column": 11,
+      "endColumn": 14
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "value_out_of_range",
+    "message": "an address forced to `.w` is -32768 to 32767, and `98304` is outside it",
+    "hint": "write `$18000.l`, or `$18000` on its own: both reach the same address here",
+    "location": {
+      "file": "value_out_of_range.asm",
+      "line": 6,
+      "column": 11,
+      "endColumn": 17
+    },
+    "related": []
   }
 ]

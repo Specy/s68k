@@ -59,16 +59,29 @@ pub struct ExecutionStep {
     location: Option<Location>,
     old_ccr: Flags,
     new_ccr: Flags,
+    /// The whole status register before the step, condition codes included.
+    ///
+    /// It is what undo puts back, because the high byte of the status register
+    /// — trace, supervisor, interrupt mask — is state a step can change
+    /// (`move #n,sr`, `andi #n,sr`) and `old_ccr` does not carry it. The two
+    /// overlap on the condition codes on purpose: `old_ccr` is the shape the
+    /// editor has always read, in this crate's own flag bits, and this is the
+    /// register as the processor numbers it (the implementation notes, phase 3).
+    old_sr: u16,
+    /// The whole status register after the step.
+    new_sr: u16,
 }
 
 impl ExecutionStep {
-    pub fn new(pc: usize, ccr: Flags) -> Self {
+    pub fn new(pc: usize, ccr: Flags, sr: u16) -> Self {
         Self {
             id: 0,
             mutations: vec![],
             pc,
             old_ccr: ccr,
             new_ccr: ccr,
+            old_sr: sr,
+            new_sr: sr,
             location: None,
         }
     }
@@ -92,6 +105,10 @@ impl ExecutionStep {
     }
     pub fn get_ccr(&self) -> Flags {
         self.old_ccr
+    }
+    /// The whole status register before the step, which is what undo restores.
+    pub fn get_sr(&self) -> u16 {
+        self.old_sr
     }
     /// Where the instruction this step ran was written.
     pub fn get_location(&self) -> Option<&Location> {
@@ -171,7 +188,11 @@ impl Debugger {
         }
         //include at least one to prevent initialization errors when pushing history state
         let mut empty_history: LinkedList<ExecutionStep> = LinkedList::new();
-        empty_history.push_front(ExecutionStep::new(0, Flags::empty()));
+        empty_history.push_front(ExecutionStep::new(
+            0,
+            Flags::empty(),
+            crate::interpreter::INITIAL_STATUS_REGISTER,
+        ));
         Self {
             next_step_id: 1,
             history: empty_history,
@@ -208,6 +229,13 @@ impl Debugger {
             .back_mut()
             .expect("No history to set new ccr")
             .new_ccr = ccr;
+    }
+    /// Records the whole status register the step left behind.
+    pub fn set_new_sr(&mut self, sr: u16) {
+        self.history
+            .back_mut()
+            .expect("No history to set new sr")
+            .new_sr = sr;
     }
     /// Records where the instruction of the step being executed was written.
     pub fn set_location(&mut self, location: Option<Location>) {

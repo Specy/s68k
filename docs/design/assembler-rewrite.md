@@ -70,6 +70,8 @@ Hand-written tokenizer and recursive-descent parser, Pratt loop for expressions,
 - Addressing modes: PC-relative displacement and index; `.w`/`.l` on absolute addresses; `.s`/`.w`/`.l` on branches, accepted without a range check until real sizes exist. *(Completed in the review step: `.b` is accepted on a branch too and means exactly what `.s` means — "EASy68K will accept .B or .S to force 1-byte offsets and .W or .L to force 2-byte offsets", `Reference/68ks9b.htm`. This section was silent on `.b`, and the rule for silence is to follow EASy68K.)*
 - One instruction table for mnemonics, operand rules, sizes and defaults, shared by parser, analyzer and encoder.
 
+**This section is finished (step 15).** Everything it asks for is implemented: the status register and `movep` in step 13, the extend-flag and binary-coded-decimal group in step 14, and the Addressing modes in step 15, which is the last of them. Two things the bullets above could not decide and step 15 did, both recorded in the implementation notes and in `README.md`: a PC-relative Operand is written as the address it reaches and **stored as the distance from the instruction's own extension word to it**, which the Interpreter adds back, because a fixed four-byte instruction has no encoded displacement to read; and `label.w` and `label.l` name the **same address**, `.l` saying nothing and `.w` being checked against the sixteen bits an absolute short reference holds. What is left of the design record for the instructions is one thing it always deferred, "Real instruction sizes are a later, separate decision" (Scope), and the four Mnemonics and the one register refused for good.
+
 ### Files, `include`, `incbin`
 
 - Input: the Project's Files, a map from root-relative path to text or bytes, plus the Entry file's path. A single string wraps as `main.m68k`.
@@ -1559,3 +1561,1151 @@ of phase 1 changed in these fixtures".
   Operand count is short, so a Directive that takes a list (`dc.b 1 2`) still
   says nothing — deliberately, because `dc` accepts any number of items and the
   count alone cannot tell the mistake from the intent.
+
+## Implementation notes (phase 2)
+
+The running record of phase 2, kept the way phase 1's is: one bullet a choice,
+so that the next step can read the state of the work from the repository.
+Nothing above this heading is rewritten except to fix a factual error, and such
+a fix says so here. **The step numbers carry on from phase 1's**, so that a
+reference to "step 7" means one thing in this document.
+
+### Step 11 — `reg`, `fail`, `simhalt` and the Directives' label rules
+
+The first half of phase 2: the three Directives of the design record's
+"implement with EASy68K meaning" bucket that need no new notion of the Layout,
+and the label rules of `docs/grammar.md` 2.6. `src/assembler/layout.rs` grows
+the three, the label rule and the register-list resolution;
+`src/assembler/diagnostics.rs` grows five kinds; `Instruction::SIMHALT` is a new
+variant of the encoded instruction and the Interpreter runs it. `cargo test` is
+**349 green** (21 new), `cargo fmt --check` is clean, `cargo build
+--all-targets` raises no warning, `cargo clippy --all-targets` no new one (the
+same 4, all older than phase 1's step 10) and `RUSTDOCFLAGS=-D warnings cargo
+doc --no-deps` is clean. **Two corpus fixtures moved, one entry each**, both
+`-errors.snap` of an EASy68K original, and `tests/corpus/README.md` has them
+under "What phase 2's first half changed in these fixtures".
+
+- **`reg` defines a Symbol that holds a mask, not a number.** `SymbolKind` and
+  `SymbolValue::RegisterList` were written in phase 1 and had no writer;
+  `Layout::plan_reg` is it. The Operand is a `register_list` or a single
+  register, which is a list of one exactly as it is for `movem`
+  (`docs/grammar.md` 1.12); anything else is the new `register_list_expected`.
+  The name is defined whatever the Operand turned out to be, which is the rule
+  `plan_equate` already followed: a list that could not be read has been
+  reported once and leaving the name undefined would report it again at every
+  `movem` that uses it.
+- **A `reg` name in a `movem` position becomes the list, and the substitution is
+  the Layout's.** ADR 0003 gives the analyzer the comparison of an Operand with
+  the instruction table, and this is not that comparison: it is a Symbol
+  look-up, which is the Layout's, and what it produces is an
+  `ast::Operand::RegisterList` that the analyzer then judges by its ordinary
+  rules. `Layout::resolve_register_lists` rewrites the line's Operands and hands
+  the analyzer the rewritten `Line`; from there the lowering, the mask, the
+  predecrement reversal and the fixture printer are the written list's, because
+  it *is* one. The alternative was a second question on the analyzer's
+  `SymbolValues` trait and the same look-up written twice.
+- **"Which position may hold a register list" is the table's answer**, not a
+  test for `movem` by name: `InstructionSpec::takes_a_register_list(position)`
+  is any Form whose `Modes` at that position holds `REGISTER_LIST`. Today only
+  `movem` answers `true`, and it answers for both of its positions, so
+  `movem.l AllRegs,-(a7)` and `movem.l (a7)+,AllRegs` both work with no
+  direction logic of their own. The Operand *count* is deliberately not part of
+  the question: `movem.l AllRegs` is told how many Operands `movem` takes and
+  not also that a register list cannot be an Expression.
+- **Four answers to a name in a register-list position, and the fourth is
+  silence.** A `reg` Symbol defined above becomes the list; one defined below is
+  `register_list_not_defined_yet` (EASy68K's "Register list symbol not
+  previously defined") with the `reg` line as a related Location; a Symbol of
+  another kind is `not_a_register_list` (its "Symbol is not a register list
+  symbol"); and a name that is defined **nowhere** is left alone. The evaluator
+  answers that one with `undefined_symbol` and its "did you mean", and the
+  analyzer adds what `movem` takes there — two sentences that between them
+  diagnose a missing `reg` line, and both of them true. Inventing a third
+  message for it would have had to guess between a typo and a missing
+  Directive.
+- **"Not a register list" is only said where nothing else fits.** Both of
+  `movem`'s positions accept a list in *some* Form, so a rule that read every
+  bare name in either of them as a list would answer `movem.l table,d0-d2` —
+  registers read back *from* `table` — with "`table` is a label, not a register
+  list", which is a working instruction called a mistake. The two refusals are
+  therefore held back unless the line has a count `movem` takes and **no Form
+  of it fits as written**, which is `InstructionSpec::has_a_form_that_fits`, a
+  `Form::fits` lifted out of the analyzer's own `choose_form` so that the two
+  cannot disagree about what fits. The **substitution** has no such guard and
+  needs none: a `reg` Symbol has no value at all, so a name that is one can
+  never be the address the other direction would have allowed — which is also
+  why a list defined below is refused wherever it stands, and not only where
+  nothing else fits. Without that last exception a `movem.l table,d0-d2` whose
+  `table` was a `reg` line further down would have lowered to nothing at all,
+  silently, and the Program would have been short one instruction with no
+  Diagnostic to show for it.
+- **A register list is the one forward reference refused in an instruction
+  Operand.** Everywhere else the rule is the design record's — allowed in an
+  instruction Operand and in `dc` data, refused where the value decides the
+  Layout — and a Label read before its definition is answered by pass 2. A
+  register list is not a value pass 2 can fill in: it is part of how the
+  instruction is encoded, EASy68K refuses it by name, and the position is
+  compared with the `reg` line's Source line index. That comparison is the
+  second place in the Assembler that reads a position as a line index (the
+  first is `Symbol::value_at`, for `set`), so phase 4's textual `include` has
+  to change both together.
+- **When a name in a register-list position is refused, the Operand is not
+  judged again.** `movem.l count,-(a7)` with `count equ 4` says "`count` is a
+  constant, not a register list" and stops there; the mode check would add "the
+  first operand of `movem` cannot be an absolute address", which is true of the
+  Operand and false about the mistake. The line takes the path a line the parser
+  already failed on takes — the name and the size are judged and nothing is
+  lowered — which is the machinery phase 1 built for exactly this.
+- **The evaluator is not asked about a name that is a register list.** Pass 2
+  evaluates every Expression of every Operand so that an undefined name is named
+  once; a `reg` Symbol there is `register_list_in_expression`, which is right for
+  `move.l AllRegs,d0` and wrong for `movem.l AllRegs,-(a7)`, where the name is
+  the Operand and not an Expression at all. The loop therefore skips a bare name
+  in a register-list position that resolves to a Register list, and only that.
+  `move.l #AllRegs,d0`, `move.l AllRegs,d1` and `move.l AllRegs+1,d2` all still
+  get EASy68K's sentence, which is what the golden case holds.
+- **`register_list_in_expression` has a case at last.** It was one of the two
+  codes `src/test/diagnostics.rs` listed as unreachable from one File of source,
+  because nothing could define a Register list; `unreadable_file` is now the
+  only one, and phase 4's `include` owes it.
+- **`fail`'s message is the raw text and the Diagnostic is the message.**
+  `DiagnosticKind::UserDefinedError` renders the text the parser kept, commas,
+  spaces and all (`FAIL ERROR, Argument missing in call to foo macro.` is one
+  message), and EASy68K's own default when the line writes none:
+  `UNSPECIFIED_FAILURE`, "Unspecified user defined error", without the "ERROR:"
+  that assembler prefixes to everything and that is the `Severity` here. The
+  hint is what a student needs and the help does not have: that the sentence
+  comes from a `fail` line in the program and is not something the assembler
+  found. Assembly carries on, as `Directives/fail.htm` says it does — the line
+  after a `fail` is still laid out — and the error is what stops the Program
+  from being handed out.
+- **A Label on a `fail` names the address of the line**, like a Label on any
+  Directive that produces nothing. The help's usage line is `[label] FAIL
+  message`.
+- **`simhalt` is an executable item, not an escape hatch in the Interpreter.**
+  EASy68K assembles it to the object code `$FFFFFFFF`, which its simulator reads
+  as halt; here it is four bytes at an even address, an
+  `AssembledInstruction` like any other, and a Label on it names its address.
+  The encoded form is a new `Instruction::SIMHALT`, so the two exhaustive
+  matches over `Instruction` — the Interpreter's `execute_instruction` and the
+  fixture printer — had to be given an arm, which is what those matches are for.
+  It is the one Directive whose line reaches pass 2 for an instruction: the
+  Layout's `analyze` answers `Some(Instruction::SIMHALT)` for it before the
+  early return that leaves every other Directive to pass 1.
+- **Resuming after `simhalt` is not offered.** "Pressing the Pause button on the
+  toolbar will re-enable the simulator controls following a SIMHALT. Program
+  execution may be continued with the instruction following SIMHALT"
+  (`Directives/simhalt.htm`). s68k has no such control: `simhalt` ends the run
+  with the status the Terminate task gives, and a terminated Interpreter stays
+  terminated — `Interpreter::set_status` refuses to move it. Nor is EASy68K's
+  `*[sim68k]SIMHALT_OFF` comment, which turns the same object code back into a
+  Line F exception, read here: s68k assembles no `$FFFF` word a program could
+  reach by accident, so there is nothing to disable.
+- **`simhalt` modifies no register**, which is the help's own sentence, and the
+  Interpreter's arm is one call to `set_status`. The program counter stops one
+  past it, which is where the step had already left it.
+- **`simhalt` reads the rest of its line as a Comment**, and that rule was
+  forced by an EASy68K original. `Directives/simhalt.htm`'s usage line is `LABEL
+  SIMHALT comment` and line 206 of `tests/corpus/easy68k/graphicSound.X68` is
+  `SIMHALT                 Halt Simulator`; read as an ordinary Operation that is
+  the Operand `Halt` and the Comment `Simulator`, because rule 4 of
+  `docs/grammar.md` 1.5 ends the Operand field at the first whitespace and no
+  rule of the parser may consult a Directive's arity (ADR 0003). Implementing
+  the Directive would then have *added* a `wrong_operand_count` to an EASy68K
+  program that ADR 0001 promises will assemble. `page`, `list` and `nolist`
+  already ignore their Operand field for the same reason, and `page`'s help says
+  so in as many words ("any comments are ignored").
+- **The label rule is one function and three values.** `label_rule_of` in
+  `layout.rs` is `Required` for `equ`, `set` and `reg`, `Forbidden` for `page`
+  and the ten conditional-assembly Directives, `Optional` for everything else,
+  and `Layout::check_label_rule` runs it at the head of `plan_directive`, before
+  the Directive itself. `directive_needs_a_label` moved there out of
+  `plan_equate`, which is why `equ`, `set` and `reg` now answer the same
+  sentence from one place.
+- **The Forbidden list is EASy68K's and nothing beyond it.** `page` is "No label
+  is permitted" (`Directives/page.htm`) and the conditionals are "IFxx and ENDC
+  directives may not be labeled" (`Directives/conditional.htm`). `macro` is
+  deliberately absent: its label field holds the Macro's name. The
+  structured-control keywords are absent too, because the help says nothing
+  about them and silence is answered the lenient way (ADR 0001).
+- **A refused Directive is still checked for its label, and that is two
+  Diagnostics on one line.** `skip ifeq debug` answers both "`ifeq` takes no
+  label" and "conditional assembly is not implemented yet". They are two
+  mistakes at two places in the line — the label field and the operation field —
+  and the label rule is a fact about the shape of the line whether or not the
+  feature exists, which is why it is not held back until conditional assembly
+  is. "One mistake, one message" is about one mistake.
+- **A Label that is not allowed is still defined** at the address the line sits
+  at. The line is already an error so no Program is built either way, and an
+  undefined name would be reported again at every use of it — the rule
+  `plan_equate` follows for a value it cannot work out.
+- **Five new `DiagnosticKind`s**, each with a golden case in
+  `tests/diagnostics/`: `label_not_allowed`, `register_list_expected`,
+  `not_a_register_list`, `register_list_not_defined_yet` and
+  `user_defined_error`. `directive_needs_a_label` was phase 1's and covers the
+  "label required" half unchanged.
+- **`docs/grammar.md` 2.6 now writes the label rule out** as a table of three
+  values with EASy68K's error names beside it, says what `reg` and `simhalt` do
+  that their productions cannot carry, and its rule index (5) maps
+  `reg_directive`, `fail_directive` and `simhalt_directive` to the tests that
+  cover them, where they used to share the "not implemented yet" row.
+- **The printer rule for `simhalt` is `simhalt`**, and `tests/corpus/README.md`
+  has it with the unsized instructions. `printer_rules` in `src/test/corpus.rs`
+  writes the same `movem` twice, once through a `reg` name and once with the
+  list written out, and asserts that the two print the same line — which is the
+  evidence that a `reg` Symbol is lowered exactly as the literal list is, in
+  both directions and with the predecrement mask reversal.
+- **Not done in this step**, and next: phase 2's second half, `offset` and
+  `section`. What it needs to know about the Layout is in the paragraph below.
+  `include`, `incbin` and the refused Directives are unchanged;
+  `unimplemented_reason` in `layout.rs` is down to those and to `memory`, the
+  Macro Directives, conditional assembly and structured control.
+
+**What `offset` and `section` need from the Layout as it stands.** The Layout is
+two passes over one `Vec<LinePlan>`, and a plan is `{ address, scope, item }`
+with `item` one of `Nothing`, `Instruction`, `Data(len)` and `Reserved(len)`.
+`Layout::address` is the single current address, `Layout::origin` is the first
+address anything was placed at, and `Layout::place` is the one function that
+takes room, records a `Placement` for the overlap sweep and moves the address
+on. Four consequences:
+
+* **`offset` needs an address that produces no bytes.** `Directives/offset.htm`
+  says "No machine code is generated by instructions or directives following an
+  OFFSET directive" and that `ORG *` ends the section. Nothing in the Layout
+  distinguishes "laid out" from "placed" today: `place` is what both moves the
+  address and enters the overlap sweep, so an `offset` region has to skip the
+  `Placement` while still moving `address` and defining its Labels. That is a
+  flag on the Layout read by `place`, not a new `Item`.
+* **`section` needs several current addresses.** It restores "the address
+  following the last location allocated in the indicated section (or zero if
+  used for the first time)", so `address` becomes one per section, sixteen of
+  them, with `org` writing the current one. The overlap sweep is over all of
+  them at once, which is right: "the assembler does not check for overlapping
+  sections" is EASy68K's, and s68k's overlap error is a deliberate deviation
+  already recorded in ADR 0001.
+* **Both are pass-1 Directives with a forward-reference rule.** `offset`'s
+  Expression and `section`'s number decide the Layout, so both go through
+  `value_now`, which is what raises `forward_reference_not_allowed` with the
+  Directive's name in it. `section`'s Operand may be a Symbol
+  (`Directives/section.htm` writes `SECTION DATA` with `DATA EQU 1`), so it is
+  an ordinary Expression and not a literal.
+* **`section` with no Operand requires a Label** and sets it to the number of
+  the current section, which is why `label_rule_of` answers `Optional` for
+  `section` today: the rule depends on the Operand and not on the name, and
+  `plan_section` has to raise `directive_needs_a_label` itself. The table in
+  `docs/grammar.md` 2.6 says so.
+
+### Step 12 — `section` and `offset`: sixteen counters and a region that places nothing
+
+The second half of phase 2, and the last two Directives of the design record's
+"implement with EASy68K meaning" bucket that phase 2 owns. `src/assembler/layout.rs`
+grows the sixteen location counters, the `offset` region and the two planners;
+`src/assembler/diagnostics.rs` grows one kind. `cargo test` is **372 green** (23
+new), `cargo fmt --check` is clean, `cargo build --all-targets` raises no
+warning, `cargo clippy --all-targets` no new one (the same 4, all older than
+phase 1's step 10) and `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` is clean.
+**No corpus fixture moved**, in either direction: no program of `tests/corpus/`
+writes either Directive, so the three `-errors.snap` are exactly what step 11
+left them.
+
+- **The current address is a reading, not a field.** `Layout::address` was one
+  `i64`; it is now `Layout::address()` over `sections: [i64; SECTION_COUNT]`
+  indexed by `section`, shadowed by `offset: Option<i64>` while a region is
+  open, and `set_address` writes whichever of the two is in force. Every
+  Directive that moves the address goes through the pair and none of them knows
+  which counter it is writing, which is what makes `org` "set the current
+  program location" inside a section and inside a region alike.
+- **Section 0 starts at `$1000` and the other fifteen at zero.** EASy68K's rule
+  is "zero if used for the first time" for every section and s68k's own is the
+  default origin of `$1000` (ADR 0001). The two meet at section 0, which is the
+  section a program starts in — "by default, the assembler will begin with
+  section 0" — and therefore the one the default origin is a statement about;
+  the fifteen others are EASy68K's zero, so `section 1` with no `org` lays data
+  out from 0 exactly as EASy68K does. `sections_at_the_start` is the whole of
+  it, and it is the choice this bullet records.
+- **An `offset` region shadows the section's counter and never writes it**,
+  which is why `org *` needs nothing saved: the address "in use prior to the
+  OFFSET" is the section's own counter, untouched, and closing the region
+  reveals it. `resume_address` is that reading. The alternative — moving the
+  address and remembering the old one — has the same behaviour and one more
+  piece of state to keep true.
+- **`*` is the region's counter everywhere but in an `org`.** `here equ *` and
+  `dc.l *` inside a region are the offset, because that is what the current
+  address means where the names are offsets; `org *` alone is the shadowed
+  address, which is `Directives/offset.htm`'s own sentence and the only
+  documented way to end a region. `value_now_at` takes the value of `*` as an
+  argument for that one caller, and `value_now` passes `address()` for everyone
+  else.
+- **`place` is still the one function that takes room, and inside a region it
+  takes none.** It moves the counter and returns before the `Placement`, the
+  origin and the 16 MB check: no byte of the run exists, so the overlap sweep
+  must not see it, the first *placed* address is still what `origin` means, and
+  the counter is not an address at all — the help's own stack frame counts from
+  `-3*4`, and a negative offset is the point of the Directive.
+- **What a region holds back is decided once, in pass 1.**
+  `hold_back_in_an_offset_region` turns the plan of a line inside a region into
+  `Item::Nothing`, so a `dc` writes no `MemoryRun`, a `ds` reserves nothing and
+  an instruction is never lowered. Doing it in one place after `plan_line`,
+  rather than in each of the five planners, is what keeps "nothing is generated
+  after an `offset`" a single rule instead of five that could disagree.
+- **A line that would have produced bytes is told; a `ds` is not.**
+  `no_bytes_in_an_offset_region` is the one new kind: "an `offset` region
+  produces no bytes, and {an instruction | `dc.b` | `simhalt`} produces some",
+  with one hint for all of them — write the fields with `ds`, and `org *` below
+  them to end the region. EASy68K generates nothing there and says nothing; s68k
+  says it, because bytes that reach no memory are the failure the design record
+  keeps refusing (step 11's `movem` that lowered to nothing "silently" is the
+  same argument). `ds` is what the region is *made of* and raises nothing at
+  all.
+- **The `dc` case shares the kind rather than getting one of its own.** One
+  mistake — "this line produces bytes and the region does not" — said about
+  whichever line made it, is one kind with the line named in it; two kinds
+  would have been two ways of saying the same sentence. The golden case
+  `tests/diagnostics/no_bytes_in_an_offset_region.asm` holds both, so both
+  messages are read.
+- **A section number outside 0–15 is `value_out_of_range` and not a kind of its
+  own.** It is exactly what that kind is for and what the address of an `org`
+  and the count of a `ds` already use it for: the subject is "the number of
+  `section`", the range is the sixteen, and the advice says there are no more.
+  A new code would have added a catalogue entry that says nothing the shared one
+  does not.
+- **The section in force does not change when the number is refused**, and the
+  region is *not* closed either: a line that was not understood moves nothing,
+  so the lines below it are laid out where they would have been and the student
+  reads one mistake instead of a file of consequences.
+- **An `offset` region opens whatever its Expression turned out to be.** That is
+  the rule `equ` follows for a value it cannot work out, for the same reason: a
+  region that did not open would lay the whole table into memory and answer one
+  mistake, already reported, with an `address_used_twice` or a stray `MemoryRun`
+  at every line below it. `offset` with no Operand at all opens at 0 for the
+  same reason.
+- **A name in the label field of a region is a Constant, not a Label.** Its
+  value is an offset into a structure; there is no line of the program at it, it
+  may be negative, and calling it a Label would put an address that does not
+  exist into the symbol listing, into the asm-editor's symbol view and into the
+  corpus fixture's `labels` (which clamps a negative address to `$0`). It is
+  still the label field, so a Global one still opens a scope for the Local names
+  under it. `SymbolKind` keeps its four kinds and CONTEXT.md's glossary is
+  unchanged: a Constant is "a name for a value", which is what an offset is.
+- **`section` with no number defines a Constant too**, and for the same reason:
+  "will be set to the value of the current section (0..15)" is a number. It is
+  the one label rule that cannot be read off the Directive's name, so
+  `label_rule_of` still answers `Optional` for `section` and `plan_section`
+  raises `directive_needs_a_label` itself, which is what step 11's note said it
+  would have to do.
+- **A Label on a `section` or an `offset` line names where the line leaves the
+  address**, which is the rule a Label on an `org` follows: on a `section` with
+  a number it is the address that section goes on from, and on an `offset` it is
+  the offset the region starts at.
+- **`section` ends an `offset` region, and that is a choice.** The help names
+  only `org`; a `section` sets the current address exactly as an `org` does, so
+  it ends the region, and the alternative — refusing the line — would refuse a
+  program EASy68K assembles, which ADR 0001 does not allow without a reason.
+  `end` ends a region too, for a plainer reason: nothing after it is assembled,
+  and a Label on the `end` line is an address and not an offset.
+- **An `org` that moves nothing says nothing, which is a fix to step 7's odd
+  origin.** `org *` after a `dc.b` restores an odd address, and the phase-1 rule
+  "an odd `org` warns and rounds up" would both warn about it and move the code
+  a byte — a warning about an address the program was legitimately at, and a
+  silent shift of the line after it. The rule is now "an odd `org` that *moves*
+  the address warns and rounds up"; an `org` that lands where the address
+  already is is a no-op. Nothing in the corpus writes `org *`, no fixture moved,
+  and `an_org_that_moves_nothing_says_nothing_about_an_odd_address` holds it.
+- **Alignment rounds *up* from a negative address.** `align` used
+  `address % alignment`, which for `-11` moves to `-8`; it is `rem_euclid` now,
+  which moves to `-10`. Only an `offset` region can hold a negative current
+  address, so nothing else could have seen the difference, and the addition
+  saturates because only a region's counter can be near the end of the 64 bits
+  an Expression is computed in.
+- **The overlap sweep is over every section at once**, unchanged, which is what
+  step 11's note said it would be: EASy68K "does not check for overlapping
+  sections", s68k's check is the deviation ADR 0001 already records, and an
+  address is an address whichever section wrote it. `two_sections_over_one_address_are_still_an_overlap`
+  is the test.
+- **Two fixture-style tests hold the help's own examples**, in
+  `src/test/corpus.rs` beside `printer_rules`, with every address worked out by
+  hand in the test: `the_section_example_of_the_help` (`msg1` at `$2000`, code
+  at `$1000` in section 0, `msg2` at `$200e` because section 1 went on from
+  where it stopped) and `the_offset_stack_frame_example_of_the_help` (`num1`,
+  `num2`, `num3` at `-12`, `-8`, `-4`, no memory and no Labels at all, and the
+  five instructions from `$1000` carrying the offsets as their displacements —
+  `move.l #$11111111,-12(a0)`).
+- **`unimplemented_reason` is down to `include`, `incbin`, `memory`, the Macro
+  Directives, conditional assembly and structured control.** Phase 2's list of
+  Directives is finished: `end`, `set`, `reg`, `fail`, `simhalt`, `offset` and
+  `section` all do what EASy68K does, and `include` and `incbin` are phase 4's.
+- **Not done, and deliberately.** A region that is never ended is not reported:
+  every line inside it that meant to produce bytes is already told one by one,
+  and a File whose last line is inside a region has nothing left to warn about.
+  A second `offset` inside a region simply moves the counter, as EASy68K's
+  location counter would. Neither is in the help.
+
+**What phase 3 needs to know.** The Layout of phase 2 is: a `LinePlan` of
+`{ address, scope, item }` per line, `Item` one of `Nothing`, `Instruction`,
+`Data(len)` and `Reserved(len)`; sixteen section counters read through
+`address()`; an optional `offset` counter that shadows them; `place` the one
+function that takes room, and `hold_back_in_an_offset_region` the one that
+decides a line produces nothing after all. Three consequences for the
+instructions:
+
+* **An instruction's size is still `INSTRUCTION_SIZE`, four bytes**, and pass 1
+  gives it its address before pass 2 knows which Form it is. A phase 3 that
+  wants real sizes has to work them out in pass 1, from the Operands alone,
+  because the address of the next line depends on it — that is a change to
+  `plan_instruction` and to nothing else, and `AssembledInstruction::size`
+  already carries the number.
+* **`Instruction::SIMHALT` is a variant of the encoded instruction**, so the two
+  exhaustive matches over `Instruction` — the Interpreter's
+  `execute_instruction` and the fixture printer — have an arm that is not a
+  68000 instruction at all. A phase 3 that adds variants adds them beside it.
+* **Nothing in the Layout reads a line index as a position except two places**,
+  and they are still the two step 11 named: `Symbol::value_at` for `set`, and
+  the register-list forward-reference check. Phase 4's textual `include` changes
+  both together; phase 3 changes neither.
+
+## Implementation notes (phase 3)
+
+The running record of phase 3, kept the way phase 1's and phase 2's are: one
+bullet a choice, so that the next step can read the state of the work from the
+repository. Nothing above this heading is rewritten except to fix a factual
+error, and such a fix says so here. **The step numbers carry on**, so that a
+reference to "step 11" means one thing in this document.
+
+### Step 13 — the status register, and `movep`, `tas`, `rtr`, `chk`, `trapv`, `illegal`
+
+The first half of phase 3: the SR model of the design record's "Instructions"
+and the first group of Mnemonics the instruction table carried a "not
+implemented" reason for. `src/interpreter.rs` grows the register, sixteen
+execution arms and three runtime errors; `src/assembler/instructions/` grows sixteen
+encoded instructions, six Families and the Forms that name `sr` and `ccr`;
+`src/assembler/analyzer.rs` loses the check that refused them. `cargo test` is
+**393 green** (21 new since step 12's 372), `cargo fmt --check` is clean, `cargo
+build --all-targets` raises no warning, `cargo clippy --all-targets` no new one
+(the same 4, all older than phase 1's step 10) and `RUSTDOCFLAGS=-D warnings
+cargo doc --no-deps` is clean. The `ts-lib` chain was run — `wasm-pack build`,
+`npm run build-lib`, `npm test` — because `src/ts_types.rs` and
+`ts-lib/src/index.ts` both changed. **One corpus fixture moved, by one entry**,
+`mouseWindowSize-errors`, and `tests/corpus/README.md` has it.
+
+#### The status register
+
+- **The SR is the CCR with a byte on top of it, and the CCR keeps its own bits.**
+  `Cpu` gains `system_byte: u8` beside the `ccr: Flags` it always had;
+  `Cpu::get_sr` is `(system_byte << 8) | ccr.to_ccr_byte()` and `Cpu::set_sr`
+  splits it again. The alternative — storing one `u16` and reading the flags out
+  of it — would have moved the bits the editor reads:
+  `Flags` is a `bitflags` whose carry is `1 << 1` and whose extend is `1 << 5`,
+  one place to the left of the processor's own numbering, and
+  `wasm_get_flags_as_number` has answered those bits since 1.4.2.
+  `Flags::to_ccr_byte` and `Flags::from_ccr_byte` are the one conversion, and
+  every instruction that reads or writes `ccr` goes through them.
+- **`$2700` is where a program starts**, `INITIAL_STATUS_REGISTER`, which is
+  EASy68K's ("When the simulator starts up the supervisor bit is set on",
+  `SIMHELP/Exceptions.htm`) and the design record's. Supervisor set, interrupt
+  mask 7, trace clear, no condition code set. It has **no effect on anything**:
+  nothing in the Interpreter reads the system byte, which is what makes
+  `andi.w #$00,SR` — line 66 of `mouseWindowSize.X68`, commented "put CPU in User
+  mode" — a line that assembles, runs and changes nothing that matters.
+- **Undo restores the whole register.** `ExecutionStep` gains `old_sr` and
+  `new_sr`, the whole 16-bit register before and after the step, and
+  `Interpreter::undo` restores through `set_sr` where it used to assign
+  `cpu.ccr`. `old_ccr` and `new_ccr` stay exactly what they were — the same
+  flags in this crate's own bits, which the editor already reads and which the
+  `ts-lib` wrapper still converts from the string `bitflags` serialises — so the
+  overlap is deliberate and both are documented as such. A mutation kind
+  (`WriteStatusRegister`) was the other option; it would have put a new variant
+  in the `MutationOperation` union the editor draws, for state every step
+  already carries.
+- **Four getters and no setter cross the boundary.** `Interpreter::get_sr`,
+  `Interpreter::wasm_get_sr` and `Cpu::wasm_get_sr` in Rust and wasm,
+  `Interpreter.getSr()` and `Cpu.getSr()` in `ts-lib` (the second so that a
+  snapshot of the registers carries the register too); `set_sr` is public in
+  Rust because the execution arms and undo need it, and is not exposed, because
+  a program's status register is the program's. The flag getters (`getFlag`,
+  `getFlagsAsArray`, `getFlagsAsBitfield`) are untouched and answer what they
+  always did. `debug_status` prints an `SR: 0x2700` line above the flags, and
+  the smoke test steps a three-instruction program through `MOVE to SR`, `MOVE
+  from SR` and `ANDI to CCR` and undoes it.
+
+#### The table, and how a Form names a half of the register
+
+- **`sr` and `ccr` are `Modes` of their own** (`Modes::SR`, `Modes::CCR`,
+  `Modes::STATUS` for the two together), so the instruction table answers "which
+  position takes one" the way it answers every other question, and
+  `check_operand_is_implemented` loses the two arms that refused them. `usp` is
+  deliberately **not** a mode: `move usp,an` is not implemented, the analyzer
+  says so before it looks at a Form, and a mode that is never allowed anywhere
+  would only turn up in "there it takes …" lists as an offer that is a lie.
+- **The Forms are the reference's, position by position.** `move <ea>,ccr` and
+  `move <ea>,sr` take any **data** addressing mode, an immediate included, and
+  are a word; `move sr,<ea>` writes any **data alterable** one, also a word
+  (`Reference/68ks4d.htm`, which lists the modes for each of the three). `andi`,
+  `ori` and `eori` gain a `[Im, ccr]` **byte** Form and a `[Im, sr]` **word**
+  one — "Operations that uses the status register (SR) and the flag register
+  (CCR) can only work with word and byte" (`Reference/68ks6b.htm`) — and
+  `addi`, `subi` and `cmpi` gain nothing, because the 68000 has no such
+  instruction and `addi.w #1,sr` is an `invalid_addressing_mode` naming what
+  `addi` does take.
+- **`move ccr,<ea>` is assembled although the 68000 has no such instruction.**
+  It is the 68010's; the help documents `MOVE to CCR`, `MOVE to SR` and `MOVE
+  from SR` and not this one. The design record's "Instructions" asks for `move`
+  "to and from SR and CCR", ADR 0001's direction is the lenient one, and reading
+  the condition codes back is worth more to a student than the distinction. It
+  is written down here, in `README.md` and in the doc comment of the encoded
+  variant; nothing else in s68k assembles an instruction the 68000 lacks.
+- **A written `sr` or `ccr` narrows the Forms before the first-fit rule runs.**
+  `move` has five Forms of two Operands now, and "the first that fits, else the
+  first of that arity" would have answered `move a0,sr` with "the second operand
+  of `move` cannot be the status register", which is the wrong half of the line.
+  `Analyzer::choose_form` keeps the Forms that **agree** about every `sr` and
+  `ccr` that was written — `agrees_about_the_status_register` — and only then
+  applies the old rule, so `move a0,sr` is judged against `[data, sr]` and reads
+  "the first operand of `move` cannot be an address register … there it takes
+  Dn, (An), …, Im". A position that names a half of the register names nothing
+  else, which is what makes the agreement exact and which a test in `table.rs`
+  holds every row to. When nothing agrees (`move sr,ccr`) every Form of that
+  arity is a candidate again and the fallback answers as it always did.
+- **`invalid_size` names the chosen Form's sizes, not the Mnemonic's.**
+  `move.b d0,ccr` was answered with "`move` takes `.b`, `.w` or `.l`", the union
+  over five Forms, which offers the size it has just refused. It now reads
+  "`move` takes `.w`". The change is visible on the memory form of a shift too
+  (`asl.b (a0)` is answered with `.w` where it used to be answered with all
+  three), which is the same improvement: the shape being judged is the one the
+  Operands chose. `check_size_alone`, which runs when no Form was chosen at all,
+  still names the union.
+- **A half of the status register where none is allowed says who takes one.**
+  `tst.w ccr` is the ordinary `invalid_addressing_mode`, with the suggestion
+  "only `move`, `andi`, `ori` and `eori` reach the status register" — the same
+  shape as "only `movem` takes a register list", which is ADR 0003's "what was
+  probably meant" for a mode that is right nowhere near this Mnemonic. It is
+  said only by a Mnemonic that reaches the register in **no** Form, so
+  `move ccr,ccr` is told what `move` takes in each position and is not told that
+  `move` is one of the four, which it is.
+- **`movep` has exactly two Forms and no more**, `[Dn, d(An)]` and `[d(An), Dn]`
+  (`Reference/68ks4g.htm`: "ADDRESS METHODS: x(An)"), so `movep.w d0,(a1)` is
+  refused — and, because that is the mistake with a name, `suggestion_for`
+  answers it with "write the displacement, `0(a1)`".
+- **The other five rows are the reference read straight off**: `tas <ea>` is
+  data alterable and a byte; `chk <ea>,Dn` is a data mode and a word; `rtr`,
+  `trapv` and `illegal` take no Operand and no size. `move usp,an` and
+  `move an,usp` stay unimplemented, with `usp`'s own reason ("s68k runs one
+  program with one stack pointer, `a7`"), which is the one arm left in
+  `check_operand_is_implemented` beside the PC-relative modes.
+
+#### Lowering, and the encoded instruction
+
+- **Sixteen new `Instruction` variants, one per encoding the 68000 has.**
+  `MOVEP`, `MOVEtoCCR`,
+  `MOVEfromCCR`, `MOVEtoSR`, `MOVEfromSR`, `ANDItoCCR`, `ORItoCCR`, `EORItoCCR`,
+  `ANDItoSR`, `ORItoSR`, `EORItoSR`, `TAS`, `RTR`, `CHK`, `TRAPV`, `ILLEGAL`.
+  The immediates carry the width of their destination (`u8` for `ccr`, `u16` for
+  `sr`) rather than a `Size`, and the four `move`s carry none at all, because
+  every one of them is a word by definition. The names are the manual's ("ANDI
+  to CCR") in the one spelling that is not `non_camel_case_types`.
+- **`sr` and `ccr` never become an encoded `Operand`.** Adding them there would
+  have put an arm in `get_operand_value`, `store_operand_value`,
+  `get_operand_address` and the fixture printer for a thing that is not an
+  addressing mode. `lowering::lower_operation` is the new entry point the
+  analyzer calls: it answers the status-register shapes from the **tree**
+  (`lower_status_register`, which reads the two Operands and the `Family`) and
+  hands everything else to the `lower` that already existed, unchanged. That is
+  also why `lower_operand` still answers `None` for a special register.
+- **`movep`'s direction is read off the Operands**, as `movem`'s is: a data
+  register first is `ToMemory`, second is `FromMemory`. `TargetDirection` is
+  reused rather than a second two-valued enum being written.
+
+#### Running them
+
+- **`movep` walks every second byte, most significant first** — the bytes at
+  `d`, `d+2`, `d+4`, `d+6` — and touches no flag. A `.w` writes or reads the low
+  word of the register and leaves the rest of it alone, which is
+  `set_register_value` with `Size::Word` and needs nothing of its own.
+- **`tas` sets the flags from the byte *before* it writes.** `set_logic_flags`
+  is exactly the help's table (N and Z from the value, V and C cleared, X kept),
+  and the store is `value | $80` through `Used::Twice`, so `tas (a0)+` walks its
+  register once like every other read-modify-write instruction here.
+- **`rtr` is a return.** It pops the word, keeps its low byte as the condition
+  codes, pops the return address, and — like `rts` — records a `PopCall`
+  mutation and pops the debugger's call stack, so the call stack and undo stay
+  true for a subroutine that ends with `move sr,-(sp)` … `rtr`.
+- **An exception ends the run, and that is the whole of the model.**
+  `Interpreter::end_with_an_exception` sets `TerminatedWithException` and answers
+  the error; `chk` outside its bounds, `trapv` with V set and `illegal` are its
+  three callers. A 68000 would build a stack frame and jump through the vector at
+  `$18`, `$1C` or `$10` (`SIMHELP/Exceptions.htm`); s68k has no vectors, no
+  supervisor stack frame and no `rte` to come back from one, so the honest thing
+  is to stop where an address error already stops. `chk` sets N on the way out —
+  set when the register is below zero, cleared when it is above the bound, which
+  is the help's own sentence — and leaves the flags the help calls undefined
+  alone.
+- **Three new `RuntimeError` variants**, `ChkOutOfBounds { value, bound }`,
+  `OverflowException` and `IllegalInstruction`, each naming its instruction, and
+  the TypeScript `RuntimeError` union in `src/ts_types.rs` grew the same three.
+  The value and the bound are carried as signed numbers, because that is how
+  `chk` compares them and a message about "11 is not within 0 to 10" is the
+  whole diagnosis.
+- **The command line names the line that failed.** `print_runtime_error` in
+  `src/main.rs` prints the error and, under it, the file, the line and the
+  source of the instruction being executed, mapped back to the path the user
+  typed the way the Diagnostics already are. A runtime error is not a Diagnostic
+  (CONTEXT.md), but a student reading `Runtime error: ChkOutOfBounds { value: 11,
+  bound: 10 }` deserves to be told where.
+
+#### Diagnostics, fixtures and documentation
+
+- **`docs/grammar.md` is untouched, and that is the ADR 0003 point.** The
+  parser has read `sr`, `ccr` and `usp` at any position of any Operation since
+  step 4 (1.10), and everything this step decided about them is the analyzer's
+  and the table's. A phase that had to change the grammar to add an instruction
+  would be a phase that had put the instruction table in the parser.
+- **"Yet" is now a field, not a habit.** `unimplemented_addressing_mode` said
+  "which s68k does not assemble **yet**" of every mode it refused, and with `sr`
+  and `ccr` gone from that list the only special register left is `usp`, which
+  is out for good (the design record, "Scope"). The kind gains
+  `planned: bool` — true for the PC-relative modes, which are in the plan, false
+  for `usp` — and the sentence drops the word when there is nothing to wait for.
+  It is the same distinction `unimplemented_operation` already made in prose,
+  where `rte`'s reason says no "yet" and `roxl`'s does.
+- **No new `DiagnosticKind`.** Every rejection this step can produce already had
+  a kind that says the right thing: `invalid_addressing_mode` with the Forms
+  above, `invalid_size` with the Form's own sizes, `wrong_operand_count`,
+  `immediate_out_of_range` against the byte of a `ccr` immediate. `WITHOUT_A_CASE`
+  is still `unreadable_file` alone, and phase 4 owes it.
+- **Two golden cases changed, because their lines stopped raising their code**:
+  `tests/diagnostics/unimplemented_addressing_mode.asm` traded `move.w sr,d0`
+  for `move.l usp,a0`, and `unimplemented_operation.asm` traded
+  `movep.w d0,4(a0)` for `roxl.w #1,d0`. Both snapshots were regenerated and
+  read; `tests/corpus/README.md` records both.
+- **One corpus fixture moved**: `mouseWindowSize-errors` loses its
+  `unimplemented_addressing_mode` and is 19 entries where it was 20. Nothing else
+  did — no `editor/` program writes any Mnemonic of this group, and the summary
+  at the top of `tests/corpus/README.md` now says "15, 3 and 19" and no longer
+  lists `sr` among the features the three originals name.
+- **The printer grew sixteen arms and three rules**, written into
+  `tests/corpus/README.md`: `sr` and `ccr` as Operands, no size on the ten
+  instructions that name one (the destination is the width), and `movep` with
+  its size and its direction. `printer_rules` in `src/test/corpus.rs` writes all
+  twenty new lines and asserts them, since no corpus program does.
+- **Twenty-one new tests.** Three in `analyzer.rs` — every status shape
+  assembling with nothing said, the Form choice on `move a0,sr` and `move sr,#5`
+  with the size rules of `andi` to each half, and `movep`'s displacement with
+  its message — and eighteen in `src/test/test.rs` under `the_status_register`
+  and `movep_tas_rtr_and_the_exceptions`: the initial
+  `$2700`, `move` to and from both halves, the help's own "clearing the flag
+  register does not set Z", the three immediates, undo putting the system byte
+  back, `movep` both ways with the reference's `$12345678` pattern and its
+  untouched flags, `tas` on `0` and on `$80`, `rtr` restoring a caller's flags
+  and returning, `chk` in range, above and below, `trapv` both ways, and
+  `illegal`.
+
+**What the second half must know.**
+
+* **Instruction size is still `INSTRUCTION_SIZE` = 4**, and this step did not
+  touch it. The handover of phase 2 stands word for word: real sizes have to be
+  worked out in pass 1 from the Operands alone, in `plan_instruction`, because
+  the next line's address depends on it.
+* **A new `Instruction` variant needs four arms**, and the compiler asks for
+  three of them: `execute_instruction`, the fixture printer in
+  `src/test/corpus.rs` (both exhaustive, no catch-all), the printer rules of
+  `tests/corpus/README.md` (which no compiler checks), and `lower`.
+* **A Mnemonic whose Operand is not an addressing mode goes through
+  `lower_status_register`**, not through `lower_operand`: that is the pattern to
+  copy if anything else ever takes a register the encoded `Operand` has no form
+  for.
+* **`Analyzer::choose_form` now has two stages**, and a new Form that names
+  `sr` or `ccr` beside an ordinary mode in one position would break the first
+  one; `table.rs` fails the build if a row does that.
+* **What is left of the design record's "Instructions"**: `addx`, `subx`,
+  `negx`, `abcd`, `sbcd`, `nbcd`, `roxl`, `roxr` — the extend-flag and
+  binary-coded-decimal group — and the PC-relative addressing modes, which are
+  the analyzer's `unimplemented_addressing_mode` and a `Modes` flag each.
+  `rte`, `stop`, `reset` and `move usp,an` stay out for good, with the reason
+  each carries.
+
+### Step 14 — the extend flag and binary coded decimal: `addx`, `subx`, `negx`, `roxl`, `roxr`, `abcd`, `sbcd`, `nbcd`
+
+The second half of phase 3, and the last group of Mnemonics the instruction
+table carried a "not implemented" reason for. `src/assembler/instructions/`
+grows seven encoded instructions, four Families and a `ShiftKind`;
+`src/math.rs` grows the five pieces of arithmetic they need;
+`src/interpreter.rs` grows seven execution arms and three flag helpers;
+`src/assembler/analyzer.rs` grows the one new Diagnostic of the step. `cargo
+test` is **416 green** (23 new since step 13's 393), `cargo fmt --check` is
+clean, `cargo build --all-targets` raises no warning, `cargo clippy
+--all-targets` no new one (the same 4, all older than phase 1's step 10) and
+`RUSTDOCFLAGS=-D warnings cargo doc --no-deps` is clean. The `ts-lib` chain was
+**not** run and did not need to be: `src/lib.rs`, `src/ts_types.rs` and
+`ts-lib/` are untouched, because an `Instruction` crosses to JavaScript as
+`instruction: any` and no `RuntimeError` was added. **No corpus fixture moved**,
+and `tests/corpus/README.md` says so.
+
+#### The table: two Forms that are two whole shapes
+
+- **`addx`, `subx`, `abcd` and `sbcd` take `Dy,Dx` or `-(Ay),-(Ax)` and nothing
+  else**, which is the reference read literally ("ADDRESS METHODS: Dn, -(An)",
+  `Reference/68ks5e.htm`, `68ks5v.htm`, `68ks8e.htm`, `68ks8g.htm`). That is two
+  Forms of two Operands each — `EXTENDED_PAIR_FORMS` at `.b`/`.w`/`.l` and
+  `DECIMAL_PAIR_FORMS` at `.b` — and it is the first time the table holds a
+  Mnemonic whose Forms are two *whole shapes* rather than two positions: every
+  earlier pair of same-arity Forms (`cmp`, `movem`, `move`, `movep`, the three
+  immediates) differs in one position at a time. The consequence is the new
+  Diagnostic below.
+- **`negx` and `nbcd` are one data-alterable Operand**, `negx` at any size and
+  `nbcd` at a byte (`Reference/68ks5q.htm`, `68ks8f.htm`), which is `neg`'s row
+  and `clr`'s with the size rule changed.
+- **`roxl` and `roxr` are a `ShiftKind`, not a Family.** They take the three
+  shapes of the other six shifts — `#count,Dn`, `Dx,Dy` and one memory word —
+  and the same 1-to-8 range on a written count, so they are `shift("roxl",
+  ShiftKind::RotateExtend, ShiftWay::Left)` and share `SHIFT_FORMS` and the
+  `value` rule with `asl` and `rol`. Only the encoded instruction differs. The
+  help's own "when rotating in the memory, you can only use word" is
+  `SizeRule::WordOnly` on that Form, already there for the others.
+- **Four Families and one `ShiftKind`**: `AddSubExtended { subtract }`,
+  `AddSubDecimal { subtract }`, `NegExtended`, `NegDecimal` and
+  `ShiftKind::RotateExtend`. The `{ subtract }` flag is the shape `Family::AddSub`
+  already had, so `addx`/`subx` and `abcd`/`sbcd` are one arm each in the
+  lowering.
+- **`unimplemented_operation` is down to three Mnemonics.** Step 6 gave
+  seventeen of them a reason and said fourteen of those said "yet", "because
+  phase 3 adds them and this is the sentence phase 3 deletes". All fourteen are
+  deleted now — six in step 13 and eight here — and the three left are `rte`,
+  `stop` and `reset`, whose reasons never said "yet" because they are about the
+  machine s68k simulates. No *row* of the table says "yet" any more; the only
+  "yet" the analyzer still writes about an instruction is
+  `unimplemented_addressing_mode`'s, for the PC-relative modes, and the
+  Directives keep theirs until phase 4.
+- **Two table tests moved and one is new.**
+  `a_refused_instruction_is_in_the_table_with_its_reason` is down to `rte`,
+  `stop` and `reset`, which are the whole of what is refused for good;
+  `every_implemented_row_has_a_form_and_every_form_a_rule_per_operand`'s list of
+  Mnemonics allowed two Forms of one arity grew `addx`, `subx`, `abcd` and
+  `sbcd`; and `the_extend_flag_group_takes_what_the_reference_gives_it` holds
+  all eight rows to the shapes and the sizes of their reference pages, so a row
+  edited by hand fails the build.
+
+#### `invalid_operand_pair`, the one new Diagnostic
+
+- **A position is the wrong thing to name when the shapes are the mistake.**
+  `addx d0,-(a1)` is wrong in neither Operand on its own: judged against the
+  register Form it reads "the second operand of `addx` cannot be a predecrement
+  operand", of a line whose fix is to make the *first* one a predecrement too.
+  And `addx (a0),(a1)` is wrong in both positions, so the per-position check
+  said the same thing twice. The new kind is **one Diagnostic over both
+  Operands**: "`addx` takes two data registers or two predecrement operands, and
+  this line has a data register and a predecrement operand", hinted "write `addx
+  d0,d1` or `addx -(a0),-(a1)`; `add` takes every addressing mode". That is ADR
+  0003's three parts — what was found, what is allowed, what was probably meant
+  — with the found half built from `Operand::description()`, which every other
+  message already uses.
+- **It is raised in `Analyzer::check_operand_pair` and suppresses the
+  per-position checks.** The function answers `true` when it has spoken, and the
+  Operands are then not judged one by one as well, nor asked about their values:
+  one mistake, one message, which is the rule the rest of `check` follows.
+  `the_advice_of_a_pair` is what tells the four Mnemonics apart from the rest of
+  the table — it reads the `Family` and answers the last clause of the hint —
+  so nothing here is keyed on a Mnemonic's spelling.
+- **The advice is `add` and `sub` for the extend pair and "move the byte into a
+  data register first" for the decimal one**, because `abcd` and `sbcd` have no
+  counterpart that reaches memory: decimal arithmetic on the 68000 is those two
+  and `nbcd`.
+- **Everything else the group can get wrong already had a message.** A size is
+  `invalid_size` against the chosen Form ("`abcd` takes `.b`", "`roxl` takes
+  `.w`" on the memory form), `negx a0` is the ordinary
+  `invalid_addressing_mode` with the address-register suggestion, `roxl #9,d0`
+  is `value_out_of_range` against the shift count, and a wrong Operand count is
+  `wrong_operand_count`. `WITHOUT_A_CASE` in `src/test/diagnostics.rs` is still
+  `unreadable_file` alone, and phase 4 owes it.
+- **The golden case is `tests/diagnostics/invalid_operand_pair.asm`**: the three
+  reachable shapes of the mistake (neither operand, and each half of a shape the
+  other half does not finish), and both correct shapes below them, which raise
+  nothing.
+
+#### The encoded instructions
+
+- **Seven new `Instruction` variants**: `ADDX`, `SUBX` and `NEGX` carry a
+  `Size`; `ABCD`, `SBCD` and `NBCD` carry **none**, because a byte is the only
+  size they have — the same choice `TAS` made in step 13, and the printer rule
+  that follows from it; `ROXd` has the shape of `ASd`, `LSd` and `ROd`, so
+  `lower_shift` gains a fourth arm and nothing else moves.
+- **`lower_operation` was not touched.** Every Operand of this group is an
+  ordinary Addressing mode, so `lower_operand` answers all of them and the
+  `lower_status_register` path of step 13 is not involved.
+
+#### Running them, and the flag rules
+
+- **The Z flag is the rule of the group's arithmetic, and it has a helper of its own.**
+  `clear_zero_if_the_result_is_not_zero` sets Z to false when the result is not
+  zero and **touches nothing when it is**, which is what makes a number of any
+  width testable in one pass: set Z, work up from the least significant piece,
+  read Z at the end ("The Z flag works in another way now… You must set the zero
+  flag before making the addition though", `Reference/68ks5e.htm`). **Six of the
+  seven arms go through it and `roxl`/`roxr` do not**: their pages give Z as
+  "S", set from the result like every other shift's, because a rotate is not
+  multi-precision arithmetic — it is the one instruction of the group that
+  carries the extend flag without carrying the rule that goes with it. The
+  pinning test is
+  `the_zero_flag_is_cleared_by_a_result_that_is_not_zero_and_never_set`, and it
+  holds the rule in all three directions: a 64-bit sum in two longs whose
+  **high half comes out zero while the sum is 2** (Z must stay cleared — the
+  case an implementation that sets Z from its own result gets wrong), one whose
+  low half comes out zero while the sum is not (Z is cleared again by the high
+  half), and one that is zero all through (Z survives).
+- **One typing slip in the help, and it is recorded here.**
+  `Reference/68ks5q.htm` gives `NEGX`'s Z flag as "Set if the result is not
+  zero, else unaffected", which is neither what the 68000 does nor what its two
+  neighbours say: `SUBX` on `68ks5v.htm` reads "Cleared if the result is not
+  zero, else unaffected" and `ABCD` on `68ks8e.htm` "Cleared if the result is
+  NOT zero. Unaffected else". s68k implements the rule those two state, for all
+  of them; the design record is silent, the reference contradicts itself, and
+  the reading that makes the instruction useful wins. The reason is a comment on
+  the `NEGX` arm as well, where somebody comparing it with the help will look.
+- **X and C are set alike, always** ("C - Same as X" on all eight pages), and N
+  and V are the result's for `addx`, `subx` and `negx` —
+  `set_extended_arithmetic_flags` is those five bits in one place. The overflow
+  is `has_add_overflowed`/`has_sub_overflowed` over the result that already has
+  the extend flag in it, which is the 68000's own definition, and the test shows
+  it working both ways: `127 + 0 + X` overflows a byte where the addition alone
+  would not, and `-128 + -1 + X` does **not** overflow where the addition alone
+  would.
+- **The decimal three leave N and V exactly where they were.** The help calls
+  both undefined for `abcd`, `sbcd` and `nbcd`, and s68k does not invent a value
+  for an undefined flag — the same choice step 13 made for the flags `chk`'s
+  page calls undefined. So `set_decimal_flags` writes X, C and Z and nothing
+  else, and a test asserts that N and V come out of an `abcd` holding what a
+  `move` to `ccr` put there. Setting them from the result was the alternative
+  (it is what the hardware happens to do); leaving them says "this instruction
+  does not answer that question", which is the honest thing for a teaching tool
+  and cannot be mistaken for a promise.
+- **The decimal arithmetic is the 68000's correction and not a digit-by-digit
+  sum.** `add_decimal` and `subtract_decimal` in `src/math.rs` add or subtract
+  the low digits, correct by 6 when they pass 9 (which carries a ten into the
+  high digits), then the high digits, and correct by `$a0` when the byte passes
+  99, which is the carry out. Two well formed BCD bytes give the decimal answer
+  either way; a byte holding a digit above 9 gives what the hardware gives,
+  which the help says nothing about, and that is why the hardware's version was
+  written rather than the tidier one.
+- **`nbcd` is `subtract_decimal(0, value, extend)`** and has no arithmetic of
+  its own: the tens complement *is* zero less the value, which is why "the tens
+  complement to 01 is 99" and why a second `nbcd` under a borrow gives 73 and
+  not 74 (`Reference/68ks8f.htm`, and the test says so in as many words).
+- **A rotate through the extend flag is a loop over `rotate_with_extend`**, one
+  place at a time, `count % 64` places — the same shape as `ROd`, and never more
+  than 63 iterations. `set_logic_flags` gives N, Z and a cleared V, and X and C
+  are then both set to the bit that came out. **With a count of zero X is left
+  alone and C answers it**, which falls out of the loop not running and is the
+  one place a rotate's carry is not a bit it moved ("Unaffected if rotation step
+  was zero", and "C - Same as X").
+- **The predecrement forms read the source first**, which is what makes
+  `addx -(a0),-(a1)` walk both registers down in the 68000's order; the
+  `Used::Once`/`Used::Twice` pair that every read-modify-write instruction here
+  already uses does the rest, and a test asserts both registers and the two
+  longs in memory afterwards.
+- **Twenty-one new interpreter tests**, in `src/test/test.rs` under
+  `the_extend_flag_and_binary_coded_decimal`: every example the eight reference
+  pages give (`ADDX D0,D1`, `SUBX.B D0,D1`, `NEGX` of 2 with X set giving
+  `0000FFFD`, `ROXL.B #1,D0` and `ROXR.B #1,D0` with X set and clear, `ABCD` and
+  `SBCD` of two BCD bytes, the tens complements of 01 and 26), the two
+  multi-precision walks through memory (a 64-bit `addx` and a six-digit `abcd`),
+  the Z rule above, a rotation of zero places, a rotation of nine places that
+  comes back to where it started, the memory form of a rotate, the undefined
+  flags of the decimal three, and one undo over a predecrement `abcd`, which
+  writes two address registers and a byte of memory in one step.
+
+#### Fixtures and documentation
+
+- **No fixture moved.** No `editor/` program and none of the three `easy68k/`
+  originals writes any of the eight Mnemonics, so the 30 assembly and run
+  fixtures and the three `-errors.snap` are byte for byte what step 13 left
+  them, at 15, 3 and 19 entries. `tests/corpus/README.md` records that, the
+  eleven new printer lines and the two changed size lists.
+- **The printer grew seven arms and eleven lines of `printer_rules`.** `addx`,
+  `subx`, `negx` and the two rotates carry their size; `abcd`, `sbcd` and `nbcd`
+  carry none; and the memory form of a rotate normalises to an explicit count of
+  one and the word size, exactly as `asl (a0)` does.
+- **One golden case changed**: `tests/diagnostics/unimplemented_operation.asm`
+  traded its `roxl.w #1,d0`, which now assembles, for `reset`, which is refused
+  for good and whose reason carries no alternative — so the case now covers a
+  `hint` of `null` as well, which nothing else in it did.
+- **`docs/grammar.md` is untouched again**, for the reason step 13 gives: the
+  parser has read every one of these shapes since step 4, and the whole of what
+  this step decided is the table's and the analyzer's.
+- **`README.md`** gains the eight Mnemonics (a "Binary coded decimal" row of its
+  own), a paragraph on the shapes and the Z rule, and loses them from its Todo,
+  which is now the refused Directives, the PC-relative modes and real
+  instruction sizes. `src/assembler/mod.rs`'s "What is still to come" says the
+  same.
+- **The `nop *` message phase 1 left to phase 3 was already delivered**, in
+  phase 1's step 6 (`star_is_the_current_address`, a warning, with the golden
+  case beside it); it was re-read against the phase 1 note in this step and
+  nothing needed changing. The note's suggested "or put a space before `*`" is
+  deliberately not in the hint: a space before the `*` is what `nop * do
+  nothing` already has, and in this grammar a `*` where the Operand field begins
+  is the current address whatever precedes it, so the only fix is `;`.
+
+**What the addressing-mode step must know.**
+
+* **The PC-relative modes are the only thing left of the design record's
+  "Instructions"**, and they are a bigger change than this group was, because
+  they reach the *encoded* Operand: `ast::Operand::PcDisplacement` and `PcIndex`
+  have no `encoded::Operand` to become. That is a new variant (or two) in
+  `encoded::Operand`, and therefore new arms in `get_operand_value`,
+  `get_operand_address`, `store_operand_value` and the fixture printer, none of
+  which has a catch-all. On the front-end side it is a `Modes` flag each with a
+  name in `MODE_NAMES`, the arm in `Analyzer::check_operand_is_implemented`
+  deleted, `Modes::of` and `lowering::lower_operand` answering them instead of
+  `None`, and the doc comment on `Modes` that says they are deliberately absent
+  rewritten.
+* **What the PC is while an instruction runs** is the question that step has to
+  answer first and that nothing in the crate answers today: instructions are a
+  fixed four bytes (below), so `label(pc)` cannot mean what it means on a
+  68000 unless the Assembler resolves it at assembly time. Resolving it in the
+  Assembler — the displacement worked out from the instruction's own address —
+  is the choice that keeps the fixed size honest, and it is the one the
+  analyzer's current advice already implies ("write the label on its own").
+* **Instruction size is still `INSTRUCTION_SIZE` = 4.** Untouched by both halves
+  of phase 3. The handover of phase 2 stands word for word: real sizes have to
+  be worked out in pass 1 from the Operands alone, in `plan_instruction`.
+* **A new `Instruction` variant needs four arms**, and the compiler asks for
+  three: `execute_instruction`, the fixture printer in `src/test/corpus.rs`,
+  `lowering::lower` — and the printer rules of `tests/corpus/README.md`, which
+  no compiler checks.
+* **`Analyzer::choose_form` has two stages and `check` now has a pair check
+  before the per-position loop.** A Mnemonic whose Forms are two whole shapes
+  goes through `check_operand_pair` and is never judged position by position; a
+  Mnemonic whose Forms differ in one position at a time is judged the old way.
+  Which of the two a row is is answered by `the_advice_of_a_pair`, from the
+  `Family`.
+
+### Step 15 — the Addressing modes: PC-relative displacement and index, and the forced widths of an absolute address
+
+The last part of phase 3, and the end of the design record's "Instructions".
+`src/assembler/instructions/` grows two encoded Operands, two `Modes` flags and
+the arithmetic that turns an address into a displacement; `src/interpreter.rs`
+grows the one function that turns it back; `src/assembler/analyzer.rs` loses the
+last of `check_operand_is_implemented` but `usp` and grows three checks.
+`cargo test` is **428 green** (12 new since step 14's 416), `cargo fmt --check`
+is clean, `cargo build --all-targets` raises no warning, `cargo clippy
+--all-targets` no new one (the same 4, all older than phase 1's step 10) and
+`RUSTDOCFLAGS=-D warnings cargo doc --no-deps` is clean. **No `editor/` fixture
+moved**, and of the three `-errors.snap` only `clockDigital-errors` did, by two
+message lines, which are the "yet" sweep below and not the modes.
+
+#### What the PC is here, and the round trip that follows from it
+
+- **A PC-relative Operand is written as an address and stored as a
+  displacement.** EASy68K's own syntax is the address — "The displacement word
+  (x) is specified as an address relative to the current PC. The assembler
+  calculates the relative offset" (`Reference/68ks1e.htm`), whose example
+  `MOVE.L $1102(PC),D0` reads `$1102` — so the source says where it wants to
+  go and the Assembler works out how far that is. What it stores is
+  `label - (address of this instruction + 2)`: the 68000 measures the
+  displacement from the **extension word**, which sits one word past the
+  operation word, and `EXTENSION_WORD_OFFSET` in
+  `src/assembler/instructions/encoded.rs` is that two, read by the lowering,
+  by the analyzer's range check and by the Interpreter alike, so that no
+  arithmetic of the pair is written twice.
+- **The Interpreter adds the same two numbers back**, in
+  `Interpreter::pc_relative_address`, from `current_instruction_address` — the
+  instruction being executed, not the program counter, which has already
+  stepped past it. That is the whole of the round trip: the Assembler's
+  `label - (A + 2)` and the Interpreter's `A + 2 + d` give `label` again, and
+  the tests are written as the value read rather than as the arithmetic, so a
+  pair that disagreed would fail on what the program computed.
+- **Resolving it at assembly time is what keeps the fixed instruction size
+  honest**, which is what the handover of step 14 said this step had to decide
+  first. Instructions are four bytes here and hold no encoded words, so there
+  is no extension word to read at run time and nothing but the stored
+  displacement says where the operand was measured from. The alternative —
+  storing the address and calling the mode PC-relative — would have made
+  `label(pc)` a synonym for `label`, which teaches the opposite of what the
+  mode is for.
+- **`(pc,d1.w)` is the one PC-relative form whose number is not an address**,
+  because it has no number at all: the displacement-free `(An,Xn)` is "a
+  displacement of zero" (`docs/grammar.md` 2.5) and the same reading gives
+  `(pc,d1.w)` the extension word's own address plus the index. Reading the
+  absent displacement as "the address 0" would have made every use of it an
+  out-of-range error. EASy68K's syntax list always writes the `x`, so this form
+  is s68k's own leniency and this is the sentence that says what it means.
+
+#### The modes in the instruction table
+
+- **Two flags, and the group constants did the rest.** `Modes::PC_DISPLACEMENT`
+  and `Modes::PC_INDEX` (`Modes::PC_RELATIVE` for the pair) went into `DATA`,
+  `MEMORY` and `CONTROL` and stayed out of `ALTERABLE`, which is exactly where
+  the manual's four groups put them, and **not one row of the table was
+  edited**: `move`, `add`, `cmp`, `and`, `divu`, `chk` and `btst` take them
+  because their positions are `ALL` or `DATA`, `lea`, `pea`, `jmp` and `jsr`
+  because theirs is `CONTROL`, and every destination refuses them because
+  `ALTERABLE` never held them. That the groups carry the whole answer is what
+  `the_pc_relative_modes_are_read_and_never_written` in `table.rs` asserts,
+  including the four control instructions by name.
+- **Two constants had to be split**, and both are the same fact: a mode that is
+  read and never written cannot be in a set the instruction writes.
+  `MEMORY_ALTERABLE` (the destination of a memory shift) is `MEMORY` less the
+  pair, and `MOVEM_TO_MEMORY` is the new `CONTROL_ALTERABLE` plus `-(An)`. So
+  `movem.l (data,pc),d0-d2` reads registers back through a PC-relative operand
+  and `movem.l d0-d2,data(pc)` is refused — which is the one place `movem`'s two
+  directions differ by more than the side the list is on.
+- **`MODE_NAMES` grew `d(PC)` and `d(PC,Xn)`**, in the manual's own order
+  (after `Ea/<label>`, before `Im`), so every "there it takes …" hint now offers
+  them where they are allowed. That moved two hints in
+  `tests/diagnostics/snapshots/invalid_addressing_mode.snap` — `divu`'s, whose
+  position is `DATA`, and `jmp`'s, whose position is `CONTROL`, while `clr`'s
+  data-alterable one is unchanged — and one in `analyzer.rs`'s own tests. The
+  change is the point: a mode that is implemented belongs in the list of what
+  would have been right.
+- **`Modes::of` answers `None` for `usp` alone now**, and
+  `Analyzer::check_operand_is_implemented` is one `let … else` about it. With
+  the PC-relative modes implemented, the `planned` flag step 13 added to
+  `unimplemented_addressing_mode` had no `true` left to carry, so **it is
+  deleted**: a field whose one branch nothing can raise is a promise the code
+  cannot keep. The code and the message are otherwise unchanged, and the kind
+  is now about one thing, which its doc comment says.
+
+#### The three checks the analyzer grew
+
+- **How far a PC-relative Operand has to reach is `value_out_of_range`**, not a
+  kind of its own — the same finding as the displacement of `d(An)`, which that
+  kind has answered since phase 1, with the subject changed: "the distance a
+  `d(PC)` operand reaches is -32768 to 32767, and `192502` is outside it",
+  hinted "write `far` on its own: an absolute address reaches anywhere in
+  memory". The range is EASy68K's ("Word displacements must be in the range
+  -32768 through 32767. Byte displacements must be in the range -128 through
+  127", `errors.htm`), and the *value* in the message is the distance and not
+  the address, because the distance is what does not fit and it is a number the
+  student never wrote. `Analyzer::check_pc_distance` calls
+  `lowering::pc_relative_offset`, the same function the lowering stores, so the
+  check and the store cannot disagree about what is in range.
+- **An address forced to `.w` is checked and one forced to `.l` is not.** The
+  two name the same address here — s68k stores addresses and encodes no words —
+  so `.l` says nothing at all, while `.w` is a claim about the address that can
+  be false: EASy68K's own "Absolute short addressing must be in the range
+  -32768 through 32767" (`errors.htm`), as `value_out_of_range` with the subject
+  "an address forced to `.w`" and the advice "write `$18000.l`, or `$18000` on
+  its own: both reach the same address here".
+- **That is a deviation, and ADR 0001 now lists it.** EASy68K *warns* that
+  forcing short "disables range checking of extension word" and encodes the low
+  word sign extended, so its `$8000.w` reads `$ff8000`. s68k reads the address
+  as written, so an address the field cannot name would quietly mean a different
+  place here; refusing it is the stricter direction and the ADR is where a
+  stricter direction is recorded. The sign extension itself is deliberately not
+  reproduced: `.w` and `.l` naming one address is what the rest of this step is
+  built on.
+- **One new `DiagnosticKind`, `invalid_address_width`**, for the suffix that is
+  neither: `move.l table.b,d0` forces the *address* to a byte. It is not
+  `invalid_size` — that kind's sentence is "`.b` is not a size for `move`", and
+  the mistake here is that the suffix is not the instruction's size at all — so
+  the message says what the suffix does where it stands ("`.b` after `table`
+  forces the width of the address, and an address is forced to `.w` or `.l`")
+  and the hint says where the instruction's own size goes. It catches
+  `bra done.s`, which is `bra.s done` written on the wrong field, and it is the
+  one kind this step adds; its golden case is
+  `tests/diagnostics/invalid_address_width.asm`, which holds both mistakes and
+  the three lines they were meant to be.
+- **"A PC-relative operand is read and never written" is the new suggestion**
+  on `invalid_addressing_mode`, said only where the position reaches memory at
+  all — so `move.l d0,data(pc)` gets it and `lea (a0),data(pc)`, whose second
+  operand takes `An` and nothing else, is told what it takes instead. It is
+  ADR 0003's "what was probably meant" for the one mistake this mode has that a
+  list of allowed modes does not explain.
+
+#### Lowering, running and printing
+
+- **`Values` gained `instruction_address`.** The lowering needed one fact the
+  tree does not hold, and the trait that already answers "the value of this
+  Expression" is where it goes; `analyzer::Context` answers it with
+  `current_address`, which the Layout has been filling in since phase 1. No
+  call site of `lower_operand` changed.
+- **`encoded::Operand` gained two variants and no `Instruction` did.** A
+  PC-relative operand is an Addressing mode and not an encoding of its own, so
+  `get_operand_value`, `get_operand_address` and the fixture printer grew an arm
+  each and `execute_instruction`, `lower` and the printer's instruction match
+  grew none — which is why `lea`, `pea`, `jmp` and `jsr` needed no work beyond
+  `get_operand_address`.
+- **`store_operand_value` answers `IncorrectAddressingMode`** for the pair,
+  which is unreachable from any assembled Program (nothing writes through the
+  program counter, and `Modes::ALTERABLE` is where that is enforced). Writing to
+  the address it names would have been the wrong kind of lenient: the arm exists
+  because the match has no catch-all, and it says what it is.
+- **The printer writes the displacement, not the address.** `move.l data(pc),d0`
+  at `$1000` with `data` at `$1014` prints as `move.l 18(pc),d0`, which is what
+  the Program holds; `tests/corpus/README.md` says so and `printer_rules`
+  writes seven new lines, a negative displacement and the two forced widths
+  among them. A forced width prints as nothing at all, because the Program keeps
+  the address and not the suffix.
+
+#### The sweep, and what is left
+
+- **Every remaining "not implemented" reason was read against the plan.** The
+  instruction table's three are `rte`, `stop` and `reset`, each about the
+  machine s68k simulates and none of them saying "yet"; `usp` is the same and
+  says it in the analyzer. `layout::unimplemented_reason` keeps "yet" for
+  `include` and `incbin`, which phase 4 really adds, and **loses it for macros
+  and conditional assembly**, which no phase of this plan adds — the design
+  record has them as "maybe a later milestone" — so "macros are not assembled
+  yet" is now "macros are not assembled" and "conditional assembly is not
+  implemented yet" is "conditional assembly is not implemented". `memory` and
+  the structured-control keywords never had one. That moved two messages in
+  `clockDigital-errors` — the whole of what this step moved in the corpus — and
+  the same sentences in the golden cases of `unimplemented_operation`,
+  `unterminated_macro_definition` and `label_not_allowed`.
+- **Two records were corrected in place, and both say so where they stand.**
+  `tests/corpus/README.md`'s list of "every real 68000 instruction s68k does not
+  implement" still named the eight Mnemonics step 14 implemented; it is `rte`,
+  `stop` and `reset` now, with a parenthesis saying what changed and when. And
+  `docs/adr/0001` gained one bullet, the range check on an address forced to
+  `.w`, because that ADR is where a place s68k is stricter than EASy68K has to
+  be listed and this step made one.
+- **Branch sizes were confirmed and left**, as this step was told: `.b`, `.s`,
+  `.w` and `.l` are `SizeRule::Branch`, accepted and not range checked because
+  every instruction is four bytes, and none of them reaches the encoded
+  instruction (`branch_takes_b_as_it_takes_s`, phase 1's step 10).
+- **`docs/grammar.md` is untouched for the third step running**, and for the
+  same reason: the parser has read `label(pc)`, `(d,pc,xn)` and `label.w` since
+  step 4, and everything this step decided is the table's, the analyzer's and
+  the lowering's. That is ADR 0003 doing its job.
+- **The `ts-lib` chain was run and is green** — `wasm-pack build`,
+  `npm run build-lib`, `npm test` — although nothing crossing the boundary
+  changed shape: `src/lib.rs`, `src/ts_types.rs` and `ts-lib/` are untouched, an
+  `Instruction` reaches JavaScript as `instruction: any`, a Diagnostic's `code`
+  is declared as `string` rather than as a union of the codes, and `parseLine`
+  has answered `pc_displacement` and `pc_index` as mode names since phase 1. It
+  was run because this is the last step of phase 3 and the chain is what CI
+  runs.
+- **Not done, and deliberately: a width forced on a Directive's operand says
+  nothing.** `org $2000.w` and `dc.l big.w` are read for their value and their
+  suffix is ignored, because the check above is about an Addressing mode — how
+  an instruction *reaches* a place — and a Directive's operand is a value, not
+  an address. Nothing in the corpus writes one, and the shape that a student
+  really does write, `move.l #big.w,d0`, has been answered since phase 1 by the
+  parser: "this looks like an immediate operand, `#5`, but an immediate carries
+  no size: the size goes on the operation".
+- **Twelve new tests**: two in `table.rs` and `lowering.rs` (the groups the
+  modes belong to, and the distance the lowering stores in both directions and
+  for the displacement-free form), three in `analyzer.rs` (where the modes are
+  allowed and what the refusals say, the distance against both fields, and the
+  forced widths), and seven in `src/test/test.rs` under `pc_relative_addressing`
+  (a read forwards, a read backwards, two lines at two addresses reading one
+  place, the index form and the displacement-free one, a `movem` reading three
+  registers back, `jmp`/`jsr`, and a `pea` that pushes the address).
+
+**What phase 4 needs to know.**
+
+* **Phase 3 is finished.** Every Mnemonic of the design record's "Instructions"
+  is implemented and every Addressing mode CONTEXT.md lists is assembled. What
+  is refused for good is `rte`, `stop`, `reset`, `move usp,an`, `memory`,
+  macros with conditional assembly and structured control; what is refused with
+  a "yet" is `include` and `incbin`, which are phase 4's, and they are the only
+  two sentences left in the crate that promise anything.
+* **`unreadable_file` is still the one code with no golden case**, and phase 4's
+  `include` owes it (`WITHOUT_A_CASE` in `src/test/diagnostics.rs`).
+* **Instruction size is still `INSTRUCTION_SIZE` = 4**, and a PC-relative
+  operand is now the second thing that depends on it: the round trip is
+  `label - (A + 2)` and `A + 2 + d`, where the `2` is `EXTENSION_WORD_OFFSET`
+  and not a function of the instruction's size, so real sizes change nothing
+  here — but a version that assembled real encodings would have to keep the
+  displacement measured from the extension word, which is what the constant's
+  doc comment says.
+* **The two places that read a line index as a position are unchanged**
+  (`Symbol::value_at` for `set`, and the register-list forward-reference check),
+  so phase 2's handover to phase 4 stands word for word.

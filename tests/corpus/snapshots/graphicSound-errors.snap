@@ -41,18 +41,5 @@ expression: diagnostics
       "endColumn": 9
     },
     "related": []
-  },
-  {
-    "severity": "error",
-    "code": "unimplemented_operation",
-    "message": "`simhalt` is not implemented: halting the simulator is not implemented yet",
-    "hint": "write `move.b #9,d0` and `trap #15` to end the program instead",
-    "location": {
-      "file": "graphicSound.X68",
-      "line": 205,
-      "column": 4,
-      "endColumn": 11
-    },
-    "related": []
   }
 ]

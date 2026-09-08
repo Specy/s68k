@@ -1,0 +1,46 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/invalid_operand_pair.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "invalid_operand_pair",
+    "message": "`addx` takes two data registers or two predecrement operands, and this line has an immediate and a data register",
+    "hint": "write `addx d0,d1` or `addx -(a0),-(a1)`; `add` takes every addressing mode",
+    "location": {
+      "file": "invalid_operand_pair.asm",
+      "line": 3,
+      "column": 11,
+      "endColumn": 16
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "invalid_operand_pair",
+    "message": "`addx` takes two data registers or two predecrement operands, and this line has a data register and a predecrement operand",
+    "hint": "write `addx d0,d1` or `addx -(a0),-(a1)`; `add` takes every addressing mode",
+    "location": {
+      "file": "invalid_operand_pair.asm",
+      "line": 4,
+      "column": 11,
+      "endColumn": 19
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "invalid_operand_pair",
+    "message": "`sbcd` takes two data registers or two predecrement operands, and this line has a predecrement operand and a data register",
+    "hint": "write `sbcd d0,d1` or `sbcd -(a0),-(a1)`; move the byte into a data register first",
+    "location": {
+      "file": "invalid_operand_pair.asm",
+      "line": 5,
+      "column": 9,
+      "endColumn": 17
+    },
+    "related": []
+  }
+]

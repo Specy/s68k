@@ -631,7 +631,18 @@ impl Operand {
             Operand::Immediate { .. } => "an immediate",
             Operand::DataRegisterDirect { .. } => "a data register",
             Operand::AddressRegisterDirect { .. } => "an address register",
-            Operand::SpecialRegister { .. } => "a special register",
+            Operand::SpecialRegister {
+                register: SpecialRegister::Sr,
+                ..
+            } => "the status register",
+            Operand::SpecialRegister {
+                register: SpecialRegister::Ccr,
+                ..
+            } => "the condition codes",
+            Operand::SpecialRegister {
+                register: SpecialRegister::Usp,
+                ..
+            } => "the user stack pointer",
             Operand::Indirect { .. } => "an indirect operand",
             Operand::Postincrement { .. } => "a postincrement operand",
             Operand::Predecrement { .. } => "a predecrement operand",

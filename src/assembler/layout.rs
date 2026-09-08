@@ -29,14 +29,26 @@
 //!   first instruction (CONTEXT.md, "Entry point").
 //! * A line after `end` is not assembled, and the first one carrying a Label or
 //!   an Operation says so.
+//! * `reg` names a `movem` register list, `fail` reports the rest of its line
+//!   as the program's own error, and `simhalt` is an executable item of four
+//!   bytes that ends the run.
+//! * A Directive that gives a name to something needs a Label and `page` and
+//!   the conditional-assembly Directives take none (`label_rule_of`).
+//! * `section` picks one of sixteen location counters and `offset` opens a
+//!   region that moves an address and places nothing, both of them read back
+//!   through the one current address (`Directives/section.htm`,
+//!   `Directives/offset.htm`).
 
 use std::collections::HashSet;
 
 use super::analyzer::{Analyzer, Context, DEFAULT_ORIGIN};
-use super::ast::{Expr, Line, Operand, Operation, SizeSuffix};
+use super::ast::{
+    Expr, Line, Operand, Operation, Register, RegisterKind, RegisterListItem, SizeSuffix,
+};
 use super::diagnostics::{Diagnostic, DiagnosticKind};
 use super::expr::{self, Site};
 use super::instructions::encoded::Instruction;
+use super::instructions::lowering;
 use super::instructions::table;
 use super::names;
 use super::parser::ParsedFile;
@@ -57,6 +69,21 @@ pub const ADDRESS_SPACE: i64 = 0x0100_0000;
 /// Program stores a size per instruction so that the decision is this constant
 /// and not a rewrite.
 pub const INSTRUCTION_SIZE: usize = 4;
+
+/// How many location counters a program has, one for each `section`.
+///
+/// EASy68K's own range: "`<number>` must be in the range 0..15. No section
+/// numbers are reserved in any way. By default, the assembler will begin with
+/// section 0" (`Directives/section.htm`).
+pub const SECTION_COUNT: usize = 16;
+
+/// What a `fail` with no message says, word for word EASy68K's own
+/// ("If no message is provided the message: \"ERROR: Unspecified user defined
+/// error.\" is used", `Directives/fail.htm`); the "ERROR:" of it is that
+/// assembler's prefix on every error and is the [`Severity`] here.
+///
+/// [`Severity`]: super::diagnostics::Severity
+pub const UNSPECIFIED_FAILURE: &str = "Unspecified user defined error";
 
 /// Lay one File out and assemble it.
 ///
@@ -97,6 +124,16 @@ struct LinePlan {
     item: Item,
 }
 
+/// What [`Layout::resolve_register_lists`] made of a line's Operands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RegisterLists {
+    /// A `reg` Symbol was read: these are the Operands to judge, with the name
+    /// replaced by the register list it stands for.
+    Resolved(Vec<Operand>),
+    /// A name where a register list belongs is not one, and has been reported.
+    Refused,
+}
+
 /// One run of addresses a line takes up, for the overlap check.
 struct Placement {
     start: i64,
@@ -115,8 +152,19 @@ struct Layout<'a> {
     declared: HashSet<String>,
     plans: Vec<LinePlan>,
     placements: Vec<Placement>,
-    /// The address pass 1 has reached.
-    address: i64,
+    /// The address pass 1 has reached in each of the sixteen sections;
+    /// [`Layout::address`] reads the one in force out of it. Section 0 starts
+    /// at the default origin and the other fifteen at zero
+    /// ([`sections_at_the_start`]).
+    sections: [i64; SECTION_COUNT],
+    /// Which section is in force, `0..SECTION_COUNT` (`Directives/section.htm`).
+    section: usize,
+    /// The counter of an open `offset` region, which **shadows** the section's
+    /// own while it is open: everything that would have placed bytes moves this
+    /// instead and places nothing, so closing the region leaves the section's
+    /// counter exactly where `offset` found it, which is the address `org *`
+    /// restores (`Directives/offset.htm`).
+    offset: Option<i64>,
     /// The address the first item of the program is laid out at, which is what
     /// tells `move.l 5,d0` from `move.l label,d0`.
     origin: Option<i64>,
@@ -142,7 +190,9 @@ impl<'a> Layout<'a> {
             declared: declared_names(parsed),
             plans: Vec::with_capacity(parsed.lines.len()),
             placements: Vec::new(),
-            address: DEFAULT_ORIGIN,
+            sections: sections_at_the_start(),
+            section: 0,
+            offset: None,
             origin: None,
             scope: None,
             end: None,
@@ -160,6 +210,7 @@ impl<'a> Layout<'a> {
     fn pass_one(&mut self) {
         for index in 0..self.parsed.lines.len() {
             let plan = self.plan_line(index);
+            let plan = self.hold_back_in_an_offset_region(index, plan);
             self.plans.push(plan);
         }
         self.report_overlaps();
@@ -229,13 +280,14 @@ impl<'a> Layout<'a> {
     fn plan_instruction(&mut self, index: usize) -> LinePlan {
         self.align(2);
         self.define_label(index);
-        let address = self.address;
+        let address = self.address();
         self.place(index, INSTRUCTION_SIZE);
         self.plan(address, Item::Instruction)
     }
 
     /// One Directive, in pass 1.
     fn plan_directive(&mut self, index: usize, name: &str) -> LinePlan {
+        self.check_label_rule(index, name);
         match name {
             "org" => self.plan_org(index),
             "equ" | "set" => self.plan_equate(index, name),
@@ -243,6 +295,11 @@ impl<'a> Layout<'a> {
             "ds" => self.plan_ds(index),
             "dcb" => self.plan_dcb(index),
             "end" => self.plan_end(index),
+            "reg" => self.plan_reg(index),
+            "fail" => self.plan_fail(index),
+            "simhalt" => self.plan_simhalt(index),
+            "offset" => self.plan_offset(index),
+            "section" => self.plan_section(index),
             // `opt`, `list`, `nolist` and `page` are display settings and are
             // accepted with nothing to say (the design record, "Directives").
             "opt" | "list" | "nolist" | "page" => {
@@ -257,16 +314,34 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// `org expr`: the address the next item goes to.
+    /// `org expr`: the address the next item goes to, and the end of an
+    /// `offset` region.
+    ///
+    /// The `*` of `org (*+1)&-2` is the address `org` is about to leave, so the
+    /// value is worked out before anything moves. Inside an `offset` region it
+    /// is something else: "ORG * restores the code to the address in use prior
+    /// to the OFFSET" (`Directives/offset.htm`), so in this one Operand `*` is
+    /// the address the region is shadowing and not the region's own counter.
+    /// Every other `*` inside a region — `here equ *`, `dc.l *` — is the
+    /// counter, because that is what the current address means where the
+    /// Labels are offsets.
     fn plan_org(&mut self, index: usize) -> LinePlan {
         self.no_size(index, "org");
         let Some(operand) = self.one_operand(index, "org") else {
+            self.close_the_offset_region();
             self.define_label(index);
             return self.nothing();
         };
-        // The `*` of `org (*+1)&-2` is the address `org` is about to leave, so
-        // the value is worked out before anything moves.
-        if let Some(value) = self.value_now(index, "org", &operand) {
+        let star = match self.offset {
+            Some(_) => self.resume_address(),
+            None => self.address(),
+        };
+        let value = self.value_now_at(index, "org", &operand, star);
+        // Whatever the address turns out to be, the `offset` region ends here:
+        // `org` is the Directive the help names for it, and a region left open
+        // would swallow the rest of the File.
+        self.close_the_offset_region();
+        if let Some(value) = value {
             let span = operand.span();
             if !(0..ADDRESS_SPACE).contains(&value) {
                 self.raise(
@@ -281,14 +356,18 @@ impl<'a> Layout<'a> {
                     },
                 );
             } else {
-                let address = match value % 2 == 0 {
+                // An `org` that lands where the address already is moves
+                // nothing, so there is nothing to round up and nothing to say —
+                // and `org *` after a `dc.b`, which is how an `offset` region
+                // is ended, would otherwise be told its own address is odd.
+                let address = match value % 2 == 0 || value == star {
                     true => value,
                     false => {
                         self.raise(index, span, DiagnosticKind::OddOrigin { address: value });
                         value + 1
                     }
                 };
-                self.address = address;
+                self.set_address(address);
             }
         }
         // The Label of an `org` line names where the program goes on from, not
@@ -300,20 +379,10 @@ impl<'a> Layout<'a> {
     /// `label equ expr` and `label set expr`.
     fn plan_equate(&mut self, index: usize, name: &str) -> LinePlan {
         self.no_size(index, name);
+        // `check_label_rule` has already said that a value Directive needs a
+        // name, so a line with none is simply not defined here.
         let line = self.line(index);
         let Some(label) = line.label.as_ref() else {
-            let span = line
-                .operation
-                .as_ref()
-                .map(|operation| operation.name_span)
-                .unwrap_or(Span::empty(0));
-            self.raise(
-                index,
-                span,
-                DiagnosticKind::DirectiveNeedsALabel {
-                    directive: name.to_string(),
-                },
-            );
             return self.nothing();
         };
         let (label_name, label_span) = (label.name.clone(), label.span);
@@ -343,7 +412,7 @@ impl<'a> Layout<'a> {
         let size = self.data_size(index, "dc");
         self.align(alignment_of(size));
         self.define_label(index);
-        let address = self.address;
+        let address = self.address();
         let line = self.line(index);
         let operands = line
             .operation
@@ -366,7 +435,7 @@ impl<'a> Layout<'a> {
         let size = self.data_size(index, "ds");
         self.align(alignment_of(size));
         self.define_label(index);
-        let address = self.address;
+        let address = self.address();
         let name = format!("ds.{}", size.letter());
         let Some(operand) = self.one_operand(index, &name) else {
             return self.plan(address, Item::Reserved(0));
@@ -382,7 +451,7 @@ impl<'a> Layout<'a> {
         let size = self.data_size(index, "dcb");
         self.align(alignment_of(size));
         self.define_label(index);
-        let address = self.address;
+        let address = self.address();
         let operands = self.operands(index);
         let name = format!("dcb.{}", size.letter());
         if operands.len() != 2 {
@@ -398,16 +467,15 @@ impl<'a> Layout<'a> {
     /// `end [expr]`: the Entry point, and the last line that is assembled.
     fn plan_end(&mut self, index: usize) -> LinePlan {
         self.no_size(index, "end");
+        // `end` ends an open `offset` region as `org` does. The help says only
+        // that an `org` ends one, but nothing after `end` is assembled anyway,
+        // and a Label on the `end` line itself is an address and not an offset.
+        self.close_the_offset_region();
         self.define_label(index);
         let operands = self.operands(index);
         match operands.len() {
             0 => {
-                let span = self
-                    .line(index)
-                    .operation
-                    .as_ref()
-                    .map(|operation| operation.name_span)
-                    .unwrap_or(Span::empty(0));
+                let span = self.operation_name_span(index);
                 self.raise(index, span, DiagnosticKind::EndWithoutAnAddress);
             }
             1 => {
@@ -423,15 +491,343 @@ impl<'a> Layout<'a> {
         self.nothing()
     }
 
+    /// `label reg d0-d3/a0-a2`: a name for a `movem` register list.
+    ///
+    /// `Directives/reg.htm` gives the whole of it — `AllRegs REG D0-D7/A0-A6`,
+    /// then `MOVEM.L AllRegs,-(SP)`. The Symbol holds the mask and not a
+    /// number: a Register list has no value in an Expression, which is what
+    /// [`RegisterListInExpression`](DiagnosticKind::RegisterListInExpression)
+    /// answers, and [`Layout::resolve_register_lists`] is where `movem` reads
+    /// it back.
+    fn plan_reg(&mut self, index: usize) -> LinePlan {
+        self.no_size(index, "reg");
+        // `check_label_rule` has already said that `reg` needs a name.
+        let Some(label) = self.line(index).label.as_ref() else {
+            return self.nothing();
+        };
+        let (name, span) = (label.name.clone(), label.span);
+        let mask = match self.one_operand(index, "reg") {
+            Some(operand) => self.register_mask_of(index, &operand),
+            None => None,
+        };
+        // The name is defined whatever the list turns out to be, for the same
+        // reason `equ` defines its name: a list that could not be read has been
+        // reported once already, and leaving the name undefined would report it
+        // again at every `movem` that uses it.
+        self.define(
+            index,
+            &name,
+            span,
+            SymbolKind::RegisterList,
+            SymbolValue::RegisterList(mask.unwrap_or(0)),
+        );
+        self.nothing()
+    }
+
+    /// The `movem` mask an Operand stands for.
+    ///
+    /// A register list is one; so is a single register, which is a list of one
+    /// (`docs/grammar.md` 1.12, and `movem.l d1,-(a7)` is line 178 of
+    /// `tests/corpus/easy68k/clockDigital.X68`). Anything else is
+    /// `register_list_expected`.
+    fn register_mask_of(&mut self, index: usize, operand: &Operand) -> Option<u16> {
+        match operand {
+            Operand::RegisterList { items, .. } => Some(lowering::register_mask(items)),
+            Operand::DataRegisterDirect { register, .. }
+            | Operand::AddressRegisterDirect { register, .. } => Some(1 << register.mask_index()),
+            other => {
+                self.raise(
+                    index,
+                    other.span(),
+                    DiagnosticKind::RegisterListExpected {
+                        found: other.description().to_string(),
+                    },
+                );
+                None
+            }
+        }
+    }
+
+    /// `fail [message]`: the program's own error (`Directives/fail.htm`).
+    ///
+    /// The message is the text after the Directive, verbatim — the parser keeps
+    /// it raw, commas and spaces included — or EASy68K's own default when the
+    /// line writes none. The assembly carries on, as the help says it does, and
+    /// the error is what stops the Program from being built.
+    fn plan_fail(&mut self, index: usize) -> LinePlan {
+        self.no_size(index, "fail");
+        // A Label on a `fail` names the address the line sits at, like a Label
+        // on any Directive that produces nothing.
+        self.define_label(index);
+        let operation = self.line(index).operation.as_ref();
+        let (message, span, written) = match operation.and_then(|operation| operation.text.as_ref())
+        {
+            Some(field) => (field.text.clone(), field.span, true),
+            None => (
+                UNSPECIFIED_FAILURE.to_string(),
+                operation
+                    .map(|operation| operation.name_span)
+                    .unwrap_or(Span::empty(0)),
+                false,
+            ),
+        };
+        self.raise(
+            index,
+            span,
+            DiagnosticKind::UserDefinedError { message, written },
+        );
+        self.nothing()
+    }
+
+    /// `simhalt`: four bytes that end the run.
+    ///
+    /// EASy68K assembles it to the object code `$FFFFFFFF`, which its simulator
+    /// reads as "halt" (`Directives/simhalt.htm`). Here it is an executable
+    /// item of the Program like an instruction — the same size, the same
+    /// alignment, and a Label on it names its address — and pass 2 lowers it to
+    /// [`Instruction::SIMHALT`].
+    ///
+    /// Whatever follows it on the line is a **comment** and is not looked at,
+    /// which is the help's own usage line, `LABEL SIMHALT comment`, and what
+    /// `page`, `list` and `nolist` already do here. Without that rule
+    /// `SIMHALT                 Halt Simulator` — line 206 of
+    /// `tests/corpus/easy68k/graphicSound.X68` — would be an Operand `Halt` and
+    /// a Comment `Simulator`, because the Operand field ends at the first
+    /// whitespace that is not beside a comma (`docs/grammar.md` 1.5) and no
+    /// rule of the parser can know that this Operation takes none.
+    fn plan_simhalt(&mut self, index: usize) -> LinePlan {
+        self.no_size(index, "simhalt");
+        self.align(2);
+        self.define_label(index);
+        let address = self.address();
+        self.place(index, INSTRUCTION_SIZE);
+        self.plan(address, Item::Instruction)
+    }
+
+    /// `offset expr`: a temporary origin that produces no bytes
+    /// (`Directives/offset.htm`).
+    ///
+    /// From here to the `org` that ends the region every name in a Label field
+    /// takes an offset rather than an address and nothing is placed at all: the
+    /// region's counter shadows the section's, so closing it leaves the section
+    /// exactly where it was, which is what `org *` restores. A Label on the
+    /// `offset` line itself names the offset the region starts at, the rule a
+    /// Label on an `org` follows.
+    ///
+    /// The Expression decides the Layout, so a forward reference is refused in
+    /// it. The value is **not** held to the 16 MB of memory, because it is not
+    /// an address: the help's own stack frame counts from `-3*4`.
+    fn plan_offset(&mut self, index: usize) -> LinePlan {
+        self.no_size(index, "offset");
+        // The region opens whatever the Operand turned out to be, for the
+        // reason `equ` defines its name whatever its value is: a region that
+        // did not open would lay every line of the table into memory and answer
+        // one mistake, already reported, with another at every line below it.
+        let value = match self.one_operand(index, "offset") {
+            Some(operand) => self.value_now(index, "offset", &operand).unwrap_or(0),
+            None => 0,
+        };
+        self.offset = Some(value);
+        self.define_label(index);
+        self.nothing()
+    }
+
+    /// `section [n]`: one of the sixteen location counters
+    /// (`Directives/section.htm`).
+    ///
+    /// The counter is "restored to the address following the last location
+    /// allocated in the indicated section (or to zero if used for the first
+    /// time)", which is what the sixteen counters hold; an `org` inside a
+    /// section writes the one in force. A number outside `0..15` is
+    /// [`ValueOutOfRange`](DiagnosticKind::ValueOutOfRange), the kind the
+    /// address of an `org` and the count of a `ds` already answer with, named
+    /// by its subject. The number may be a Symbol — the help writes
+    /// `SECTION DATA` against `DATA EQU 1` — so it is an ordinary Expression,
+    /// and it decides the Layout, so a forward reference is refused in it.
+    ///
+    /// With no number the Directive requires a Label and gives it the number of
+    /// the section in force. That rule cannot be read off the Directive's name,
+    /// which is why [`label_rule_of`] answers `Optional` for `section` and this
+    /// raises [`DirectiveNeedsALabel`](DiagnosticKind::DirectiveNeedsALabel)
+    /// itself.
+    fn plan_section(&mut self, index: usize) -> LinePlan {
+        self.no_size(index, "section");
+        let operands = self.operands(index);
+        let operand = match operands.len() {
+            0 => return self.name_the_current_section(index),
+            1 => operands.into_iter().next().expect("one operand"),
+            found => {
+                self.wrong_operand_count(index, "section", found, vec![0, 1]);
+                self.define_label(index);
+                return self.nothing();
+            }
+        };
+        let number = self.value_now(index, "section", &operand);
+        if let Some(number) = number.filter(|number| self.is_a_section(index, &operand, *number)) {
+            // A `section` sets the current address, so it ends an `offset`
+            // region as `org` does. The help says nothing about the two
+            // together and silence is answered the lenient way (ADR 0001):
+            // refusing the line would refuse a program EASy68K assembles.
+            self.close_the_offset_region();
+            self.section = number as usize;
+        }
+        // The Label names where the section goes on from, which is the rule a
+        // Label on an `org` follows.
+        self.define_label(index);
+        self.nothing()
+    }
+
+    /// Whether a `section` number is one of the sixteen, saying so when it is
+    /// not.
+    fn is_a_section(&mut self, index: usize, operand: &Operand, number: i64) -> bool {
+        let last = SECTION_COUNT as i64 - 1;
+        if (0..=last).contains(&number) {
+            return true;
+        }
+        self.raise(
+            index,
+            operand.span(),
+            DiagnosticKind::ValueOutOfRange {
+                subject: "the number of `section`".to_string(),
+                value: number,
+                min: 0,
+                max: last,
+                advice: Some(
+                    "a program has sixteen sections, `section 0` to `section 15`, and none of \
+                     them is reserved"
+                        .to_string(),
+                ),
+            },
+        );
+        false
+    }
+
+    /// `label section`: the number of the section in force.
+    ///
+    /// "If no section number is specified then a label is required and will be
+    /// set to the value of the current section (0..15)"
+    /// (`Directives/section.htm`). The value is a number and not an address, so
+    /// the Symbol is a **Constant**, which is what the help's own Macro reads
+    /// back with `SECTION SECT\@`.
+    fn name_the_current_section(&mut self, index: usize) -> LinePlan {
+        let Some(label) = self.line(index).label.as_ref() else {
+            let span = self.operation_name_span(index);
+            self.raise(
+                index,
+                span,
+                DiagnosticKind::DirectiveNeedsALabel {
+                    directive: "section".to_string(),
+                },
+            );
+            return self.nothing();
+        };
+        let (name, span) = (label.name.clone(), label.span);
+        let number = self.section as i64;
+        self.define(
+            index,
+            &name,
+            span,
+            SymbolKind::Constant,
+            SymbolValue::Number(number),
+        );
+        self.nothing()
+    }
+
+    /// What a line that would put something in the program makes inside an
+    /// `offset` region: nothing, and a Diagnostic when bytes were meant.
+    ///
+    /// "No machine code is generated by instructions or directives following an
+    /// OFFSET directive" (`Directives/offset.htm`). `ds` is what an offset
+    /// table is made of and says nothing: its counter has already moved and
+    /// there is no memory here to reserve. An instruction, a `simhalt` and a
+    /// `dc` are another matter — they would have produced bytes that reach no
+    /// memory, and a student who wrote code inside a region is told so rather
+    /// than handed a Program silently short of it.
+    fn hold_back_in_an_offset_region(&mut self, index: usize, plan: LinePlan) -> LinePlan {
+        if self.offset.is_none() {
+            return plan;
+        }
+        match plan.item {
+            Item::Nothing => return plan,
+            // `ds` is the Directive an offset table is made of: its counter has
+            // moved and there is no memory here to reserve.
+            Item::Reserved(_) => {}
+            Item::Instruction | Item::Data(_) => {
+                let item = self.offset_item_name(index);
+                let span = self.operation_name_span(index);
+                self.raise(
+                    index,
+                    span,
+                    DiagnosticKind::NoBytesInAnOffsetRegion { item },
+                );
+            }
+        }
+        LinePlan {
+            item: Item::Nothing,
+            ..plan
+        }
+    }
+
+    /// How a Diagnostic names what a line inside an `offset` region would have
+    /// put there: the Directive as it is written, or "an instruction".
+    fn offset_item_name(&self, index: usize) -> String {
+        let Some(operation) = self.line(index).operation.as_ref() else {
+            return "this line".to_string();
+        };
+        let name = operation.lowercase_name();
+        if table::lookup(&name).is_some() {
+            return "an instruction".to_string();
+        }
+        match operation.size {
+            Some(size) => format!("`{name}.{}`", size.letter()),
+            None => format!("`{name}`"),
+        }
+    }
+
+    /// The §2.6 label rule of a Directive, checked before the Directive itself.
+    ///
+    /// Two of EASy68K's errors, and [`label_rule_of`] is the list: "Label
+    /// required with this directive" for the Directives that give a name to
+    /// something, and "Label is not allowed" for `page` and the
+    /// conditional-assembly Directives (`errors.htm`, `Directives/page.htm`,
+    /// `Directives/conditional.htm`).
+    ///
+    /// A Label that is not allowed is **still defined** at the current address.
+    /// The line is already an error, so nothing is built either way, and
+    /// leaving the name undefined would report it again at every use of it —
+    /// the rule `plan_equate` follows for a value it cannot work out.
+    fn check_label_rule(&mut self, index: usize, directive: &str) {
+        let line = self.line(index);
+        match (label_rule_of(directive), line.label.as_ref()) {
+            (LabelRule::Required, None) => {
+                let span = self.operation_name_span(index);
+                self.raise(
+                    index,
+                    span,
+                    DiagnosticKind::DirectiveNeedsALabel {
+                        directive: directive.to_string(),
+                    },
+                );
+            }
+            (LabelRule::Forbidden, Some(label)) => {
+                let (name, span) = (label.name.clone(), label.span);
+                self.raise(
+                    index,
+                    span,
+                    DiagnosticKind::LabelNotAllowed {
+                        directive: directive.to_string(),
+                        name,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// A Directive s68k reads and does not implement in this phase.
     fn unimplemented_directive(&mut self, index: usize, name: &str) {
         let (reason, alternative) = unimplemented_reason(name);
-        let span = self
-            .line(index)
-            .operation
-            .as_ref()
-            .map(|operation| operation.name_span)
-            .unwrap_or(Span::empty(0));
+        let span = self.operation_name_span(index);
         self.raise(
             index,
             span,
@@ -500,18 +896,50 @@ impl<'a> Layout<'a> {
         // A Directive is pass 1's; a word that is neither a Mnemonic nor a
         // Directive still goes to the analyzer, which is where
         // `unknown_mnemonic` is raised.
-        if table::lookup(&name).is_none() && names::is_directive(&name) {
-            return None;
+        let spec = table::lookup(&name);
+        if spec.is_none() && names::is_directive(&name) {
+            // `simhalt` is the one Directive that puts an executable item in
+            // the Program, and pass 1 has already given it its four bytes.
+            return match name.as_str() {
+                "simhalt" if plan.item == Item::Instruction => Some(Instruction::SIMHALT),
+                _ => None,
+            };
         }
-        let parser_reported_an_error = self
+        let mut parser_reported_an_error = self
             .parsed
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.location.line == index && diagnostic.is_error());
-        if table::lookup(&name).is_some() && !parser_reported_an_error {
+        // A `reg` Symbol standing where `movem` wants a register list is read
+        // before anything else looks at the Operand: it is not an Expression
+        // and must not be evaluated as one.
+        let resolved = match (spec, parser_reported_an_error) {
+            (Some(spec), false) => {
+                self.resolve_register_lists(index, plan, spec, &operation.operands)
+            }
+            _ => None,
+        };
+        // A name this could not read has been answered by name; judging it
+        // against the instruction table as well would say it is an absolute
+        // address, which is not the mistake.
+        if matches!(resolved, Some(RegisterLists::Refused)) {
+            parser_reported_an_error = true;
+        }
+        let rewritten: Option<Line> = match &resolved {
+            Some(RegisterLists::Resolved(operands)) => {
+                Some(rewrite_operands(line, operands.clone()))
+            }
+            _ => None,
+        };
+        let line: &Line = rewritten.as_ref().unwrap_or(line);
+        if let (Some(spec), false) = (spec, parser_reported_an_error) {
             // The Operands of a line the parser failed on are whatever recovery
             // left behind, and a name out of one of them is not the mistake.
-            for operand in &operation.operands {
+            for (position, operand) in operation.operands.iter().enumerate() {
+                if spec.takes_a_register_list(position) && self.names_a_register_list(plan, operand)
+                {
+                    continue;
+                }
                 for expression in expressions_of(operand) {
                     self.value_later(index, plan, expression);
                 }
@@ -531,6 +959,120 @@ impl<'a> Layout<'a> {
         };
         self.diagnostics.extend(found);
         instruction
+    }
+
+    /// Read a `reg` Symbol standing where `movem` wants a register list.
+    ///
+    /// `Directives/reg.htm`'s whole example is `AllRegs REG D0-D7/A0-A6` and
+    /// then `MOVEM.L AllRegs,-(SP)`. The parser cannot know what `AllRegs` is —
+    /// a bare name is always an `absolute` (`docs/grammar.md` 1.12) — so the
+    /// Symbol is read here, in whichever of `movem`'s two positions the
+    /// direction puts the list, and the Operand becomes the list it stands for.
+    /// From there it is lowered exactly as a written list is, the predecrement
+    /// mask reversal included, because it *is* one.
+    ///
+    /// Three names are refused instead, each by its own sentence:
+    ///
+    /// * a Symbol of another kind — EASy68K's "Symbol is not a register list
+    ///   symbol";
+    /// * a `reg` Symbol defined further down — its "Register list symbol not
+    ///   previously defined". This is the one forward reference that is refused
+    ///   in an instruction Operand, and the reason is that a register list is
+    ///   not a value the Layout can put off: it decides how the instruction is
+    ///   encoded.
+    /// * a name that is defined nowhere is **not** refused here. The evaluator
+    ///   answers it with `undefined_symbol` and its "did you mean", and the
+    ///   analyzer adds what `movem` takes in that position, which between them
+    ///   are the diagnosis of a missing `reg` line.
+    fn resolve_register_lists(
+        &mut self,
+        index: usize,
+        plan: &LinePlan,
+        spec: &'static table::InstructionSpec,
+        operands: &[Operand],
+    ) -> Option<RegisterLists> {
+        // A name is only *required* to be a register list where nothing else
+        // fits: in `movem.l table,d0-d2` the list is the second Operand and
+        // `table` is an ordinary address, and the first position accepts one in
+        // the other direction's Form. So the two "this is not a register list"
+        // sentences are held back unless the line has the right number of
+        // Operands and no Form of it fits as written.
+        let must_be_a_list =
+            spec.arities().contains(&operands.len()) && !spec.has_a_form_that_fits(operands);
+        let mut resolved: Option<Vec<Operand>> = None;
+        let mut refused = false;
+        for (position, operand) in operands.iter().enumerate() {
+            if !spec.takes_a_register_list(position) {
+                continue;
+            }
+            let Some((name, span)) = bare_symbol(operand) else {
+                continue;
+            };
+            let Some(symbol) = self.symbols.resolve(name, plan.scope.as_deref()) else {
+                continue;
+            };
+            let (kind, definition) = (symbol.kind, symbol.location.clone());
+            let mask = match symbol.value {
+                SymbolValue::RegisterList(mask) => mask,
+                SymbolValue::Number(_) if must_be_a_list => {
+                    self.raise(
+                        index,
+                        span,
+                        DiagnosticKind::NotARegisterList {
+                            name: name.to_string(),
+                            kind: kind.description().to_string(),
+                        },
+                    );
+                    refused = true;
+                    continue;
+                }
+                // A name that stands for a value where a value also fits: it is
+                // the address it names, and nothing here has anything to say.
+                SymbolValue::Number(_) => continue,
+            };
+            // A name that *is* a register list can be nothing else, wherever
+            // it stands: it has no value at all, so `must_be_a_list` does not
+            // come into it.
+            if definition.line > index {
+                let location =
+                    Location::from_span(self.source.path(), index, self.text(index), span);
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        DiagnosticKind::RegisterListNotDefinedYet {
+                            name: name.to_string(),
+                        },
+                        location,
+                    )
+                    .with_related(definition, "the register list is defined here"),
+                );
+                refused = true;
+                continue;
+            }
+            resolved.get_or_insert_with(|| operands.to_vec())[position] =
+                register_list_operand(mask, span);
+        }
+        match (refused, resolved) {
+            (true, _) => Some(RegisterLists::Refused),
+            (false, Some(operands)) => Some(RegisterLists::Resolved(operands)),
+            (false, None) => None,
+        }
+    }
+
+    /// Whether an Operand is a bare name that stands for a `reg` Symbol.
+    ///
+    /// The evaluator answers such a name with `register_list_in_expression`,
+    /// which is right everywhere but in a `movem` register-list position: there
+    /// the name *is* the Operand and is never read as an Expression.
+    fn names_a_register_list(&self, plan: &LinePlan, operand: &Operand) -> bool {
+        let Some((name, _)) = bare_symbol(operand) else {
+            return false;
+        };
+        matches!(
+            self.symbols
+                .resolve(name, plan.scope.as_deref())
+                .map(|symbol| symbol.value),
+            Some(SymbolValue::RegisterList(_))
+        )
     }
 
     /// The bytes of a `dc`: every item in turn, a quoted literal as its Latin-1
@@ -730,8 +1272,47 @@ impl<'a> Layout<'a> {
 
     /// A plan for a line that puts nothing in the program.
     fn nothing(&mut self) -> LinePlan {
-        let address = self.address;
+        let address = self.address();
         self.plan(address, Item::Nothing)
+    }
+
+    /// The address the next item goes to: the counter of an open `offset`
+    /// region, else the counter of the section in force.
+    fn address(&self) -> i64 {
+        match self.offset {
+            Some(counter) => counter,
+            None => self.sections[self.section],
+        }
+    }
+
+    /// Move the current address, whichever of the two counters that is.
+    fn set_address(&mut self, address: i64) {
+        match self.offset.as_mut() {
+            Some(counter) => *counter = address,
+            None => self.sections[self.section] = address,
+        }
+    }
+
+    /// The address an `org` inside an `offset` region comes back to: the
+    /// counter of the section in force, which the region has not touched.
+    fn resume_address(&self) -> i64 {
+        self.sections[self.section]
+    }
+
+    /// End an open `offset` region, which reveals the section's own counter
+    /// exactly where the region found it.
+    fn close_the_offset_region(&mut self) {
+        self.offset = None;
+    }
+
+    /// The Span of the `index`th line's Operation name, or an empty one when
+    /// the line has no Operation at all.
+    fn operation_name_span(&self, index: usize) -> Span {
+        self.line(index)
+            .operation
+            .as_ref()
+            .map(|operation| operation.name_span)
+            .unwrap_or(Span::empty(0))
     }
 
     /// A plan, with the scope the line ended in.
@@ -750,9 +1331,19 @@ impl<'a> Layout<'a> {
     }
 
     /// Move the current address up to a multiple of `alignment`.
+    ///
+    /// The remainder is Euclidean, so that a negative address rounds *up* the
+    /// way a positive one does and `-11` aligns to `-10`. Only an `offset`
+    /// region can hold a negative current address, and the help's own stack
+    /// frame is one.
     fn align(&mut self, alignment: i64) {
-        if alignment > 1 && self.address % alignment != 0 {
-            self.address += alignment - self.address % alignment;
+        let address = self.address();
+        let remainder = address.rem_euclid(alignment);
+        if alignment > 1 && remainder != 0 {
+            // Saturating, because only an `offset` region's counter can be
+            // anywhere near the end of the 64 bits an Expression is computed in
+            // and a region that far out has been reported already.
+            self.set_address(address.saturating_add(alignment - remainder));
         }
     }
 
@@ -765,7 +1356,16 @@ impl<'a> Layout<'a> {
         if length == 0 {
             return;
         }
-        let end = self.address + length as i64;
+        if self.offset.is_some() {
+            // Inside an `offset` region nothing is placed: the counter moves so
+            // that the names below take their offsets, and no byte of the run
+            // exists for the overlap sweep to find. The counter is not an
+            // address either, so it is not held to the 16 MB — the region is a
+            // table of offsets and the help's own starts at `-3*4`.
+            self.set_address(self.address().saturating_add(length as i64));
+            return;
+        }
+        let end = self.address() + length as i64;
         if end > ADDRESS_SPACE {
             let location = Location::whole_line(self.source.path(), index, self.text(index));
             self.diagnostics.push(Diagnostic::new(
@@ -781,18 +1381,25 @@ impl<'a> Layout<'a> {
             return;
         }
         if self.origin.is_none() {
-            self.origin = Some(self.address);
+            self.origin = Some(self.address());
         }
         self.placements.push(Placement {
-            start: self.address,
+            start: self.address(),
             end,
             line: index,
         });
-        self.address = end;
+        self.set_address(end);
     }
 
     /// Define the Label of the `index`th line at the current address, and open
     /// a new scope when it is a Global one.
+    ///
+    /// Inside an `offset` region the name is a **Constant** and not a Label:
+    /// its value is an offset into a structure, no line of the program is laid
+    /// out at it, and calling it a Label would put an address that does not
+    /// exist in the symbol listing and in the corpus fixture
+    /// (`tests/corpus/README.md`, "labels"). It is still the Label field, so a
+    /// Global one still opens a scope for the Local names under it.
     fn define_label(&mut self, index: usize) {
         let Some(label) = self.line(index).label.as_ref() else {
             return;
@@ -801,14 +1408,12 @@ impl<'a> Layout<'a> {
         if !symbols::is_local(&name) {
             self.scope = Some(name.clone());
         }
-        let address = self.address;
-        self.define(
-            index,
-            &name,
-            span,
-            SymbolKind::Label,
-            SymbolValue::Number(address),
-        );
+        let kind = match self.offset {
+            Some(_) => SymbolKind::Constant,
+            None => SymbolKind::Label,
+        };
+        let address = self.address();
+        self.define(index, &name, span, kind, SymbolValue::Number(address));
     }
 
     /// Define one Symbol, and say where it was already defined when it was.
@@ -911,6 +1516,18 @@ impl<'a> Layout<'a> {
     /// The value of a Directive's Operand in **pass 1**, where a forward
     /// reference is refused.
     fn value_now(&mut self, index: usize, directive: &str, operand: &Operand) -> Option<i64> {
+        self.value_now_at(index, directive, operand, self.address())
+    }
+
+    /// The same, with a value of its own for `*`, which only an `org` that ends
+    /// an `offset` region needs (`Directives/offset.htm`).
+    fn value_now_at(
+        &mut self,
+        index: usize,
+        directive: &str,
+        operand: &Operand,
+        star: i64,
+    ) -> Option<i64> {
         let expression = self.expression_of(index, directive, operand)?;
         let mut problems = Vec::new();
         let value = {
@@ -918,7 +1535,7 @@ impl<'a> Layout<'a> {
             let symbols = self
                 .symbols
                 .in_scope(self.scope.as_deref(), index, Some(&declared));
-            expr::evaluate(&expression, &symbols, self.address, &mut problems)
+            expr::evaluate(&expression, &symbols, star, &mut problems)
         };
         let site = Site {
             file: self.source.path(),
@@ -1158,6 +1775,22 @@ fn declared_names(parsed: &ParsedFile) -> HashSet<String> {
     names
 }
 
+/// The sixteen location counters as a program starts.
+///
+/// Section 0 is at the default origin and the other fifteen at zero. EASy68K's
+/// own rule is "zero if used for the first time" for every section
+/// (`Directives/section.htm`) and s68k's own is a default origin of `$1000`
+/// (ADR 0001); the two meet at section 0, which is the section a program starts
+/// in — "by default, the assembler will begin with section 0" — and therefore
+/// the one the default origin is a statement about. The fifteen others are
+/// EASy68K's zero, so a program that writes `section 1` and no `org` lays its
+/// data out from 0 exactly as EASy68K does.
+fn sections_at_the_start() -> [i64; SECTION_COUNT] {
+    let mut sections = [0; SECTION_COUNT];
+    sections[0] = DEFAULT_ORIGIN;
+    sections
+}
+
 /// How many bytes one item of a size takes up.
 fn bytes_of(size: SizeSuffix) -> usize {
     match size {
@@ -1229,12 +1862,107 @@ fn expressions_of(operand: &Operand) -> Vec<&Expr> {
     }
 }
 
+/// What a Directive's label field has to hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LabelRule {
+    /// The Directive gives a name to something and cannot be written without
+    /// one: EASy68K's "Label required with this directive".
+    Required,
+    /// The Directive takes no label at all: EASy68K's "Label is not allowed".
+    Forbidden,
+    /// A Label is allowed and names the address the line sits at, which is
+    /// every other Directive.
+    Optional,
+}
+
+/// The label rule of one Directive (`docs/grammar.md` 2.6).
+///
+/// **Required** is the Directives that give a name to something: `equ`, `set`
+/// and `reg`, whose usage lines are `label EQU value`, `Size SET 38` and
+/// `AllRegs REG D0-D7/A0-A6`. `section` with no number joins them ("If no
+/// section number is specified then a label is required",
+/// `Directives/section.htm`), and it is the one rule that cannot be read off
+/// the name of the Directive — it depends on the Operand — so `section` is
+/// `Optional` here and [`Layout::plan_section`] raises
+/// [`DirectiveNeedsALabel`](DiagnosticKind::DirectiveNeedsALabel) itself.
+///
+/// **Forbidden** is EASy68K's own list and nothing beyond it: `page` ("No label
+/// is permitted", `Directives/page.htm`) and the conditional-assembly
+/// Directives ("IFxx and ENDC directives may not be labeled",
+/// `Directives/conditional.htm`). The `macro` Directive takes the Macro's name
+/// in its label field and is not in the list; the structured-control keywords
+/// are not either, because the help says nothing about them and silence is
+/// answered by the lenient reading (ADR 0001).
+///
+/// A Directive s68k refuses whole is still checked, so `skip ifeq debug` is
+/// answered both about its label and about conditional assembly: the two are
+/// separate mistakes at separate places in the line, and the label rule is true
+/// of the shape of the line whether or not the feature is implemented.
+fn label_rule_of(directive: &str) -> LabelRule {
+    match directive {
+        "equ" | "set" | "reg" => LabelRule::Required,
+        "page" | "ifeq" | "ifne" | "iflt" | "ifle" | "ifgt" | "ifge" | "ifc" | "ifnc" | "ifarg"
+        | "endc" => LabelRule::Forbidden,
+        _ => LabelRule::Optional,
+    }
+}
+
+/// The name an Operand that is one bare Symbol carries, with its Span.
+///
+/// This is the shape a `reg` Symbol reaches `movem` in: a bare name always
+/// parses as an `absolute` whose Expression is one `symbol_reference`
+/// (`docs/grammar.md` 1.12), and only the Symbol table can say what it means.
+fn bare_symbol(operand: &Operand) -> Option<(&str, Span)> {
+    match operand {
+        Operand::Absolute {
+            value: Expr::Symbol { name, span },
+            ..
+        } => Some((name.as_str(), *span)),
+        _ => None,
+    }
+}
+
+/// The same Line with different Operands, which is what a resolved register
+/// list gives the analyzer to judge.
+fn rewrite_operands(line: &Line, operands: Vec<Operand>) -> Line {
+    let mut rewritten = line.clone();
+    if let Some(operation) = rewritten.operation.as_mut() {
+        operation.operands = operands;
+    }
+    rewritten
+}
+
+/// The Operand a `movem` register-list mask stands for, at the span of the name
+/// that named it.
+///
+/// One item a register, which is all the lowering reads: the mask it computes
+/// back is the one this was built from, and the fixture printer prints the mask
+/// and never the items. The span is the name's, so a Diagnostic about the
+/// Operand lands on the word the source wrote.
+fn register_list_operand(mask: u16, span: Span) -> Operand {
+    let items = (0u8..16)
+        .filter(|index| mask & (1 << index) != 0)
+        .map(|index| RegisterListItem::Single {
+            register: Register {
+                kind: match index < 8 {
+                    true => RegisterKind::Data,
+                    false => RegisterKind::Address,
+                },
+                number: index & 7,
+                span,
+            },
+            span,
+        })
+        .collect();
+    Operand::RegisterList { items, span }
+}
+
 /// Why a Directive is not implemented, and what to write instead.
 ///
 /// The design record's "Directives" says which bucket each one is in: `memory`,
 /// the Macro and conditional-assembly Directives and the structured-control
-/// keywords are refused, and the rest arrive in phase 2 or phase 4, which is
-/// what "yet" says. The Operation names that reach this are the ones
+/// keywords are refused, and `include` and `incbin` arrive in phase 4, which is
+/// what "yet" says. Phase 2 has taken every other Directive out of this list. The Operation names that reach this are the ones
 /// [`names::is_directive`] knows and [`Layout::plan_directive`] does not.
 fn unimplemented_reason(name: &str) -> (&'static str, Option<&'static str>) {
     match name {
@@ -1246,37 +1974,24 @@ fn unimplemented_reason(name: &str) -> (&'static str, Option<&'static str>) {
             "reading a file's bytes into memory is not implemented yet",
             Some("`dc.b` with the bytes written out"),
         ),
-        "reg" => (
-            "naming a register list is not implemented yet",
-            Some("the register list itself, `movem.l d0-d2,-(a7)`"),
-        ),
-        "fail" => (
-            "stopping the assembly on purpose is not implemented yet",
-            None,
-        ),
-        "simhalt" => (
-            "halting the simulator is not implemented yet",
-            Some("`move.b #9,d0` and `trap #15` to end the program"),
-        ),
-        "offset" => (
-            "laying a structure out without producing bytes is not implemented yet",
-            Some("an `equ` for each field"),
-        ),
-        "section" => (
-            "sections are not implemented yet",
-            Some("`org` where the section is to go"),
-        ),
         "memory" => (
             "s68k has one memory of 16 MB and no access levels in it",
             None,
         ),
+        // No "yet" in either of these two, and the reason is the design
+        // record's own: macros with conditional assembly are "maybe a later
+        // milestone" and no phase of this plan adds them, where `include` and
+        // `incbin` above are phase 4's. "Yet" says a later phase brings it
+        // (the implementation notes, phase 3), and a sentence that promises
+        // more than the plan does is a sentence a student would be right to
+        // believe.
         "macro" | "endm" | "mexit" => (
-            "macros are not assembled yet",
+            "macros are not assembled",
             Some("the lines of the macro where it is used"),
         ),
         "ifeq" | "ifne" | "iflt" | "ifle" | "ifgt" | "ifge" | "ifc" | "ifnc" | "ifarg" | "endc" => {
             (
-                "conditional assembly is not implemented yet",
+                "conditional assembly is not implemented",
                 Some("the lines the condition would have kept"),
             )
         }
@@ -1291,6 +2006,7 @@ fn unimplemented_reason(name: &str) -> (&'static str, Option<&'static str>) {
 mod tests {
     use super::*;
     use crate::assembler::instructions::encoded::Operand as EncodedOperand;
+    use crate::assembler::instructions::encoded::TargetDirection;
     use crate::assembler::parser;
     use crate::assembler::source::Files;
 
@@ -1368,6 +2084,21 @@ mod tests {
         let source = "    org $2001\n    nop\n";
         assert_eq!(codes(source), vec!["odd_origin"]);
         assert_eq!(addresses(source), vec![0x2002]);
+    }
+
+    #[test]
+    fn an_org_that_moves_nothing_says_nothing_about_an_odd_address() {
+        // `org *` is the idiom that ends an `offset` region
+        // (`Directives/offset.htm`), and the address it comes back to is odd
+        // whenever a `dc.b` left it so. It is the address the program was
+        // legally at and the `org` does not move it, so it is neither rounded
+        // up nor complained about; an odd address the source *chose* still is.
+        let source = "    org $2000\n    dc.b 1\n    org *\n    dc.b 2\n";
+        assert!(codes(source).is_empty());
+        assert_eq!(
+            memory(source),
+            vec![(0x2000, "01".to_string()), (0x2001, "02".to_string())]
+        );
     }
 
     #[test]
@@ -1666,7 +2397,7 @@ second:
         let invocation = assemble(source).1.remove(1);
         assert_eq!(
             invocation.message(),
-            "`DELAY` is not implemented: it is a macro, and macros are not assembled yet"
+            "`DELAY` is not implemented: it is a macro, and macros are not assembled"
         );
         assert_eq!(
             invocation.hint(),
@@ -1750,11 +2481,6 @@ second:
         for source in [
             "    include 'io.x68'\n",
             "    incbin 'sprite.bin'\n",
-            "regs reg d0-d2\n",
-            "    fail no good\n",
-            "    simhalt\n",
-            "    offset 0\n",
-            "    section data\n",
             "    memory $1000,$2000,ROM\n",
             "    macro foo\n    endm\n",
             "    ifeq 1\n    endc\n",
@@ -1772,6 +2498,717 @@ second:
     #[test]
     fn the_ignored_directives_are_ignored_in_silence() {
         assert!(codes("    opt cre\n    list\n    nolist\n    page\n").is_empty());
+    }
+
+    // -- `reg`, `fail` and `simhalt` (phase 2) -----------------------------
+
+    #[test]
+    fn reg_names_a_register_list_and_movem_reads_it_in_both_directions() {
+        // `Directives/reg.htm`'s own example, and the mask it stands for is the
+        // one the written list gives: a `reg` name is lowered exactly as the
+        // list would be, predecrement reversal included.
+        let source = "\
+AllRegs reg d0-d2/a0
+start:
+    movem.l AllRegs,-(a7)
+    movem.l (a7)+,AllRegs
+    movem.l d0-d2/a0,-(a7)
+    movem.l (a7)+,d0-d2/a0
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            program.symbols()["AllRegs"].kind,
+            SymbolKind::RegisterList,
+            "a `reg` symbol is a register list and not a value"
+        );
+        let masks: Vec<(u16, bool)> = program
+            .instructions()
+            .iter()
+            .map(|assembled| match assembled.instruction {
+                Instruction::MOVEM {
+                    registers_mask,
+                    direction,
+                    ..
+                } => (registers_mask, direction == TargetDirection::ToMemory),
+                other => panic!("expected a movem, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(masks[0], masks[2], "out through `-(a7)`, mask reversed");
+        assert_eq!(masks[1], masks[3], "back through `(a7)+`");
+        assert_eq!(masks[1].0, 0b1_0000_0111, "d0, d1, d2 and a0");
+        assert_eq!(masks[0].0, 0b1_0000_0111u16.reverse_bits());
+    }
+
+    #[test]
+    fn reg_takes_a_single_register_as_a_list_of_one() {
+        let source = "one reg d3
+start:
+    movem.w one,(a0)
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            program.symbols()["one"].value,
+            0b1000,
+            "a single register is a list of one"
+        );
+    }
+
+    #[test]
+    fn reg_without_a_name_says_so() {
+        assert_eq!(
+            codes(
+                "    reg d0-d2
+"
+            ),
+            ["directive_needs_a_label"]
+        );
+    }
+
+    #[test]
+    fn reg_takes_a_register_list_and_nothing_else() {
+        assert_eq!(
+            codes(
+                "regs reg #5
+"
+            ),
+            ["register_list_expected"]
+        );
+        assert_eq!(
+            codes(
+                "regs reg (a0)
+"
+            ),
+            ["register_list_expected"]
+        );
+        assert_eq!(
+            codes(
+                "regs reg
+"
+            ),
+            ["wrong_operand_count"]
+        );
+        assert_eq!(
+            codes(
+                "regs reg.w d0-d2
+"
+            ),
+            ["invalid_size"]
+        );
+    }
+
+    #[test]
+    fn a_register_list_in_an_expression_is_refused() {
+        // EASy68K's "Register list symbol used in an expression": the Symbol
+        // stands for a `movem` operand and has no value at all.
+        let source = "\
+AllRegs reg d0-d2
+start:
+    move.l #AllRegs,d0
+    move.l AllRegs,d1
+    move.l AllRegs+1,d2
+";
+        assert_eq!(
+            codes(source),
+            [
+                "register_list_in_expression",
+                "register_list_in_expression",
+                "register_list_in_expression"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_register_list_has_to_be_defined_above_the_movem_that_reads_it() {
+        // EASy68K's "Register list symbol not previously defined". It is the one
+        // forward reference that is refused in an instruction Operand: a
+        // register list is not a value the second pass can fill in, it is how
+        // the instruction is encoded.
+        let source = "start:
+    movem.l AllRegs,-(a7)
+AllRegs reg d0-d2
+";
+        let (_, diagnostics) = assemble(source);
+        let codes: Vec<&str> = diagnostics.iter().map(Diagnostic::code).collect();
+        assert_eq!(codes, ["register_list_not_defined_yet"]);
+        assert_eq!(
+            diagnostics[0].related.len(),
+            1,
+            "the `reg` line is a related location"
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_register_list_says_so() {
+        // EASy68K's "Symbol is not a register list symbol". The mode check is
+        // not made as well: `count` *is* a legal absolute address, and "it
+        // cannot be an absolute address here" is not the mistake.
+        let source = "count equ 4
+start:
+    movem.l count,-(a7)
+";
+        assert_eq!(codes(source), ["not_a_register_list"]);
+    }
+
+    #[test]
+    fn a_name_in_the_memory_position_of_a_movem_is_an_address() {
+        // `movem.l table,d0-d2` reads the registers back *from* `table`, so the
+        // list is the second Operand and the first is an ordinary address. A
+        // name there is judged as one and nothing about register lists is said.
+        let source = "\
+    org $2000
+table: ds.l 3
+start:
+    movem.l table,d0-d2
+    movem.l d0-d2,table
+";
+        assert!(codes(source).is_empty(), "{:?}", codes(source));
+    }
+
+    #[test]
+    fn a_register_list_defined_below_is_refused_wherever_it_stands() {
+        // A `reg` Symbol has no value at all, so it can never be read as the
+        // address the other direction would allow there.
+        let source = "start:\n    movem.l AllRegs,d0-d2\nAllRegs reg d0-d2\n";
+        assert_eq!(codes(source), ["register_list_not_defined_yet"]);
+    }
+
+    #[test]
+    fn a_movem_with_the_wrong_count_is_told_about_the_count_and_nothing_else() {
+        // The name is still read as the list it is, so the only thing left to
+        // say is how many operands `movem` takes.
+        let source = "AllRegs reg d0-d2\nstart:\n    movem.l AllRegs\n";
+        assert_eq!(codes(source), ["wrong_operand_count"]);
+    }
+
+    #[test]
+    fn a_name_that_is_defined_nowhere_keeps_its_own_message() {
+        // A name the program never defines is answered by the evaluator, which
+        // knows the closest name there is, and by the analyzer, which knows
+        // that a register list belongs there. Between them they are the
+        // diagnosis of a missing `reg` line.
+        let source = "start:
+    movem.l AllRegs,-(a7)
+";
+        assert_eq!(
+            codes(source),
+            ["undefined_symbol", "invalid_addressing_mode"]
+        );
+    }
+
+    #[test]
+    fn fail_reports_its_message_word_for_word_and_the_assembly_carries_on() {
+        // `Directives/fail.htm`: the message is the rest of the line, commas
+        // and all, and "the assembly proceeds normally after the error has been
+        // printed" — so the `move` below it is still laid out.
+        let source = "\
+start:
+    fail ERROR, Argument missing in call to foo macro.
+    move.l #1,d0
+";
+        let (program, diagnostics) = assemble(source);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diagnostic| (diagnostic.code(), diagnostic.message()))
+                .collect::<Vec<_>>(),
+            [(
+                "user_defined_error",
+                "ERROR, Argument missing in call to foo macro.".to_string()
+            )]
+        );
+        assert_eq!(
+            program.instructions().len(),
+            1,
+            "the line after a `fail` is still assembled"
+        );
+    }
+
+    #[test]
+    fn fail_without_a_message_uses_easy68ks_default() {
+        let (_, diagnostics) = assemble(
+            "    fail
+",
+        );
+        assert_eq!(diagnostics[0].code(), "user_defined_error");
+        assert_eq!(diagnostics[0].message(), UNSPECIFIED_FAILURE);
+    }
+
+    #[test]
+    fn a_label_on_a_fail_names_the_address_of_the_line() {
+        let source = "    org $2000
+here fail no good
+    dc.b 1
+";
+        let (program, _) = assemble(source);
+        assert_eq!(program.symbols()["here"].value, 0x2000);
+    }
+
+    #[test]
+    fn simhalt_is_an_instruction_of_four_bytes() {
+        let source = "start:
+    nop
+halt simhalt
+    nop
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(addresses(source), vec![0x1000, 0x1004, 0x1008]);
+        assert_eq!(
+            program.symbols()["halt"].value,
+            0x1004,
+            "a label on `simhalt` names its address"
+        );
+        assert!(matches!(
+            program.instructions()[1].instruction,
+            Instruction::SIMHALT
+        ));
+    }
+
+    #[test]
+    fn simhalt_reads_the_rest_of_its_line_as_a_comment() {
+        // `Directives/simhalt.htm`'s usage line is `LABEL SIMHALT comment`, and
+        // line 206 of `tests/corpus/easy68k/graphicSound.X68` is
+        // `SIMHALT                 Halt Simulator`.
+        assert_eq!(
+            codes("    simhalt                 Halt Simulator\n"),
+            ["bare_comment"],
+            "the comment is a comment and nothing in it is an operand"
+        );
+        assert_eq!(
+            codes(
+                "    simhalt.w
+"
+            ),
+            ["invalid_size"]
+        );
+    }
+
+    // -- the label rules of `docs/grammar.md` 2.6 --------------------------
+
+    #[test]
+    fn the_directives_that_give_a_name_to_something_need_a_label() {
+        for source in [
+            "    equ 12
+",
+            "    set 12
+",
+            "    reg d0-d2
+",
+        ] {
+            assert_eq!(
+                codes(source),
+                ["directive_needs_a_label"],
+                "`{source}` needs a label"
+            );
+        }
+    }
+
+    #[test]
+    fn the_directives_that_take_no_label_say_so() {
+        // EASy68K's own list: `page` ("No label is permitted") and the
+        // conditional-assembly directives ("IFxx and ENDC directives may not be
+        // labeled").
+        assert_eq!(
+            codes(
+                "heading page
+"
+            ),
+            ["label_not_allowed"]
+        );
+        assert_eq!(
+            codes(
+                "skip ifeq 1
+"
+            ),
+            ["label_not_allowed", "unimplemented_operation"],
+            "the label rule and the missing feature are separate mistakes"
+        );
+        assert_eq!(
+            codes(
+                "done endc
+"
+            ),
+            ["label_not_allowed", "unimplemented_operation"]
+        );
+        // The name is still defined, so a use of it is not reported as well.
+        let (program, _) = assemble(
+            "    org $2000
+heading page
+    dc.b 1
+",
+        );
+        assert_eq!(program.symbols()["heading"].value, 0x2000);
+    }
+
+    #[test]
+    fn every_other_directive_takes_a_label_or_no_label() {
+        assert!(codes(
+            "here org $2000
+"
+        )
+        .is_empty());
+        assert!(codes(
+            "here dc.b 1
+"
+        )
+        .is_empty());
+        assert!(codes(
+            "here nolist
+"
+        )
+        .is_empty());
+        assert!(codes(
+            "    org $2000
+"
+        )
+        .is_empty());
+    }
+
+    // -- `section` and `offset` (phase 2) ----------------------------------
+
+    #[test]
+    fn a_program_starts_in_section_zero_at_the_default_origin() {
+        // "By default, the assembler will begin with section 0"
+        // (`Directives/section.htm`), and s68k's default origin is `$1000`, so
+        // that is where section 0's counter starts.
+        let source = "zero section\n    dc.b 1\n";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.symbols()["zero"].value, 0);
+        assert_eq!(memory(source), vec![(0x1000, "01".to_string())]);
+    }
+
+    #[test]
+    fn section_switches_between_sixteen_location_counters() {
+        // `Directives/section.htm`'s own example, with an instruction in place
+        // of its `<code>`: each section goes on from where it left off.
+        let source = "\
+CODE    equ 0
+DATA    equ 1
+    section DATA
+    org $2000
+msg1 dc.b 'Hello',0
+    section CODE
+    org $1000
+    nop
+    nop
+    section DATA
+msg2 dc.b 'Bye',0
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        // `msg1` is six bytes from `$2000`, so `msg2` goes to `$2006` when the
+        // program comes back to section 1, and the two `nop`s are in section 0.
+        assert_eq!(program.symbols()["msg1"].value, 0x2000);
+        assert_eq!(program.symbols()["msg2"].value, 0x2006);
+        assert_eq!(addresses(source), vec![0x1000, 0x1004]);
+    }
+
+    #[test]
+    fn org_inside_a_section_moves_that_sections_counter() {
+        // "The ORG directive may be used within a section, at any time, to set
+        // the current program location" — the current one, and no other.
+        let source = "\
+    section 1
+    org $3000
+    dc.b 1
+    section 0
+    dc.b 2
+    section 1
+    dc.b 3
+";
+        assert!(codes(source).is_empty());
+        assert_eq!(
+            memory(source),
+            vec![
+                (0x1000, "02".to_string()),
+                (0x3000, "01".to_string()),
+                (0x3001, "03".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_label_on_a_section_names_the_address_it_goes_on_from() {
+        // The rule a Label on an `org` follows: the line moves the address and
+        // the name is where the program goes on from, not where it was.
+        let source = "\
+    section 1
+    org $3000
+    dc.b 1
+    section 0
+here section 1
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.symbols()["here"].value, 0x3001);
+        assert_eq!(program.symbols()["here"].kind, SymbolKind::Label);
+    }
+
+    #[test]
+    fn a_section_that_is_used_for_the_first_time_starts_at_zero() {
+        let source = "    section 1\n    dc.b 1\n";
+        assert!(codes(source).is_empty());
+        assert_eq!(memory(source), vec![(0, "01".to_string())]);
+    }
+
+    #[test]
+    fn two_sections_over_one_address_are_still_an_overlap() {
+        // EASy68K "does not check for overlapping sections"; s68k's overlap
+        // error is a deliberate deviation (ADR 0001) and an address is an
+        // address whichever section wrote it.
+        let source = "\
+    section 1
+    org $1000
+    dc.b 1
+    section 0
+    dc.b 2
+";
+        assert_eq!(codes(source), vec!["address_used_twice"]);
+    }
+
+    #[test]
+    fn a_section_number_may_be_a_symbol_and_may_not_be_a_forward_reference() {
+        assert!(codes("DATA equ 1\n    section DATA\n").is_empty());
+        assert_eq!(
+            codes("    section DATA\nDATA equ 1\n"),
+            vec!["forward_reference_not_allowed"],
+            "a section number decides the layout"
+        );
+    }
+
+    #[test]
+    fn a_section_number_outside_the_sixteen_says_so() {
+        assert_eq!(codes("    section 16\n"), vec!["value_out_of_range"]);
+        assert_eq!(codes("    section -1\n"), vec!["value_out_of_range"]);
+        assert!(codes("    section 15\n").is_empty());
+        let (_, diagnostics) = assemble("    section 16\n");
+        assert_eq!(
+            diagnostics[0].message(),
+            "the number of `section` is 0 to 15, and `16` is outside it"
+        );
+        // The section in force does not change, so the line below the refused
+        // one is laid out where it would have been.
+        assert_eq!(
+            memory("    section 16\n    dc.b 1\n"),
+            vec![(0x1000, "01".to_string())]
+        );
+    }
+
+    #[test]
+    fn section_with_no_number_names_the_section_in_force() {
+        let source = "    section 3\nhere section\n";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.symbols()["here"].value, 3);
+        assert_eq!(
+            program.symbols()["here"].kind,
+            SymbolKind::Constant,
+            "the number of a section is a value, not an address"
+        );
+    }
+
+    #[test]
+    fn section_with_no_number_needs_a_label() {
+        // The one label rule that depends on the Operand and not on the name of
+        // the Directive, which is why `label_rule_of` does not carry it.
+        assert_eq!(codes("    section\n"), vec!["directive_needs_a_label"]);
+        assert!(codes("here section 1\n").is_empty());
+    }
+
+    #[test]
+    fn offset_moves_an_address_and_places_nothing() {
+        // `Directives/offset.htm`'s first example.
+        let source = "\
+    offset 0
+label1 ds.w 1
+label2 ds.b 2
+    org *
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.symbols()["label1"].value, 0);
+        assert_eq!(program.symbols()["label2"].value, 2);
+        assert!(
+            program.memory().is_empty(),
+            "an offset region reserves nothing: {:?}",
+            program.memory()
+        );
+    }
+
+    #[test]
+    fn a_name_defined_in_an_offset_region_is_a_constant() {
+        let source = "\
+    offset 0
+field ds.w 1
+    org *
+here dc.b 1
+";
+        let (program, _) = assemble(source);
+        assert_eq!(
+            program.symbols()["field"].kind,
+            SymbolKind::Constant,
+            "an offset is a value and no line of the program is laid out at it"
+        );
+        assert_eq!(
+            program.symbols()["here"].kind,
+            SymbolKind::Label,
+            "and the region is over by then"
+        );
+    }
+
+    #[test]
+    fn org_star_restores_the_address_the_offset_region_shadowed() {
+        // "ORG * restores the code to the address in use prior to the OFFSET"
+        // (`Directives/offset.htm`). Every other `*` inside the region is the
+        // region's own counter.
+        let source = "\
+    org $2000
+    dc.b 1
+    offset 0
+first ds.w 1
+mark equ *
+    org *
+here dc.b 2
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.symbols()["mark"].value, 2, "`*` is the counter");
+        assert_eq!(program.symbols()["here"].value, 0x2001);
+    }
+
+    #[test]
+    fn an_org_with_an_address_ends_an_offset_region_too() {
+        let source = "\
+    offset 0
+field ds.w 1
+    org $3000
+here dc.b 1
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.symbols()["here"].value, 0x3000);
+        assert_eq!(program.symbols()["here"].kind, SymbolKind::Label);
+    }
+
+    #[test]
+    fn a_section_ends_an_offset_region_as_an_org_does() {
+        // The help says nothing about the two together; a `section` sets the
+        // current address, so it ends the region, and refusing the line would
+        // refuse a program EASy68K assembles (ADR 0001).
+        let source = "\
+    offset 0
+field ds.w 1
+    section 1
+    org $3000
+here dc.b 1
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.symbols()["here"].value, 0x3000);
+        assert_eq!(program.symbols()["here"].kind, SymbolKind::Label);
+    }
+
+    #[test]
+    fn end_closes_an_offset_region() {
+        let source = "\
+start:
+    nop
+    offset 0
+field ds.w 1
+done end start
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.symbols()["field"].kind, SymbolKind::Constant);
+        assert_eq!(program.symbols()["done"].kind, SymbolKind::Label);
+        assert_eq!(program.symbols()["done"].value, 0x1004);
+    }
+
+    #[test]
+    fn a_line_that_would_produce_bytes_in_an_offset_region_says_so() {
+        // "No machine code is generated by instructions or directives following
+        // an OFFSET directive" (`Directives/offset.htm`), so a line that meant
+        // to produce some is told rather than dropped in silence.
+        let source = "\
+    offset 0
+field ds.w 1
+    move.l #1,d0
+    dc.b 1
+    simhalt
+";
+        let (program, diagnostics) = assemble(source);
+        let codes: Vec<&str> = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code())
+            .collect();
+        assert_eq!(
+            codes,
+            vec![
+                "no_bytes_in_an_offset_region",
+                "no_bytes_in_an_offset_region",
+                "no_bytes_in_an_offset_region"
+            ],
+            "`ds` is what the region is made of and says nothing"
+        );
+        assert!(program.instructions().is_empty());
+        assert!(program.memory().is_empty());
+    }
+
+    #[test]
+    fn an_offset_region_opens_whatever_its_expression_says() {
+        // The rule `equ` follows for a value it cannot work out: the mistake is
+        // reported once, and the region opens so that the table below it is not
+        // laid out into memory and reported again line by line.
+        assert_eq!(
+            codes("    offset LATER\nfield ds.w 1\nLATER equ 4\n"),
+            vec!["forward_reference_not_allowed"]
+        );
+        assert_eq!(
+            codes("    offset\nfield ds.w 1\n"),
+            vec!["wrong_operand_count"]
+        );
+        // A counter near the end of the 64 bits an Expression is computed in
+        // saturates instead of wrapping round: the region is nonsense either
+        // way, it has been reported once, and nothing overflows.
+        assert_eq!(
+            codes("    offset $7fffffffffffffff\nfield ds.w 1\n"),
+            vec!["constant_above_32_bits"]
+        );
+    }
+
+    #[test]
+    fn a_negative_offset_is_the_stack_frame_of_the_help() {
+        // `Directives/offset.htm`'s second example: three long words below a
+        // frame pointer, and the offsets are negative.
+        let source = "\
+SIZE equ -3*4
+    offset SIZE
+num1 ds.l 1
+num2 ds.l 1
+num3 ds.l 1
+    org *
+    link a0,#SIZE
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.symbols()["num1"].value, -12);
+        assert_eq!(program.symbols()["num2"].value, -8);
+        assert_eq!(program.symbols()["num3"].value, -4);
+        assert_eq!(addresses(source), vec![0x1000]);
+    }
+
+    #[test]
+    fn a_word_in_an_offset_region_aligns_up_from_a_negative_offset() {
+        // A word starts on an even address, and rounding *up* from `-11` is
+        // `-10`: the remainder of the alignment is Euclidean for exactly this.
+        let source = "    offset -11\nfield ds.w 1\nafter ds.b 1\n";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.symbols()["field"].value, -10);
+        assert_eq!(program.symbols()["after"].value, -8);
     }
 
     #[test]

@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/no_bytes_in_an_offset_region.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "no_bytes_in_an_offset_region",
+    "message": "an `offset` region produces no bytes, and an instruction produces some",
+    "hint": "an `offset` region names the fields of a structure with `ds`; write `org *` below them to end it and assemble code again",
+    "location": {
+      "file": "no_bytes_in_an_offset_region.asm",
+      "line": 7,
+      "column": 8,
+      "endColumn": 12
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "no_bytes_in_an_offset_region",
+    "message": "an `offset` region produces no bytes, and `dc.b` produces some",
+    "hint": "an `offset` region names the fields of a structure with `ds`; write `org *` below them to end it and assemble code again",
+    "location": {
+      "file": "no_bytes_in_an_offset_region.asm",
+      "line": 9,
+      "column": 8,
+      "endColumn": 10
+    },
+    "related": []
+  }
+]

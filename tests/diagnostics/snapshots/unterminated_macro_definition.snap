@@ -20,7 +20,7 @@ input_file: tests/diagnostics/unterminated_macro_definition.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`macro` is not implemented: macros are not assembled yet",
+    "message": "`macro` is not implemented: macros are not assembled",
     "hint": "write the lines of the macro where it is used instead",
     "location": {
       "file": "unterminated_macro_definition.asm",

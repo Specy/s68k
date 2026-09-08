@@ -12,10 +12,9 @@ Real M68K programs, kept here as the input side of the golden fixtures of
 2. `easy68k/` — the 3 EASy68K original programs. These do not assemble, and
    are not meant to; their fixtures are Diagnostics. On 1.4.2 they raised 88,
    138 and 64 errors respectively, most of them the old checker misreading a
-   label in column 1; they now raise 16, 4 and 20, and every one of those names
-   a feature s68k does not implement — macros, structured control, `simhalt`,
-   `rte`, `sr` — with one exception recorded below (`END START` against a Label
-   written `start`).
+   label in column 1; they now raise 15, 3 and 19, and every one of those names
+   a feature s68k does not implement — macros, structured control, `rte` — with
+   one exception recorded below (`END START` against a Label written `start`).
 
 The programs are inputs only. Nothing here is edited to suit s68k: a program
 that trips the Assembler is a finding, not a file to fix. The fixtures beside
@@ -171,6 +170,11 @@ language can produce the same bytes. Read it as the specification and
   field is the Labels, by name, and a Constant's value is visible in every
   instruction that uses it. Writing the whole symbol table instead is a
   deliberate change of the fixtures and is not one phase 1 made.
+  A name written in the label field **inside an `offset` region** is a Constant
+  and not a Label — its value is an offset into a structure, no line of the
+  program is laid out at it, and it may be negative — so it is not here either;
+  the symbol listing of the Program is where it is, and it says `constant`
+  (phase 2 of the design record, `Directives/offset.htm`).
 
 ### Conventions
 
@@ -205,13 +209,17 @@ nothing else. Everything is lowercase.
 that carries a size, whether or not the source wrote one — an instruction the
 source left unsized shows the default the Assembler chose, not a blank. The
 sized instructions are `move`, `movea`, `movem`, `add`, `adda`, `addi`, `addq`,
-`sub`, `suba`, `subi`, `subq`, `cmp`, `cmpa`, `cmpi`, `cmpm`, `and`, `andi`,
-`or`, `ori`, `eor`, `eori`, `not`, `neg`, `clr`, `tst`, `ext`/`extb`,
-`asl`/`asr`, `lsl`/`lsr` and `rol`/`ror`. The unsized ones carry no suffix at
-all: `moveq`, `divs`, `divu`, `muls`, `mulu`, `swap`, `exg`, `lea`, `pea`,
-`link`, `unlk`, `jmp`, `jsr`, `bsr`, `bra`, every `Bcc`, `DBcc` and `Scc`,
-`btst`, `bset`, `bclr`, `bchg`, `trap`, `rts` and `nop`. Branches are among them
-because the version these fixtures were taken from stores no branch size.
+`addx`, `sub`, `suba`, `subi`, `subq`, `subx`, `cmp`, `cmpa`, `cmpi`, `cmpm`,
+`and`, `andi`, `or`, `ori`, `eor`, `eori`, `not`, `neg`, `negx`, `clr`, `tst`,
+`ext`/`extb`, `asl`/`asr`, `lsl`/`lsr`, `rol`/`ror`, `roxl`/`roxr` and `movep`.
+The unsized ones carry no suffix at all: `moveq`, `divs`, `divu`, `muls`,
+`mulu`, `swap`, `exg`, `lea`, `pea`, `link`, `unlk`, `jmp`, `jsr`, `bsr`, `bra`,
+every `Bcc`, `DBcc` and `Scc`, `btst`, `bset`, `bclr`, `bchg`, `trap`, `rts`,
+`nop`, `simhalt`, `tas`, `chk`, `rtr`, `trapv`, `illegal`, `abcd`, `sbcd`,
+`nbcd` and every instruction that names a half of the status register (below).
+Branches are among them because the version these fixtures were taken from
+stores no branch size, and the three decimal instructions because a byte is the
+only size they have, the way `tas` has only a byte.
 
 **Registers.** `d0` to `d7` and `a0` to `a7`. The stack pointer is `a7`; `sp`
 never appears, so `move.l sp,a5` prints as `movea.l a7,a5`.
@@ -227,11 +235,32 @@ never appears, so `move.l sp,a5` prints as `movea.l a7,a5`.
 | Predecrement | | `-(a0)` |
 | Displacement | signed decimal displacement, then the base register | `-8(a6)`, `0(a6)` |
 | Index | signed decimal displacement, base, index register and its size | `4(a6,d1.w)`, `0(a0,a2.l)` |
-| Absolute | `$` and the address in hex | `$2000` |
+| Absolute | `$` and the address in hex, with no forced width | `$2000` |
+| PC-relative displacement | signed decimal displacement, then `(pc)` | `18(pc)`, `-6(pc)` |
+| PC-relative index | signed decimal displacement, `pc`, index register and its size | `14(pc,d1.w)`, `0(pc,a2.l)` |
+| The status register | `sr` | `move sr,d0` |
+| The condition codes | `ccr` | `move d0,ccr` |
 
 The displacement of a displacement or index Operand is always written, `0`
 included, which is what tells `0(a6)` apart from `(a6)`. An index Operand always
 carries its `.w` or `.l`, the default included.
+
+**A PC-relative Operand prints the displacement the Assembler worked out and
+not the address the source wrote.** The source writes the address it wants —
+`move.l data(pc),d0` — and the Assembler stores the distance from that
+instruction's extension word to it, which is the address of the instruction plus
+two, since an instruction is four bytes here. So the same line at `$1000` with
+`data` at `$1014` prints as `move.l 18(pc),d0`, and a `data` *behind* the
+instruction prints as a negative displacement. The displacement is signed
+decimal, like every other displacement, and it is what the Interpreter adds back
+to reach the address again. `(pc,d1.w)`, which writes no address at all, is a
+displacement of zero and prints as `0(pc,d1.w)`.
+
+**A forced address width is not printed.** `label.w` and `label.l` name the same
+address here, and the Program holds the address alone, so `move.l $1000.w,d0`
+and `move.l $1000.l,d0` both print as `move.l $1000,d0`. The `.w` form is range
+checked while it is assembled (EASy68K's "Absolute short addressing must be in
+the range -32768 through 32767") and leaves no trace after that.
 
 **Immediates** print as the unsigned value the Assembler stored, in hex, and it
 is the width the Assembler stored it at, not the size of the instruction, that
@@ -246,6 +275,31 @@ version these fixtures were taken from: the same `-1` truncates, so
 32-bit field, prints as `link a6,#$fffffffc`. `printer_rules` in
 `src/test/corpus.rs` holds `moveq #-1,d0` and `move.l #-1,d1` side by side.
 
+**The status register** is `sr` and the condition codes are `ccr`, and the four
+`move`s and the six immediates that name one carry **no size**: `ccr` is a byte
+and `sr` a word by definition, so the operand says the width and the line does
+not repeat it. `move.w d0,ccr` prints as `move d0,ccr`, `andi.b #$1f,ccr` as
+`andi #$1f,ccr` and `ori.w #$700,sr` as `ori #$700,sr`. The immediate of one of
+those is stored at the width of its destination — eight bits for `ccr`, sixteen
+for `sr` — and prints as that, where an ordinary immediate Operand is 32 bits.
+`usp` never appears: `move usp,an` is not implemented.
+
+**`movep`** prints its size, because a word and a long are a real choice, and
+the data register comes first when the bytes go to memory: `movep.w d0,4(a1)`
+and `movep.l 4(a1),d0`.
+
+**The extend-flag group** prints as it is written, source first: `addx.l d0,d1`
+and `addx.b -(a0),-(a1)`, `subx.w d0,d1`, `negx.l (a0)`, `abcd d0,d1`,
+`sbcd -(a0),-(a1)` and `nbcd (a0)`. `roxl` and `roxr` print like the other
+shifts, the memory form included, which normalises to an explicit count of one
+and the word size: `roxl (a0)` prints as `roxl.w #$1,(a0)`. `printer_rules` in
+`src/test/corpus.rs` writes all eleven lines, since no corpus program does.
+
+**`simhalt`** prints as `simhalt` and nothing else. It is a Directive and not a
+68000 instruction, and it is in `instructions` because it is an executable item
+of the Program: four bytes at its own address, which end the run
+(`Directives/simhalt.htm`, and phase 2 of the design record).
+
 **Branch and jump targets** print as absolute addresses, `$` and hex, because a
 Label is resolved to its address before the instruction is stored: `bra done`
 prints as `bra $1050`.
@@ -254,6 +308,12 @@ prints as `bra $1050`.
 `t`, `f`, `hi`, `ls`, `cc`, `cs`, `ne`, `eq`, `vc`, `vs`, `pl`, `mi`, `ge`,
 `lt`, `gt`, `le`. The aliases have no printed form of their own, so `bhs` prints
 as `bcc`, `blo` as `bcs`, `shs` as `scc`, `slo` as `scs` and `dbra` as `dbf`.
+
+A **`reg` register list** has no printed form of its own: `movem.l AllRegs,-(a7)`
+prints exactly as the list `AllRegs` stands for would, because the Assembler
+lowers it to the same mask. `printer_rules` in `src/test/corpus.rs` writes the
+same `movem` twice, once with a `reg` name and once with the list, and asserts
+that the two print the same line.
 
 **`movem` register lists** print in canonical form, `d0-d2/a0/a6`: lowest
 register first, every data register before any address register, two or more
@@ -278,7 +338,7 @@ stores them, and the fixture shows what it stored:
 | `add X,an` | `adda.<size> X,an` |
 | `sub X,an` | `suba.<size> X,an` |
 | `move X,an` | `movea.<size> X,an` |
-| `asl X` and the other one-operand shifts | `asl.w #$1,X`: an explicit count of one and the word size |
+| `asl X` and the other one-operand shifts, `roxl` and `roxr` included | `asl.w #$1,X`: an explicit count of one and the word size |
 | `ext.w dn`, `ext.l dn` | the same, `ext` printing with its destination size |
 | `extb.l dn` | `extb.l dn`, the byte to long form of the same instruction |
 | `dbra dn,label` | `dbf dn,$...` |
@@ -543,6 +603,11 @@ does not contain, and every item is deliberate.
 * **`btst #1,#$ff`** — `btst` only reads its destination, so it takes any data
   addressing mode, an immediate included; the checker held it to the same
   data-alterable set as `bset`, `bclr` and `bchg`, which do write theirs.
+* **The PC-relative modes and the forced widths of an address** — `label(pc)`,
+  `(d,pc)`, `label(pc,d1.w)`, `label.w` and `label.l`. The lexer of 1.4.2 had no
+  reading for `pc` at all, so none of the first three could be written; the
+  suffix on an address was read as an operand size and dropped. Phase 3's last
+  part implements all five, and "Operands" above says how they print.
 
 **Now refused, where 1.4.2 accepted:**
 
@@ -563,12 +628,16 @@ does not contain, and every item is deliberate.
 
 **Refused by both, and now said differently:** `trap #0` to `#14` ("s68k
 simulates one trap, `#15`, which is its input and output" rather than "Only
-implemented TRAP is 15 for IO"), `move sr,d2` and every other use of `sr`, `ccr`
-and `usp` ("`sr` is the status register, which s68k does not assemble yet"
-rather than "Invalid absolute"), and every real 68000 instruction s68k does not
-implement — `movep`, `addx`, `subx`, `negx`, `abcd`, `sbcd`, `nbcd`, `roxl`,
-`roxr`, `tas`, `rtr`, `rte`, `trapv`, `chk`, `illegal`, `stop`, `reset` — which
-are rows of the table carrying their reason rather than unknown words.
+implemented TRAP is 15 for IO"), `move usp,a0` ("`usp` is the user stack
+pointer, which s68k does not assemble" rather than "Invalid absolute"), and the
+three real 68000 instructions s68k does not implement — `rte`, `stop` and
+`reset` — which are rows of the table carrying their reason rather than unknown
+words. *(That list is corrected here rather than rewritten silently: it named
+`addx`, `subx`, `negx`, `abcd`, `sbcd`, `nbcd`, `roxl` and `roxr` as well, and
+phase 3's second half implemented all eight without updating the sentence.)*
+`movep`, `tas`, `rtr`, `trapv`, `chk` and `illegal` were in it until phase 3's
+first half, and so was every use of `sr` and `ccr`; the eight above went with
+its second half, and the PC-relative modes with its last.
 
 ### What the review of phase 1 changed in these fixtures, and why
 
@@ -603,6 +672,188 @@ and four moved, each because its case program grew a line: the source form of
 register), the two dropped `equ` leniencies under `value_expected`, `d8` under
 `undefined_symbol`, the data Directives under `wrong_operand_count`, and the
 Macro invocation under `unimplemented_operation`.
+
+### What phase 2's first half changed in these fixtures, and why
+
+Phase 2 implements the Directives the design record's table calls "implement
+with EASy68K meaning". Its first half is `reg`, `fail`, `simhalt` and the label
+rules of §2.6 of `docs/grammar.md`. **Two `-errors.snap` fixtures moved, one
+entry each, and no other fixture did**: all 30 `editor/` assembly and run
+snapshots are untouched, because no program the editor ships writes any of the
+three Directives.
+
+| Fixture | What moved |
+| --- | --- |
+| `clockDigital-errors` | the `unimplemented_operation` on `SIMHALT` (line 124) is gone: `simhalt` assembles now. Its other 14 entries are unchanged, and the file is down from 16 to 15 |
+| `graphicSound-errors` | the same, on line 206. Down from 4 to 3 |
+
+Both files still hold errors — their macros, structured control and `rte` — so
+neither builds a Program yet and neither has an assembly or a run fixture.
+`the_easy68k_originals_raise_only_what_is_not_implemented` in
+`src/test/diagnostics.rs` counts the same change by code and is what fails first
+if one of them moves again.
+
+**One EASy68K line forced a rule, and it is worth keeping.**
+`SIMHALT                 Halt Simulator` is `Directives/simhalt.htm`'s own usage
+line, `LABEL SIMHALT comment`; read as an ordinary Operation it would be the
+Operand `Halt` and the Comment `Simulator`, because the Operand field ends at
+the first whitespace that is not beside a comma (`docs/grammar.md` 1.5) and no
+rule of the parser may consult a Directive's arity (ADR 0003). `simhalt`
+therefore reads its whole Operand field as a Comment, which is what `page`,
+`list` and `nolist` already do. Without it, implementing the Directive would
+have *added* a `wrong_operand_count` to `graphicSound-errors`, which is the
+opposite of what ADR 0001 promises.
+
+In `tests/diagnostics/`, **six cases and six snapshots are new** and none moved:
+`label_not_allowed`, `register_list_expected`, `not_a_register_list`,
+`register_list_not_defined_yet` and `user_defined_error` are the new kinds, and
+`register_list_in_expression` — listed in `src/test/diagnostics.rs` as having no
+case since phase 1, because no File could define a Register list — has one now.
+`unreadable_file` is the one code left without a case, and phase 4's `include`
+owes it.
+
+### What phase 2's second half changed in these fixtures, and why
+
+Nothing. Phase 2's second half is `section` and `offset`, and **no fixture
+moved**: no program of `editor/` or of `easy68k/` writes either Directive, so
+the 30 assembly fixtures, the 30 run fixtures and the three `-errors.snap` are
+exactly what the first half left them. `grep -ni 'offset\|section' tests/corpus`
+finds the word only in this file.
+
+Two rules of the format above were written for Directives no corpus program
+uses, so that a fixture taken from a program that does use them is not a
+surprise: a name defined inside an `offset` region is a **Constant** and so is
+not in `labels` (the bullet in "Shape"), and a `section` never shows up in a
+fixture at all — an address is an address, whichever counter it came from, so
+the `memory` and `instructions` lists are sorted by address across all sixteen.
+The two examples of the EASy68K help are held as fixture-style tests instead of
+snapshots, in `src/test/corpus.rs`: `the_section_example_of_the_help` and
+`the_offset_stack_frame_example_of_the_help`, each with every address worked out
+by hand in the test rather than read back from the Assembler.
+
+One sentence of this file was left out of date by the first half and is
+corrected here rather than rewritten silently: the summary at the top said the
+three `easy68k/` programs "now raise 16, 4 and 20" and listed `simhalt` among
+the features they name. They raise **15, 3 and 20** since `simhalt` was
+implemented, and the list no longer holds it. The count "16, 4 and 20" under
+"What step 9's public API changed" is a statement about step 9 and is still
+true.
+
+In `tests/diagnostics/`, **one case and one snapshot are new** and none moved:
+`no_bytes_in_an_offset_region`, the one kind this half adds, whose case holds
+both the instruction and the `dc` that raise it. A section number outside 0–15
+is the existing `value_out_of_range`, named by its subject, and needs no case of
+its own.
+
+### What phase 3's first half changed in these fixtures, and why
+
+Phase 3's first half is the status register and the first group of missing
+instructions: `move` and `andi`/`ori`/`eori` to and from `sr` and `ccr`,
+`movep`, `tas`, `rtr`, `chk`, `trapv` and `illegal`. **One fixture moved, by one
+entry**, and it is the shrinking of an `-errors.snap` that the design record
+predicts as directives and instructions arrive:
+
+| Fixture | What moved |
+| --- | --- |
+| `mouseWindowSize-errors` | the one `unimplemented_addressing_mode` is gone. Line 66 of the program is `andi.w  #$00,SR` — "put CPU in User mode" — which now assembles, and does exactly what the design record says it does: the system byte is stored, and it has no effect, because s68k runs every program as supervisor. The file raises **19** entries where it raised 20, all of them `unimplemented_operation` but the `entry_point_case_mismatch` warning |
+
+The other two `-errors.snap` and all 30 `editor/` assembly and run fixtures are
+byte for byte what phase 2 left: no `editor/` program writes any instruction of
+this group — a grep over `editor/` for the six Mnemonics and for `,sr` and
+`,ccr` matches one line, the Label `movepipes` in `flappy-bird.x68`, which is a
+word and not a Mnemonic — and running them touches the new status register only
+through the condition codes they already set, whose bits and whose `flags` line
+are unchanged.
+
+Three rules of the printer above are new, and are exercised by `printer_rules`
+in `src/test/corpus.rs` rather than by any corpus program: `sr` and `ccr` as
+Operands, the no-size rule for the ten instructions that name one, and `movep`
+with its size and its direction. `usp` has no printed form at all, because
+`move usp,an` is still not implemented.
+
+In `tests/diagnostics/`, **no kind is new and two cases changed**:
+`unimplemented_addressing_mode.asm` traded its `move.w sr,d0` for
+`move.l usp,a0`, the one special register that is still not implemented, and
+`unimplemented_operation.asm` traded its `movep.w d0,4(a0)` for `roxl.w #1,d0`.
+Both files are cases for a code, and the lines in them had stopped raising it.
+The first also reads differently: `unimplemented_addressing_mode` carries a
+`planned` flag now, so `usp` is "which s68k does not assemble" and a PC-relative
+operand is "which s68k does not assemble **yet**" — there is not going to be a
+second stack pointer here, and the message no longer implies one.
+
+### What phase 3's second half changed in these fixtures, and why
+
+Phase 3's second half is the extend-flag and binary-coded-decimal group:
+`addx`, `subx`, `negx`, `roxl`, `roxr`, `abcd`, `sbcd` and `nbcd`. **No fixture
+moved at all.** No `editor/` program and none of the three `easy68k/` originals
+writes any of the eight Mnemonics — a grep over both directories matches
+nothing — so the 30 assembly and run fixtures and the three `-errors.snap` are
+byte for byte what phase 3's first half left them, at **15, 3 and 19** entries.
+
+Eleven printer lines are new and are exercised by `printer_rules` in
+`src/test/corpus.rs` rather than by any corpus program: the four sized
+instructions of the group, the three decimal ones that carry no size, and the
+two rotates, whose memory form normalises to a count of one and a word exactly
+as `asl (a0)` does.
+
+In `tests/diagnostics/`, **one kind is new and one case changed**:
+`invalid_operand_pair` is the message for the four instructions whose two Forms
+are two whole shapes (`addx d0,-(a1)` is wrong in neither operand on its own),
+and it has its own case; and `unimplemented_operation.asm` traded its
+`roxl.w #1,d0`, which now assembles, for `reset`, which is refused for good and
+whose reason carries no alternative — so the case covers a hint of `null` as
+well. `unimplemented_addressing_mode.asm` is untouched this time: the
+PC-relative modes and `usp` are what is left in it, and both are still refused.
+
+### What phase 3's last part changed in these fixtures, and why
+
+Phase 3's last part is the Addressing modes: PC-relative displacement and
+index, and the widths `label.w` and `label.l` force on an absolute address.
+**No `editor/` fixture moved** — no program the editor ships writes `(pc)` or a
+forced width, which a grep over `editor/` confirms — and the three `-errors.snap`
+moved by **two message lines**, which are the "yet" sweep below and not the
+modes:
+
+| Fixture | What moved |
+| --- | --- |
+| `clockDigital-errors` | two messages: "macros are not assembled **yet**" is "macros are not assembled", on the `macro` line and on the `DELAY` invocation. Its 15 entries, their codes, hints, lines and columns are otherwise what phase 3's first half left |
+| `graphicSound-errors`, `mouseWindowSize-errors` | nothing at all: their diagnostics are structured control, which never said "yet" |
+
+**Why the word went.** "Yet" says a later phase of this plan brings the feature
+(the implementation notes, phase 3), and the design record has macros with
+conditional assembly as "maybe a later milestone" rather than as a phase. Only
+`include` and `incbin` still say it, and phase 4 is where they arrive. The
+counts are unchanged: **15, 3 and 19**.
+
+Seven printer lines are new and are exercised by `printer_rules` in
+`src/test/corpus.rs` rather than by any corpus program: four PC-relative
+Operands (a displacement forwards, one backwards, an index, and the
+displacement-free `(pc,d1.w)`), and the two forced widths, which print as the
+address and nothing else. The two rules above them in "Operands" say what they
+mean.
+
+In `tests/diagnostics/`, **one kind is new and four cases changed**:
+
+* `invalid_address_width` is the new kind — `move.l table.b,d0` and
+  `bra done.s` force the *address* to a width no address has — and its case
+  holds both, with the three lines they were meant to be under them;
+* `unimplemented_addressing_mode.asm` loses its `move.l greeting(pc),d0`, which
+  now assembles, and is `usp` in both directions. The message also drops its
+  "yet": with the PC-relative modes implemented there was nothing left for the
+  `planned` flag to be true of, so the flag is gone and the sentence is
+  "`usp` is the user stack pointer, which s68k does not assemble";
+* `invalid_addressing_mode.asm` gains `move.l d0,greeting(pc)`, so that the new
+  suggestion — "a PC-relative operand is read and never written" — has a
+  snapshot to be read in, and its `divu` and `jmp` hints now offer `d(PC)` and
+  `d(PC,Xn)` among what those positions take, which is the point of
+  implementing them;
+* `value_out_of_range.asm` gains the two new subjects of that code, the distance
+  a `d(PC)` operand has to reach and an address forced to `.w`, because both are
+  sentences a student has to be able to read.
+
+`unimplemented_operation.snap`, `unterminated_macro_definition.snap` and
+`label_not_allowed.snap` each lost a "yet" from a message about macros or
+conditional assembly, and nothing else in them moved.
 
 ## Execution fixtures
 

@@ -119,6 +119,14 @@ export class Cpu {
     getRegisterValue(register: number, type: RegisterType): number {
         return this.getRegister(register, type).getLong()
     }
+
+    /**
+     * The whole status register as it was when the snapshot was taken; see
+     * {@link Interpreter.getSr}.
+     */
+    getSr(): number {
+        return this.cpu.wasm_get_sr()
+    }
 }
 
 export type InterruptHandler = (interrupt: Interrupt) => Promise<InterruptResult> | void
@@ -262,6 +270,20 @@ export class Interpreter {
 
     getFlagsAsBitfield(): number {
         return this.interpreter.wasm_get_flags_as_number()
+    }
+
+    /**
+     * The whole status register, `0x2700` before the program has run.
+     *
+     * Its high byte — trace, supervisor and the interrupt mask — is stored and
+     * readable and has no effect: s68k runs every program as supervisor, as
+     * EASy68K's simulator does. Its low byte is the condition codes as the
+     * processor numbers them (extend 16, negative 8, zero 4, overflow 2,
+     * carry 1), which is not the bitfield {@link Interpreter.getFlagsAsBitfield}
+     * answers.
+     */
+    getSr(): number {
+        return this.interpreter.wasm_get_sr()
     }
 
     readMemoryBytes(address: number, length: number): Uint8Array {
@@ -447,6 +469,10 @@ export type ExecutionStepInternal = {
     pc: number,
     old_ccr: string,
     new_ccr: string
+    /** The whole status register before the step; a number, not a bitfield name. */
+    old_sr: number,
+    /** The whole status register after it. */
+    new_sr: number,
     location?: Location
 }
 

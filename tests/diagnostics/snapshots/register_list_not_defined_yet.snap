@@ -1,0 +1,30 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/register_list_not_defined_yet.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "register_list_not_defined_yet",
+    "message": "`AllRegs` is a register list defined further down, and a register list has to be defined before it is used",
+    "hint": "move the `AllRegs reg …` line above this one",
+    "location": {
+      "file": "register_list_not_defined_yet.asm",
+      "line": 3,
+      "column": 12,
+      "endColumn": 19
+    },
+    "related": [
+      {
+        "location": {
+          "file": "register_list_not_defined_yet.asm",
+          "line": 4,
+          "column": 0,
+          "endColumn": 7
+        },
+        "message": "the register list is defined here"
+      }
+    ]
+  }
+]

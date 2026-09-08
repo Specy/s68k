@@ -25,12 +25,12 @@ use crate::assembler::source::Files;
 
 /// The codes no case in this directory can raise, and why.
 ///
-/// Both are raised by code that exists — the evaluator answers a `reg` Symbol
-/// in an Expression, and [`assemble`](crate::assembler::assemble) answers an
-/// Entry file it cannot read — and neither is reachable from a single File of
-/// source, which is all a case here is. Phase 2's `reg` and phase 4's
-/// `include` are what make them reachable, and each owes its case then.
-const WITHOUT_A_CASE: [&str; 2] = ["register_list_in_expression", "unreadable_file"];
+/// One is left: [`assemble`](crate::assembler::assemble) answers an Entry file
+/// it cannot read, and a case here is one File of source that is read by
+/// definition. Phase 4's `include` is what makes it reachable and owes its case
+/// then. `register_list_in_expression` was the other until phase 2's `reg`
+/// made a Register list something a File can define.
+const WITHOUT_A_CASE: [&str; 1] = ["unreadable_file"];
 
 /// Everything the Assembler finds in one File, in source order.
 ///
@@ -222,8 +222,10 @@ buffer: ds.b 8
 /// below, code by code, and not one of them is a syntax error:
 ///
 /// * `unimplemented_operation` — the Macro definition, every invocation of it,
-///   the conditional and structured-control keywords, `simhalt` and `rte`;
-/// * `unimplemented_addressing_mode` — `andi.w #$00,SR`;
+///   the conditional and structured-control keywords, and `rte`. `simhalt` was
+///   among them until phase 2 implemented it, and `andi.w #$00,SR` raised
+///   `unimplemented_addressing_mode` until phase 3 implemented the status
+///   register;
 /// * `bare_comment` — the once-a-File suggestion for EASy68K's own comment
 ///   field;
 /// * `entry_point_case_mismatch` — a **warning**: `mouseWindowSize.X68` writes
@@ -264,10 +266,9 @@ fn the_easy68k_originals_raise_only_what_is_not_implemented() {
     assert_eq!(
         found,
         vec![
-            "clockDigital.X68: bare_comment 1, unimplemented_operation 15",
-            "graphicSound.X68: bare_comment 1, unimplemented_operation 3",
-            "mouseWindowSize.X68: entry_point_case_mismatch 1, unimplemented_addressing_mode 1, \
-             unimplemented_operation 18",
+            "clockDigital.X68: bare_comment 1, unimplemented_operation 14",
+            "graphicSound.X68: bare_comment 1, unimplemented_operation 2",
+            "mouseWindowSize.X68: entry_point_case_mismatch 1, unimplemented_operation 18",
         ]
     );
 }

@@ -44,11 +44,15 @@
 //!
 //! # What is still to come
 //!
-//! Phase 2 owes the Directives that are still refused (`include`, `incbin`,
-//! `reg`, `fail`, `simhalt`, `offset`, `section`) and phase 4 the Files they
-//! read; phase 3 owes the instructions and the Addressing modes the table
-//! carries a "not implemented" for. Both are one module's worth of change
-//! from here: `layout::plan_directive` and the instruction table.
+//! Phase 4 owes `include` and `incbin` and the Files they read, which are the
+//! last two Directives that carry a "not implemented yet". Phase 3 is
+//! finished: every Addressing mode of the language is assembled, the
+//! PC-relative pair included (CONTEXT.md, "Addressing mode"). `rte`, `stop`, `reset`, `move usp,an`,
+//! macros with conditional assembly, `memory` and the structured-control
+//! keywords are the whole of what is refused with no "yet" in the sentence,
+//! each with the reason it carries in the instruction table or in
+//! [`layout`]'s own list. Real instruction sizes are the one decision the
+//! design record leaves open: an instruction is four bytes here.
 
 pub mod analyzer;
 pub mod ast;

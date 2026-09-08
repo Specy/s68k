@@ -31,19 +31,6 @@ expression: diagnostics
   },
   {
     "severity": "error",
-    "code": "unimplemented_addressing_mode",
-    "message": "`SR` is the status register, which s68k does not assemble yet",
-    "hint": "the condition codes are set by the instructions themselves; `seq d0` puts one of them in a register",
-    "location": {
-      "file": "mouseWindowSize.X68",
-      "line": 65,
-      "column": 17,
-      "endColumn": 19
-    },
-    "related": []
-  },
-  {
-    "severity": "error",
     "code": "unimplemented_operation",
     "message": "`if` is not implemented: structured control is not assembled here",
     "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",

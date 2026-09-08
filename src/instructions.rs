@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::assembler::instructions::encoded::{
     Condition, IndexRegister, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
-    TargetDirection,
+    TargetDirection, EXTENSION_WORD_OFFSET,
 };
 
 /// Which form of task 19 the program asked for, decided by D1.L: EASy68K reads

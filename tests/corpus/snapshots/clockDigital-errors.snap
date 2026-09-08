@@ -19,7 +19,7 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`macro` is not implemented: macros are not assembled yet",
+    "message": "`macro` is not implemented: macros are not assembled",
     "hint": "write the lines of the macro where it is used instead",
     "location": {
       "file": "clockDigital.X68",
@@ -71,7 +71,7 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled yet",
+    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled",
     "hint": "write the lines of the macro here instead",
     "location": {
       "file": "clockDigital.X68",
@@ -205,19 +205,6 @@ expression: diagnostics
       "line": 114,
       "column": 4,
       "endColumn": 8
-    },
-    "related": []
-  },
-  {
-    "severity": "error",
-    "code": "unimplemented_operation",
-    "message": "`simhalt` is not implemented: halting the simulator is not implemented yet",
-    "hint": "write `move.b #9,d0` and `trap #15` to end the program instead",
-    "location": {
-      "file": "clockDigital.X68",
-      "line": 123,
-      "column": 4,
-      "endColumn": 11
     },
     "related": []
   }

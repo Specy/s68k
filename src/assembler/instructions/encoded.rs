@@ -121,9 +121,44 @@ pub enum Operand {
         index: IndexRegister,
     },
 
+    /// `label(pc)`, as the displacement the Assembler worked out.
+    ///
+    /// The source writes an address and the Assembler stores the distance from
+    /// it to the extension word of this instruction, which is
+    /// [`EXTENSION_WORD_OFFSET`] bytes past the instruction's own address: the
+    /// Interpreter adds the two back together and reaches the address that was
+    /// written. The Program holds no encoded words, so this displacement is the
+    /// only thing that says where the operand was measured from.
+    PcDisplacement {
+        /// The displacement, sign extended from the sixteen bits the 68000
+        /// encodes it in.
+        offset: i32,
+    },
+    /// `label(pc,d1.w)`.
+    PcIndex {
+        /// The displacement, sign extended from the eight bits the 68000
+        /// encodes it in.
+        offset: i32,
+        /// The index register and the width it is read at.
+        index: IndexRegister,
+    },
+
     /// `$2000`, and a Label, which is its address by the time it gets here.
     Absolute(usize),
 }
+
+/// How far the extension word of an instruction sits from the instruction's
+/// own address, which is what a PC-relative Operand is measured from.
+///
+/// On a 68000 the displacement of `d16(PC)` is added to the address of the
+/// extension word that holds it, which is the word after the operation word:
+/// two bytes past the instruction. s68k stores no encoded words and every
+/// instruction is four bytes ([`INSTRUCTION_SIZE`](crate::assembler::layout::INSTRUCTION_SIZE)),
+/// so the same two bytes are all that is needed to make the pair round-trip:
+/// the Assembler works out `label - (address + 2)` and the Interpreter reads
+/// back `address + 2 + displacement`. Both sides read this constant, which is
+/// what keeps them the same arithmetic.
+pub const EXTENSION_WORD_OFFSET: i32 = 2;
 
 /*
 Thanks to:  https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/instructions.rs
@@ -250,6 +285,13 @@ pub enum Instruction {
     ADD(Operand, Operand, Size),
     /// `sub.<size> <ea>,Dn` and `sub.<size> Dn,<ea>`
     SUB(Operand, Operand, Size),
+    /// `addx.<size> Dy,Dx` and `addx.<size> -(Ay),-(Ax)`: the source, the
+    /// destination and the size. The extend flag is added in as well
+    /// (`Reference/68ks5e.htm`).
+    ADDX(Operand, Operand, Size),
+    /// `subx.<size> Dy,Dx` and `subx.<size> -(Ay),-(Ax)`, the same shape
+    /// (`Reference/68ks5v.htm`).
+    SUBX(Operand, Operand, Size),
     /// `addq.<size> #1-8,<ea>`
     ADDQ(u8, Operand, Size),
     /// `moveq #-128-127,Dn`
@@ -286,6 +328,19 @@ pub enum Instruction {
     PEA(Operand),
     /// `neg.<size> <ea>`
     NEG(Operand, Size),
+    /// `negx.<size> <ea>`: zero minus the operand minus the extend flag
+    /// (`Reference/68ks5q.htm`).
+    NEGX(Operand, Size),
+    /// `abcd Dy,Dx` and `abcd -(Ay),-(Ax)`: one byte of binary coded decimal,
+    /// plus the extend flag. It carries no size, because a byte is the only one
+    /// it has (`Reference/68ks8e.htm`).
+    ABCD(Operand, Operand),
+    /// `sbcd Dy,Dx` and `sbcd -(Ay),-(Ax)`, the same in subtraction
+    /// (`Reference/68ks8g.htm`).
+    SBCD(Operand, Operand),
+    /// `nbcd <ea>`: the tens complement of one byte, less the extend flag
+    /// (`Reference/68ks8f.htm`).
+    NBCD(Operand),
     /// `ext.w`, `ext.l` and `extb.l`: the register, the width read and the
     /// width written.
     EXT(RegisterOperand, Size, Size),
@@ -321,6 +376,10 @@ pub enum Instruction {
     ROd(Operand, Operand, ShiftDirection, Size),
     /// `lsl`/`lsr`, the same shape.
     LSd(Operand, Operand, ShiftDirection, Size),
+    /// `roxl`/`roxr`, the same shape again: the rotation goes through the
+    /// extend flag, which makes it 9, 17 or 33 bits wide
+    /// (`Reference/68ks7g.htm`).
+    ROXd(Operand, Operand, ShiftDirection, Size),
     /// `btst <bit>,<ea>`
     BTST(Operand, Operand),
     /// `bclr <bit>,<ea>`
@@ -335,8 +394,63 @@ pub enum Instruction {
     BSR(u32),
     /// `trap #0-15`; only `#15`, the I/O trap, is simulated.
     TRAP(u8),
+    /// `movep.<size>`, a byte-interleaved transfer between a data register and
+    /// every second byte of memory (`Reference/68ks4g.htm`).
+    MOVEP {
+        /// Which way the bytes go: `ToMemory` is `movep dx,d16(ay)`.
+        direction: TargetDirection,
+        /// `.w` (two bytes) or `.l` (four).
+        size: Size,
+        /// The data register the bytes come from or go to.
+        register: RegisterOperand,
+        /// The memory operand, always a displacement one.
+        target: Operand,
+    },
+    /// `move <ea>,ccr`: the low byte of a word sets the condition codes.
+    MOVEtoCCR(Operand),
+    /// `move ccr,<ea>`: the condition codes as a word, zero extended.
+    ///
+    /// The 68000 has no such instruction — it is the 68010's — and s68k
+    /// assembles it because the design record asks for `move` "to and from SR
+    /// and CCR" (the implementation notes, phase 3).
+    MOVEfromCCR(Operand),
+    /// `move <ea>,sr`: a word sets the whole status register.
+    MOVEtoSR(Operand),
+    /// `move sr,<ea>`: the whole status register as a word.
+    MOVEfromSR(Operand),
+    /// `andi #n,ccr`, a byte.
+    ANDItoCCR(u8),
+    /// `ori #n,ccr`, a byte.
+    ORItoCCR(u8),
+    /// `eori #n,ccr`, a byte.
+    EORItoCCR(u8),
+    /// `andi #n,sr`, a word.
+    ANDItoSR(u16),
+    /// `ori #n,sr`, a word.
+    ORItoSR(u16),
+    /// `eori #n,sr`, a word.
+    EORItoSR(u16),
+    /// `tas <ea>`: test a byte and set its top bit.
+    TAS(Operand),
+    /// `rtr`: pop the condition codes, then the return address.
+    RTR,
+    /// `chk <ea>,Dn`: end the run when the register is outside 0 to `<ea>`.
+    CHK(Operand, RegisterOperand),
+    /// `trapv`: end the run when the overflow flag is set.
+    TRAPV,
+    /// `illegal`: end the run, always.
+    ILLEGAL,
     /// `rts`
     RTS,
     /// `nop`
     NOP,
+    /// `simhalt`, the Directive that ends the run.
+    ///
+    /// It is not a 68000 instruction: EASy68K assembles it to the object code
+    /// `$FFFFFFFF`, which its simulator reads as "halt"
+    /// (`Directives/simhalt.htm`). Here it is an executable item of the Program
+    /// like any other, four bytes at its own address, and the Interpreter ends
+    /// the run on it with the status the Terminate task gives, modifying no
+    /// register.
+    SIMHALT,
 }

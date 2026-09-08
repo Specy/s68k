@@ -66,6 +66,38 @@ assert.equal(cpu.getRegisterValue(2, RegisterType.Data) | 0, -2, 'D2 should be s
 assert.equal(typeof interpreter.undo, 'function', 'undo should be exposed')
 
 // ---------------------------------------------------------------------------
+// The status register
+// ---------------------------------------------------------------------------
+
+// $2700 to start with, as in EASy68K: supervisor, interrupt mask 7, no
+// condition code set. The high byte is stored and has no effect.
+const statusRegister = S68k.assemble(`
+    ORG $1000
+START:
+    MOVE.W  #$2705, SR
+    MOVE.W  SR, D0
+    ANDI.B  #$00, CCR
+`)
+assert.deepEqual(statusRegister.diagnostics, [], 'the status register instructions assemble')
+const withStatus = new Interpreter(statusRegister.program)
+assert.equal(withStatus.getSr(), 0x2700, 'a program starts at $2700')
+withStatus.step()
+assert.equal(withStatus.getSr(), 0x2705, 'MOVE to SR writes the whole register')
+withStatus.step()
+assert.equal(
+    withStatus.getCpuSnapshot().getRegisterValue(0, RegisterType.Data) & 0xffff,
+    0x2705,
+    'MOVE from SR reads it back'
+)
+withStatus.step()
+assert.equal(withStatus.getSr(), 0x2700, 'ANDI to CCR clears the condition codes only')
+const undone = withStatus.undo()
+assert.equal(typeof undone.old_sr, 'number', 'an undone step carries the status register')
+assert.equal(withStatus.getSr(), 0x2705, 'and undo puts it back')
+withStatus.dispose()
+statusRegister.program.dispose()
+
+// ---------------------------------------------------------------------------
 // Locations: a breakpoint, and where the program counter is
 // ---------------------------------------------------------------------------
 
