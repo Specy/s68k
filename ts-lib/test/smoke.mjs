@@ -97,6 +97,29 @@ assert.equal(withStatus.getSr(), 0x2705, 'and undo puts it back')
 withStatus.dispose()
 statusRegister.program.dispose()
 
+// SIMHALT yields to the host without terminating the interpreter. Calling a
+// run or step method again resumes at the following instruction.
+const pausingAssembly = S68k.assemble(`
+    ORG $1000
+    MOVE.L #7,D0
+    SIMHALT
+    MOVE.L #9,D0
+`)
+assert.deepEqual(pausingAssembly.diagnostics, [])
+const pausing = new Interpreter(pausingAssembly.program)
+assert.equal(pausing.run(), InterpreterStatus.Paused, 'SIMHALT pauses the run')
+assert.equal(pausing.hasTerminated(), false, 'a paused program has not terminated')
+assert.equal(pausing.getPc(), 0x1008, 'the PC points after SIMHALT')
+assert.equal(
+    pausing.getCpuSnapshot().getRegisterValue(0, RegisterType.Data),
+    7,
+    'the instruction after SIMHALT has not run'
+)
+assert.equal(pausing.step(), InterpreterStatus.Terminated, 'step resumes after SIMHALT')
+assert.equal(pausing.getCpuSnapshot().getRegisterValue(0, RegisterType.Data), 9)
+pausing.dispose()
+pausingAssembly.program.dispose()
+
 // ---------------------------------------------------------------------------
 // Locations: a breakpoint, and where the program counter is
 // ---------------------------------------------------------------------------

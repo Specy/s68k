@@ -444,13 +444,13 @@ pub enum Instruction {
     RTS,
     /// `nop`
     NOP,
-    /// `simhalt`, the Directive that ends the run.
+    /// `simhalt`, the Directive that pauses the run.
     ///
     /// It is not a 68000 instruction: EASy68K assembles it to the object code
     /// `$FFFFFFFF`, which its simulator reads as "halt"
     /// (`Directives/simhalt.htm`). Here it is an executable item of the Program
-    /// like any other, four bytes at its own address, and the Interpreter ends
-    /// the run on it with the status the Terminate task gives, modifying no
-    /// register.
+    /// like any other, four bytes at its own address. The Interpreter pauses
+    /// after it without modifying a register and resumes at the following
+    /// instruction when it is run or stepped again.
     SIMHALT,
 }

@@ -52,6 +52,10 @@ if (program) {
 }
 ```
 
+`simhalt` makes an interpreter return `InterpreterStatus.Paused` without
+terminating it. Calling `step()`, `run()`, `runWithLimit()` or
+`runWithBreakpoints()` again resumes at the following instruction.
+
 A diagnostic is a plain object, and only an `error` stops the program from being
 built — a `warning` or a `suggestion` comes back with a program beside it:
 

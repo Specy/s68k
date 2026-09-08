@@ -517,6 +517,12 @@ pub enum InterpreterStatus {
     Interrupt,
     Terminated,
     TerminatedWithException,
+    /// Execution stopped at `simhalt`. Calling any run or step method resumes
+    /// at the following instruction.
+    ///
+    /// This variant is last because wasm-bindgen exports this enum as numbers;
+    /// keeping the older variants in place preserves their public values.
+    Paused,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -713,6 +719,8 @@ impl Interpreter {
             self.cpu.ccr.contains(Flags::Extend) as u8,
         ]
     }
+    /// Whether no execution can follow. A paused Interpreter has not
+    /// terminated and can be resumed by a run or step method.
     pub fn has_terminated(&self) -> bool {
         self.status == InterpreterStatus::Terminated
             || self.status == InterpreterStatus::TerminatedWithException
@@ -727,10 +735,25 @@ impl Interpreter {
         self.pc >= self.end_address
     }
 
+    /// Runs one instruction. If the Interpreter is paused, this resumes at the
+    /// instruction after the `simhalt` that paused it.
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
+        let old_status = self.status;
+        self.verify_can_run()?;
+        if old_status == InterpreterStatus::Paused {
+            if self.has_reached_bottom() {
+                self.set_status(InterpreterStatus::Terminated);
+                return Ok(self.status);
+            }
+            self.set_status(InterpreterStatus::Running);
+        }
         if self.keep_history {
-            self.debugger
-                .add_step(ExecutionStep::new(self.pc, self.cpu.ccr, self.cpu.get_sr()));
+            self.debugger.add_step(ExecutionStep::new(
+                self.pc,
+                self.cpu.ccr,
+                self.cpu.get_sr(),
+                old_status,
+            ));
         }
         self.current_instruction_address = self.pc;
         let instruction = self
@@ -759,7 +782,10 @@ impl Interpreter {
                 self.execute_instruction(&ins)?;
                 let status = self.get_status();
                 //TODO not sure if doing this before or after running the instruction
-                if self.has_reached_bottom() && *status != InterpreterStatus::Interrupt {
+                if self.has_reached_bottom()
+                    && *status != InterpreterStatus::Interrupt
+                    && *status != InterpreterStatus::Paused
+                {
                     self.set_status(InterpreterStatus::Terminated);
                 }
                 if self.keep_history {
@@ -838,6 +864,7 @@ impl Interpreter {
                         }
                     }
                 }
+                self.status = step.get_interpreter_status();
                 Ok(step)
             }
             None => Err(RuntimeError::Raw("No more steps to undo".to_string())),
@@ -1667,12 +1694,10 @@ impl Interpreter {
                 self.set_sp(new_sp);
             }
             Instruction::NOP => {}
-            // `simhalt` is the EASy68K directive that halts the simulator
-            // (`Directives/simhalt.htm`): the run ends where the Terminate task
-            // ends it and no register is touched. EASy68K's Pause button lets a
-            // run carry on from the instruction after it; s68k does not offer
-            // that, and a terminated Interpreter stays terminated.
-            Instruction::SIMHALT => self.set_status(InterpreterStatus::Terminated),
+            // `simhalt` pauses after the instruction and touches no register.
+            // `step` advances the PC before executing it, so the next run or
+            // step call resumes at the following instruction.
+            Instruction::SIMHALT => self.set_status(InterpreterStatus::Paused),
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
                 if self.keep_history {
@@ -2504,8 +2529,13 @@ impl Interpreter {
         }
         Ok(())
     }
+    /// Runs until `simhalt` pauses the Program, an interrupt needs an answer,
+    /// or the Program terminates. Calling it while paused resumes the Program.
     pub fn run(&mut self) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
+        if self.status == InterpreterStatus::Paused {
+            self.step()?;
+        }
         while self.status == InterpreterStatus::Running {
             self.step()?;
         }
@@ -2536,8 +2566,8 @@ impl Interpreter {
             .collect()
     }
 
-    /// Runs until a breakpoint, the end of the program, an interrupt or
-    /// `limit` instructions.
+    /// Runs until a breakpoint, `simhalt`, the end of the program, an interrupt
+    /// or `limit` instructions. Calling it while paused resumes the Program.
     ///
     /// A breakpoint on the line the program counter is already on does not stop
     /// it again, which is what makes "continue" from a breakpoint move.
@@ -2547,13 +2577,21 @@ impl Interpreter {
         limit: Option<usize>,
     ) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
+        if self.status == InterpreterStatus::Paused && self.has_reached_bottom() {
+            self.set_status(InterpreterStatus::Terminated);
+            return Ok(self.status);
+        }
+        let resuming_after_pause = self.status == InterpreterStatus::Paused;
         let addresses = self.get_breakpoint_addresses(breakpoints);
         let mut iterations = 0;
         let limit = limit.unwrap_or(usize::MAX);
         let mut limit_counter = limit;
-        while self.status == InterpreterStatus::Running && limit_counter > 0 {
+        while (self.status == InterpreterStatus::Running
+            || (resuming_after_pause && iterations == 0))
+            && limit_counter > 0
+        {
             //skip the first iteration if the pc is on a breakpoint
-            if iterations > 0 && addresses.contains(&self.pc) {
+            if (iterations > 0 || resuming_after_pause) && addresses.contains(&self.pc) {
                 self.status = InterpreterStatus::Running;
                 break;
             }
@@ -2570,9 +2608,19 @@ impl Interpreter {
     pub fn run_with_limit(&mut self, limit: usize) -> RuntimeResult<InterpreterStatus> {
         let mut limit_counter = limit;
         self.verify_can_run()?;
-        while self.status == InterpreterStatus::Running && limit_counter > 0 {
+        if self.status == InterpreterStatus::Paused && self.has_reached_bottom() {
+            self.set_status(InterpreterStatus::Terminated);
+            return Ok(self.status);
+        }
+        let resuming_after_pause = self.status == InterpreterStatus::Paused;
+        let mut iterations = 0;
+        while (self.status == InterpreterStatus::Running
+            || (resuming_after_pause && iterations == 0))
+            && limit_counter > 0
+        {
             self.step()?;
             limit_counter -= 1;
+            iterations += 1;
         }
         if limit_counter == 0 {
             return Err(RuntimeError::ExecutionLimit(limit));

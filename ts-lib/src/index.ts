@@ -212,7 +212,10 @@ export class Interpreter {
         this.interpreter.wasm_answer_interrupt(interruptResult)
     }
 
-    /** Run one instruction and answer the status it leaves the program in. */
+    /**
+     * Run one instruction and answer the resulting status. If `SIMHALT`
+     * paused the program, this resumes at the following instruction.
+     */
     step(): InterpreterStatus {
         return this.interpreter.wasm_step()
     }
@@ -357,17 +360,19 @@ export class Interpreter {
         return this.interpreter.wasm_has_reached_bottom()
     }
 
+    /** Run until the program pauses, requests an interrupt, or terminates. */
     run(): InterpreterStatus {
         return this.interpreter.wasm_run()
     }
 
+    /** Like {@link Interpreter.run}, but execute at most `limit` instructions. */
     runWithLimit(limit: number): InterpreterStatus {
         return this.interpreter.wasm_run_with_limit(limit)
     }
 
     /**
-     * Run until one of `breakpoints` is reached, the program ends, or `limit`
-     * instructions have run.
+     * Run until one of `breakpoints` is reached, the program pauses, requests
+     * an interrupt or ends, or `limit` instructions have run.
      *
      * A breakpoint is a line of a file: a breakpoint on a comment, a directive
      * or a label alone stops nothing, and neither does one on a line of a file

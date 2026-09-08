@@ -19,7 +19,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use crate::{
     assembler::{program::ProgramSymbol, source::Location, symbols::SymbolKind},
     instructions::{RegisterOperand, Size},
-    interpreter::Flags,
+    interpreter::{Flags, InterpreterStatus},
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,10 +70,15 @@ pub struct ExecutionStep {
     old_sr: u16,
     /// The whole status register after the step.
     new_sr: u16,
+    /// The Interpreter state before the step. This is internal history state:
+    /// undo needs it to put a resumed instruction back behind the pause it
+    /// crossed, but it is not part of the public ExecutionStep shape.
+    #[serde(skip)]
+    old_interpreter_status: InterpreterStatus,
 }
 
 impl ExecutionStep {
-    pub fn new(pc: usize, ccr: Flags, sr: u16) -> Self {
+    pub fn new(pc: usize, ccr: Flags, sr: u16, interpreter_status: InterpreterStatus) -> Self {
         Self {
             id: 0,
             mutations: vec![],
@@ -83,6 +88,7 @@ impl ExecutionStep {
             old_sr: sr,
             new_sr: sr,
             location: None,
+            old_interpreter_status: interpreter_status,
         }
     }
     pub fn add_mutation(&mut self, mutation: MutationOperation) {
@@ -109,6 +115,10 @@ impl ExecutionStep {
     /// The whole status register before the step, which is what undo restores.
     pub fn get_sr(&self) -> u16 {
         self.old_sr
+    }
+    /// The Interpreter state before the step, which is what undo restores.
+    pub fn get_interpreter_status(&self) -> InterpreterStatus {
+        self.old_interpreter_status
     }
     /// Where the instruction this step ran was written.
     pub fn get_location(&self) -> Option<&Location> {
@@ -192,6 +202,7 @@ impl Debugger {
             0,
             Flags::empty(),
             crate::interpreter::INITIAL_STATUS_REGISTER,
+            InterpreterStatus::Running,
         ));
         Self {
             next_step_id: 1,

@@ -64,7 +64,7 @@ of its size on a real 68000.
 | `end` | ends the program and, with an operand, sets the entry point |
 | `reg` | names a `movem` register list, `AllRegs reg d0-d7/a0-a6`, for `movem.l AllRegs,-(sp)` |
 | `fail` | reports the rest of the line as an error of the program's own; the assembly carries on |
-| `simhalt` | ends the run |
+| `simhalt` | pauses the run; the next `run` or `step` resumes at the following instruction |
 | `section` | switches between the sixteen location counters, 0 to 15, each going on from where it was left |
 | `offset` | opens a region that produces no bytes, where `ds` names the fields of a structure by their offsets; `org *` ends it |
 | `include` | assembles another file of the project here, as if its lines had been pasted at this line |

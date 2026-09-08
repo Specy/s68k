@@ -256,6 +256,15 @@ second:
         }
 
         #[test]
+        fn paused_is_appended_to_the_public_status_values() {
+            assert_eq!(InterpreterStatus::Running as u32, 0);
+            assert_eq!(InterpreterStatus::Interrupt as u32, 1);
+            assert_eq!(InterpreterStatus::Terminated as u32, 2);
+            assert_eq!(InterpreterStatus::TerminatedWithException as u32, 3);
+            assert_eq!(InterpreterStatus::Paused as u32, 4);
+        }
+
+        #[test]
         fn the_run_ends_after_the_last_instruction_and_not_on_it() {
             let mut interpreter = prepare("    org $1000\n    nop\n");
             assert!(!interpreter.has_reached_bottom());
@@ -266,46 +275,105 @@ second:
         }
 
         #[test]
-        fn simhalt_ends_the_run_where_it_stands_and_touches_no_register() {
+        fn simhalt_pauses_after_itself_and_step_resumes() {
             //`Directives/simhalt.htm`: the simulator halts and "No registers are
-            //modified". EASy68K's Pause button lets a run carry on from the
-            //instruction after it; s68k does not offer that, so the lines below
-            //it never run.
+            //modified". The next step continues at the instruction after it.
             let mut interpreter = prepare(
                 "    org $1000
     move.l #7,d0
     simhalt
     move.l #9,d0
+    nop
 ",
             );
             interpreter.step().expect("the move");
             let status = interpreter.step().expect("the simhalt");
-            assert_eq!(status, InterpreterStatus::Terminated);
-            assert!(interpreter.has_terminated());
+            assert_eq!(status, InterpreterStatus::Paused);
+            assert!(!interpreter.has_terminated());
             assert_eq!(
                 interpreter.get_cpu().get_register_values()[0],
                 7,
-                "simhalt modifies no register, and the line after it never runs"
+                "simhalt modifies no register"
             );
             assert_eq!(
                 interpreter.get_pc(),
                 0x1008,
                 "the program counter stops one past the simhalt"
             );
+            assert_eq!(
+                interpreter.step().expect("the step after the pause"),
+                InterpreterStatus::Running
+            );
+            assert_eq!(interpreter.get_cpu().get_register_values()[0], 9);
         }
 
         #[test]
-        fn simhalt_ends_a_run_as_the_terminate_task_does() {
+        fn run_resumes_after_each_simhalt() {
             let mut interpreter = prepare(
                 "    org $1000
-    bra done
-    move.l #9,d0
-done:
+    move.l #1,d0
     simhalt
+    move.l #2,d0
+    simhalt
+    move.l #3,d0
 ",
             );
-            interpreter.run().expect("the run to end on the simhalt");
-            assert_eq!(*interpreter.get_status(), InterpreterStatus::Terminated);
+            assert_eq!(
+                interpreter.run().expect("the first pause"),
+                InterpreterStatus::Paused
+            );
+            assert_eq!(interpreter.get_cpu().get_register_values()[0], 1);
+            assert_eq!(
+                interpreter.run().expect("the second pause"),
+                InterpreterStatus::Paused
+            );
+            assert_eq!(interpreter.get_cpu().get_register_values()[0], 2);
+            assert_eq!(
+                interpreter.run().expect("the end after the second resume"),
+                InterpreterStatus::Terminated
+            );
+            assert_eq!(interpreter.get_cpu().get_register_values()[0], 3);
+        }
+
+        #[test]
+        fn simhalt_at_the_bottom_pauses_until_resumed() {
+            let mut interpreter = prepare("    simhalt\n");
+            assert_eq!(
+                interpreter.step().expect("the simhalt"),
+                InterpreterStatus::Paused
+            );
+            assert!(interpreter.has_reached_bottom());
+            assert!(!interpreter.has_terminated());
+            assert_eq!(
+                interpreter
+                    .step()
+                    .expect("resume past the last instruction"),
+                InterpreterStatus::Terminated
+            );
+        }
+
+        #[test]
+        fn undo_restores_both_sides_of_a_pause() {
+            let mut interpreter = with_history(
+                "    org $1000
+    move.l #7,d0
+    simhalt
+    move.l #9,d0
+    nop
+",
+            );
+            interpreter.step().expect("the first move");
+            interpreter.step().expect("the simhalt");
+            interpreter.step().expect("the move after the pause");
+
+            interpreter.undo().expect("the resumed move");
+            assert_eq!(*interpreter.get_status(), InterpreterStatus::Paused);
+            assert_eq!(interpreter.get_pc(), 0x1008);
+            assert_eq!(interpreter.get_cpu().get_register_values()[0], 7);
+
+            interpreter.undo().expect("the simhalt");
+            assert_eq!(*interpreter.get_status(), InterpreterStatus::Running);
+            assert_eq!(interpreter.get_pc(), 0x1004);
         }
 
         #[test]
@@ -387,6 +455,63 @@ start:
                 .run_with_breakpoints(&breakpoints, None)
                 .expect("to run on");
             assert_eq!(status, InterpreterStatus::Terminated);
+        }
+
+        #[test]
+        fn a_breakpoint_after_simhalt_stops_before_the_resumed_instruction() {
+            let mut interpreter = prepare(
+                "    org $1000
+    move.l #1,d0
+    simhalt
+    move.l #2,d0
+    nop
+",
+            );
+            let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 3)];
+
+            assert_eq!(
+                interpreter
+                    .run_with_breakpoints(&breakpoints, None)
+                    .expect("the simhalt"),
+                InterpreterStatus::Paused
+            );
+            assert_eq!(interpreter.get_pc(), 0x1008);
+
+            assert_eq!(
+                interpreter
+                    .run_with_breakpoints(&breakpoints, None)
+                    .expect("the breakpoint after the pause"),
+                InterpreterStatus::Running
+            );
+            assert_eq!(interpreter.get_pc(), 0x1008);
+            assert_eq!(interpreter.get_cpu().get_register_values()[0], 1);
+
+            assert_eq!(
+                interpreter
+                    .run_with_breakpoints(&breakpoints, None)
+                    .expect("continue from the breakpoint"),
+                InterpreterStatus::Terminated
+            );
+            assert_eq!(interpreter.get_cpu().get_register_values()[0], 2);
+        }
+
+        #[test]
+        fn run_with_limit_resumes_after_simhalt() {
+            let mut interpreter = prepare(
+                "    simhalt
+    move.l #9,d0
+    nop
+",
+            );
+            assert_eq!(
+                interpreter.run_with_limit(3).expect("the pause"),
+                InterpreterStatus::Paused
+            );
+            assert_eq!(
+                interpreter.run_with_limit(3).expect("the resumed run"),
+                InterpreterStatus::Terminated
+            );
+            assert_eq!(interpreter.get_cpu().get_register_values()[0], 9);
         }
 
         #[test]

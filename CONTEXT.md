@@ -121,6 +121,11 @@ The assignment of an address to every line that produces bytes or an instruction
 What runs a Program: registers, memory, the step, run, undo and interrupt operations. It never reads source; it reaches the source only through each instruction's Location.
 _Avoid_: emulator (that is the asm-editor's object around it), simulator, CPU
 
+**Paused**:
+The Interpreter status after it executes `simhalt`. The Program counter already
+names the following instruction, and the next step or run operation resumes
+from it. A Paused Interpreter has not terminated.
+
 ### Diagnosis
 
 **Diagnostic**:

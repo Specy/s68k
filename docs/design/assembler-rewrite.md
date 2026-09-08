@@ -1706,18 +1706,18 @@ under "What phase 2's first half changed in these fixtures".
   It is the one Directive whose line reaches pass 2 for an instruction: the
   Layout's `analyze` answers `Some(Instruction::SIMHALT)` for it before the
   early return that leaves every other Directive to pass 1.
-- **Resuming after `simhalt` is not offered.** "Pressing the Pause button on the
-  toolbar will re-enable the simulator controls following a SIMHALT. Program
-  execution may be continued with the instruction following SIMHALT"
-  (`Directives/simhalt.htm`). s68k has no such control: `simhalt` ends the run
-  with the status the Terminate task gives, and a terminated Interpreter stays
-  terminated — `Interpreter::set_status` refuses to move it. Nor is EASy68K's
-  `*[sim68k]SIMHALT_OFF` comment, which turns the same object code back into a
-  Line F exception, read here: s68k assembles no `$FFFF` word a program could
-  reach by accident, so there is nothing to disable.
-- **`simhalt` modifies no register**, which is the help's own sentence, and the
-  Interpreter's arm is one call to `set_status`. The program counter stops one
-  past it, which is where the step had already left it.
+- **`simhalt` pauses and resumes.** "Pressing the Pause button on the toolbar
+  will re-enable the simulator controls following a SIMHALT. Program execution
+  may be continued with the instruction following SIMHALT"
+  (`Directives/simhalt.htm`). s68k reports `InterpreterStatus::Paused`; the
+  next `step`, `run`, `run_with_limit` or `run_with_breakpoints` call resumes
+  at the following instruction. EASy68K's `*[sim68k]SIMHALT_OFF` comment,
+  which turns the same object code back into a Line F exception, is not read
+  here: s68k assembles no `$FFFF` word a program could reach by accident, so
+  there is nothing to disable.
+- **`simhalt` modifies no register**, which is the help's own sentence. The
+  program counter stops one past it, which is where the step had already left
+  it, and the paused status keeps it there until the caller resumes.
 - **The Layout ignores `simhalt`'s Operand field**, and that rule was
   forced by an EASy68K original. `Directives/simhalt.htm`'s usage line is `LABEL
   SIMHALT comment` and line 206 of `tests/corpus/easy68k/graphicSound.X68` is
@@ -3319,4 +3319,3 @@ The s68k side of phase 4 was reviewed and passed with no blocker or major findin
 - **The command line prints a related `include` location's file twice, two different ways** — `cargo run -- /abs/path/proj/main.asm` on a diagnostic inside an included File prints `/abs/path/proj/main.asm:3:13: included from `main.asm``: the Location half is mapped back through `on_disk` to the path on disk, and the message half is the Project path the Assembler wrote. Both halves name the same file and neither is wrong, but the line reads as if two files were involved. Fix: In `print_diagnostic`, drop the file name from the related message when it equals the related Location's own file (print just "included from here"), or map the message's name through `on_disk` as well.
 - **One unwrapped line in the rewritten `simhalt` bullet of docs/grammar.md** — §2.6's rewritten bullet ends `...and\n  no rule of the parser may consult the Directive's arity (ADR 0003). It is the one Directive that produces an executable item: four` — about 115 columns where every other line of the file wraps near 80. It is the seam where finding 9's replacement text was spliced onto the old sentence. Fix: Re-wrap that paragraph to the file's width.
 - **The line budget still assembles 200,000 lines before it fires** — A deliberately multiplying Project (a chain of eight Files each including the next twice, bottoming out in a 3,000-line File) assembles for 1.86 s in a debug build before reporting one `include_too_deep` ("including `a7.m68k` would take this assembly past 200000 lines") and no Program. The backstop bounds the work, as ADR 0001 now says, but the bound is a full 200,000-line layout, and the stated m Fix: Nothing required. If it is ever measured to matter, the cheap half is to check the budget against the target's *transitive* size rather than its own line count, so a runaway is refused before the lines are laid out.
-

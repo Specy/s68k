@@ -443,7 +443,8 @@ fn as_text(bytes: Vec<u8>) -> String {
     }
 }
 
-/// Runs until the program terminates, answering every interrupt on the way.
+/// Runs until the program pauses or terminates, answering every interrupt on
+/// the way.
 fn run_to_the_end(interpreter: &mut Interpreter, on_disk: &BTreeMap<String, String>) {
     while !interpreter.has_terminated() {
         let status = match interpreter.run() {
@@ -462,6 +463,10 @@ fn run_to_the_end(interpreter: &mut Interpreter, on_disk: &BTreeMap<String, Stri
             }
             InterpreterStatus::TerminatedWithException => {
                 println!("Program Terminated with exception");
+            }
+            InterpreterStatus::Paused => {
+                println!("Program paused at ${:x}", interpreter.get_pc());
+                return;
             }
             _ => {}
         }
