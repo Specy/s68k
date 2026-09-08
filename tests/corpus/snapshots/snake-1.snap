@@ -1002,7 +1002,7 @@ expression: fixture
     },
     {
       "address": "$3012",
-      "zeroed": 15
+      "reserved": 122
     },
     {
       "address": "$308c",
@@ -1018,7 +1018,7 @@ expression: fixture
     },
     {
       "address": "$30b0",
-      "zeroed": 1
+      "reserved": 8
     }
   ],
   "labels": {

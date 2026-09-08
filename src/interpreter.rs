@@ -1,3 +1,19 @@
+//! The Interpreter: what runs an assembled
+//! [`Program`](crate::assembler::program).
+//!
+//! It holds the registers, the 16 MB of memory, the condition codes and the
+//! step, run, undo and interrupt operations, and it never reads source: it
+//! reaches a line only through the source [`Location`](crate::assembler::source)
+//! the Assembler stored with each instruction (CONTEXT.md, "Interpreter").
+//!
+//! A failure of a running program is a **runtime error** and not a Diagnostic:
+//! it is attributed to the instruction's Location and answered as an
+//! [`InterpreterStatus`], while everything the Assembler found was reported
+//! before the Program was built.
+//!
+//! Much of this module predates the assembler rewrite and its public items are
+//! not all documented yet; everything the rewrite added or changed is.
+
 /*
     Some of the implementations were inspired/taken from here, especially the complex flag handling and some mathematical operations
     https://github.com/transistorfet/moa/blob/main/emulator/cpus/m68k/src/execute.rs
@@ -10,16 +26,17 @@
     There needs to be added a way to only apply the side effect once, and then store the result to the register.
 */
 use core::panic;
-use std::{collections::HashMap, hash::Hash};
+use std::collections::HashSet;
 
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
+use crate::assembler::program::{AssembledInstruction, MemoryContent, Program};
+use crate::assembler::source::Location;
 use crate::debugger::PrettyStackFrame;
 use crate::instructions::TargetDirection;
 use crate::{
-    compiler::{Compiler, Directive, InstructionLine},
     debugger::{Debugger, ExecutionStep, MutationOperation},
     instructions::{
         Condition, Instruction, Interrupt, InterruptResult, KeyStateRequest, KeyStateResult,
@@ -383,10 +400,7 @@ pub enum RuntimeError {
     Raw(String),
     ExecutionLimit(usize),
     OutOfBounds(String),
-    AddressError {
-        address: usize,
-        size: Size
-    },
+    AddressError { address: usize, size: Size },
     DivisionByZero,
     IncorrectAddressingMode(String),
     Unimplemented,
@@ -424,77 +438,110 @@ impl Default for InterpreterOptions {
     }
 }
 
+/// A breakpoint: a Source line of a File, which is a [`Location`] without the
+/// columns.
+///
+/// A breakpoint is set on a whole line, so it carries no column; and it names
+/// its File, because a Program is assembled from several of them and two Files
+/// both have a line 12. The Interpreter turns them into the addresses of the
+/// instructions those lines assembled to.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Breakpoint {
+    /// The root-relative path of the File, as a [`Location`] writes it.
+    pub file: String,
+    /// 0-based index of the Source line.
+    pub line: usize,
+}
+
+impl Breakpoint {
+    /// A breakpoint on a line of a File.
+    pub fn new(file: impl Into<String>, line: usize) -> Self {
+        Self {
+            file: file.into(),
+            line,
+        }
+    }
+}
+
+/// Writes the initial contents of memory: every run of bytes the Program
+/// carries, and nothing where it only reserves room.
+///
+/// `ds` reserves memory and writes nothing to it (`Directives/ds.htm`), so a
+/// [`MemoryContent::Reserved`] run leaves the fill the Interpreter starts with
+/// where it is.
+fn prepare_memory(memory: &mut Memory, program: &Program) -> RuntimeResult<()> {
+    for run in program.memory() {
+        match &run.content {
+            MemoryContent::Bytes { bytes } => memory.write_bytes(run.address, bytes)?,
+            MemoryContent::Reserved { .. } => {}
+        }
+    }
+    Ok(())
+}
+
 #[wasm_bindgen]
 pub struct Interpreter {
     memory: Memory,
     cpu: Cpu,
     pc: usize,
-    program: Vec<InstructionLine>,
-    //i could store this in the memory instead of having a separate vector but it prevents accidental memory writes overriding the instruction map
-    //even tho this is more similar to how a real cpu works
-    instruction_map: Vec<usize>,
+    /// What is being run. The instructions are looked up in it by address
+    /// rather than kept in memory, which is less like a real processor and
+    /// keeps a wild write from rewriting the program.
+    program: Program,
     debugger: Debugger,
     keep_history: bool,
-    last_line_address: usize,
-    final_instruction_address: usize,
+    /// The address of the instruction being executed, and after the step, of
+    /// the one that has just run. It is 0 before the first step, when none has.
+    current_instruction_address: usize,
+    /// One past the last byte of the last instruction: a program counter that
+    /// reaches it has walked off the bottom of the program.
+    end_address: usize,
     current_interrupt: Option<Interrupt>,
     status: InterpreterStatus,
 }
 
 impl Interpreter {
-    pub fn new(compiled_program: Compiler, options: Option<InterpreterOptions>) -> Self {
+    /// An Interpreter ready to run `program` from its Entry point.
+    ///
+    /// Memory is the 16 MB of the address space, filled as [`Memory::new`]
+    /// leaves it and then written with the Program's initial contents; the
+    /// stack pointer starts at the top of it. A Program with no instruction in
+    /// it, or whose Entry point is past the last of them, is
+    /// [`Terminated`](InterpreterStatus::Terminated) before it starts.
+    pub fn new(program: Program, options: Option<InterpreterOptions>) -> Self {
         let sp = 0x01000000;
-        let start = compiled_program.get_start_address();
-        let end = compiled_program.get_final_instruction_address();
-        let program = compiled_program.get_instructions().clone();
-        let length = program.len();
-        let options = options.unwrap_or(InterpreterOptions {
-            keep_history: false,
-            history_size: 100,
-        });
-        let max_address = program.iter().map(|i| i.address).max().unwrap_or(0);
-        let mut instruction_map = vec![usize::MAX; max_address + 1];
-        for (index, ins) in program.iter().enumerate() {
-            //no need to check if the array is big enough because i already checked the max address
-            instruction_map[ins.address] = index;
+        let start = program.entry();
+        let end = program.end_address();
+        let options = options.unwrap_or_default();
+        let mut memory = Memory::new();
+        if let Err(e) = prepare_memory(&mut memory, &program) {
+            //the Layout refuses to place anything past the address space, so this cannot
+            //happen for a Program the Assembler built
+            panic!("Error preparing memory: {:?}", e);
         }
         let mut interpreter = Self {
-            memory: Memory::new(),
-            instruction_map,
+            memory,
             cpu: Cpu::new(),
             pc: start,
-            final_instruction_address: end,
-            program,
+            end_address: end,
             keep_history: options.keep_history,
-            last_line_address: 0,
-            debugger: Debugger::new(options.history_size, compiled_program.get_labels_map()),
+            current_instruction_address: 0,
+            debugger: Debugger::new(options.history_size, program.symbols()),
             current_interrupt: None,
-            status: if start <= end && length > 0 {
+            status: if !program.is_empty() && start < end {
                 InterpreterStatus::Running
             } else {
                 InterpreterStatus::Terminated
             },
+            program,
         };
         interpreter.cpu.a_reg[7].store_long(sp as u32);
-        match interpreter.prepare_memory(compiled_program.get_directives()) {
-            Ok(_) => interpreter,
-            Err(e) => panic!("Error preparing memory: {:?}", e),
-        }
+        interpreter
     }
 
-    //TODO could make this an external function and pass the memory in
-    fn prepare_memory(&mut self, directives: &Vec<Directive>) -> RuntimeResult<()> {
-        for directive in directives {
-            match &directive {
-                Directive::DC { data, address }
-                | Directive::DS { data, address }
-                | Directive::DCB { data, address } => {
-                    self.memory.write_bytes(*address, data)?;
-                }
-                Directive::Other => {}
-            };
-        }
-        Ok(())
+    /// The Program being run.
+    pub fn get_program(&self) -> &Program {
+        &self.program
     }
 
     #[inline(always)]
@@ -522,7 +569,7 @@ impl Interpreter {
             return;
         }
         match self.status {
-            InterpreterStatus::Terminated | InterpreterStatus::TerminatedWithException  => {
+            InterpreterStatus::Terminated | InterpreterStatus::TerminatedWithException => {
                 panic!("Cannot change status of terminated program")
             }
             _ => self.status = status,
@@ -542,9 +589,13 @@ impl Interpreter {
             || self.status == InterpreterStatus::TerminatedWithException
     }
 
+    /// Whether the program counter has walked off the bottom of the program.
+    ///
+    /// The program ends one byte past the last instruction, which is that
+    /// instruction's address plus the size stored with it.
     #[inline(always)]
     pub fn has_reached_bottom(&self) -> bool {
-        self.pc > self.final_instruction_address
+        self.pc >= self.end_address
     }
 
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
@@ -552,27 +603,30 @@ impl Interpreter {
             self.debugger
                 .add_step(ExecutionStep::new(self.pc, self.cpu.ccr));
         }
-        self.last_line_address = self.pc;
+        self.current_instruction_address = self.pc;
         let instruction = self
             .get_instruction_at(self.pc)
-            .map(|i| (i.parsed_line.line_index, i.instruction));
+            .map(|i| (i.size, i.instruction));
         match instruction {
             _ if self.status == InterpreterStatus::Terminated
                 || self.status == InterpreterStatus::TerminatedWithException =>
-                {
-                    Err(RuntimeError::Raw(
-                        "Attempt to run terminated program".to_string(),
-                    ))
-                }
+            {
+                Err(RuntimeError::Raw(
+                    "Attempt to run terminated program".to_string(),
+                ))
+            }
             _ if self.status == InterpreterStatus::Interrupt => Err(RuntimeError::Raw(
                 "Attempted to step while interrupt is pending".to_string(),
             )),
 
-            Some((index, ins)) => {
+            Some((size, ins)) => {
                 if self.keep_history {
-                    self.debugger.set_line(index);
+                    //cloned only when a history is kept: a Location holds the path of its File,
+                    //and a step nobody can undo should not pay for it
+                    let location = self.get_instruction_at(self.pc).map(|i| i.location.clone());
+                    self.debugger.set_location(location);
                 }
-                self.increment_pc(4);
+                self.increment_pc(size);
                 self.execute_instruction(&ins)?;
                 let status = self.get_status();
                 //TODO not sure if doing this before or after running the instruction
@@ -584,7 +638,7 @@ impl Interpreter {
                 }
                 Ok(self.status)
             }
-            None if self.pc < self.final_instruction_address => {
+            None if self.pc < self.end_address => {
                 self.set_status(InterpreterStatus::TerminatedWithException);
                 Err(RuntimeError::OutOfBounds(format!(
                     "Invalid instruction address: {}",
@@ -627,8 +681,10 @@ impl Interpreter {
                             self.memory.write_bytes(*address, old)?;
                         }
                         MutationOperation::PopCall { to, from } => {
-                            //try to get the address of the function that popped the call
-                            let ins = self.get_instruction_at(to.wrapping_sub(4));
+                            //try to get the address of the function that popped the call: the
+                            //return address is one past the instruction that called it, and each
+                            //instruction stores how many bytes it takes up
+                            let ins = self.program.instruction_ending_at(*to);
                             let callee_address = match ins {
                                 Some(ins) => match &ins.instruction {
                                     Instruction::BSR(address) => *address as usize,
@@ -684,9 +740,7 @@ impl Interpreter {
             | InterruptResult::SetTextCursorPosition
             | InterruptResult::SetSimulatorShortcuts
             | InterruptResult::DisplaySignedNumberInField
-            | InterruptResult::DisplayStringAndNumber
-
-            => {}
+            | InterruptResult::DisplayStringAndNumber => {}
             InterruptResult::ReadKeyboardString(str) => {
                 let safe_len = std::cmp::min(str.len(), 80);
                 let safe_str_bytes = &str.as_bytes()[..safe_len];
@@ -721,9 +775,9 @@ impl Interpreter {
             InterruptResult::GetKeyState(state) => {
                 let value = match state {
                     //EASy68K answers a key state with $FF or $00 in the byte the key code was given in
-                    KeyStateResult::Keys(keys) => keys
-                        .iter()
-                        .fold(0u32, |acc, down| (acc << 8) | if *down { 0xFF } else { 0x00 }),
+                    KeyStateResult::Keys(keys) => keys.iter().fold(0u32, |acc, down| {
+                        (acc << 8) | if *down { 0xFF } else { 0x00 }
+                    }),
                     KeyStateResult::LastKeys { up, down } => ((up as u32) << 16) | down as u32,
                 };
                 self.set_register_value(RegisterOperand::Data(1), value, Size::Long);
@@ -777,13 +831,22 @@ impl Interpreter {
     pub fn set_sp(&mut self, sp: usize) {
         self.set_register_value(RegisterOperand::Address(7), sp as u32, Size::Long);
     }
+    /// The instruction laid out at `address`, if one is.
     #[inline(always)]
-    pub fn get_instruction_at(&self, address: usize) -> Option<&InstructionLine> {
-        let index = self.instruction_map.get(address);
-        match index {
-            Some(index) => self.program.get(*index),
-            None => None,
-        }
+    pub fn get_instruction_at(&self, address: usize) -> Option<&AssembledInstruction> {
+        self.program.instruction_at(address)
+    }
+
+    /// Where in the source the instruction about to run was written, if the
+    /// program counter is on one.
+    ///
+    /// This is what the editor highlights while a program is stopped: a
+    /// [`Location`] and not a line number, because a Program is assembled from
+    /// several Files.
+    pub fn get_current_location(&self) -> Option<&Location> {
+        self.program
+            .instruction_at(self.pc)
+            .map(|instruction| &instruction.location)
     }
     pub fn get_current_interrupt(&self) -> RuntimeResult<Interrupt> {
         match &self.current_interrupt {
@@ -884,10 +947,8 @@ impl Interpreter {
                                 ));
                             }
                             Size::Word | Size::Long => {
-                                let dest_value = self.get_register_value(
-                                    RegisterOperand::Address(*reg),
-                                    Size::Long,
-                                );
+                                let dest_value = self
+                                    .get_register_value(RegisterOperand::Address(*reg), Size::Long);
                                 let (result, _) =
                                     overflowing_sub_sized(dest_value, *value as u32, Size::Long);
                                 self.set_register_value(
@@ -954,10 +1015,8 @@ impl Interpreter {
                                 ));
                             }
                             Size::Word | Size::Long => {
-                                let dest_value = self.get_register_value(
-                                    RegisterOperand::Address(*reg),
-                                    Size::Long,
-                                );
+                                let dest_value = self
+                                    .get_register_value(RegisterOperand::Address(*reg), Size::Long);
                                 let (result, _) =
                                     overflowing_add_sized(dest_value, *value as u32, Size::Long);
                                 self.set_register_value(
@@ -1012,7 +1071,9 @@ impl Interpreter {
                     });
                     self.debugger.add_mutation(MutationOperation::PushCall {
                         to: *address as usize,
-                        from: self.get_pc().wrapping_sub(4), //the pc is incremented before the instruction is executed
+                        //the pc is incremented before the instruction is executed, so the address
+                        //of the call is the one the step recorded
+                        from: self.current_instruction_address,
                     });
                 }
                 let new_sp = self
@@ -1021,11 +1082,8 @@ impl Interpreter {
                 self.set_sp(new_sp);
                 let caller_address = self.pc;
                 self.pc = *address as usize;
-                self.debugger.push_call(
-                    self.pc,
-                    caller_address,
-                    self.cpu.get_register_values(),
-                );
+                self.debugger
+                    .push_call(self.pc, caller_address, self.cpu.get_register_values());
             }
             Instruction::JSR(source) => {
                 let address = self.get_operand_address(source)?;
@@ -1039,7 +1097,7 @@ impl Interpreter {
                     });
                     self.debugger.add_mutation(MutationOperation::PushCall {
                         to: address as usize,
-                        from: self.get_pc().wrapping_sub(4), //pc is incremented before the instruction is executed
+                        from: self.current_instruction_address,
                     });
                 }
                 let new_sp = self
@@ -1386,7 +1444,7 @@ impl Interpreter {
                 if self.keep_history {
                     self.debugger.add_mutation(MutationOperation::PopCall {
                         to: value.get_long() as usize,
-                        from: self.get_pc().wrapping_sub(4), //pc is incremented before execution
+                        from: self.current_instruction_address,
                     })
                 }
                 self.set_sp(new_sp);
@@ -1397,14 +1455,13 @@ impl Interpreter {
                 15 => {
                     let task = self.cpu.d_reg[0].get_byte();
                     let interrupt = self.get_trap(task)?;
-                    
+
                     // TODO should i check if the interrupt is the Terminate one or if it terminated?
                     match &interrupt {
                         Interrupt::Terminate => self.set_status(InterpreterStatus::Terminated),
                         _ => self.set_status(InterpreterStatus::Interrupt),
                     }
                     self.current_interrupt = Some(interrupt);
-                
                 }
                 _ => {
                     return Err(RuntimeError::Raw(format!(
@@ -1577,7 +1634,9 @@ impl Interpreter {
         }
         self.memory.write_bytes(address, bytes)
     }
-    pub fn get_next_instruction(&self) -> Option<&InstructionLine> {
+    /// The instruction the program counter is on, which is the one the next
+    /// step will run.
+    pub fn get_next_instruction(&self) -> Option<&AssembledInstruction> {
         self.get_instruction_at(self.pc)
     }
     /// Tasks 13, 14, 17, 18 and 95 all take the string at (A1), terminated by a null byte.
@@ -1665,11 +1724,9 @@ impl Interpreter {
                 }
             }
             15 => {
-               /*
-               Display the unsigned number in D1.L converted to number base (2 through 36) contained in D2.B.
-    For example, to display D1.L in base16 put 16 in D2.B
- Values of D2.B outside the range 2 to 36 inclusive are ignored.
-                */
+                //Display the unsigned number in D1.L converted to the number base (2 through 36)
+                //in D2.B: to display D1.L in base 16, put 16 in D2.B. EASy68K ignores a base
+                //outside 2 to 36; this reports it instead.
                 let value = self.cpu.d_reg[1].get_long();
                 let base = self.cpu.d_reg[2].get_byte() as u32;
                 if !(2..=36).contains(&base) {
@@ -1678,7 +1735,10 @@ impl Interpreter {
                         base
                     )));
                 };
-                Ok(Interrupt::DisplayNumberInBase { value, base: base as u8 })
+                Ok(Interrupt::DisplayNumberInBase {
+                    value,
+                    base: base as u8,
+                })
             }
             17 | 18 => {
                 //tasks 14 and 3, or 14 and 4, in a single trap
@@ -1992,7 +2052,7 @@ impl Interpreter {
             Operand::PreIndirect(op) => {
                 //give priority to the getter to decrement
                 let address = if used == Used::Twice {
-                    //if it's used twice, just get the address 
+                    //if it's used twice, just get the address
                     //as it was already decremented by the get
                     self.get_a_reg_sized(*op, Size::Long)
                 } else {
@@ -2054,45 +2114,52 @@ impl Interpreter {
         Ok(self.status)
     }
 
-    pub fn generate_breakpoints_map(&self, breakpoint_lines: &Vec<usize>) -> Vec<bool> {
-        let breakpoints_lines_map = breakpoint_lines
+    /// The addresses the given breakpoints stop at: every instruction whose
+    /// Location is one of those (File, line) pairs.
+    ///
+    /// A line that assembled to several instructions contributes all of them,
+    /// and a line that assembled to none — a comment, a Directive, a Label on
+    /// its own — contributes nothing and stops the run nowhere.
+    pub fn get_breakpoint_addresses(&self, breakpoints: &[Breakpoint]) -> HashSet<usize> {
+        let lines: HashSet<(&str, usize)> = breakpoints
             .iter()
-            .map(|l| (l, true))
-            .collect::<HashMap<&usize, bool>>();
-        let breakpoints_addresses = self
-            .program
+            .map(|breakpoint| (breakpoint.file.as_str(), breakpoint.line))
+            .collect();
+        self.program
+            .instructions()
             .iter()
-            .filter(|l| breakpoints_lines_map.contains_key(&l.parsed_line.line_index))
-            .map(|l| l.address)
-            .collect::<Vec<usize>>();
-        let max = *breakpoints_addresses.iter().max().unwrap_or(&0);
-        let mut breakpoints_addresses_map = vec![false; max + 1];
-        for line in breakpoints_addresses {
-            breakpoints_addresses_map[line] = true
-        }
-        breakpoints_addresses_map
+            .filter(|instruction| {
+                lines.contains(&(
+                    instruction.location.file.as_str(),
+                    instruction.location.line,
+                ))
+            })
+            .map(|instruction| instruction.address)
+            .collect()
     }
+
+    /// Runs until a breakpoint, the end of the program, an interrupt or
+    /// `limit` instructions.
+    ///
+    /// A breakpoint on the line the program counter is already on does not stop
+    /// it again, which is what makes "continue" from a breakpoint move.
     pub fn run_with_breakpoints(
         &mut self,
-        breakpoint_lines: &Vec<usize>,
+        breakpoints: &[Breakpoint],
         limit: Option<usize>,
     ) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
-        let breakpoints_map = self.generate_breakpoints_map(breakpoint_lines);
+        let addresses = self.get_breakpoint_addresses(breakpoints);
         let mut iterations = 0;
         let limit = limit.unwrap_or(usize::MAX);
         let mut limit_counter = limit;
         while self.status == InterpreterStatus::Running && limit_counter > 0 {
-            match breakpoints_map.get(self.pc) {
-                //skip the first iteration if the pc is in a breakpoint
-                Some(true) if iterations > 0 => {
-                    self.status = InterpreterStatus::Running;
-                    break;
-                }
-                _ => {
-                    self.step()?;
-                }
+            //skip the first iteration if the pc is on a breakpoint
+            if iterations > 0 && addresses.contains(&self.pc) {
+                self.status = InterpreterStatus::Running;
+                break;
             }
+            self.step()?;
             limit_counter -= 1;
             iterations += 1;
         }
@@ -2100,7 +2167,6 @@ impl Interpreter {
             return Err(RuntimeError::ExecutionLimit(limit));
         }
         Ok(self.status)
-        //convert the line numbers to their corresponding addresses, to then save it in a vector to check if the current pc is in it
     }
 
     pub fn run_with_limit(&mut self, limit: usize) -> RuntimeResult<InterpreterStatus> {
@@ -2188,8 +2254,8 @@ impl Interpreter {
                     && self.get_flag(Flags::Overflow)
                     && !self.get_flag(Flags::Zero))
                     || (!self.get_flag(Flags::Negative)
-                    && !self.get_flag(Flags::Overflow)
-                    && !self.get_flag(Flags::Zero))
+                        && !self.get_flag(Flags::Overflow)
+                        && !self.get_flag(Flags::Zero))
             }
             Condition::LessThanOrEqual => {
                 self.get_flag(Flags::Zero)
@@ -2236,13 +2302,15 @@ impl Interpreter {
     pub fn wasm_can_undo(&self) -> bool {
         self.debugger.can_undo()
     }
-    pub fn wasm_step(&mut self) -> Result<JsValue, JsValue> {
-        match self.step() {
-            Ok(step) => Ok(serde_wasm_bindgen::to_value(&step).unwrap()),
-            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
-        }
-    }
-    pub fn wasm_step_only_status(&mut self) -> Result<InterpreterStatus, JsValue> {
+    /// Run one instruction and answer the status the Interpreter is left in.
+    ///
+    /// 1.4.2 serialised that status through `serde` and declared the result a
+    /// `[instruction, status]` pair, which it never was: the pair had gone
+    /// before the type was written, and a caller that destructured it read the
+    /// second character of the string `"Running"`. It answers the same
+    /// `InterpreterStatus` as [`wasm_run`](Interpreter::wasm_run) now, and
+    /// `wasm_step_only_status`, which existed to work around it, is gone.
+    pub fn wasm_step(&mut self) -> Result<InterpreterStatus, JsValue> {
         match self.step() {
             Ok(status) => Ok(status),
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
@@ -2254,12 +2322,16 @@ impl Interpreter {
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
     }
+    /// `breakpoints` is an array of `{ file, line }`, a Location without its
+    /// columns.
     pub fn wasm_run_with_breakpoints(
         &mut self,
-        breakpoint_lines: Vec<usize>,
+        breakpoints: JsValue,
         limit: Option<usize>,
     ) -> Result<InterpreterStatus, JsValue> {
-        match self.run_with_breakpoints(&breakpoint_lines, limit) {
+        let breakpoints: Vec<Breakpoint> = serde_wasm_bindgen::from_value(breakpoints)
+            .map_err(|e| JsValue::from_str(&format!("Invalid breakpoints: {}", e)))?;
+        match self.run_with_breakpoints(&breakpoints, limit) {
             Ok(status) => Ok(status),
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
@@ -2290,7 +2362,9 @@ impl Interpreter {
     }
 
     pub fn wasm_get_last_step_id(&self) -> f64 {
-        self.debugger.get_last_step().map_or(0, |step| step.get_id()) as f64
+        self.debugger
+            .get_last_step()
+            .map_or(0, |step| step.get_id()) as f64
     }
     pub fn wasm_get_status(&self) -> InterpreterStatus {
         *self.get_status()
@@ -2320,10 +2394,10 @@ impl Interpreter {
         self.get_condition_value(&cond)
     }
     pub fn wasm_get_last_line_address(&self) -> usize {
-        self.last_line_address
+        self.current_instruction_address
     }
     pub fn wasm_get_last_instruction(&self) -> JsValue {
-        self.wasm_get_instruction_at(self.last_line_address)
+        self.wasm_get_instruction_at(self.current_instruction_address)
     }
     pub fn wasm_get_register_value(&self, reg: JsValue, size: Size) -> Result<u32, String> {
         match serde_wasm_bindgen::from_value(reg.clone()) {
@@ -2376,10 +2450,12 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn wasm_get_current_line_index(&self) -> usize {
-        match self.get_instruction_at(self.pc) {
-            Some(ins) => ins.parsed_line.line_index,
-            None => 0,
+    /// The [`Location`] of the instruction the program counter is on, as
+    /// `{ file, line, column, end_column }`, or `null` when it is on none.
+    pub fn wasm_get_current_location(&self) -> JsValue {
+        match self.get_current_location() {
+            Some(location) => serde_wasm_bindgen::to_value(location).unwrap(),
+            None => JsValue::NULL,
         }
     }
 }

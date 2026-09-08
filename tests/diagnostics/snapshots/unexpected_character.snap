@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unexpected_character.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unexpected_character",
+    "message": "`?` cannot start anything here",
+    "hint": null,
+    "location": {
+      "file": "unexpected_character.asm",
+      "line": 1,
+      "column": 11,
+      "endColumn": 12
+    },
+    "related": []
+  }
+]

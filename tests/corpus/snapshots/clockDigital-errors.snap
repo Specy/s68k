@@ -1,94 +1,224 @@
 ---
 source: src/test/corpus.rs
-expression: messages
+expression: diagnostics
 ---
 [
-  "Error on line 17: Invalid number of arguments for directive equ",
-  "Error on line 20: Unknown instruction: \"delay\"",
-  "Error on line 21: Invalid absolute: Invalid decimal number or non existing label: d0traptask23, invalid digit found in string",
-  "Error on line 22: Invalid immediate: Invalid decimal number or non existing label: , cannot parse integer from empty string",
-  "Error on line 22: Invalid absolute: Invalid decimal number or non existing label: d1delayamount, invalid digit found in string",
-  "Error on line 24: Unknown instruction: \"endm\"",
-  "Error on line 30: Unknown instruction: \"start\"",
-  "Error on line 32: Invalid absolute: Invalid decimal number or non existing label: seconds, invalid digit found in string",
-  "Error on line 33: Invalid absolute: Invalid decimal number or non existing label: d0traptasktogetaddressofhardware, invalid digit found in string",
-  "Error on line 35: Invalid immediate: Invalid decimal number or non existing label: 15displayhardwarewindow, invalid digit found in string",
-  "Error on line 35: Invalid decimal number or non existing label: 15displayhardwarewindow, invalid digit found in string",
-  "Error on line 37: Invalid immediate: Invalid decimal number or non existing label: 15getaddressof7, invalid digit found in string",
-  "Error on line 37: Invalid decimal number or non existing label: 15getaddressof7, invalid digit found in string",
-  "Error on line 38: Invalid absolute: Invalid decimal number or non existing label: a4A4, invalid digit found in string",
-  "Error on line 40: Invalid immediate: Invalid decimal number or non existing label: 15getaddressofLEDs, invalid digit found in string",
-  "Error on line 40: Invalid decimal number or non existing label: 15getaddressofLEDs, invalid digit found in string",
-  "Error on line 41: Invalid absolute: Invalid decimal number or non existing label: a3A3, invalid digit found in string",
-  "Error on line 43: Unknown instruction: \"loop\"",
-  "Error on line 45: Unknown instruction: \"repeat\"",
-  "Error on line 46: Expected two operands, received \"3\"",
-  "Error on line 48: Unknown instruction: \"if\"",
-  "Error on line 49: Invalid immediate: Invalid decimal number or non existing label: NOON, invalid digit found in string",
-  "Error on line 49: Invalid absolute: Invalid decimal number or non existing label: d1time, invalid digit found in string",
-  "Error on line 50: Unknown instruction: \"endi\"",
-  "Error on line 52: Invalid absolute: Invalid decimal number or non existing label: d1converttoseconds, invalid digit found in string",
-  "Error on line 53: Invalid absolute: Invalid decimal number or non existing label: d4savefractionalseconds, invalid digit found in string",
-  "Error on line 54: Invalid absolute: Invalid decimal number or non existing label: d1discardfractionalseconds, invalid digit found in string",
-  "Error on line 55: Invalid absolute: Invalid decimal number or non existing label: d1converttominutes, invalid digit found in string",
-  "Error on line 58: Invalid absolute: Invalid decimal number or non existing label: d7d7, invalid digit found in string",
-  "Error on line 59: Invalid absolute: Invalid decimal number or non existing label: d1discardsecondsfromd1, invalid digit found in string",
-  "Error on line 60: Invalid absolute: Invalid decimal number or non existing label: d5d5, invalid digit found in string",
-  "Error on line 61: Invalid absolute: Invalid decimal number or non existing label: d1converttohours, invalid digit found in string",
-  "Error on line 64: Invalid absolute: Invalid decimal number or non existing label: d6minutesthishourtod6, invalid digit found in string",
-  "Error on line 65: Invalid absolute: Invalid decimal number or non existing label: d4displayfractionalsecondsonLEDs, invalid digit found in string",
-  "Error on line 67: Unknown instruction: \"delay\"",
-  "Error on line 68: Unknown instruction: \"until\"",
-  "Error on line 73: Invalid absolute: Invalid decimal number or non existing label: d5hoursas1, invalid digit found in string",
-  "Error on line 74: Unknown instruction: \"if\"",
-  "Error on line 75: Invalid absolute: Invalid decimal number or non existing label: d5hoursas1, invalid digit found in string",
-  "Error on line 76: Unknown instruction: \"endi\"",
-  "Error on line 77: Invalid absolute: Invalid decimal number or non existing label: d3blankdigitcode, invalid digit found in string",
-  "Error on line 78: Unknown instruction: \"if\"",
-  "Error on line 80: Invalid absolute: Invalid decimal number or non existing label: d3displaya1, invalid digit found in string",
-  "Error on line 81: Unknown instruction: \"endi\"",
-  "Error on line 82: Invalid absolute: Invalid decimal number or non existing label: segment7hour10sdigit, invalid digit found in string",
-  "Error on line 84: Invalid absolute: Invalid decimal number or non existing label: segment7hour1sdigit, invalid digit found in string",
-  "Error on line 87: Invalid absolute: Invalid decimal number or non existing label: d3dashdigitcode, invalid digit found in string",
-  "Error on line 88: Invalid absolute: Invalid decimal number or non existing label: segment7displaydash, invalid digit found in string",
-  "Error on line 93: Invalid absolute: Invalid decimal number or non existing label: d30digitcode, invalid digit found in string",
-  "Error on line 94: Unknown instruction: \"if\"",
-  "Error on line 96: Invalid absolute: Invalid decimal number or non existing label: d310, invalid digit found in string",
-  "Error on line 97: Unknown instruction: \"endi\"",
-  "Error on line 100: Invalid absolute: Invalid decimal number or non existing label: d31, invalid digit found in string",
-  "Error on line 104: Invalid absolute: Invalid decimal number or non existing label: d3dashdigitcode, invalid digit found in string",
-  "Error on line 105: Invalid absolute: Invalid decimal number or non existing label: segment7displaydash, invalid digit found in string",
-  "Error on line 108: Invalid absolute: Invalid decimal number or non existing label: secondssaveseconds, invalid digit found in string",
-  "Error on line 111: Invalid absolute: Invalid decimal number or non existing label: d30digitcode, invalid digit found in string",
-  "Error on line 112: Unknown instruction: \"if\"",
-  "Error on line 114: Invalid absolute: Invalid decimal number or non existing label: d310, invalid digit found in string",
-  "Error on line 115: Unknown instruction: \"endi\"",
-  "Error on line 118: Invalid absolute: Invalid decimal number or non existing label: d31, invalid digit found in string",
-  "Error on line 121: Invalid absolute: Invalid decimal number or non existing label: looploopforever, invalid digit found in string",
-  "Error on line 124: Unknown instruction: \"simhalt\"",
-  "Error on line 142: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 143: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 144: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 145: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 146: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 147: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 148: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 149: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 150: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 151: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 152: Invalid argument \"digit\" for directive dc at position 2",
-  "Error on line 152: Invalid argument \"off\" for directive dc at position 3",
-  "Error on line 153: Invalid argument \"dash\" for directive dc at position 2",
-  "Error on line 155: Too many arguments for label directive: \"ds\", expected 1, got 5",
-  "Error on line 164: Invalid absolute: Invalid decimal number or non existing label: a7, invalid digit found in string",
-  "Error on line 165: Invalid absolute: Invalid decimal number or non existing label: a0bitpatterntable, invalid digit found in string",
-  "Error on line 167: Invalid absolute: Invalid decimal number or non existing label: a2, invalid digit found in string",
-  "Error on line 169: Invalid operands for movem instruction, register list and memory, or memory and register list, received \"2\" operands",
-  "Error on line 178: Invalid absolute: Invalid decimal number or non existing label: a7, invalid digit found in string",
-  "Error on line 183: Invalid absolute: Invalid decimal number or non existing label: d0shifttenstoproperlocation, invalid digit found in string",
-  "Error on line 184: Invalid absolute: Invalid decimal number or non existing label: d1putunitsinproperlocation, invalid digit found in string",
-  "Error on line 185: Invalid absolute: Invalid decimal number or non existing label: d0combineunitswithtens, invalid digit found in string",
-  "Error on line 186: Invalid operands for movem instruction, register list and memory, or memory and register list, received \"2\" operands",
-  "Error on line 190: Unknown instruction: \"seconds\"",
-  "Error on line 192: Unknown instruction: \"end\""
+  {
+    "severity": "suggestion",
+    "code": "bare_comment",
+    "message": "this is EASy68K's comment field; s68k reads it as a comment",
+    "hint": "start comments with `;` to say so",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 16,
+      "column": 31,
+      "endColumn": 56
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`macro` is not implemented: macros are not assembled yet",
+    "hint": "write the lines of the macro where it is used instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 19,
+      "column": 9,
+      "endColumn": 14
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`repeat` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 44,
+      "column": 4,
+      "endColumn": 10
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`if` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 47,
+      "column": 8,
+      "endColumn": 10
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`endi` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 49,
+      "column": 8,
+      "endColumn": 12
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled yet",
+    "hint": "write the lines of the macro here instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 66,
+      "column": 8,
+      "endColumn": 13
+    },
+    "related": [
+      {
+        "location": {
+          "file": "clockDigital.X68",
+          "line": 19,
+          "column": 0,
+          "endColumn": 5
+        },
+        "message": "`DELAY` is defined here"
+      }
+    ]
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`until` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 67,
+      "column": 4,
+      "endColumn": 9
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`if` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 73,
+      "column": 4,
+      "endColumn": 6
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`endi` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 75,
+      "column": 4,
+      "endColumn": 8
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`if` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 77,
+      "column": 4,
+      "endColumn": 6
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`endi` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 80,
+      "column": 4,
+      "endColumn": 8
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`if` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 93,
+      "column": 4,
+      "endColumn": 6
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`endi` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 96,
+      "column": 4,
+      "endColumn": 8
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`if` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 111,
+      "column": 4,
+      "endColumn": 6
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`endi` is not implemented: structured control is not assembled here",
+    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 114,
+      "column": 4,
+      "endColumn": 8
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`simhalt` is not implemented: halting the simulator is not implemented yet",
+    "hint": "write `move.b #9,d0` and `trap #15` to end the program instead",
+    "location": {
+      "file": "clockDigital.X68",
+      "line": 123,
+      "column": 4,
+      "endColumn": 11
+    },
+    "related": []
+  }
 ]

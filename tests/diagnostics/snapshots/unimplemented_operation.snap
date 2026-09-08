@@ -1,0 +1,82 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unimplemented_operation.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames",
+    "hint": "write `rts` instead",
+    "location": {
+      "file": "unimplemented_operation.asm",
+      "line": 1,
+      "column": 4,
+      "endColumn": 7
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`movep` is not implemented: s68k has no byte-interleaved transfer yet",
+    "hint": "write `move.b` for each byte instead",
+    "location": {
+      "file": "unimplemented_operation.asm",
+      "line": 2,
+      "column": 4,
+      "endColumn": 9
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`trap #3` is not implemented: s68k simulates one trap, `#15`, which is its input and output",
+    "hint": "write `trap #15` instead",
+    "location": {
+      "file": "unimplemented_operation.asm",
+      "line": 3,
+      "column": 9,
+      "endColumn": 11
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`macro` is not implemented: macros are not assembled yet",
+    "hint": "write the lines of the macro where it is used instead",
+    "location": {
+      "file": "unimplemented_operation.asm",
+      "line": 7,
+      "column": 8,
+      "endColumn": 13
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled yet",
+    "hint": "write the lines of the macro here instead",
+    "location": {
+      "file": "unimplemented_operation.asm",
+      "line": 11,
+      "column": 4,
+      "endColumn": 9
+    },
+    "related": [
+      {
+        "location": {
+          "file": "unimplemented_operation.asm",
+          "line": 7,
+          "column": 0,
+          "endColumn": 5
+        },
+        "message": "`DELAY` is defined here"
+      }
+    ]
+  }
+]

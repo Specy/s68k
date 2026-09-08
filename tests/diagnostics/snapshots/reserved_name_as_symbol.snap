@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/reserved_name_as_symbol.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "reserved_name_as_symbol",
+    "message": "`d0` is a register name and cannot be a symbol",
+    "hint": "pick another name, such as `d0_value`",
+    "location": {
+      "file": "reserved_name_as_symbol.asm",
+      "line": 1,
+      "column": 0,
+      "endColumn": 2
+    },
+    "related": []
+  }
+]

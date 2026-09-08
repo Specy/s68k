@@ -1,36 +1,55 @@
+//! The Interpreter's own tests: small programs assembled and run, and the trap
+//! tasks answered one by one.
+//!
+//! Every one of them goes through [`assemble`], which is
+//! [`assemble_source`](crate::assembler::assemble_source), so a program that
+//! stops being accepted by the Assembler fails here with its Diagnostics rather
+//! than with a panic about a missing Program.
+
 use console::Term;
 
-use crate::compiler::Compiler;
+use crate::assembler::program::Program;
 use crate::instructions::{Interrupt, InterruptResult};
 use crate::interpreter::{Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError};
-use crate::S68k;
 
 //TODO add better tests for all cases and if i find bugs etc
 #[cfg(test)]
 mod tests {
-    use crate::interpreter;
-    use crate::test::test::lex_and_run;
+    use crate::instructions::{RegisterOperand, Size};
+    use crate::test::test::assemble_and_run;
 
+    /// `equ` names a value, and that value reaches the instruction that uses
+    /// it.
+    ///
+    /// This case read `ten equ #10` and `register_1 equ d1` until the rewrite:
+    /// 1.4.2's `equ` was a text substitution and could alias anything, the `#`
+    /// of an immediate and a register name included. A Constant is a value now
+    /// (ADR 0001, and CONTEXT.md, "Constant"), so the `#` belongs to the
+    /// instruction and a register cannot be aliased at all.
     #[test]
     fn equ_substitution() {
-        lex_and_run(
-            "ten equ #10
-register_1 equ d1
-	move.l ten, register_1
+        let interpreter = assemble_and_run(
+            "ten equ 10
+	move.l #ten, d1
 ",
+        );
+        assert_eq!(
+            interpreter.get_register_value(RegisterOperand::Data(1), Size::Long),
+            10
         );
     }
 
     #[test]
-    fn correctly_apply_pre_decrement(){
-        let interpreter = lex_and_run(
+    fn correctly_apply_pre_decrement() {
+        let interpreter = assemble_and_run(
             "move.l #$818081a8, d0
 move.l #$1000, a0
 move.l d0, (a0)+
 move.l d0, (a0)
 move.l #$0F0F, d0
 and.w d0, (a0)
-and.w d0, -(a0)");
+and.w d0, -(a0)",
+        );
         let expected: u32 = 0x81800108;
         let expected2: u32 = 0x010081A8;
         let mem = interpreter.get_memory();
@@ -40,7 +59,7 @@ and.w d0, -(a0)");
 
     #[test]
     fn test_addressing_modes() {
-        lex_and_run(
+        assemble_and_run(
             "
     move.l #10, d0
     move.l #$10, (a0)
@@ -62,7 +81,7 @@ and.w d0, -(a0)");
 
     #[test]
     fn test_case_insensitive_registers_in_indirect_displacement() {
-        lex_and_run(
+        assemble_and_run(
             "
     move.l #$1000, A0
     move.b #$42, $0(A0)
@@ -75,7 +94,7 @@ and.w d0, -(a0)");
 
     #[test]
     fn test_complex_code() {
-        lex_and_run(
+        assemble_and_run(
             "ORG    $1000
     length: dc.w 20
     arr: dc.w 11, 71, 26, 44, 45, 65, 86, 10, 36, 26, 87, 86, 99, 48, 70, 89, 68, 92, 47, 80
@@ -193,6 +212,219 @@ for_end:
     rts
 end:",
         );
+    }
+
+    /// What the Interpreter reads out of the Program: the Entry point, the
+    /// initial memory, the Location of every instruction and the breakpoints
+    /// and the call stack built on it.
+    mod running_a_program {
+        use crate::assembler::source::DEFAULT_ENTRY_PATH;
+        use crate::interpreter::{Breakpoint, Interpreter, InterpreterOptions, InterpreterStatus};
+        use crate::test::test::{assemble, prepare};
+
+        /// An Interpreter over `code` that keeps a history, which is what the
+        /// call stack and undo need.
+        fn with_history(code: &str) -> Interpreter {
+            Interpreter::new(
+                assemble(code),
+                Some(InterpreterOptions {
+                    keep_history: true,
+                    history_size: 100,
+                }),
+            )
+        }
+
+        #[test]
+        fn the_run_starts_at_the_entry_point() {
+            //`end` names it, and it is read even though it is written last
+            let interpreter = prepare(
+                "    org $1000
+first:
+    nop
+second:
+    nop
+    end second
+",
+            );
+            assert_eq!(interpreter.get_pc(), 0x1004);
+        }
+
+        #[test]
+        fn a_program_with_no_instruction_has_already_terminated() {
+            let interpreter = prepare("* nothing but a comment\n");
+            assert!(interpreter.has_terminated());
+        }
+
+        #[test]
+        fn the_run_ends_after_the_last_instruction_and_not_on_it() {
+            let mut interpreter = prepare("    org $1000\n    nop\n");
+            assert!(!interpreter.has_reached_bottom());
+            interpreter.step().expect("one instruction to run");
+            assert_eq!(interpreter.get_pc(), 0x1004, "the nop is 4 bytes wide");
+            assert!(interpreter.has_reached_bottom());
+            assert!(interpreter.has_terminated());
+        }
+
+        #[test]
+        fn dc_writes_its_bytes_and_ds_only_reserves_room() {
+            //`ds` stores nothing (`Directives/ds.htm`), so its block keeps the fill memory
+            //starts with; 1.4.2 wrote zeros over an eighth of it
+            let interpreter = prepare(
+                "    org $1000
+    nop
+    org $2000
+data: dc.b 1,2
+room: ds.b 4
+",
+            );
+            let memory = interpreter.get_memory();
+            assert_eq!(memory.read_byte(0x2000).unwrap(), 1);
+            assert_eq!(memory.read_byte(0x2001).unwrap(), 2);
+            assert_eq!(
+                (0x2002..0x2006)
+                    .map(|address| memory.read_byte(address).unwrap())
+                    .collect::<Vec<u8>>(),
+                vec![255, 255, 255, 255]
+            );
+        }
+
+        #[test]
+        fn the_current_location_is_the_line_the_instruction_was_written_on() {
+            let mut interpreter = prepare(
+                "    org $1000
+    nop
+    nop
+",
+            );
+            let location = interpreter
+                .get_current_location()
+                .expect("the pc is on an instruction")
+                .clone();
+            assert_eq!(location.file, DEFAULT_ENTRY_PATH);
+            assert_eq!(location.line, 1);
+            interpreter.step().expect("one instruction to run");
+            assert_eq!(interpreter.get_current_location().map(|l| l.line), Some(2));
+            interpreter.step().expect("one instruction to run");
+            assert_eq!(
+                interpreter.get_current_location(),
+                None,
+                "past the last instruction there is no line to point at"
+            );
+        }
+
+        const THREE_MOVES: &str = "    org $1000
+start:
+    move.l #1,d0
+    move.l #2,d0
+    move.l #3,d0
+";
+
+        #[test]
+        fn a_breakpoint_stops_the_run_on_the_line_it_names() {
+            let mut interpreter = prepare(THREE_MOVES);
+            let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 3)];
+            assert_eq!(
+                interpreter.get_breakpoint_addresses(&breakpoints),
+                [0x1004].into_iter().collect()
+            );
+            interpreter
+                .run_with_breakpoints(&breakpoints, None)
+                .expect("to stop at the breakpoint");
+            assert_eq!(interpreter.get_pc(), 0x1004);
+            assert_eq!(
+                interpreter.get_register_value(
+                    crate::instructions::RegisterOperand::Data(0),
+                    crate::instructions::Size::Long
+                ),
+                1,
+                "the line the breakpoint is on has not run yet"
+            );
+            //a breakpoint on the line the pc is already on does not stop it again
+            let status = interpreter
+                .run_with_breakpoints(&breakpoints, None)
+                .expect("to run on");
+            assert_eq!(status, InterpreterStatus::Terminated);
+        }
+
+        #[test]
+        fn a_breakpoint_of_another_file_stops_nothing() {
+            let mut interpreter = prepare(THREE_MOVES);
+            let breakpoints = [Breakpoint::new("other.m68k", 3)];
+            assert!(interpreter
+                .get_breakpoint_addresses(&breakpoints)
+                .is_empty());
+            let status = interpreter
+                .run_with_breakpoints(&breakpoints, None)
+                .expect("to run to the end");
+            assert_eq!(status, InterpreterStatus::Terminated);
+        }
+
+        #[test]
+        fn a_breakpoint_on_a_line_that_assembles_to_nothing_stops_nothing() {
+            let interpreter = prepare(THREE_MOVES);
+            //line 0 is the `org` and line 1 is the Label on its own
+            for line in [0, 1] {
+                assert!(interpreter
+                    .get_breakpoint_addresses(&[Breakpoint::new(DEFAULT_ENTRY_PATH, line)])
+                    .is_empty());
+            }
+        }
+
+        const A_CALL: &str = "    org $1000
+start:
+    bsr routine
+    move.b #9,d0
+    trap #15
+routine:
+    rts
+";
+
+        #[test]
+        fn the_call_stack_names_the_label_of_the_routine_and_where_it_was_written() {
+            let mut interpreter = with_history(A_CALL);
+            interpreter.step().expect("the bsr to run");
+            let stack = interpreter.get_pretty_call_stack();
+            assert_eq!(stack.len(), 1);
+            assert_eq!(stack[0].label_name, "routine");
+            assert_eq!(stack[0].label_address, 0x100c);
+            let location = stack[0]
+                .label_location
+                .as_ref()
+                .expect("the Label of a routine has a Location");
+            assert_eq!(location.file, DEFAULT_ENTRY_PATH);
+            assert_eq!(location.line, 5);
+            assert_eq!(
+                stack[0].source_address, 0x1004,
+                "the frame remembers where the call returns to, one past the `bsr`"
+            );
+        }
+
+        #[test]
+        fn undo_puts_the_call_stack_back() {
+            let mut interpreter = with_history(A_CALL);
+            interpreter.step().expect("the bsr to run");
+            assert_eq!(interpreter.get_pc(), 0x100c);
+            interpreter.step().expect("the rts to run");
+            assert_eq!(interpreter.get_pc(), 0x1004);
+            assert!(interpreter.get_pretty_call_stack().is_empty());
+            //the return address is one past the instruction that called, and finding that
+            //instruction again is what the stored size is for
+            interpreter.undo().expect("the rts to be undone");
+            let stack = interpreter.get_pretty_call_stack();
+            assert_eq!(stack.len(), 1);
+            assert_eq!(stack[0].label_name, "routine");
+        }
+
+        #[test]
+        fn an_undone_step_carries_the_location_of_the_line_that_ran() {
+            let mut interpreter = with_history("    org $1000\n    nop\n    nop\n");
+            interpreter.step().expect("one instruction to run");
+            let step = interpreter.undo().expect("a step to undo");
+            let location = step.get_location().expect("a step ran an instruction");
+            assert_eq!(location.file, DEFAULT_ENTRY_PATH);
+            assert_eq!(location.line, 1);
+            assert_eq!(interpreter.get_pc(), 0x1000, "undo goes back to the line");
+        }
     }
 
     mod traps {
@@ -534,20 +766,35 @@ start:
     }
 }
 
-const TEST_LIMIT: usize = 3000000;
-
-fn lex_and_run(code: &str) -> Interpreter {
-    let options = InterpreterOptions {
-        keep_history: false,
-        ..Default::default()
-    };
-    let s68k = S68k::new(code.to_string());
-    let errors = s68k.semantic_check();
-    if !errors.is_empty() {
-        panic!("Code did not pass semantic check: {:#?}", errors);
+/// Assembles `code`, panicking with every error the Assembler found if it does
+/// not build.
+fn assemble(code: &str) -> Program {
+    let assembly = crate::assembler::assemble_source(code);
+    match assembly.program {
+        Some(program) => program,
+        None => {
+            let errors: Vec<String> = assembly
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.is_error())
+                .map(|diagnostic| {
+                    format!(
+                        "line {}: {} [{}]",
+                        diagnostic.location.line + 1,
+                        diagnostic.message(),
+                        diagnostic.code()
+                    )
+                })
+                .collect();
+            panic!("Code did not assemble:\n{}", errors.join("\n"))
+        }
     }
-    let compiled = s68k.compile().expect("To compile correctly");
-    let mut interpreter = s68k.create_interpreter(compiled, Some(options));
+}
+
+/// Assembles `code` and runs it to the end, answering every interrupt from the
+/// terminal.
+fn assemble_and_run(code: &str) -> Interpreter {
+    let mut interpreter = prepare(code);
     while !interpreter.has_terminated() {
         let status = interpreter.run().unwrap();
         match status {
@@ -564,7 +811,8 @@ fn lex_and_run(code: &str) -> Interpreter {
     interpreter
 }
 
-/// Runs a program, answering every interrupt with the given closure, and returns the interrupts it raised.
+/// Assembles and runs a program, answering every interrupt with the given
+/// closure, and returns the interrupts it raised.
 fn run_answering(
     code: &str,
     mut answer: impl FnMut(&Interrupt) -> InterruptResult,
@@ -583,7 +831,8 @@ fn run_answering(
     (interpreter, interrupts)
 }
 
-/// Runs a program that is expected to stop with a runtime error, and returns its message.
+/// Assembles and runs a program that is expected to stop with a runtime error,
+/// and returns its message.
 fn run_expecting_error(code: &str) -> String {
     let mut interpreter = prepare(code);
     match interpreter.run() {
@@ -592,29 +841,16 @@ fn run_expecting_error(code: &str) -> String {
     }
 }
 
+/// An Interpreter ready to run `code`, with no history kept.
 fn prepare(code: &str) -> Interpreter {
     let options = InterpreterOptions {
         keep_history: false,
         ..Default::default()
     };
-    let s68k = S68k::new(code.to_string());
-    let errors = s68k.semantic_check();
-    if !errors.is_empty() {
-        panic!("Code did not pass semantic check: {:#?}", errors);
-    }
-    let compiled = s68k.compile().expect("To compile correctly");
-    s68k.create_interpreter(compiled, Some(options))
+    Interpreter::new(assemble(code), Some(options))
 }
 
-fn lex_only(code: &str) -> Compiler {
-    let s68k = S68k::new(code.to_string());
-    let errors = s68k.semantic_check();
-    if !errors.is_empty() {
-        panic!("Code did not pass semantic check: {:#?}", errors);
-    }
-    s68k.compile().expect("To compile correctly")
-}
-
+/// Answers one interrupt from the terminal, the way the command line does.
 fn handle_interrupt(interpreter: &mut Interpreter, interrupt: &Interrupt) {
     match interrupt {
         Interrupt::DisplayNumber(number) => {

@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/undefined_symbol.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "undefined_symbol",
+    "message": "`cont` is not defined",
+    "hint": "did you mean `count`?",
+    "location": {
+      "file": "undefined_symbol.asm",
+      "line": 2,
+      "column": 12,
+      "endColumn": 16
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "undefined_symbol",
+    "message": "`d8` is not defined",
+    "hint": "the data registers are `d0` to `d7` and the address registers `a0` to `a7`",
+    "location": {
+      "file": "undefined_symbol.asm",
+      "line": 5,
+      "column": 11,
+      "endColumn": 13
+    },
+    "related": []
+  }
+]

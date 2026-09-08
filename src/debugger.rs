@@ -1,10 +1,24 @@
-use std::collections::{HashMap, LinkedList};
+//! The Debugger: what the Interpreter records while it runs.
+//!
+//! One [`ExecutionStep`] per instruction — the mutations it made, the program
+//! counter and the condition codes before it — which is what undo replays
+//! backwards, and the call stack of [`CallStackFrame`]s that `jsr` and `bsr`
+//! push. Every step and every frame carries the
+//! source [`Location`](crate::assembler::source) of the line it came from,
+//! which is what the editor highlights.
+//!
+//! The `StackFrame` TypeScript declaration lives in `src/ts_types.rs` with the
+//! other hand-written declarations. Items older than the assembler rewrite are
+//! not all documented yet.
+
+use std::collections::{BTreeMap, HashMap, LinkedList};
 
 use serde::Serialize;
-use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
+use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
-    instructions::{Label, RegisterOperand, Size},
+    assembler::{program::ProgramSymbol, source::Location, symbols::SymbolKind},
+    instructions::{RegisterOperand, Size},
     interpreter::Flags,
 };
 
@@ -40,7 +54,9 @@ pub struct ExecutionStep {
     id: u64,
     mutations: Vec<MutationOperation>,
     pc: usize,
-    line: usize,
+    /// Where the instruction that ran was written, or `None` when the program
+    /// counter was on no instruction.
+    location: Option<Location>,
     old_ccr: Flags,
     new_ccr: Flags,
 }
@@ -53,7 +69,7 @@ impl ExecutionStep {
             pc,
             old_ccr: ccr,
             new_ccr: ccr,
-            line: 0,
+            location: None,
         }
     }
     pub fn add_mutation(&mut self, mutation: MutationOperation) {
@@ -77,8 +93,14 @@ impl ExecutionStep {
     pub fn get_ccr(&self) -> Flags {
         self.old_ccr
     }
+    /// Where the instruction this step ran was written.
+    pub fn get_location(&self) -> Option<&Location> {
+        self.location.as_ref()
+    }
 }
 
+/// One frame of the call stack: a subroutine that has been entered and not yet
+/// returned from.
 pub struct CallStackFrame {
     address: usize,
     source_address: usize,
@@ -104,20 +126,48 @@ impl CallStackFrame {
     }
 }
 
+/// A Label of the Program, as the call stack names it: which routine a frame
+/// is in, and where that name was written.
+#[derive(Debug, Clone, Serialize)]
+pub struct StackFrameLabel {
+    /// The full name, so a Local label reads as `start:loop`.
+    pub name: String,
+    /// The address the Label stands for.
+    pub address: usize,
+    /// Where the Label was written.
+    pub location: Location,
+}
+
 #[wasm_bindgen]
 pub struct Debugger {
     next_step_id: u64,
     history: LinkedList<ExecutionStep>,
     history_size: usize,
     call_stack: Vec<CallStackFrame>,
-    labels: HashMap<usize, Label>,
+    labels: HashMap<usize, StackFrameLabel>,
 }
 
 impl Debugger {
-    pub fn new(history_size: usize, labels: &HashMap<String, Label>) -> Self {
-        let mut labels_map = HashMap::new();
-        for label in labels.values() {
-            labels_map.insert(label.address, label.clone());
+    /// A Debugger that keeps `history_size` steps and names the addresses of
+    /// `symbols` in the call stack.
+    ///
+    /// Only Labels are names of addresses; a Constant, a Variable and a
+    /// Register list name values and never a frame. Where two Labels sit on one
+    /// address the first in name order is the one the call stack shows, so that
+    /// it always shows the same one.
+    pub fn new(history_size: usize, symbols: &BTreeMap<String, ProgramSymbol>) -> Self {
+        let mut labels_map: HashMap<usize, StackFrameLabel> = HashMap::new();
+        for symbol in symbols.values() {
+            if symbol.kind != SymbolKind::Label {
+                continue;
+            }
+            labels_map
+                .entry(symbol.value as usize)
+                .or_insert_with(|| StackFrameLabel {
+                    name: symbol.name.clone(),
+                    address: symbol.value as usize,
+                    location: symbol.location.clone(),
+                });
         }
         //include at least one to prevent initialization errors when pushing history state
         let mut empty_history: LinkedList<ExecutionStep> = LinkedList::new();
@@ -159,11 +209,12 @@ impl Debugger {
             .expect("No history to set new ccr")
             .new_ccr = ccr;
     }
-    pub fn set_line(&mut self, line: usize) {
+    /// Records where the instruction of the step being executed was written.
+    pub fn set_location(&mut self, location: Option<Location>) {
         self.history
             .back_mut()
-            .expect("No history to set new line")
-            .line = line;
+            .expect("No history to set the location of")
+            .location = location;
     }
     pub fn add_mutation(&mut self, operation: MutationOperation) {
         self.history
@@ -181,7 +232,9 @@ impl Debugger {
             .take(count)
             .collect::<Vec<&ExecutionStep>>()
     }
-    pub fn get_labels(&self) -> &HashMap<usize, Label> {
+    /// The Label of every address that has one, which is what the call stack
+    /// reads.
+    pub fn get_labels(&self) -> &HashMap<usize, StackFrameLabel> {
         &self.labels
     }
     pub fn push_call(&mut self, address: usize, source_address: usize, registers: Vec<u32>) {
@@ -191,6 +244,8 @@ impl Debugger {
     pub fn pop_call(&mut self) -> Option<CallStackFrame> {
         self.call_stack.pop()
     }
+    /// The call stack as the editor shows it: every frame with the name of the
+    /// routine it is in and where that name was written.
     pub fn to_call_stack(&self) -> Vec<PrettyStackFrame> {
         self.call_stack
             .iter()
@@ -201,7 +256,7 @@ impl Debugger {
                     registers: frame.registers.clone(),
                     label_name: label.name.clone(),
                     label_address: label.address,
-                    label_line: label.line,
+                    label_location: Some(label.location.clone()),
                 },
                 None => PrettyStackFrame {
                     address: frame.address,
@@ -209,31 +264,30 @@ impl Debugger {
                     registers: frame.registers.clone(),
                     label_name: "Unknown".to_string(),
                     label_address: frame.address,
-                    label_line: 0,
+                    label_location: None,
                 },
             })
             .collect()
     }
 }
 
+/// One frame of the call stack, with the Label of the routine it is in already
+/// looked up: what the editor draws.
 #[derive(Debug, Clone, Serialize)]
 pub struct PrettyStackFrame {
+    /// The address the routine starts at.
     pub address: usize,
+    /// The address of the instruction that called it.
     pub source_address: usize,
+    /// The registers as they were when it was called.
     pub registers: Vec<u32>,
 
+    /// The name of the Label on `address`, or `Unknown` when it has none.
     pub label_name: String,
+    /// The address that Label stands for.
     pub label_address: usize,
-    pub label_line: usize,
+    /// Where that Label was written, or `None` when the address has none.
+    pub label_location: Option<Location>,
 }
-#[wasm_bindgen(typescript_custom_section)]
-const TS_STACK_FRAME: &'static str = r#"
-export interface StackFrame {
-    address: number,
-    source_address: number,
-    registers: number[],
-    label_name: string,
-    label_address: number,
-    label_line: number
-}
-"#;
+// The TypeScript declaration of this shape is `IStackFrame` in
+// `src/ts_types.rs`, with every other hand-written one.

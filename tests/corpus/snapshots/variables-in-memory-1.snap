@@ -37,7 +37,7 @@ expression: fixture
     },
     {
       "address": "$2008",
-      "zeroed": 0
+      "reserved": 4
     }
   ],
   "labels": {

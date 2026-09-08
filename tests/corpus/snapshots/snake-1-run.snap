@@ -28,5 +28,5 @@ expression: fixture
   "pc": "$11c4",
   "flags": "X:0 N:0 Z:0 V:0 C:0",
   "output": "Game over. Score: 1",
-  "memory": "ebaece9526b2b522"
+  "memory": "647602dc06188cae"
 }

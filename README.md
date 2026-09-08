@@ -1,5 +1,5 @@
 # s68k
-A rust interpreter for m68k with semantic checker.
+A rust assembler and interpreter for m68k, written to explain what is wrong with a program as much as to run it.
 It compiles to WASM to be used with javascript and node.js, [available on npm](https://www.npmjs.com/package/@specy/s68k)
 
 [Typescript library documentation](https://github.com/Specy/s68k/wiki)
@@ -19,19 +19,21 @@ The purpose of this interpreter is to help people learn the basics of assembly, 
 It wasn't made to assemble or make actual programs, but marely as a learning tool, don't expect 100% accuracy.
 
 ## Workings
-The interpreter is split into individual modules that can be used standalone for different purposes
-- Lexer: Has the job to identify the lines and the operands, it does no semantic or syntax checks and is left as generic as possible so that whatever piece of text can be fed to it and parsed
+There are two halves, and one thing between them.
 
-- Semantic checker: Has the job to verify that the lexed code is valid and reports useful errors so that the programmer can quickly identify and solve the problem. An example of this is the addressing modes, it will see if the addressing mode is not available, and hint which are. The semantic checker does not do further parsing
+- **Assembler** (`src/assembler/`): the whole front end. It reads the source files of a project, starting from the entry file, and answers with the diagnostics it found and, when none of them is an error, with the program. Inside it are a tokenizer and a hand-written parser (one line at a time, with a Pratt loop for expressions), a symbol table, an expression evaluator, the layout that gives every line an address, one instruction table that says which addressing modes and sizes each mnemonic takes, and an analyzer that measures every line against it. Assembly does not stop at the first mistake: every phase adds to one list of diagnostics, so a student sees the whole build.
 
-- Program compiler : it will do a final processing of the code, like converting the immediates to actual numbers, registers to indexes, prepares the table of labels, etc... 
+- **Program**: what the assembler produces — the assembled instructions with their addresses, sizes and source locations, the initial contents of memory, the symbols, and the entry point. It is the only thing the interpreter reads, and it holds no source: an instruction reaches its line through its location, which is a file, a line and a range of columns.
 
-- Interpreter: Fed the compiled program, it will execute the program, it also allows to step through it, in the future breakpoints will be added
+- **Interpreter** (`src/interpreter.rs`): fed a program, it runs it — registers, memory, flags, one step at a time or to the end, with an undo history, breakpoints given as `{ file, line }`, and a call stack that names the routine each frame is in. It never reads source and never parses anything.
 
-**WARNING** as this is only an interpreter, it does not load the actual program in memory so it won't be possible to modify instructions at runtime, it is left to the developer to align the memory correctly as every instruction is 4bytes long and the the PC is incremented by 4 everytime.
+A **diagnostic** carries a severity (error, warning or suggestion), a stable code, a message, often a hint saying what to write instead, and related locations; it is what the editor draws and what this project is really about.
+
+**WARNING** as this is only an interpreter, it does not load the actual program in memory so it won't be possible to modify instructions at runtime. Every instruction takes four bytes whatever it would encode to on a real 68000; the program counter steps by the size stored with each instruction, so real sizes are a change to the assembler alone.
 
 ## Might do
-- Assembler
+- Real instruction encodings, and a program loaded in memory
+- Macros and conditional assembly
 - Disassembler (unlikely)
 
 
@@ -40,33 +42,50 @@ The interpreter is split into individual modules that can be used standalone for
 |------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu, addq, subq, addi, subi                                                                                                                                              |
 | Comparison             | tst, cmp, cmpi, cmpa, cmpm                                                                                                                                                                                        |
-| Branching and jumping  | bcc, bcs, beq, bne, blt, ble, bgt, bge, bls, bhi, bpl, bmi, blo, bhs, bvc, bvs, bsr, bra, jsr, rts, dbcc, dbcs, dbeq, dbne, dbge, dbgt, dble, dbls, dblt, dbhi, dbmi, dbpl, dbvc, dbvs, dbf, dbt, dbhs, dblo dbra |
+| Branching and jumping  | bcc, bcs, beq, bne, blt, ble, bgt, bge, bls, bhi, bpl, bmi, blo, bhs, bvc, bvs, bsr, bra, jmp, jsr, rts, dbcc, dbcs, dbeq, dbne, dbge, dbgt, dble, dbls, dblt, dbhi, dbmi, dbpl, dbvc, dbvs, dbf, dbt, dbhs, dblo, dbra |
 | Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st, shs, slo                                                                                                                            |
-| Bitwise                | not, or, and, eor, lsl, lsr, asr, asl, rol, ror, btst, bclr, bchg, bset                                                                                                                                           |
-| Other                  | clr, exg, neg, ext, swap, move, link, unl, lea, pea, moveq, movea, movem                                                                                                                                          |
-| Interrupt              | trap #15, with implemented interrupts from 0 to 7                                                                                                                                                                 |
+| Bitwise                | not, or, ori, and, andi, eor, eori, lsl, lsr, asr, asl, rol, ror, btst, bclr, bchg, bset                                                                                                                          |
+| Other                  | clr, exg, neg, ext, extb, swap, move, link, unlk, lea, pea, moveq, movea, movem, nop                                                                                                                              |
+| Interrupt              | trap #15, with the I/O tasks 0-9, 11, 13-15, 17-20, 23, 24 and 33 in `d0`, the mouse task 61 and the graphics tasks 80-96 (the `Interrupt` enum of `src/instructions.rs` is the list)                             |
 
 ## Supported directives
-equ, org, dc, ds, dcb
+| Directive | What it does |
+|---|---|
+| `org` | sets the address the following lines are laid out at, forwards or backwards; the default origin is `$1000` |
+| `equ` | names a value, once |
+| `set` | names a value that may be set again; each use sees the latest definition above it |
+| `dc` | puts values or a string in memory, `.b`, `.w` or `.l` |
+| `dcb` | puts a value in memory a given number of times |
+| `ds` | reserves room and writes nothing to it |
+| `end` | ends the program and, with an operand, sets the entry point |
+| `opt`, `list`, `nolist`, `page` | accepted and ignored: they are about the listing file, which there is none of |
+
+Without `end`, the entry point is a label named `START`, and failing that the first instruction. There is no `even`: `ds.w 0` is EASy68K's idiom for it, and word and long data align on their own anyway.
+
+`include`, `incbin`, `reg`, `fail`, `simhalt`, `offset` and `section` are recognised and refused with a diagnostic naming the feature and, where there is one, what to write instead; they are the next piece of work. `memory`, the macro directives and conditional assembly are refused the same way, and macros are the one feature that may come back later.
 
 ## Todo
-- Add more instructions
-- Add more directives
-- Add END directive
-- Add tests
+- The directives above that are still refused
+- The instructions the table carries a "not implemented" reason for: `movep`, `addx`, `subx`, `negx`, `abcd`, `sbcd`, `nbcd`, `roxl`, `roxr`, `tas`, `rtr`, `chk`, `trapv`, `illegal`
+- `sr`, `ccr` and `usp`, and the PC-relative addressing modes
+- Real instruction sizes
 
+## Known limitations
+1. Characters are one byte, read and written as Latin-1; a source character with no byte of its own is an assembly error. This is a decision and not a bug — a program that writes `dc.b 'é'` has to put one byte in memory.
+2. Every instruction is four bytes wide whatever it encodes to on a real 68000, so an address computed from instruction sizes will not match the hardware.
+3. The program runs as supervisor, always: the status register is stored and readable, and its trace, supervisor and interrupt-mask bits have no effect.
 
-## Known bugs
-1. Not really a bug but a decision to make, characters are treated as UTF-8, so encoding and decoding might problematic for some front ends, alternative would be to allow only extended ASCII characters 0-255.
-2. The "lexer" for the arithmetical expression uses a simple regex, if a string has multiple characters in it, it will treat it all as a single string, ex: `#'a'+'b' will be treated as #''a'+'b'' (a single string)`
-3. Some instructions have different valid addressing modes based off the destination, for example the add instruction allows only some operands if the destination is a memory access, this distinction needs to be added to the semantic checker.
 # How to run rust
-Firstly make sure you have rust installed, [you can download it here](https://www.rust-lang.org/tools/install), once done, clone the repository on your machine and run `cargo run` in the root folder of the project. This will run the interpreter with the code inside of `code-to-run.asm` file.
+Firstly make sure you have rust installed, [you can download it here](https://www.rust-lang.org/tools/install), once done, clone the repository on your machine and run `cargo run` in the root folder of the project. This will assemble and run the code inside of the `code-to-run.asm` file; name another file to run that one instead, `cargo run -- my-program.asm`.
+
+Every diagnostic is printed as `file:line:column: severity: message`, with its hint under it, and a program with an error in it is not run. `--step` steps through it (D, A, S and Q for step, undo, print and quit), `--show-program` prints the assembled instructions, `--benchmark` runs it with no undo history and times it, and `--no-debug` leaves out the registers at the end.
 
 # How to build WASM binary
 The interpreter was made for WASM in mind, to build it you need [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) installed.
 Once installed you can build the project by running `npm run build-wasm` in the `ts-lib` folder of the project. This will create a `pkg` folder in the ts-lib one with the compiled code.
 
 # How to try the WASM binary locally
-Inside of the `web` folder there is a very basic website with the library imported from the `pkg` folder **WARNING** not the ts-lib one, but in the root foler, to build it you need to run `wasm-pack build` in the root. You can test the package by running `npm install` to install dependencies and then `npm run start` to start the server. The website will be available at `http://localhost:3000`
+`ts-lib` is the supported way to use the library, and `ts-lib/test/smoke.mjs` is a working example of the 2.0 API: `npm ci`, `npm run build-lib` and `npm test` in `ts-lib` assemble and run a program through the built package.
+
+The `web` folder holds a small webpack demo which **has not been ported to the 2.0 API** and does not build: it calls `new S68k(code)`, `wasm_semantic_check` and `wasm_compile`, which the rewrite removed. `web/README.md` says what porting it needs. Neither it nor the `pkg/` folder it imports is in any CI job, and `pkg/` is no longer committed — it is `wasm-pack build`'s output and is now ignored, like `ts-lib/src/pkg`.
 

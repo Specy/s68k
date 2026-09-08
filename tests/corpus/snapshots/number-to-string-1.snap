@@ -159,7 +159,7 @@ expression: fixture
   "memory": [
     {
       "address": "$2000",
-      "zeroed": 4
+      "reserved": 34
     }
   ],
   "labels": {

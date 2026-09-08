@@ -1,0 +1,59 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/constant_above_32_bits.asm
+---
+[
+  {
+    "severity": "warning",
+    "code": "constant_above_32_bits",
+    "message": "`$1234567890` does not fit in the 32 bits this machine works in",
+    "hint": "a 32-bit value goes up to 4294967295, `$ffffffff`; the value is kept whole and checked against the size it is used at",
+    "location": {
+      "file": "constant_above_32_bits.asm",
+      "line": 2,
+      "column": 8,
+      "endColumn": 19
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "immediate_out_of_range",
+    "message": "`#78187493520` does not fit in a long",
+    "hint": "a long immediate holds -2147483648 to 4294967295",
+    "location": {
+      "file": "constant_above_32_bits.asm",
+      "line": 3,
+      "column": 11,
+      "endColumn": 15
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "immediate_out_of_range",
+    "message": "`#4294967296` does not fit in a long",
+    "hint": "a long immediate holds -2147483648 to 4294967295",
+    "location": {
+      "file": "constant_above_32_bits.asm",
+      "line": 4,
+      "column": 11,
+      "endColumn": 22
+    },
+    "related": []
+  },
+  {
+    "severity": "warning",
+    "code": "constant_above_32_bits",
+    "message": "`4294967296` does not fit in the 32 bits this machine works in",
+    "hint": "a 32-bit value goes up to 4294967295, `$ffffffff`; the value is kept whole and checked against the size it is used at",
+    "location": {
+      "file": "constant_above_32_bits.asm",
+      "line": 4,
+      "column": 12,
+      "endColumn": 22
+    },
+    "related": []
+  }
+]

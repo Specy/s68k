@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/nesting_too_deep.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "nesting_too_deep",
+    "message": "this operand nests more than 64 levels deep and is not read further",
+    "hint": "no expression needs to nest that deep; check for a `)` that is missing",
+    "location": {
+      "file": "nesting_too_deep.asm",
+      "line": 1,
+      "column": 76,
+      "endColumn": 77
+    },
+    "related": []
+  }
+]

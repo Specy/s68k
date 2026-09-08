@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/code_after_end.asm
+---
+[
+  {
+    "severity": "warning",
+    "code": "code_after_end",
+    "message": "this line comes after `end` and is not assembled",
+    "hint": "`end` is the last line the assembler reads",
+    "location": {
+      "file": "code_after_end.asm",
+      "line": 3,
+      "column": 0,
+      "endColumn": 7
+    },
+    "related": []
+  }
+]

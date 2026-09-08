@@ -1,0 +1,46 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/value_expected.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "value_expected",
+    "message": "`dc.b` takes a value, and this is an indirect operand",
+    "hint": "a value is a number, a character literal, a symbol or an expression of them",
+    "location": {
+      "file": "value_expected.asm",
+      "line": 1,
+      "column": 9,
+      "endColumn": 13
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "value_expected",
+    "message": "`equ` takes a value, and this is an immediate",
+    "hint": "write `ten equ 10`, and keep the `#` where the value is used, as in `move.l #ten,d0`",
+    "location": {
+      "file": "value_expected.asm",
+      "line": 4,
+      "column": 8,
+      "endColumn": 11
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "value_expected",
+    "message": "`equ` takes a value, and this is a data register",
+    "hint": "`equ` names a value, not a register: write the register itself where `r` is used, or a `reg` list once `reg` is implemented",
+    "location": {
+      "file": "value_expected.asm",
+      "line": 5,
+      "column": 8,
+      "endColumn": 10
+    },
+    "related": []
+  }
+]

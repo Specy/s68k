@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unterminated_macro_definition.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unterminated_macro_definition",
+    "message": "this macro definition is never closed",
+    "hint": "macro definitions end with `endm`",
+    "location": {
+      "file": "unterminated_macro_definition.asm",
+      "line": 1,
+      "column": 8,
+      "endColumn": 13
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`macro` is not implemented: macros are not assembled yet",
+    "hint": "write the lines of the macro where it is used instead",
+    "location": {
+      "file": "unterminated_macro_definition.asm",
+      "line": 1,
+      "column": 8,
+      "endColumn": 13
+    },
+    "related": []
+  }
+]

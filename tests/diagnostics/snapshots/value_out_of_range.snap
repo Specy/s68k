@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/value_out_of_range.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "value_out_of_range",
+    "message": "the count of `addq` is 1 to 8, and `9` is outside it",
+    "hint": "`add #n,<ea>` has no such limit",
+    "location": {
+      "file": "value_out_of_range.asm",
+      "line": 1,
+      "column": 11,
+      "endColumn": 13
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "value_out_of_range",
+    "message": "the bit number is 0 to 31, and `40` is outside it",
+    "hint": "a data register has 32 bits, numbered from 0; a byte in memory has 8",
+    "location": {
+      "file": "value_out_of_range.asm",
+      "line": 2,
+      "column": 9,
+      "endColumn": 12
+    },
+    "related": []
+  }
+]

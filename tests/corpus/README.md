@@ -10,11 +10,12 @@ Real M68K programs, kept here as the input side of the golden fixtures of
    memory, Entry point) and where running them gets to, so that the rewritten
    Assembler and the Interpreter behind it can both be held to it.
 2. `easy68k/` — the 3 EASy68K original programs. These do not assemble, and
-   are not meant to; their fixtures are Diagnostics. On 1.4.2 they raise 88,
+   are not meant to; their fixtures are Diagnostics. On 1.4.2 they raised 88,
    138 and 64 errors respectively, most of them the old checker misreading a
-   label in column 1. After the rewrite the only errors left should be the
-   "not implemented" ones naming macros, structured control and the
-   unsupported trap tasks.
+   label in column 1; they now raise 16, 4 and 20, and every one of those names
+   a feature s68k does not implement — macros, structured control, `simhalt`,
+   `rte`, `sr` — with one exception recorded below (`END START` against a Label
+   written `start`).
 
 The programs are inputs only. Nothing here is edited to suit s68k: a program
 that trips the Assembler is a finding, not a file to fix. The fixtures beside
@@ -71,10 +72,10 @@ Assembler has to keep handling.
 `bad-apple.x68` is 3.3 MB and 6645 lines (the last unterminated, as above),
 nearly all of it one `dc.b` blob of video frames. It is by far the largest
 program the editor ships and the only one that makes assembly time visible,
-which is why it is worth having: on 1.4.2 it takes about 19 seconds to lex,
-check and compile in a `cargo test` (unoptimised) build, against 25 to 60
-milliseconds for every other program here. A harness that needs a quick pass
-can skip it by size.
+which is why it is worth having: on 1.4.2 it took about 19 seconds to lex, check
+and compile in a `cargo test` (unoptimised) build, against 25 to 60 milliseconds
+for every other program here; the Assembler of the rewrite takes about 2 seconds
+over it. A harness that needs a quick pass can skip it by size.
 
 The design record says "25 lecture playgrounds, 5 runnable `.x68`". The
 repository at the commit above has 24 and 6. The total of 30 is right and the
@@ -121,6 +122,14 @@ does when it runs; "Execution fixtures" below is its format.
 `INSTA_UPDATE=always cargo test corpus` rewrites them when a change to them is
 the point.
 
+**All three kinds of fixture are the rewrite's** since step 8 of
+`docs/design/assembler-rewrite.md`: `<stem>.snap` is built from the Assembler's
+`Program` (step 7), `-errors.snap` is the Diagnostics the Assembler raises on a
+program that does not build (step 8), and `-run.snap` is the Interpreter running
+that `Program` (step 8). The old pipeline is gone from the crate, so nothing
+here records what 1.4.2 did any more; the two sections below say what moved when
+each half changed hands and why.
+
 The format below is the contract, not the current implementation: it names no
 Rust type, field or internal convention, so a different Assembler for the same
 language can produce the same bytes. Read it as the specification and
@@ -134,7 +143,7 @@ language can produce the same bytes. Read it as the specification and
   "instructions": [ { "address": "$1000", "line": 3, "text": "move.l #$a,d0" } ],
   "memory": [
     { "address": "$2000", "bytes": "48656c6c6f00" },
-    { "address": "$3000", "zeroed": 4000 }
+    { "address": "$3000", "reserved": 4000 }
   ],
   "labels": { "greeting": { "address": "$2000", "line": 12 } }
 }
@@ -144,22 +153,24 @@ language can produce the same bytes. Read it as the specification and
 * **`instructions`** — one entry per assembled instruction, sorted by address.
   `line` is the 0-based index of the Source line it came from; `text` is the
   canonical rendering below.
-* **`memory`** — one entry per Directive that puts bytes in memory (`dc`, `dcb`,
-  `ds`), sorted by address. `dc` and `dcb` carry their `bytes`; `ds` carries
-  `zeroed`, the number of zero bytes the Program writes there. Every other
-  Directive (`org`, `equ`, ...) contributes nothing. A memory entry carries no
-  `line`, unlike an instruction and a Label: the Program of the version these
-  fixtures were taken from keeps no Source line for a data Directive, and phase
-  0 does not change the Assembler to record one. Two data Directives that swap
-  Source lines without moving therefore give the same fixture, and a changed
-  `bytes` run has to be found by address. When Directives carry a Location, the
-  field is worth adding, and that is a deliberate change of every fixture that
-  has a `memory` entry.
+* **`memory`** — one entry per Directive that puts bytes in memory or reserves
+  room for them (`dc`, `dcb`, `ds`), sorted by address. `dc` and `dcb` carry
+  their `bytes`; `ds` carries `reserved`, the number of bytes it takes up and
+  does not write. Every other Directive (`org`, `equ`, ...) contributes nothing.
+  A memory entry carries no `line`, unlike an instruction and a Label. The
+  Program of 1.4.2 kept no Source line for a data Directive, so phase 0 had none
+  to write; the Program of the rewrite does carry one, and adding the field is
+  still a deliberate change of every fixture that has a `memory` entry, which
+  phase 1 did not make. Two data Directives that swap Source lines without
+  moving therefore give the same fixture, and a changed `bytes` run has to be
+  found by address.
 * **`labels`** — one entry per Label, by name, with its address and the 0-based
-  index of the Source line it is on. Constants (`equ`) are not Symbols in the
-  version these fixtures were taken from — their text is substituted before
-  parsing — so they never appear here; when they become Symbols that is a
-  deliberate change of the fixtures.
+  index of the Source line it is on. Constants (`equ`) are not Symbols in 1.4.2
+  — their text is substituted before parsing — so they never appeared here. They
+  are Symbols of the rewrite's Program and are **still** not written here: the
+  field is the Labels, by name, and a Constant's value is visible in every
+  instruction that uses it. Writing the whole symbol table instead is a
+  deliberate change of the fixtures and is not one phase 1 made.
 
 ### Conventions
 
@@ -279,31 +290,51 @@ rendering rather than being printed wrong.
 ### Diagnostics fixtures
 
 The three `easy68k/` originals do not assemble, so their fixture is the list of
-Diagnostics the checker raises instead: `snapshots/<stem>-errors.snap`, a JSON
-array of its messages, verbatim, one entry per error, in the order it reports
-them.
+Diagnostics the Assembler raises instead: `snapshots/<stem>-errors.snap`, a JSON
+array of the Diagnostics themselves, in source order — the same objects the
+TypeScript side receives, and the same shape the cases in `tests/diagnostics/`
+are snapshotted as.
 
 ```json
 [
-  "Error on line 42: Unknown instruction: \"start\"",
-  "Error on line 44: Invalid immediate: Invalid decimal number or non existing label: versionTrap, invalid digit found in string"
+  {
+    "severity": "error",
+    "code": "unimplemented_operation",
+    "message": "`simhalt` is not implemented: halting the simulator is not implemented yet",
+    "hint": "write `move.b #9,d0` and `trap #15` to end the program instead",
+    "location": {
+      "file": "graphicSound.X68",
+      "line": 205,
+      "column": 4,
+      "endColumn": 11
+    },
+    "related": []
+  }
 ]
 ```
 
-Two things about it are the version's and not the format's. The line numbers
-inside the message text are **1-based**, unlike the 0-based `line` fields of the
-assembly fixture above; and some messages carry Rust standard library text
-(`invalid digit found in string`, `cannot parse integer from empty string`) that
-reached the message through a failed number parse. Both are recorded exactly as
-they are, because a fixture is a record of what this version does and not of
-what it should say.
+* **`severity`** — `error`, `warning` or `suggestion`. Only an `error` stops the
+  Program from being built.
+* **`code`** — the stable snake_case name of the kind, which is what a test or
+  an editor matches on; the message is for a person to read.
+* **`hint`** — what to do about it, or `null`.
+* **`location`** — the File, the 0-based line and the 0-based column range,
+  `endColumn` exclusive. Unlike the messages of the fixtures this file used to
+  hold, nothing here counts from 1. The key is camelCase because a Location is
+  written the same way everywhere, and the TypeScript side is where it is read
+  (the design record, "Public API"); step 9 renamed it from `end_column`, which
+  is the only difference between these files and the ones step 8 wrote.
+* **`related`** — `{ location, message }` pairs, the other places the finding is
+  about: the first definition of a name defined twice, the line an address was
+  already used by.
 
-There is no shape to hold on to here beyond that. The whole array is expected to
-be replaced when Diagnostics become structured, carrying a Location, a code, a
-Severity and a Hint rather than one formatted string, and the count is expected
-to fall from 88, 138 and 64 to the "not implemented" errors alone. A total
-rewrite of these three files is the intended outcome of the rewrite, not a
-regression.
+These fixtures were rewritten whole in step 8, as this section always said they
+would be: on 1.4.2 they were 88, 138 and 64 formatted error strings, nearly all
+of them the old checker misreading a Label in column 1, and they are now 16, 4
+and 20 structured Diagnostics naming the features s68k does not implement. The
+same finding counted by code is
+`the_easy68k_originals_raise_only_what_is_not_implemented` in
+`src/test/diagnostics.rs`, which is what fails first when one of them moves.
 
 ### What the 1.4.2 fixtures record that the rewrite will change
 
@@ -327,17 +358,20 @@ fix it is rather than a regression:
   `editor/flappy-bird.x68` and `move.w #$ffffffff,d2` in
   `editor/snake-1.asm`. The quick forms go the other way and truncate to eight
   bits, so `moveq #-1,d3` in `editor/binary-search-1.asm` prints as
-  `moveq #$ff,d3`. Both lines move when values are evaluated in 64 bits and
-  range-checked against the operand size, as the design record has it.
+  `moveq #$ff,d3`. *(This one turned out not to move: phase 1 evaluates values
+  in 64 bits and range-checks them against the operand size, and then stores the
+  immediate in the same 32 bits and the quick form's count in the same 8, so
+  every one of these lines prints exactly as it did.)*
 * **The Entry point is the first instruction in all 30 fixtures**, so no
   snapshot tells the two rules of this version apart: `bad-apple.x68` is the
   only program spelling the Label `START:` and it is on the first instruction
   anyway, and the five other `.x68` write a lowercase `start:` that the
   case-sensitive lookup does not see. `end` is not even a known Mnemonic here,
   so the third source the design gives the Entry point cannot be written. The
-  rules are pinned by `entry_point_is_an_uppercase_start_label_or_the_first_instruction`
-  in `src/test/corpus.rs` rather than by any fixture, and phase 1 needs its own
-  test of the `end expr` / `START` / first-instruction precedence.
+  rules are pinned by
+  `entry_point_is_end_then_an_uppercase_start_label_then_the_first_instruction`
+  in `src/test/corpus.rs` rather than by any fixture — phase 1 renamed that test
+  and gave it the `end expr` case, which 1.4.2 could not even parse.
 * **Every instruction is 4 bytes**, whatever it encodes to on a real 68000, so
   every address in `instructions` steps by 4.
 * **`add`/`sub` and `cmp` disagree about which rewrite wins.** `add #1,a0`
@@ -348,6 +382,227 @@ fix it is rather than a regression:
 * **A one-operand shift may not carry a size.** `asr (a0)` assembles and prints
   as `asr.w #$1,(a0)`; `asr.l (a0)` is refused with "Invalid size, instruction
   is not sized", so the memory form is always word whatever the program meant.
+
+### What phase 1's Assembler changed in these fixtures, and why
+
+Phase 1 replaced the pipeline that wrote the `<stem>.snap` fixtures. **Eight
+entries of five fixtures moved, and nothing else did**: every instruction, every
+address, every byte of `dc` and `dcb` data, every Label, every Entry point and
+every `line` came out identical to 1.4.2 over all 30 programs.
+
+**What moved** — the `ds` bug of the list above, fixed, and the key that carries
+it:
+
+| Fixture | Was | Is |
+| --- | --- | --- |
+| `counting-loop-1` `$2000` | `zeroed: 2` | `reserved: 20` |
+| `flappy-bird` `$1925`, `$1955`, `$195d` | `zeroed: 6`, `1`, `0` | `reserved: 48`, `8`, `1` |
+| `number-to-string-1` `$2000` | `zeroed: 4` | `reserved: 34` |
+| `snake-1` `$3012`, `$30b0` | `zeroed: 15`, `1` | `reserved: 122`, `8` |
+| `variables-in-memory-1` `$2008` | `zeroed: 0` | `reserved: 4` |
+
+`ds` reserves its room and writes nothing at all now, which is what
+`Directives/ds.htm` says it does ("unlike DC, no data is stored in the reserved
+memory"), so the count is the whole block and the key is `reserved` rather than
+`zeroed`: there are no zeros to count. The key had to change with the meaning —
+a `reserved: 20` written as `zeroed: 20` would say the Program writes twenty
+zeros there, which is exactly what it stopped doing.
+
+**What the running program sees** is the other half of it, and step 8 is where
+it moved: see "What step 8's Interpreter changed" below.
+
+**Rules that changed and that no corpus program exercises.** These moved no
+fixture, and are here so that the next one to move is recognised:
+
+* **A word or a long data Directive is aligned.** `dc.w`, `dc.l`, `ds.w`,
+  `ds.l`, `dcb.w` and `dcb.l` start on an even address, padding what comes
+  before them, which is what `Directives/dc.htm` and `Directives/ds.htm`
+  specify and what 1.4.2 did not do at all. No corpus program writes an odd
+  number of bytes before a word one, so nothing moved; a program that does will
+  see its data move up by a byte, and every Label after it with it.
+* **Constants are Symbols.** `equ` is no longer a text substitution, so
+  `x equ 5` no longer rewrites `next` into `ne5t`; the Constants are in the
+  Program's symbol table and out of `labels`, as above. Every corpus program's
+  Constants still reach the instructions that use them with the same values —
+  `addi.l #$14,d0` for `add.l #TAX,d0` — which is why no fixture moved.
+* **The Entry point can be written.** `end START` is read now, where 1.4.2
+  answered "Unknown instruction: end". No corpus program writes `end`, so
+  `entry` is unchanged in all 30;
+  `entry_point_is_a_start_label_of_either_case_then_the_first_instruction`
+  in `src/test/corpus.rs` is what holds the three sources apart.
+* **A Local label's full name is `global:local`**, EASy68K's own
+  (`quickStart.htm`, "Label Field"). No corpus program writes one.
+
+**The Entry point is the one name read case insensitively**, which is what
+`mouseWindowSize.X68` forced: it writes its Label as `start` and its last line as
+`END START`, and Symbols are case sensitive here (CONTEXT.md, "Symbol"). That
+file is byte-identical to the EASy68K distribution, so it is the primary
+evidence that EASy68K's own look-up is not case sensitive, and ADR 0001 promises
+that an EASy68K program assembles here unchanged. `end`'s operand and the
+`START` fallback are therefore resolved by exact match first and then by an
+ASCII-case-insensitive match over the Labels; the `end` form warns
+(`entry_point_case_mismatch`) and the fallback, whose name is s68k's own
+convention rather than a word the program wrote, says nothing. Every other use
+of a name is compared exactly, and two Labels differing only in case are not
+guessed between. The decision is recorded in ADR 0001; before it,
+`mouseWindowSize.X68` was the one original that did not assemble.
+
+### What step 8's Interpreter changed in these fixtures, and why
+
+Step 8 gave the Interpreter the `Program` and deleted the old pipeline, which is
+what moved the other two kinds of fixture. **Three `-run.snap` fixtures moved,
+one line each, and it is the `ds` fix of the table above**:
+
+| Fixture | What moved |
+| --- | --- |
+| `flappy-bird-run` | `memory` only |
+| `number-to-string-1-run` | `memory` only |
+| `snake-1-run` | `memory` only |
+
+In all three the `status`, the `steps`, the sixteen registers, the `pc`, the
+`flags` and the `output` are identical to what 1.4.2 left. Only the hash of
+memory changed, and it changed because a `ds` block now keeps the `$ff` fill
+where 1.4.2 wrote zeros over its first eighth. The other 27 programs, the seven
+that reach the limit included, are byte for byte unchanged.
+
+Two of the five programs with a `ds` in them did **not** move, and the reason is
+worth keeping: `counting-loop-1` fills all twenty bytes of its `ds.w 10` before
+it ends, so no byte of the block is left to differ; and `variables-in-memory-1`
+reserves four bytes with `ds.l 1`, of which 1.4.2 zeroed an eighth rounded down,
+which is none.
+
+`ds_reserves_memory_without_writing_it` in `src/test/corpus.rs` is the program
+that reads a `ds` block back byte by byte: it printed `0,255` on 1.4.2 and
+prints `255,255` now.
+
+**The `-errors.snap` fixtures were rewritten whole**, as "Diagnostics fixtures"
+above says they would be: 88, 138 and 64 strings of the old checker became 16, 4
+and 20 structured Diagnostics of the Assembler.
+
+**Nothing else about a run changed.** The Interpreter reads the `Program` where
+it read the compiler's output, the instruction at an address is found by binary
+search rather than by a dense table, and every place that stepped by a literal
+4 — the program counter, the end of the program, the instruction a return
+address comes back from — uses the size stored with each instruction, which is
+still 4. The execution fixtures are what says that swap changed no answer.
+
+### What step 9's public API changed in these fixtures, and why
+
+One key, in the 53 snapshots that hold a Location: **`end_column` is
+`endColumn`**. Step 9 is the 2.0 WebAssembly API, and a Diagnostic crosses into
+TypeScript as the object serde writes — so the shape the fixtures record is the
+shape the editor receives, and it is camelCase there (the design record, "Public
+API"). Renaming it in the fixtures instead of translating it in `ts-lib` keeps
+one shape: a Location inside a Diagnostic, an assembled instruction, an undo
+step or a call-stack frame is written the same way in all four.
+
+Nothing else moved. `INSTA_UPDATE=always cargo test` rewrote the three
+`-errors.snap` files and the 50 in `tests/diagnostics/snapshots`, and the
+difference in every one of them is that key: the counts of Diagnostics per
+fixture (16, 4 and 20) and every message, code, severity, line and column are
+what step 8 left. The `.snap` files with no Location in them — every
+`editor/` assembly and run fixture — are untouched.
+
+### What the instruction table of the rewrite accepts and refuses differently
+
+The Assembler's instruction table (`src/assembler/instructions/table.rs`, phase
+1) replaces the two disagreeing lists of `src/semantic_checker.rs` and
+`src/compiler.rs`. **No fixture in this directory moves because of it**: not one
+line of the 30 `editor/` programs is judged differently, which
+`the_analyzer_is_silent_on_every_editor_program` in `src/test/diagnostics.rs`
+asserts program by program. What follows is the difference on code the corpus
+does not contain, and every item is deliberate.
+
+**Now accepted, where 1.4.2 refused:**
+
+* **`extb.l d0`** — the checker did not know the Mnemonic, so the byte-to-long
+  `ext` the compiler could build was unreachable (the bullet above).
+* **A size on a branch**: `bra.b`, `bra.s`, `bcc.w`, `bsr.l`. The design record's
+  "Instructions" asks for `.s`, `.w` and `.l`; `.b` is there because the help
+  says so — "EASy68K will accept .B or .S to force 1-byte offsets and .W or .L
+  to force 2-byte offsets" (`Reference/68ks9b.htm`, and the same sentence on
+  `BRA`) — and it means exactly what `.s` means. All four are accepted and not
+  range checked, because every instruction is still four bytes, and none of them
+  reaches the encoded instruction: a branch carries no operand size.
+* **A size on the memory form of a shift**: `asr.w (a0)`, the one size the
+  68000 has there. `asr.l (a0)` is still refused, and now says `asr` takes `.w`
+  there rather than "instruction is not sized".
+* **The size the EASy68K help gives instructions 1.4.2 refused a size on
+  altogether** (`Reference/68ks*.htm`, "DATA LENGTH"): `moveq.l`, `lea.l`,
+  `pea.l`, `exg.l`, `swap.w`, `divs.w`/`divu.w`/`muls.w`/`mulu.w`, `dbra.w` and
+  every `DBcc.w`, `Scc.b`, and `.b` or `.l` on `btst`, `bset`, `bclr` and
+  `bchg`. The help's own `MOVEQ` example writes `MOVEQ.L #3,D0`, and ADR 0001
+  says an EASy68K program assembles unchanged. No corpus program writes any of
+  them, and the wrong size is still refused (`moveq.w`, `divu.l`).
+* **`cmp (a0)+,(a1)+`** — the checker refused it while the compiler could build
+  the `cmpm` the printer rules above already describe. It is the same
+  checker/compiler disagreement as `extb`.
+* **`moveq #128` to `#255`** — 1.4.2 refused anything above 127, although a
+  `moveq` value is a byte pattern and `#$ff` is how a program writes -1. The
+  range is now -128 to 255.
+* **`btst #1,#$ff`** — `btst` only reads its destination, so it takes any data
+  addressing mode, an immediate included; the checker held it to the same
+  data-alterable set as `bset`, `bclr` and `bchg`, which do write theirs.
+
+**Now refused, where 1.4.2 accepted:**
+
+* **`tst a0`** — the 68000 has no address-register form of `tst`, and neither
+  has EASy68K; the checker's rule only excluded an immediate.
+* **`jmp (a0)+`, `jsr -(a0)`, `lea (a0)+,a1`, `pea -(a0)`** — these four take a
+  *control* addressing mode, which is a place in memory that is not walked over:
+  `(An)`, `d(An)`, `d(An,Xn)` and an absolute address. The checker allowed every
+  memory mode.
+* **`movem.l d0-d2,(a7)+` and `movem.l -(a7),d0-d2`** — registers go out through
+  `-(An)` and come back through `(An)+`, and not the other way round. The
+  checker allowed either mode on either side.
+* **A bit number or a shift count read from memory**: `btst (a0),d0`,
+  `asl (a0),d0`. A count is a data register or a literal.
+* **A bit number above the destination's width**: `btst #40,d0` (a data register
+  has 32 bits) and `btst #8,(a0)` (a byte in memory has 8). The checker's bound
+  was 0 to 255 whatever the destination.
+
+**Refused by both, and now said differently:** `trap #0` to `#14` ("s68k
+simulates one trap, `#15`, which is its input and output" rather than "Only
+implemented TRAP is 15 for IO"), `move sr,d2` and every other use of `sr`, `ccr`
+and `usp` ("`sr` is the status register, which s68k does not assemble yet"
+rather than "Invalid absolute"), and every real 68000 instruction s68k does not
+implement — `movep`, `addx`, `subx`, `negx`, `abcd`, `sbcd`, `nbcd`, `roxl`,
+`roxr`, `tas`, `rtr`, `rte`, `trapv`, `chk`, `illegal`, `stop`, `reset` — which
+are rows of the table carrying their reason rather than unknown words.
+
+### What the review of phase 1 changed in these fixtures, and why
+
+Two reviews read phase 1 and their findings were applied in one pass. **Two
+`-errors.snap` fixtures moved, one entry each, and no other fixture did** —
+`graphicSound-errors` and all 30 `editor/` assembly and run snapshots are
+untouched, which `the_analyzer_is_silent_on_every_editor_program` and the
+snapshots themselves hold:
+
+| Fixture | What moved |
+| --- | --- |
+| `mouseWindowSize-errors` | the one `undefined_symbol` — `END START` against the Label `start` — is now the `entry_point_case_mismatch` **warning** of the section above, and the file assembles as far as its unimplemented features allow. Its 20 entries are otherwise what step 9 left |
+| `clockDigital-errors` | the `unknown_mnemonic` on line 67, an invocation of the `DELAY` macro defined on line 20, is now `unimplemented_operation`: "`DELAY` is not implemented: it is a macro, and macros are not assembled yet", with a related Location on the `macro` line. The old message offered to make `DELAY` a label, which would have made the program worse. Its other 15 entries are unchanged |
+
+Two messages were reworded and no fixture holds either: `address_register_byte_size`
+now says an address register is never *used* one byte at a time rather than
+never *written* one (the register is the operand read in `cmp.b a0,d1`, and
+nothing is written to it), and the operand-count message of the data Directives
+names the size and says "at least one value" for `dc`, which takes a list.
+
+Four diagnostics are new and no corpus program raises one: the
+`entry_point_case_mismatch` warning above, the `missing_comma_between_operands`
+warning of `docs/grammar.md` 3.7, and the two warnings the design record always
+listed and the evaluator did not raise — `character_literal_too_long` (EASy68K's
+"ASCII constant exceeds 4 characters") and `constant_above_32_bits` (its
+"Numeric constant exceeds 32 bits"). Each has a case in `tests/diagnostics/`.
+
+In `tests/diagnostics/snapshots/` — the one case per Diagnostic, which is not a
+1.4.2 fixture and moves whenever a message is improved — four snapshots are new
+and four moved, each because its case program grew a line: the source form of
+`address_register_byte_size` (`cmp.b a0,d1`, where nothing is written to the
+register), the two dropped `equ` leniencies under `value_expected`, `d8` under
+`undefined_symbol`, the data Directives under `wrong_operand_count`, and the
+Macro invocation under `unimplemented_operation`.
 
 ## Execution fixtures
 
@@ -389,8 +644,9 @@ row of the table is held by `a_runtime_error_ends_the_run_with_an_exception` in
 instructions, each asserted to stop the run as `exception` with the failing
 instruction counted in `steps` — and not by any fixture. The
 limit is the same 200 000 for every program: none of them needs a lower one, as
-the whole corpus test, `bad-apple`'s 20 seconds of assembly included, takes
-about half a minute in an unoptimised `cargo test` build.
+the whole corpus test, `bad-apple` included, takes about six seconds in an
+unoptimised `cargo test` build — it took about half a minute on the pipeline the
+fixtures were taken from.
 
 ### The interrupt policy
 
@@ -469,14 +725,17 @@ order and not a picture of a terminal.
   short form, and the assembly fixture beside it holds the initial bytes in
   full.
 
-### What the 1.4.2 execution fixtures record that the rewrite will change
+### Two things about an execution fixture worth knowing before changing one
 
 * **Memory starts as `$ff`, not as zeros.** Every byte no Directive and no
   instruction has written reads back as `$ff`, and the memory hash carries that
-  fill. Together with the `ds` bug above it is visible to a program: the first
-  eighth of a `ds` block reads as zeros and the rest as `$ff`
-  (`ds_zeroes_less_than_it_reserves` in `src/test/corpus.rs` is that program).
+  fill. Since step 8 a `ds` block is such a byte throughout, because `ds`
+  reserves and writes nothing (`ds_reserves_memory_without_writing_it` in
+  `src/test/corpus.rs` is the program that shows it). Whether memory should
+  start as zeros instead is a decision nobody has taken; taking it would move
+  the `memory` hash of all 30 fixtures at once, which is what such a change
+  should look like.
 * **Seven programs never end.** They are event loops, and the policy answers
   "nothing was typed, nothing was clicked" for ever, so `limit` is the honest
-  outcome rather than a fault. If the rewrite makes one of them terminate, that
-  is a change worth reading, not a snapshot to update blindly.
+  outcome rather than a fault. If a change makes one of them terminate, that is
+  a change worth reading, not a snapshot to update blindly.

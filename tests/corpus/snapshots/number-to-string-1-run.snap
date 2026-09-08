@@ -28,5 +28,5 @@ expression: fixture
   "pc": "$102c",
   "flags": "X:0 N:0 Z:0 V:0 C:0",
   "output": "BEEF\n48879\n1011111011101111\n",
-  "memory": "d3f70e91d49b39e5"
+  "memory": "75585358dd402e71"
 }

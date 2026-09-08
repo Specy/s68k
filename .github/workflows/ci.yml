@@ -74,6 +74,16 @@ jobs:
       - name: Run Rust tests
         run: cargo test
 
+      # The rustdoc build, with warnings fatal: every public type and function
+      # of the Assembler carries a doc comment (the phase-1 ground rules), and
+      # a broken intra-doc link is how that documentation rots without anyone
+      # noticing. It runs after the tests because it is the cheaper failure to
+      # read second.
+      - name: Check the documentation
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       # Mirrors ts-lib's build-wasm script. ts-lib/src/pkg is generated and not
       # committed, so the TypeScript build below cannot run without this.
       - name: Build the WebAssembly package

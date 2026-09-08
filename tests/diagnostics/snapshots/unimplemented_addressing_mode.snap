@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unimplemented_addressing_mode.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unimplemented_addressing_mode",
+    "message": "`sr` is the status register, which s68k does not assemble yet",
+    "hint": "the condition codes are set by the instructions themselves; `seq d0` puts one of them in a register",
+    "location": {
+      "file": "unimplemented_addressing_mode.asm",
+      "line": 1,
+      "column": 11,
+      "endColumn": 13
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_addressing_mode",
+    "message": "`greeting(pc)` is a PC-relative operand, which s68k does not assemble yet",
+    "hint": "write the label on its own: `label` reads the same place while the program stays where it is laid out",
+    "location": {
+      "file": "unimplemented_addressing_mode.asm",
+      "line": 2,
+      "column": 11,
+      "endColumn": 23
+    },
+    "related": []
+  }
+]

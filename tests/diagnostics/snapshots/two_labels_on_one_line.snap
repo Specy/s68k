@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/two_labels_on_one_line.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "two_labels_on_one_line",
+    "message": "`loop` is a second label on this line",
+    "hint": "one label to a line; put `loop:` on its own",
+    "location": {
+      "file": "two_labels_on_one_line.asm",
+      "line": 1,
+      "column": 7,
+      "endColumn": 11
+    },
+    "related": []
+  }
+]

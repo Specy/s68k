@@ -1,0 +1,30 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/address_used_twice.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "address_used_twice",
+    "message": "this line is laid out over `$2002`, which is already used",
+    "hint": "move one of the two with `org`, or make what comes before it shorter",
+    "location": {
+      "file": "address_used_twice.asm",
+      "line": 4,
+      "column": 0,
+      "endColumn": 14
+    },
+    "related": [
+      {
+        "location": {
+          "file": "address_used_twice.asm",
+          "line": 2,
+          "column": 0,
+          "endColumn": 14
+        },
+        "message": "this line is laid out here"
+      }
+    ]
+  }
+]

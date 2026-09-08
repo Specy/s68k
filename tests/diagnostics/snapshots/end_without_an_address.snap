@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/end_without_an_address.asm
+---
+[
+  {
+    "severity": "warning",
+    "code": "end_without_an_address",
+    "message": "`end` says where the program starts, and this one says no address",
+    "hint": "write the label the program starts at, `end START`; without one it starts at a label named `START`, or at the first instruction",
+    "location": {
+      "file": "end_without_an_address.asm",
+      "line": 2,
+      "column": 4,
+      "endColumn": 7
+    },
+    "related": []
+  }
+]

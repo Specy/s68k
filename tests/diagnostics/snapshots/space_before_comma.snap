@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/space_before_comma.asm
+---
+[
+  {
+    "severity": "suggestion",
+    "code": "space_before_comma",
+    "message": "the operand field continues past this space because a comma follows it",
+    "hint": "remove the space; if the comma starts a comment, write `;` first",
+    "location": {
+      "file": "space_before_comma.asm",
+      "line": 1,
+      "column": 13,
+      "endColumn": 14
+    },
+    "related": []
+  }
+]

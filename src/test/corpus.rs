@@ -1,18 +1,24 @@
-//! Golden fixtures of what this version of s68k makes of the corpus in `tests/corpus`.
+//! Golden fixtures of what s68k makes of the corpus in `tests/corpus`.
 //!
-//! Phase 0 of the assembler rewrite (`docs/design/assembler-rewrite.md`, "Tests"
-//! items 1 and 2): the fixtures are taken from the current pipeline before the
-//! Assembler replaces it, so that the rewrite can be held to them.
+//! The design record's "Tests" items 1 and 2
+//! (`docs/design/assembler-rewrite.md`): the fixtures were taken from the
+//! pipeline of 1.4.2 in phase 0, before the Assembler replaced it, so that the
+//! rewrite can be held to them.
 //!
-//! Two tests, one per half of the corpus:
+//! Three tests, one per half of the corpus and one for what running it does:
 //!
 //! * [`editor_programs`] assembles every program in `tests/corpus/editor` and
 //!   snapshots the Program it produces (Entry point, instructions, initial
 //!   memory, Labels) as `<stem>.snap`.
 //! * [`easy68k_programs_do_not_assemble`] records that the three EASy68K
-//!   originals in `tests/corpus/easy68k` still fail the semantic check, and
-//!   snapshots their error messages as `<stem>-errors.snap`, so that the
-//!   rewrite's effect on them is visible in the diff.
+//!   originals in `tests/corpus/easy68k` do not assemble, and snapshots the
+//!   Diagnostics they raise as `<stem>-errors.snap` — the features s68k has not
+//!   implemented, and nothing else.
+//! * [`editor_programs_run`] runs every `editor/` program under a deterministic
+//!   interrupt policy and snapshots where it gets to, as `<stem>-run.snap`.
+//!
+//! All three are the Assembler's and the Interpreter's: the old pipeline is
+//! gone from the crate and nothing here reaches 1.4.2 any more.
 //!
 //! The fixture is deliberately assembler-agnostic: nothing in it names a Rust
 //! type, a field or an internal convention, so a different implementation of the
@@ -26,13 +32,15 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::compiler::{Compiler, Directive};
+use crate::assembler::diagnostics::Diagnostic;
+use crate::assembler::program::{MemoryContent, Program};
+use crate::assembler::source::Files;
+use crate::assembler::symbols::SymbolKind;
 use crate::instructions::{
     Condition, Instruction, Interrupt, InterruptResult, KeyStateRequest, KeyStateResult, Operand,
     RegisterOperand, ShiftDirection, Sign, Size, TargetDirection,
 };
-use crate::interpreter::{InterpreterOptions, InterpreterStatus, RuntimeError};
-use crate::S68k;
+use crate::interpreter::{Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError};
 
 // ---------------------------------------------------------------------------
 // The fixture
@@ -60,12 +68,13 @@ struct FixtureInstruction {
     text: String,
 }
 
-/// A run of initial memory: `dc`/`dcb` carry their bytes, `ds` only a count.
+/// A run of initial memory: `dc`/`dcb` carry their bytes, `ds` only the number
+/// of bytes it reserves and does not write.
 #[derive(Serialize)]
 #[serde(untagged)]
 enum FixtureMemory {
     Bytes { address: String, bytes: String },
-    Zeroed { address: String, zeroed: usize },
+    Reserved { address: String, reserved: usize },
 }
 
 #[derive(Serialize)]
@@ -84,95 +93,88 @@ fn hex(value: usize) -> String {
 // The dump
 // ---------------------------------------------------------------------------
 
-/// Assembles `source` with the current pipeline, panicking with `name` in the
-/// message if it does not assemble.
-fn assemble(name: &str, source: &str) -> (S68k, Compiler) {
-    let s68k = S68k::new(source.to_string());
-    let errors = s68k.semantic_check();
-    if !errors.is_empty() {
-        let messages: Vec<String> = errors.iter().take(5).map(|e| e.get_message()).collect();
-        panic!(
-            "{} did not pass the semantic check ({} errors), first ones:\n{}",
-            name,
-            errors.len(),
-            messages.join("\n")
-        );
+/// Assembles `source` with the Assembler, panicking with `name` and the first
+/// Diagnostics in the message if it does not assemble.
+fn assemble(name: &str, source: &str) -> Program {
+    let assembly = crate::assembler::assemble_source(source);
+    match assembly.program {
+        Some(program) => program,
+        None => {
+            let errors: Vec<String> = assembly
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.is_error())
+                .take(5)
+                .map(|diagnostic| {
+                    format!(
+                        "line {}: {} [{}]",
+                        diagnostic.location.line + 1,
+                        diagnostic.message(),
+                        diagnostic.code()
+                    )
+                })
+                .collect();
+            panic!("{} did not assemble:\n{}", name, errors.join("\n"))
+        }
     }
-    let program = match s68k.compile() {
-        Ok(program) => program,
-        Err(e) => panic!("{} did not compile: {}", name, e),
-    };
-    (s68k, program)
 }
 
-/// Runs the current pipeline on `source` and builds its fixture.
+/// Assembles `source` and builds its fixture.
 ///
 /// `name` only names the program in the panic messages.
 fn dump(name: &str, source: &str) -> Fixture {
-    let (_, program) = assemble(name, source);
+    let program = assemble(name, source);
 
-    let mut instructions: Vec<FixtureInstruction> = program
-        .get_instructions()
+    let instructions: Vec<FixtureInstruction> = program
+        .instructions()
         .iter()
-        .map(|line| FixtureInstruction {
-            address: hex(line.address),
-            line: line.parsed_line.line_index,
-            text: print_instruction(&line.instruction),
+        .map(|instruction| FixtureInstruction {
+            address: hex(instruction.address),
+            line: instruction.location.line,
+            text: print_instruction(&instruction.instruction),
         })
         .collect();
-    // Stable, so that two lines laid out over the same address keep source order.
-    instructions.sort_by_key(|i| parse_hex(&i.address));
 
-    let mut memory: Vec<FixtureMemory> = program
-        .get_directives()
+    let memory: Vec<FixtureMemory> = program
+        .memory()
         .iter()
-        .filter_map(|directive| match directive {
-            Directive::DC { data, address } | Directive::DCB { data, address } => {
-                Some(FixtureMemory::Bytes {
-                    address: hex(*address),
-                    bytes: print_bytes(data),
-                })
-            }
-            Directive::DS { data, address } => Some(FixtureMemory::Zeroed {
-                address: hex(*address),
-                zeroed: data.len(),
-            }),
-            Directive::Other => None,
+        .map(|run| match &run.content {
+            MemoryContent::Bytes { bytes } => FixtureMemory::Bytes {
+                address: hex(run.address),
+                bytes: print_bytes(bytes),
+            },
+            MemoryContent::Reserved { length } => FixtureMemory::Reserved {
+                address: hex(run.address),
+                reserved: *length,
+            },
         })
         .collect();
-    memory.sort_by_key(memory_address);
 
+    // `labels` is one entry per Label, as `tests/corpus/README.md` has it. The
+    // Constants of `equ` are Symbols of the Program now, where 1.4.2 substituted
+    // their text and kept none, and they are deliberately not written here:
+    // the field is the Labels, and a Constant's value is visible in every
+    // instruction that uses it.
     let labels = program
-        .get_labels_map()
-        .iter()
-        .map(|(name, label)| {
+        .symbols()
+        .values()
+        .filter(|symbol| symbol.kind == SymbolKind::Label)
+        .map(|symbol| {
             (
-                name.clone(),
+                symbol.name.clone(),
                 FixtureLabel {
-                    address: hex(label.address),
-                    line: label.line,
+                    address: hex(symbol.value.max(0) as usize),
+                    line: symbol.location.line,
                 },
             )
         })
         .collect();
 
     Fixture {
-        entry: hex(program.get_start_address()),
+        entry: hex(program.entry()),
         instructions,
         memory,
         labels,
-    }
-}
-
-fn parse_hex(address: &str) -> usize {
-    usize::from_str_radix(&address[1..], 16).expect("an address the dump itself printed")
-}
-
-fn memory_address(entry: &FixtureMemory) -> usize {
-    match entry {
-        FixtureMemory::Bytes { address, .. } | FixtureMemory::Zeroed { address, .. } => {
-            parse_hex(address)
-        }
     }
 }
 
@@ -613,9 +615,8 @@ struct RunFixture {
 ///
 /// `name` only names the program in the panic messages.
 fn run(name: &str, source: &str, limit: usize) -> RunFixture {
-    let (s68k, program) = assemble(name, source);
-    let mut interpreter = s68k.create_interpreter(
-        program,
+    let mut interpreter = Interpreter::new(
+        assemble(name, source),
         Some(InterpreterOptions {
             keep_history: false,
             history_size: 0,
@@ -894,8 +895,15 @@ fn editor_programs() {
     });
 }
 
-/// The 3 EASy68K originals do not assemble here yet; these are the errors they
+/// The 3 EASy68K originals do not assemble; these are the Diagnostics they
 /// raise, so that the rewrite's effect on them shows up as a diff.
+///
+/// The design record's "Tests" item 2. On 1.4.2 these fixtures were 88, 138 and
+/// 64 error strings, nearly all of them the old checker misreading a Label in
+/// column 1; what is left is the features s68k does not implement, each named
+/// by its own message. `tests/corpus/README.md`, "Diagnostics fixtures", is the
+/// format, and `the_easy68k_originals_raise_only_what_is_not_implemented` in
+/// `src/test/diagnostics.rs` is the same finding counted by code.
 #[test]
 fn easy68k_programs_do_not_assemble() {
     let directory = corpus_dir("easy68k");
@@ -911,16 +919,21 @@ fn easy68k_programs_do_not_assemble() {
     settings().bind(|| {
         for path in &files {
             let name = stem(path);
-            let s68k = S68k::new(read(path));
-            let errors = s68k.semantic_check();
+            let file = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("a file name");
+            let mut files = Files::new();
+            files.insert_text(file, read(path));
+            let assembly = crate::assembler::assemble(&files, file);
             assert!(
-                !errors.is_empty(),
-                "{} now passes the semantic check; the fixture and \
-                 tests/corpus/README.md have to be updated on purpose",
+                assembly.program.is_none(),
+                "{} now assembles; the fixture and tests/corpus/README.md have \
+                 to be updated on purpose",
                 name
             );
-            let messages: Vec<String> = errors.iter().map(|e| e.get_message()).collect();
-            insta::assert_json_snapshot!(format!("{}-errors", name), messages);
+            let diagnostics: Vec<&Diagnostic> = assembly.diagnostics.iter().collect();
+            insta::assert_json_snapshot!(format!("{}-errors", name), diagnostics);
         }
     });
 }
@@ -1119,20 +1132,19 @@ fn printer_rules_out_of_reach() {
     assert_eq!(print_register_list(0b1000_0000_0000_0011), "d0-d1/a7");
 }
 
-/// The Entry point of this version: a Label named `START`, else the first
-/// instruction.
+/// The Entry point: `end`'s operand, else a Label named `START` whatever its
+/// case, else the first instruction.
 ///
-/// No fixture can tell the two apart — `entry` is the first instruction's
-/// address in all 30 of them, `bad-apple.x68` reaching it through `START:` and
-/// the other 29 through the fallback — so a regression in the lookup would
-/// change no snapshot. This is what holds it instead. Of the three sources the
-/// design gives the Entry point (`docs/design/assembler-rewrite.md`,
-/// "Directives") this version has only two: `end` is not a known mnemonic here,
-/// so the rewrite has to bring its own test for the full precedence.
+/// No fixture can tell the three apart — `entry` is the first instruction's
+/// address in all 30 of them, `bad-apple.x68` reaching it through `START:`, the
+/// five `.x68` programs that write `start:` reaching the same address through
+/// the label and the first instruction alike, and no corpus program writing
+/// `end` — so a regression in the lookup would change no snapshot. This is what
+/// holds it instead. `tests/corpus/README.md` records that the fixtures cannot
+/// see it.
 #[test]
-fn entry_point_is_an_uppercase_start_label_or_the_first_instruction() {
-    // A Label named `START` wins over the first instruction: the Entry point
-    // is the lowest instruction address at or after it.
+fn entry_point_is_a_start_label_of_either_case_then_the_first_instruction() {
+    // A Label named `START` wins over the first instruction.
     let uppercase = "\
     ORG $1000
 first:
@@ -1141,8 +1153,9 @@ START:
     nop
 ";
     assert_eq!(dump("entry_uppercase", uppercase).entry, "$1004");
-    // The lookup is case sensitive, so the lowercase `start:` that five of the
-    // six `.x68` programs write is not it, and the fallback answers instead.
+    // The fallback name is s68k's own convention and not a word the program
+    // wrote, so it is matched whatever its case: the lowercase `start:` that
+    // five of the six `.x68` programs write is the entry point too.
     let lowercase = "\
     ORG $1000
 first:
@@ -1150,15 +1163,19 @@ first:
 start:
     nop
 ";
-    assert_eq!(dump("entry_lowercase", lowercase).entry, "$1000");
-    // The third source cannot even be written: `end` is refused as a mnemonic.
-    let s68k = S68k::new("    ORG $1000\n    nop\n    END $1000\n".to_string());
-    let messages: Vec<String> = s68k
-        .semantic_check()
-        .iter()
-        .map(|e| e.get_message())
-        .collect();
-    assert_eq!(messages, ["Error on line 3: Unknown instruction: \"end\""]);
+    assert_eq!(dump("entry_lowercase", lowercase).entry, "$1004");
+    // `end` beats both, and it is the source 1.4.2 could not even parse.
+    let ended = "\
+    ORG $1000
+first:
+    nop
+START:
+    nop
+last:
+    rts
+    END last
+";
+    assert_eq!(dump("entry_end", ended).entry, "$1008");
 }
 
 /// The 30 asm-editor programs all run, and this is where they get to.
@@ -1362,9 +1379,8 @@ fn a_runtime_error_ends_the_run_with_an_exception() {
 /// The memory the fixture hashes is the whole address space and not a part of it.
 #[test]
 fn memory_hash_covers_the_whole_address_space() {
-    let (s68k, program) = assemble("memory", "    nop\n");
-    let interpreter = s68k.create_interpreter(
-        program,
+    let interpreter = Interpreter::new(
+        assemble("memory", "    nop\n"),
         Some(InterpreterOptions {
             keep_history: false,
             history_size: 0,
@@ -1383,15 +1399,16 @@ fn memory_hash_covers_the_whole_address_space() {
     );
 }
 
-/// Memory starts as `$ff` and `ds` only zeroes an eighth of the space it
-/// reserves, so the rest of a `ds` block reads back as `$ff`.
+/// `ds` reserves memory and writes nothing to it, and memory starts as `$ff`,
+/// so a `ds` block reads back as `$ff` throughout.
 ///
-/// `tests/corpus/README.md` records the `ds` bug as an assembly fixture, in the
-/// `zeroed` counts; this is the part of it a running program can see, and the
-/// memory hash of every execution fixture carries the same fill. Both change
-/// when `ds` is fixed.
+/// This is the running half of the `ds` fix of `tests/corpus/README.md`: the
+/// assembly fixtures record it as `reserved` where 1.4.2 wrote a `zeroed`
+/// count of an eighth of the block, and the memory hash of every execution
+/// fixture of a program with a `ds` in it carries the same change. On 1.4.2
+/// this program printed `0,255`.
 #[test]
-fn ds_zeroes_less_than_it_reserves() {
+fn ds_reserves_memory_without_writing_it() {
     let source = "\
     ORG $1000
 start:
@@ -1412,6 +1429,6 @@ start:
     ORG $2000
 buf: ds.b 8
 ";
-    // The first byte of the eight is zeroed, the eighth still holds the fill.
-    assert_eq!(run("ds", source, RUN_LIMIT).output, "0,255");
+    // Neither the first byte of the eight nor the eighth is written.
+    assert_eq!(run("ds", source, RUN_LIMIT).output, "255,255");
 }

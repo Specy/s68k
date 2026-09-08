@@ -1,0 +1,46 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/invalid_addressing_mode.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "invalid_addressing_mode",
+    "message": "the first operand of `clr` cannot be an address register",
+    "hint": "`suba.l a0,a0` clears an address register; there it takes Dn, (An), (An)+, -(An), d(An), d(An,Xn) or Ea/<label>",
+    "location": {
+      "file": "invalid_addressing_mode.asm",
+      "line": 1,
+      "column": 8,
+      "endColumn": 10
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "invalid_addressing_mode",
+    "message": "the first operand of `divu` cannot be an address register",
+    "hint": "an address register holds an address; move it into a data register first; there it takes Dn, (An), (An)+, -(An), d(An), d(An,Xn), Ea/<label> or Im",
+    "location": {
+      "file": "invalid_addressing_mode.asm",
+      "line": 2,
+      "column": 9,
+      "endColumn": 11
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "invalid_addressing_mode",
+    "message": "the first operand of `jmp` cannot be a postincrement operand",
+    "hint": "there it takes (An), d(An), d(An,Xn) or Ea/<label>",
+    "location": {
+      "file": "invalid_addressing_mode.asm",
+      "line": 3,
+      "column": 8,
+      "endColumn": 13
+    },
+    "related": []
+  }
+]

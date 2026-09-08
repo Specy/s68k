@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/both_operands_in_memory.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "both_operands_in_memory",
+    "message": "`add` cannot read and write memory in one instruction",
+    "hint": "one of the two operands has to be a register; load one of them first",
+    "location": {
+      "file": "both_operands_in_memory.asm",
+      "line": 1,
+      "column": 10,
+      "endColumn": 19
+    },
+    "related": []
+  }
+]

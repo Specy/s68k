@@ -2767,15 +2767,15 @@ expression: fixture
     },
     {
       "address": "$1925",
-      "zeroed": 6
+      "reserved": 48
     },
     {
       "address": "$1955",
-      "zeroed": 1
+      "reserved": 8
     },
     {
       "address": "$195d",
-      "zeroed": 0
+      "reserved": 1
     }
   ],
   "labels": {

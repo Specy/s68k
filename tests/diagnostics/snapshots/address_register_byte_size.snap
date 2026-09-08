@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/address_register_byte_size.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "address_register_byte_size",
+    "message": "`move.b` uses an address register, and an address register is never used one byte at a time",
+    "hint": "use `.w` or `.l`",
+    "location": {
+      "file": "address_register_byte_size.asm",
+      "line": 2,
+      "column": 14,
+      "endColumn": 16
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "address_register_byte_size",
+    "message": "`cmp.b` uses an address register, and an address register is never used one byte at a time",
+    "hint": "use `.w` or `.l`",
+    "location": {
+      "file": "address_register_byte_size.asm",
+      "line": 4,
+      "column": 10,
+      "endColumn": 12
+    },
+    "related": []
+  }
+]
