@@ -7,8 +7,8 @@ input_file: tests/diagnostics/bare_comment.asm
   {
     "severity": "suggestion",
     "code": "bare_comment",
-    "message": "this is EASy68K's comment field; s68k reads it as a comment",
-    "hint": "start comments with `;` to say so",
+    "message": "This is EASy68K's comment field; s68k reads it as a comment.",
+    "hint": "Start comments with `;` to say so",
     "location": {
       "file": "bare_comment.asm",
       "line": 1,

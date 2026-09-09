@@ -7,8 +7,8 @@ input_file: tests/diagnostics/register_in_expression.asm
   {
     "severity": "error",
     "code": "register_in_expression",
-    "message": "`a0` is a register; an expression holds no registers",
-    "hint": "an expression is computed while assembling, when no register has a value yet",
+    "message": "`a0` is a register; an expression holds no registers.",
+    "hint": "An expression is computed while assembling, when no register has a value yet",
     "location": {
       "file": "register_in_expression.asm",
       "line": 1,

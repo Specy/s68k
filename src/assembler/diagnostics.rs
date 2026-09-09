@@ -829,86 +829,98 @@ impl DiagnosticKind {
     pub fn message(&self) -> String {
         match self {
             DiagnosticKind::CharacterAboveLatin1 { character } => {
-                format!("{} cannot be stored: a character is one byte", show(*character))
+                format!(
+                    "{} cannot be stored: a character is one byte.",
+                    capitalize_first(&show(*character))
+                )
             }
-            DiagnosticKind::NonBreakingSpace => "this is a no-break space, not a space".to_string(),
+            DiagnosticKind::NonBreakingSpace => {
+                "This is a no-break space, not a space.".to_string()
+            }
             DiagnosticKind::UnexpectedCharacter { character } => {
-                format!("{} cannot start anything here", show(*character))
+                format!(
+                    "{} cannot start anything here.",
+                    capitalize_first(&show(*character))
+                )
             }
             DiagnosticKind::UnterminatedString { .. } => {
-                "this string is not closed before the end of the line".to_string()
+                "This string is not closed before the end of the line.".to_string()
             }
             DiagnosticKind::InvalidNumber { base, digit } => match digit {
-                Some(digit) => format!("{} is not a {} digit", show(*digit), base.name()),
-                None => format!("`{}` has no digits after it", base.prefix()),
+                Some(digit) => format!(
+                    "{} is not a {} digit.",
+                    capitalize_first(&show(*digit)),
+                    base.name()
+                ),
+                None => format!("`{}` has no digits after it.", base.prefix()),
             },
             DiagnosticKind::NumberTooLarge { text } => {
-                format!("`{text}` does not fit in the 64 bits a value is computed in")
+                format!("`{text}` does not fit in the 64 bits a value is computed in.")
             }
-            DiagnosticKind::UnknownSizeSuffix { suffix } => format!("`.{suffix}` is not a size"),
+            DiagnosticKind::UnknownSizeSuffix { suffix } => format!("`.{suffix}` is not a size."),
             DiagnosticKind::DotInName { name } => {
-                format!("`{name}` holds a dot: a name has none after its first character")
+                format!("`{name}` holds a dot: a name has none after its first character.")
             }
             DiagnosticKind::ReservedNameAsSymbol { name } => {
-                format!("`{name}` is a register name and cannot be a symbol")
+                format!("`{name}` is a register name and cannot be a symbol.")
             }
             DiagnosticKind::TwoLabelsOnOneLine { name } => {
-                format!("`{name}` is a second label on this line")
+                format!("`{name}` is a second label on this line.")
             }
             DiagnosticKind::OperationExpected { found } => {
-                format!("`{found}` is not a mnemonic or a directive")
+                format!("`{found}` is not a mnemonic or a directive.")
             }
-            DiagnosticKind::EmptyLabel => "there is no name before this `:`".to_string(),
+            DiagnosticKind::EmptyLabel => "There is no name before this `:`.".to_string(),
             DiagnosticKind::OperandExpected => {
-                "an operand was expected after this comma".to_string()
+                "An operand was expected after this comma.".to_string()
             }
-            DiagnosticKind::UnclosedParenthesis => "this `(` is never closed".to_string(),
+            DiagnosticKind::UnclosedParenthesis => "This `(` is never closed.".to_string(),
             DiagnosticKind::NestingTooDeep { limit } => {
-                format!("this operand nests more than {limit} levels deep and is not read further")
+                format!("This operand nests more than {limit} levels deep and is not read further.")
             }
             DiagnosticKind::MalformedOperand { shape, problem } => format!(
-                "this looks like {}, `{}`, but {problem}",
+                "This looks like {}, `{}`, but {problem}.",
                 shape.description(),
                 shape.example()
             ),
             DiagnosticKind::UnexpectedTokenInOperand { found } => {
-                format!("`{found}` was not expected here")
+                format!("`{found}` was not expected here.")
             }
             DiagnosticKind::RegisterExpectedInRegisterList { after } => {
-                format!("a register was expected after `{after}`")
+                format!("A register was expected after `{after}`.")
             }
             DiagnosticKind::RegisterRangeOutOfOrder { from, to } => format!(
-                "`{from}-{to}` runs backwards: a range goes from the lower register to the higher one, in the order `d0`-`d7`, `a0`-`a7`"
+                "`{from}-{to}` runs backwards: a range goes from the lower register to the higher one, in the order `d0`-`d7`, `a0`-`a7`."
             ),
             DiagnosticKind::RegisterInExpression { register } => {
-                format!("`{register}` is a register; an expression holds no registers")
+                format!("`{register}` is a register; an expression holds no registers.")
             }
             DiagnosticKind::UnterminatedMacroDefinition => {
-                "this macro definition is never closed".to_string()
+                "This macro definition is never closed.".to_string()
             }
             DiagnosticKind::ExpressionExpected { after } => {
-                format!("an expression was expected after `{after}`")
+                format!("An expression was expected after `{after}`.")
             }
             DiagnosticKind::PlusIsNotAUnaryOperator { .. } => {
-                "`+` is not a unary operator".to_string()
+                "`+` is not a unary operator.".to_string()
             }
             DiagnosticKind::ExpressionSplitBySpace { operator, .. } => format!(
-                "the operand field ended at the space before `{operator}`; an expression contains no whitespace"
+                "The operand field ended at the space before `{operator}`; an expression contains no whitespace."
             ),
             DiagnosticKind::BareComment => {
-                "this is EASy68K's comment field; s68k reads it as a comment".to_string()
+                "This is EASy68K's comment field; s68k reads it as a comment.".to_string()
             }
             DiagnosticKind::SpaceBeforeComma => {
-                "the operand field continues past this space because a comma follows it".to_string()
+                "The operand field continues past this space because a comma follows it.".to_string()
             }
             DiagnosticKind::DoubleQuotedString => {
-                "EASy68K writes strings in single quotes".to_string()
+                "EASy68K writes strings in single quotes.".to_string()
             }
             DiagnosticKind::UnknownMnemonic { name, .. } => {
-                format!("`{name}` is not an instruction or a directive")
+                format!("`{name}` is not an instruction or a directive.")
             }
             DiagnosticKind::MnemonicUsedAsLabel { name } => {
-                format!("`{name}` in column 1 is the instruction `{name}`, not a label")
+                format!("`{name}` in column 1 is the instruction `{name}`, not a label.")
             }
             DiagnosticKind::WrongOperandCount {
                 mnemonic,
@@ -917,18 +929,18 @@ impl DiagnosticKind {
                 at_least,
             } => match at_least {
                 true => format!(
-                    "`{mnemonic}` takes at least {}, and this line has {}",
+                    "`{mnemonic}` takes at least {}, and this line has {}.",
                     value_count(expected.first().copied().unwrap_or(1)),
                     count(*found)
                 ),
                 false => format!(
-                    "`{mnemonic}` takes {}, and this line has {}",
+                    "`{mnemonic}` takes {}, and this line has {}.",
                     operand_count(expected),
                     count(*found)
                 ),
             },
             DiagnosticKind::MissingCommaBetweenOperands { operand, .. } => format!(
-                "the operand field ended at the space before `{operand}`, and `{operand}` was read as a comment"
+                "The operand field ended at the space before `{operand}`, and `{operand}` was read as a comment."
             ),
             DiagnosticKind::InvalidAddressingMode {
                 mnemonic,
@@ -936,29 +948,29 @@ impl DiagnosticKind {
                 found,
                 ..
             } => format!(
-                "the {} operand of `{mnemonic}` cannot be {found}",
+                "The {} operand of `{mnemonic}` cannot be {found}.",
                 ordinal(*position)
             ),
             DiagnosticKind::InvalidOperandPair {
                 mnemonic, found, ..
             } => format!(
                 "`{mnemonic}` takes two data registers or two predecrement operands, and this \
-                 line has {found}"
+                 line has {found}."
             ),
             DiagnosticKind::BothOperandsInMemory { mnemonic } => {
-                format!("`{mnemonic}` cannot read and write memory in one instruction")
+                format!("`{mnemonic}` cannot read and write memory in one instruction.")
             }
             DiagnosticKind::AddressRegisterByteSize { mnemonic } => format!(
-                "`{mnemonic}.b` uses an address register, and an address register is never used one byte at a time"
+                "`{mnemonic}.b` uses an address register, and an address register is never used one byte at a time."
             ),
             DiagnosticKind::UnimplementedAddressingMode {
                 operand,
                 description,
                 ..
-            } => format!("`{operand}` is {description}, which s68k does not assemble"),
+            } => format!("`{operand}` is {description}, which s68k does not assemble."),
             DiagnosticKind::InvalidAddressWidth { address, size } => format!(
                 "`{size}` after `{address}` forces the width of the address, and an address is \
-                 forced to `.w` or `.l`"
+                 forced to `.w` or `.l`."
             ),
             DiagnosticKind::ValueOutOfRange {
                 subject,
@@ -966,92 +978,95 @@ impl DiagnosticKind {
                 min,
                 max,
                 ..
-            } => format!("{subject} is {min} to {max}, and `{value}` is outside it"),
+            } => format!(
+                "{} is {min} to {max}, and `{value}` is outside it.",
+                capitalize_first(subject)
+            ),
             DiagnosticKind::BareNumberAsAddress { value } => format!(
-                "`{value}` here means the contents of address {value}, not the number {value}"
+                "`{value}` here means the contents of address {value}, not the number {value}."
             ),
             DiagnosticKind::StarIsTheCurrentAddress { mnemonic } => format!(
-                "the `*` after `{mnemonic}` is the current address, not the start of a comment"
+                "The `*` after `{mnemonic}` is the current address, not the start of a comment."
             ),
             DiagnosticKind::InvalidSize {
                 mnemonic, size, ..
-            } => format!("`{size}` is not a size for `{mnemonic}`"),
+            } => format!("`{size}` is not a size for `{mnemonic}`."),
             DiagnosticKind::ImmediateOutOfRange { value, size, .. } => {
-                format!("`#{value}` does not fit in a {size}")
+                format!("`#{value}` does not fit in a {size}.")
             }
             DiagnosticKind::UnimplementedOperation { name, reason, .. } => {
-                format!("`{name}` is not implemented: {reason}")
+                format!("`{name}` is not implemented: {reason}.")
             }
             DiagnosticKind::SymbolAlreadyDefined { name } => {
-                format!("`{name}` is already defined")
+                format!("`{name}` is already defined.")
             }
-            DiagnosticKind::UndefinedSymbol { name, .. } => format!("`{name}` is not defined"),
+            DiagnosticKind::UndefinedSymbol { name, .. } => format!("`{name}` is not defined."),
             DiagnosticKind::ForwardReferenceNotAllowed { name, directive } => format!(
-                "`{directive}` cannot use `{name}`, which is defined further down"
+                "`{directive}` cannot use `{name}`, which is defined further down."
             ),
-            DiagnosticKind::DivisionByZero => "this expression divides by zero".to_string(),
+            DiagnosticKind::DivisionByZero => "This expression divides by zero.".to_string(),
             DiagnosticKind::CharacterLiteralTooLong { text, characters } => format!(
-                "`{text}` is {characters} characters, and a character literal holds at most four"
+                "`{text}` is {characters} characters, and a character literal holds at most four."
             ),
             DiagnosticKind::ConstantAbove32Bits { text, .. } => {
-                format!("`{text}` does not fit in the 32 bits this machine works in")
+                format!("`{text}` does not fit in the 32 bits this machine works in.")
             }
             DiagnosticKind::RegisterListInExpression { name } => format!(
-                "`{name}` stands for a register list, and an expression holds no register list"
+                "`{name}` stands for a register list, and an expression holds no register list."
             ),
             DiagnosticKind::OddOrigin { address } => format!(
-                "`${address:x}` is an odd address, and an instruction or a word starts on an even one"
+                "`${address:x}` is an odd address, and an instruction or a word starts on an even one."
             ),
             DiagnosticKind::AddressUsedTwice { address } => {
-                format!("this line is laid out over `${address:x}`, which is already used")
+                format!("This line is laid out over `${address:x}`, which is already used.")
             }
             DiagnosticKind::CodeAfterEnd => {
-                "this line comes after `end` and is not assembled".to_string()
+                "This line comes after `end` and is not assembled.".to_string()
             }
             DiagnosticKind::EntryPointCase { written, found } => format!(
-                "`{written}` is not defined, `{found}` is, and the program starts at `{found}`"
+                "`{written}` is not defined, `{found}` is, and the program starts at `{found}`."
             ),
             DiagnosticKind::EndWithoutAnAddress => {
-                "`end` says where the program starts, and this one says no address".to_string()
+                "`end` says where the program starts, and this one says no address.".to_string()
             }
             DiagnosticKind::DirectiveNeedsALabel { directive } if directive == "section" => {
                 "`section` with no number sets a name to the number of the section in force, \
-                 and this line has no name"
+                 and this line has no name."
                     .to_string()
             }
             DiagnosticKind::DirectiveNeedsALabel { directive } => {
-                format!("`{directive}` gives a name to something, and this line has no name")
+                format!("`{directive}` gives a name to something, and this line has no name.")
             }
             DiagnosticKind::LabelNotAllowed { directive, name } => {
-                format!("`{directive}` takes no label, and this line declares `{name}`")
+                format!("`{directive}` takes no label, and this line declares `{name}`.")
             }
             DiagnosticKind::RegisterListExpected { found } => {
-                format!("`reg` names a register list, and this is {found}")
+                format!("`reg` names a register list, and this is {found}.")
             }
             DiagnosticKind::NotARegisterList { name, kind } => {
-                format!("`{name}` is {kind}, not a register list")
+                format!("`{name}` is {kind}, not a register list.")
             }
             DiagnosticKind::RegisterListNotDefinedYet { name } => format!(
                 "`{name}` is a register list defined further down, and a register list has to be \
-                 defined before it is used"
+                 defined before it is used."
             ),
             DiagnosticKind::UserDefinedError { message, .. } => message.clone(),
             DiagnosticKind::NoBytesInAnOffsetRegion { item } => {
-                format!("an `offset` region produces no bytes, and {item} produces some")
+                format!("An `offset` region produces no bytes, and {item} produces some.")
             }
             DiagnosticKind::ValueExpected {
                 directive,
                 found,
                 ..
             } => {
-                format!("`{directive}` takes a value, and this is {found}")
+                format!("`{directive}` takes a value, and this is {found}.")
             }
             DiagnosticKind::UnreadableFile { path, binary, .. } => match binary {
-                true => format!("`{path}` holds bytes, not source"),
-                false => format!("there is no file named `{path}` in this project"),
+                true => format!("`{path}` holds bytes, not source."),
+                false => format!("There is no file named `{path}` in this project."),
             },
             DiagnosticKind::IncludeCycle { path, chain } => format!(
-                "`{path}` is already being included: {}",
+                "`{path}` is already being included: {}.",
                 chain.join(" -> ")
             ),
             DiagnosticKind::IncludeTooDeep {
@@ -1059,13 +1074,13 @@ impl DiagnosticKind {
                 limit,
                 nesting,
             } => match nesting {
-                true => format!("`{path}` would be included more than {limit} files deep"),
+                true => format!("`{path}` would be included more than {limit} files deep."),
                 false => {
-                    format!("including `{path}` would take this assembly past {limit} lines")
+                    format!("Including `{path}` would take this assembly past {limit} lines.")
                 }
             },
             DiagnosticKind::EndInAnIncludedFile { entry } => {
-                format!("`end` belongs in the entry file, `{entry}`")
+                format!("`end` belongs in the entry file, `{entry}`.")
             }
         }
     }
@@ -1075,84 +1090,84 @@ impl DiagnosticKind {
         match self {
             DiagnosticKind::CharacterAboveLatin1 { character } => {
                 Some(match look_alike(*character) {
-                    Some(plain) => format!("write `{plain}`"),
+                    Some(plain) => format!("Write `{plain}`"),
                     None => {
-                        "a character is one Latin-1 byte, so its code is 255 at most".to_string()
+                        "A character is one Latin-1 byte, so its code is 255 at most".to_string()
                     }
                 })
             }
             DiagnosticKind::NonBreakingSpace => {
-                Some("replace it with a space; a paste from a web page leaves it".to_string())
+                Some("Replace it with a space; a paste from a web page leaves it".to_string())
             }
             DiagnosticKind::UnterminatedString { quote } => {
                 let quote = quote.character();
                 Some(format!(
-                    "add the closing `{quote}`; `{quote}{quote}` writes a quote inside a string"
+                    "Add the closing `{quote}`; `{quote}{quote}` writes a quote inside a string"
                 ))
             }
             DiagnosticKind::InvalidNumber { base, .. } => {
-                Some(format!("{} digits are {}", base.name(), base.digits()))
+                Some(format!("{} digits are {}", capitalize_first(base.name()), base.digits()))
             }
             DiagnosticKind::NumberTooLarge { .. } => Some(
-                "a value is computed in 64 bits and checked against the operand's size".to_string(),
+                "A value is computed in 64 bits and checked against the operand's size".to_string(),
             ),
             DiagnosticKind::UnknownSizeSuffix { .. } => {
-                Some("sizes are `.b`, `.w`, `.l`, and `.s` on branches".to_string())
+                Some("Sizes are `.b`, `.w`, `.l`, and `.s` on branches".to_string())
             }
             DiagnosticKind::DotInName { name } => Some(format!(
-                "write `{}`; a dot after a name is a size, `.b`, `.w`, `.l` or `.s`",
+                "Write `{}`; a dot after a name is a size, `.b`, `.w`, `.l` or `.s`",
                 name.replace('.', "_")
             )),
             DiagnosticKind::ReservedNameAsSymbol { name } => {
-                Some(format!("pick another name, such as `{name}_value`"))
+                Some(format!("Pick another name, such as `{name}_value`"))
             }
             DiagnosticKind::TwoLabelsOnOneLine { name } => {
-                Some(format!("one label to a line; put `{name}:` on its own"))
+                Some(format!("One label to a line; put `{name}:` on its own"))
             }
-            DiagnosticKind::EmptyLabel => Some("a label is a name, then the colon".to_string()),
+            DiagnosticKind::EmptyLabel => Some("A label is a name, then the colon".to_string()),
             DiagnosticKind::OperandExpected => {
-                Some("remove the comma if the operand list ends here".to_string())
+                Some("Remove the comma if the operand list ends here".to_string())
             }
-            DiagnosticKind::UnclosedParenthesis => Some("add the `)`".to_string()),
+            DiagnosticKind::UnclosedParenthesis => Some("Add the `)`".to_string()),
             DiagnosticKind::NestingTooDeep { .. } => Some(
-                "no expression needs to nest that deep; check for a `)` that is missing"
+                "No expression needs to nest that deep; check for a `)` that is missing"
                     .to_string(),
             ),
             DiagnosticKind::UnexpectedTokenInOperand { found } => Some(if found == ")" {
-                "there is no `(` for this `)`".to_string()
+                "There is no `(` for this `)`".to_string()
             } else {
-                "an operand ends at a comma or at the end of the operand field".to_string()
+                "An operand ends at a comma or at the end of the operand field".to_string()
             }),
             DiagnosticKind::RegisterExpectedInRegisterList { .. } => {
-                Some("a register list reads `d0-d3/a0-a2`".to_string())
+                Some("A register list reads `d0-d3/a0-a2`".to_string())
             }
             DiagnosticKind::RegisterRangeOutOfOrder { from, to } => {
-                Some(format!("write `{to}-{from}`"))
+                Some(format!("Write `{to}-{from}`"))
             }
             DiagnosticKind::RegisterInExpression { .. } => Some(
-                "an expression is computed while assembling, when no register has a value yet"
+                "An expression is computed while assembling, when no register has a value yet"
                     .to_string(),
             ),
             DiagnosticKind::UnterminatedMacroDefinition => {
-                Some("macro definitions end with `endm`".to_string())
+                Some("Macro definitions end with `endm`".to_string())
             }
             DiagnosticKind::PlusIsNotAUnaryOperator { term } => Some(if term.is_empty() {
-                "the unary operators are `-` and `~`".to_string()
+                "The unary operators are `-` and `~`".to_string()
             } else {
-                format!("write `{term}`; the unary operators are `-` and `~`")
+                format!("Write `{term}`; the unary operators are `-` and `~`")
             }),
             DiagnosticKind::ExpressionSplitBySpace {
                 joined,
                 bare_comment,
                 ..
             } => Some(if *bare_comment {
-                format!("write `{joined}`, or start a comment with `;`")
+                format!("Write `{joined}`, or start a comment with `;`")
             } else {
-                format!("write `{joined}`")
+                format!("Write `{joined}`")
             }),
-            DiagnosticKind::BareComment => Some("start comments with `;` to say so".to_string()),
+            DiagnosticKind::BareComment => Some("Start comments with `;` to say so".to_string()),
             DiagnosticKind::SpaceBeforeComma => {
-                Some("remove the space; if the comma starts a comment, write `;` first".to_string())
+                Some("Remove the space; if the comma starts a comment, write `;` first".to_string())
             }
             DiagnosticKind::DoubleQuotedString => Some("`'Hello'` assembles in both".to_string()),
             DiagnosticKind::UnknownMnemonic {
@@ -1164,54 +1179,65 @@ impl DiagnosticKind {
                     format!("start it in column 1, or end it with a colon, if `{name}` is a label");
                 match (suggestion, could_be_label) {
                     (Some(suggestion), true) => {
-                        Some(format!("did you mean `{suggestion}`? {label_hint}"))
+                        Some(format!("Did you mean `{suggestion}`? {label_hint}"))
                     }
-                    (Some(suggestion), false) => Some(format!("did you mean `{suggestion}`?")),
-                    (None, true) => Some(label_hint),
+                    (Some(suggestion), false) => Some(format!("Did you mean `{suggestion}`?")),
+                    (None, true) => Some(capitalize_first(&label_hint)),
                     (None, false) => None,
                 }
             }
             DiagnosticKind::MnemonicUsedAsLabel { name } => {
-                Some(format!("write `{name}:` if `{name}` is a label"))
+                Some(format!("Write `{name}:` if `{name}` is a label"))
             }
             DiagnosticKind::InvalidAddressingMode {
                 allowed, suggestion, ..
-            } => match (suggestion, allowed.is_empty()) {
-                (Some(suggestion), true) => Some(suggestion.clone()),
-                (Some(suggestion), false) => {
-                    Some(format!("{suggestion}; there it takes {}", list(allowed)))
+            } => {
+                let allowed_info = if !allowed.is_empty() {
+                    Some(format!("The operand should be {}", list(allowed)))
+                } else {
+                    None
+                };
+                match (allowed_info, suggestion) {
+                    (Some(modes), Some(sugg)) => {
+                        Some(format!("{modes}. {}", capitalize_first(sugg)))
+                    }
+                    (Some(modes), None) => Some(modes),
+                    (None, Some(sugg)) => Some(capitalize_first(sugg)),
+                    (None, None) => None,
                 }
-                (None, true) => None,
-                (None, false) => Some(format!("there it takes {}", list(allowed))),
-            },
+            }
             DiagnosticKind::MissingCommaBetweenOperands { operand, previous } => {
                 Some(match previous {
-                    Some(previous) => format!("write `{previous},{operand}`"),
-                    None => "operands are written as one list, separated by commas".to_string(),
+                    Some(previous) => format!("Write `{previous},{operand}`"),
+                    None => "Operands are written as one list, separated by commas".to_string(),
                 })
             }
             DiagnosticKind::InvalidOperandPair {
                 mnemonic, advice, ..
             } => Some(match advice {
                 Some(advice) => format!(
-                    "write `{mnemonic} d0,d1` or `{mnemonic} -(a0),-(a1)`; {advice}"
+                    "Write `{mnemonic} d0,d1` or `{mnemonic} -(a0),-(a1)`; {advice}"
                 ),
-                None => format!("write `{mnemonic} d0,d1` or `{mnemonic} -(a0),-(a1)`"),
+                None => format!("Write `{mnemonic} d0,d1` or `{mnemonic} -(a0),-(a1)`"),
             }),
             DiagnosticKind::BothOperandsInMemory { .. } => Some(
-                "one of the two operands has to be a register; load one of them first".to_string(),
+                "One of the two operands has to be a register; load one of them first".to_string(),
             ),
             DiagnosticKind::AddressRegisterByteSize { .. } => {
-                Some("use `.w` or `.l`".to_string())
+                Some("Use `.w` or `.l`".to_string())
             }
-            DiagnosticKind::UnimplementedAddressingMode { advice, .. } => advice.clone(),
+            DiagnosticKind::UnimplementedAddressingMode { advice, .. } => {
+                advice.as_ref().map(|a| capitalize_first(a))
+            }
             DiagnosticKind::InvalidAddressWidth { address, .. } => Some(format!(
-                "write `{address}.w` or `{address}.l`, or `{address}` on its own; the size the \
+                "Write `{address}.w` or `{address}.l`, or `{address}` on its own; the size the \
                  instruction works at goes after the mnemonic"
             )),
-            DiagnosticKind::ValueOutOfRange { advice, .. } => advice.clone(),
+            DiagnosticKind::ValueOutOfRange { advice, .. } => {
+                advice.as_ref().map(|a| capitalize_first(a))
+            }
             DiagnosticKind::BareNumberAsAddress { value } => {
-                Some(format!("write `#{value}` for the number itself"))
+                Some(format!("Write `#{value}` for the number itself"))
             }
             DiagnosticKind::StarIsTheCurrentAddress { mnemonic } => Some(format!(
                 "`{mnemonic}` takes no operands, so the `*` is ignored; write `;` to start a comment"
@@ -1224,34 +1250,34 @@ impl DiagnosticKind {
                 format!("`{mnemonic}` takes {}", list(allowed))
             }),
             DiagnosticKind::ImmediateOutOfRange { size, min, max, .. } => {
-                Some(format!("a {size} immediate holds {min} to {max}"))
+                Some(format!("A {size} immediate holds {min} to {max}"))
             }
             DiagnosticKind::UnimplementedOperation { alternative, .. } => alternative
                 .as_ref()
-                .map(|alternative| format!("write {alternative} instead")),
+                .map(|alternative| format!("Write {alternative} instead")),
             DiagnosticKind::SymbolAlreadyDefined { .. } => Some(
-                "a name is defined once; `set` defines a symbol that may be redefined".to_string(),
+                "A name is defined once; `set` defines a symbol that may be redefined".to_string(),
             ),
             DiagnosticKind::UndefinedSymbol { name, suggestion } => Some(match suggestion {
                 // A miscounted register is not a symbol anyone meant to
                 // define, so it is answered before the "did you mean" of the
                 // symbol table, which cannot reach a register name in any case.
                 _ if numbered_register(name) => {
-                    "the data registers are `d0` to `d7` and the address registers `a0` to `a7`"
+                    "The data registers are `d0` to `d7` and the address registers `a0` to `a7`"
                         .to_string()
                 }
-                Some(suggestion) => format!("did you mean `{suggestion}`?"),
-                None => format!("define `{name}` with a label or with `equ`"),
+                Some(suggestion) => format!("Did you mean `{suggestion}`?"),
+                None => format!("Define `{name}` with a label or with `equ`"),
             }),
             DiagnosticKind::ForwardReferenceNotAllowed { directive, .. } => Some(format!(
                 "`{directive}` decides where the program goes, so move the definition above it"
             )),
             DiagnosticKind::CharacterLiteralTooLong { text, .. } => Some(format!(
-                "four characters are a long, and this one is worth its last four; write \
+                "Four characters are a long, and this one is worth its last four; write \
                  `dc.b {text}` and use its address for the whole of it"
             )),
             DiagnosticKind::ConstantAbove32Bits { .. } => Some(
-                "a 32-bit value goes up to 4294967295, `$ffffffff`; the value is kept whole and \
+                "A 32-bit value goes up to 4294967295, `$ffffffff`; the value is kept whole and \
                  checked against the size it is used at"
                     .to_string(),
             ),
@@ -1259,20 +1285,20 @@ impl DiagnosticKind {
                 "`{name}` is the register list operand of `movem` and nothing else"
             )),
             DiagnosticKind::OddOrigin { address } => Some(format!(
-                "the next item is laid out at `${:x}`",
+                "The next item is laid out at `${:x}`",
                 address.wrapping_add(1)
             )),
             DiagnosticKind::AddressUsedTwice { .. } => Some(
-                "move one of the two with `org`, or make what comes before it shorter".to_string(),
+                "Move one of the two with `org`, or make what comes before it shorter".to_string(),
             ),
             DiagnosticKind::CodeAfterEnd => {
                 Some("`end` is the last line the assembler reads".to_string())
             }
             DiagnosticKind::EntryPointCase { found, .. } => Some(format!(
-                "symbols are case sensitive here, so write `end {found}`"
+                "Symbols are case sensitive here, so write `end {found}`"
             )),
             DiagnosticKind::EndWithoutAnAddress => Some(
-                "write the label the program starts at, `end START`; without one it starts at a \
+                "Write the label the program starts at, `end START`; without one it starts at a \
                  label named `START`, or at the first instruction"
                     .to_string(),
             ),
@@ -1282,28 +1308,28 @@ impl DiagnosticKind {
             // name, `count section …`" would offer the shape that removes the
             // requirement.
             DiagnosticKind::DirectiveNeedsALabel { directive } if directive == "section" => Some(
-                "write the name in the first column, `here section`, or write the number, \
+                "Write the name in the first column, `here section`, or write the number, \
                  `section 1`"
                     .to_string(),
             ),
             DiagnosticKind::DirectiveNeedsALabel { directive } => Some(format!(
-                "write the name in the first column, `count {directive} …`"
+                "Write the name in the first column, `count {directive} …`"
             )),
             DiagnosticKind::LabelNotAllowed { name, .. } => Some(format!(
-                "put `{name}:` on a line of its own if it is meant to name the address here"
+                "Put `{name}:` on a line of its own if it is meant to name the address here"
             )),
             DiagnosticKind::RegisterListExpected { .. } => {
-                Some("write the registers themselves, `regs reg d0-d3/a0-a2`".to_string())
+                Some("Write the registers themselves, `regs reg d0-d3/a0-a2`".to_string())
             }
             DiagnosticKind::NotARegisterList { name, .. } => Some(format!(
                 "`movem` reads a name here only when `reg` defined it, as in \
                  `{name} reg d0-d3/a0-a2`"
             )),
             DiagnosticKind::RegisterListNotDefinedYet { name } => Some(format!(
-                "move the `{name} reg …` line above this one"
+                "Move the `{name} reg …` line above this one"
             )),
             DiagnosticKind::UserDefinedError { written, .. } => Some(match written {
-                true => "this is the message of the `fail` directive on this line, and not \
+                true => "This is the message of the `fail` directive on this line, and not \
                          something the assembler found"
                     .to_string(),
                 false => "`fail` reports the rest of its line as an error; write the message \
@@ -1311,13 +1337,13 @@ impl DiagnosticKind {
                     .to_string(),
             }),
             DiagnosticKind::NoBytesInAnOffsetRegion { .. } => Some(
-                "an `offset` region names the fields of a structure with `ds`; write `org *` \
+                "An `offset` region names the fields of a structure with `ds`; write `org *` \
                  below them to end it and assemble code again"
                     .to_string(),
             ),
-            DiagnosticKind::ValueExpected { advice, .. } => Some(advice.clone().unwrap_or_else(
+            DiagnosticKind::ValueExpected { advice, .. } => Some(advice.clone().map(|a| capitalize_first(&a)).unwrap_or_else(
                 || {
-                    "a value is a number, a character literal, a symbol or an expression of them"
+                    "A value is a number, a character literal, a symbol or an expression of them"
                         .to_string()
                 },
             )),
@@ -1333,7 +1359,7 @@ impl DiagnosticKind {
                         .to_string(),
                 ),
                 (true, _) => {
-                    Some("the entry file is where the assembler starts, and it has to be \
+                    Some("The entry file is where the assembler starts, and it has to be \
                           source"
                         .to_string())
                 }
@@ -1342,26 +1368,26 @@ impl DiagnosticKind {
                         .iter()
                         .map(|path| format!("`{path}`"))
                         .collect();
-                    Some(format!("did you mean {}?", list(&quoted)))
+                    Some(format!("Did you mean {}?", list(&quoted)))
                 }
-                (false, _) if *alone => Some("this project has no other file to read".to_string()),
+                (false, _) if *alone => Some("This project has no other file to read".to_string()),
                 (false, _) => None,
             },
             DiagnosticKind::IncludeCycle { .. } => Some(
-                "a file may be included more than once, but not inside itself: move the shared \
+                "A file may be included more than once, but not inside itself: move the shared \
                  lines into a third file"
                     .to_string(),
             ),
             DiagnosticKind::IncludeTooDeep { nesting: true, .. } => Some(
-                "s68k stops there; include the files side by side rather than one inside the next"
+                "S68k stops there; include the files side by side rather than one inside the next"
                     .to_string(),
             ),
             DiagnosticKind::IncludeTooDeep { .. } => Some(
-                "s68k stops there; a file included many times over is assembled every time"
+                "S68k stops there; a file included many times over is assembled every time"
                     .to_string(),
             ),
             DiagnosticKind::EndInAnIncludedFile { .. } => Some(
-                "delete it: an included file ends where its lines end, and the entry point is \
+                "Delete it: an included file ends where its lines end, and the entry point is \
                  the entry file's own `end`"
                     .to_string(),
             ),
@@ -1369,7 +1395,7 @@ impl DiagnosticKind {
                 mnemonic,
                 at_least: true,
                 ..
-            } => Some(format!("write the values after it, `{mnemonic} 1,2,3`")),
+            } => Some(format!("Write the values after it, `{mnemonic} 1,2,3`")),
             DiagnosticKind::WrongOperandCount { .. }
             | DiagnosticKind::UnexpectedCharacter { .. }
             | DiagnosticKind::OperationExpected { .. }
@@ -1432,6 +1458,18 @@ fn look_alike(character: char) -> Option<char> {
         '\u{201C}' | '\u{201D}' => Some('"'),
         '\u{2013}' | '\u{2014}' => Some('-'),
         _ => None,
+    }
+}
+
+/// Capitalise the first character of a string if it is an ASCII letter.
+fn capitalize_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => {
+            let upper = first.to_uppercase();
+            format!("{upper}{}", chars.as_str())
+        }
     }
 }
 
@@ -2074,11 +2112,11 @@ mod tests {
         };
         assert_eq!(
             found.message(),
-            "the second operand of `divu` cannot be an immediate"
+            "The second operand of `divu` cannot be an immediate."
         );
         assert_eq!(
             found.hint(),
-            Some("there it takes a data register or an indirect operand".to_string())
+            Some("The operand should be a data register or an indirect operand".to_string())
         );
 
         let malformed = DiagnosticKind::MalformedOperand {
@@ -2087,13 +2125,13 @@ mod tests {
         };
         assert_eq!(
             malformed.message(),
-            "this looks like an indexed operand, `4(a0,d1.w)`, but the `)` is missing"
+            "This looks like an indexed operand, `4(a0,d1.w)`, but the `)` is missing."
         );
 
         let look_alike = DiagnosticKind::CharacterAboveLatin1 {
             character: '\u{2019}',
         };
-        assert_eq!(look_alike.hint(), Some("write `'`".to_string()));
+        assert_eq!(look_alike.hint(), Some("Write `'`".to_string()));
 
         let unknown = DiagnosticKind::UnknownMnemonic {
             name: "loop".to_string(),
@@ -2102,7 +2140,7 @@ mod tests {
         };
         assert_eq!(
             unknown.hint(),
-            Some("start it in column 1, or end it with a colon, if `loop` is a label".to_string())
+            Some("Start it in column 1, or end it with a colon, if `loop` is a label".to_string())
         );
     }
 
@@ -2120,7 +2158,7 @@ mod tests {
             assert_eq!(
                 kind.hint(),
                 Some(
-                    "the data registers are `d0` to `d7` and the address registers `a0` to `a7`"
+                    "The data registers are `d0` to `d7` and the address registers `a0` to `a7`"
                         .to_string()
                 ),
                 "`{name}` is a miscounted register, whatever else is defined"
@@ -2134,7 +2172,7 @@ mod tests {
             name: "cont".to_string(),
             suggestion: Some("count".to_string()),
         };
-        assert_eq!(ordinary.hint(), Some("did you mean `count`?".to_string()));
+        assert_eq!(ordinary.hint(), Some("Did you mean `count`?".to_string()));
     }
 
     #[test]
@@ -2142,7 +2180,7 @@ mod tests {
         let kind = DiagnosticKind::UnexpectedCharacter { character: '\u{1}' };
         assert_eq!(
             kind.message(),
-            "the character $01 cannot start anything here"
+            "The character $01 cannot start anything here."
         );
     }
 
@@ -2161,8 +2199,8 @@ mod tests {
             serde_json::json!({
                 "severity": "error",
                 "code": "symbol_already_defined",
-                "message": "`count` is already defined",
-                "hint": "a name is defined once; `set` defines a symbol that may be redefined",
+                "message": "`count` is already defined.",
+                "hint": "A name is defined once; `set` defines a symbol that may be redefined",
                 "location": {
                     "file": "main.m68k",
                     "line": 12,

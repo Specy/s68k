@@ -7,8 +7,8 @@ input_file: tests/diagnostics/character_above_latin1.asm
   {
     "severity": "error",
     "code": "character_above_latin1",
-    "message": "`‘` cannot be stored: a character is one byte",
-    "hint": "write `'`",
+    "message": "`‘` cannot be stored: a character is one byte.",
+    "hint": "Write `'`",
     "location": {
       "file": "character_above_latin1.asm",
       "line": 1,

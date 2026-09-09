@@ -7,8 +7,8 @@ input_file: tests/diagnostics/label_not_allowed.asm
   {
     "severity": "error",
     "code": "label_not_allowed",
-    "message": "`page` takes no label, and this line declares `heading`",
-    "hint": "put `heading:` on a line of its own if it is meant to name the address here",
+    "message": "`page` takes no label, and this line declares `heading`.",
+    "hint": "Put `heading:` on a line of its own if it is meant to name the address here",
     "location": {
       "file": "label_not_allowed.asm",
       "line": 2,
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/label_not_allowed.asm
   {
     "severity": "error",
     "code": "label_not_allowed",
-    "message": "`ifeq` takes no label, and this line declares `skip`",
-    "hint": "put `skip:` on a line of its own if it is meant to name the address here",
+    "message": "`ifeq` takes no label, and this line declares `skip`.",
+    "hint": "Put `skip:` on a line of its own if it is meant to name the address here",
     "location": {
       "file": "label_not_allowed.asm",
       "line": 7,
@@ -33,8 +33,8 @@ input_file: tests/diagnostics/label_not_allowed.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`ifeq` is not implemented: conditional assembly is not implemented",
-    "hint": "write the lines the condition would have kept instead",
+    "message": "`ifeq` is not implemented: conditional assembly is not implemented.",
+    "hint": "Write the lines the condition would have kept instead",
     "location": {
       "file": "label_not_allowed.asm",
       "line": 7,
@@ -46,8 +46,8 @@ input_file: tests/diagnostics/label_not_allowed.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endc` is not implemented: conditional assembly is not implemented",
-    "hint": "write the lines the condition would have kept instead",
+    "message": "`endc` is not implemented: conditional assembly is not implemented.",
+    "hint": "Write the lines the condition would have kept instead",
     "location": {
       "file": "label_not_allowed.asm",
       "line": 8,

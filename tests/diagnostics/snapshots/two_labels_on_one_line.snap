@@ -7,8 +7,8 @@ input_file: tests/diagnostics/two_labels_on_one_line.asm
   {
     "severity": "error",
     "code": "two_labels_on_one_line",
-    "message": "`loop` is a second label on this line",
-    "hint": "one label to a line; put `loop:` on its own",
+    "message": "`loop` is a second label on this line.",
+    "hint": "One label to a line; put `loop:` on its own",
     "location": {
       "file": "two_labels_on_one_line.asm",
       "line": 1,

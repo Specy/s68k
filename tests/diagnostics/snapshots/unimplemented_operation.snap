@@ -7,8 +7,8 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames",
-    "hint": "write `rts` instead",
+    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames.",
+    "hint": "Write `rts` instead",
     "location": {
       "file": "unimplemented_operation.asm",
       "line": 1,
@@ -20,7 +20,7 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`reset` is not implemented: s68k has no external hardware to reset",
+    "message": "`reset` is not implemented: s68k has no external hardware to reset.",
     "hint": null,
     "location": {
       "file": "unimplemented_operation.asm",
@@ -33,8 +33,8 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`trap #3` is not implemented: s68k simulates one trap, `#15`, which is its input and output",
-    "hint": "write `trap #15` instead",
+    "message": "`trap #3` is not implemented: s68k simulates one trap, `#15`, which is its input and output.",
+    "hint": "Write `trap #15` instead",
     "location": {
       "file": "unimplemented_operation.asm",
       "line": 3,
@@ -46,8 +46,8 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`macro` is not implemented: macros are not assembled",
-    "hint": "write the lines of the macro where it is used instead",
+    "message": "`macro` is not implemented: macros are not assembled.",
+    "hint": "Write the lines of the macro where it is used instead",
     "location": {
       "file": "unimplemented_operation.asm",
       "line": 7,
@@ -59,8 +59,8 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled",
-    "hint": "write the lines of the macro here instead",
+    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled.",
+    "hint": "Write the lines of the macro here instead",
     "location": {
       "file": "unimplemented_operation.asm",
       "line": 11,

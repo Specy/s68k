@@ -7,8 +7,8 @@ input_file: tests/diagnostics/non_breaking_space.asm
   {
     "severity": "error",
     "code": "non_breaking_space",
-    "message": "this is a no-break space, not a space",
-    "hint": "replace it with a space; a paste from a web page leaves it",
+    "message": "This is a no-break space, not a space.",
+    "hint": "Replace it with a space; a paste from a web page leaves it",
     "location": {
       "file": "non_breaking_space.asm",
       "line": 1,

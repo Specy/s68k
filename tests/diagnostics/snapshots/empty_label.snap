@@ -7,8 +7,8 @@ input_file: tests/diagnostics/empty_label.asm
   {
     "severity": "error",
     "code": "empty_label",
-    "message": "there is no name before this `:`",
-    "hint": "a label is a name, then the colon",
+    "message": "There is no name before this `:`.",
+    "hint": "A label is a name, then the colon",
     "location": {
       "file": "empty_label.asm",
       "line": 1,

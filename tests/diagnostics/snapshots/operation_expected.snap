@@ -7,7 +7,7 @@ input_file: tests/diagnostics/operation_expected.asm
   {
     "severity": "error",
     "code": "operation_expected",
-    "message": "`5` is not a mnemonic or a directive",
+    "message": "`5` is not a mnemonic or a directive.",
     "hint": null,
     "location": {
       "file": "operation_expected.asm",

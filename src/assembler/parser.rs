@@ -2243,7 +2243,7 @@ mod tests {
             assert_eq!(codes("    move.q d0,d1"), ["unknown_size_suffix"]);
             assert_eq!(codes("    move.ll d0,d1"), ["unknown_size_suffix"]);
             assert_eq!(codes("    move. d0,d1"), ["unknown_size_suffix"]);
-            assert_eq!(messages("    move. d0,d1"), ["`.` is not a size"]);
+            assert_eq!(messages("    move. d0,d1"), ["`.` is not a size."]);
             // In the Operand field one letter is a size and a longer run is a
             // dot inside a name (1.11).
             assert_eq!(shapes("    move.l label.w,d0"), ["label.w", "d0"]);
@@ -2282,7 +2282,7 @@ mod tests {
             );
             assert_eq!(
                 hint("    movem.l d5-d2,-(sp)"),
-                Some("write `d2-d5`".to_string())
+                Some("Write `d2-d5`".to_string())
             );
         }
     }
@@ -2642,7 +2642,7 @@ mod tests {
             assert_eq!(
                 hint("    move.l #a0+4,d0"),
                 Some(
-                    "an expression is computed while assembling, when no register has a value yet"
+                    "An expression is computed while assembling, when no register has a value yet"
                         .to_string()
                 )
             );
@@ -2724,12 +2724,12 @@ mod tests {
         fn expression_split_by_space_names_the_semicolon_only_for_a_bare_comment() {
             assert_eq!(
                 hint("    move.l #2 * 3"),
-                Some("write `#2*3`".to_string()),
+                Some("Write `#2*3`".to_string()),
                 "the comment field already carries its `*` marker"
             );
             assert_eq!(
                 hint("    move.l #2 - 3"),
-                Some("write `#2-3`, or start a comment with `;`".to_string())
+                Some("Write `#2-3`, or start a comment with `;`".to_string())
             );
         }
 
@@ -2801,7 +2801,7 @@ mod tests {
             assert_eq!(diagnostics[0].code(), "malformed_operand");
             assert_eq!(
                 diagnostics[0].message(),
-                "this looks like an indexed operand, `4(a0,d1.w)`, but the `)` is missing"
+                "This looks like an indexed operand, `4(a0,d1.w)`, but the `)` is missing."
             );
             assert_eq!(
                 diagnostics[0].related.len(),
@@ -2955,27 +2955,27 @@ mod tests {
             let cases = [
                 (
                     "    move.l -(a7",
-                    "this looks like a predecrement operand, `-(a0)`, but the `)` is missing",
+                    "This looks like a predecrement operand, `-(a0)`, but the `)` is missing.",
                 ),
                 (
                     "    move.l (a0",
-                    "this looks like an indirect operand, `(a0)`, but the `)` is missing",
+                    "This looks like an indirect operand, `(a0)`, but the `)` is missing.",
                 ),
                 (
                     "    move.l (a0,",
-                    "this looks like an indexed operand, `4(a0,d1.w)`, but the index register is missing",
+                    "This looks like an indexed operand, `4(a0,d1.w)`, but the index register is missing.",
                 ),
                 (
                     "    move.l 4(d0),d1",
-                    "this looks like a displacement operand, `4(a0)`, but `d0` is not an address register",
+                    "This looks like a displacement operand, `4(a0)`, but `d0` is not an address register.",
                 ),
                 (
                     "    move.l (pc),d0",
-                    "this looks like a PC-relative operand, `label(pc)`, but the displacement is missing",
+                    "This looks like a PC-relative operand, `label(pc)`, but the displacement is missing.",
                 ),
                 (
                     "    move.l #5.w,d0",
-                    "this looks like an immediate operand, `#5`, but an immediate carries no size: the size goes on the operation, as in `move.w #5,d0`",
+                    "This looks like an immediate operand, `#5`, but an immediate carries no size: the size goes on the operation, as in `move.w #5,d0`.",
                 ),
             ];
             for (text, message) in cases {
@@ -2987,11 +2987,11 @@ mod tests {
         fn unexpected_token_in_operand_answers_a_stray_parenthesis() {
             assert_eq!(
                 hint("    move.l d0),d1"),
-                Some("there is no `(` for this `)`".to_string())
+                Some("There is no `(` for this `)`".to_string())
             );
             assert_eq!(
                 messages("    move.l 2**3,d0"),
-                ["`3` was not expected here".to_string()],
+                ["`3` was not expected here.".to_string()],
                 "`2**3` has no derivation: `*` is the current address (1.13)"
             );
         }
@@ -3000,7 +3000,7 @@ mod tests {
         fn plus_is_not_a_unary_operator_says_what_to_write() {
             assert_eq!(
                 hint("    move.l #+5,d0"),
-                Some("write `5`; the unary operators are `-` and `~`".to_string())
+                Some("Write `5`; the unary operators are `-` and `~`".to_string())
             );
         }
 
@@ -3009,7 +3009,7 @@ mod tests {
             assert_eq!(
                 hint("    move.l array.length,d0"),
                 Some(
-                    "write `array_length`; a dot after a name is a size, `.b`, `.w`, `.l` or `.s`"
+                    "Write `array_length`; a dot after a name is a size, `.b`, `.w`, `.l` or `.s`"
                         .to_string()
                 )
             );

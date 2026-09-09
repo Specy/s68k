@@ -7,8 +7,8 @@ input_file: tests/diagnostics/number_too_large.asm
   {
     "severity": "error",
     "code": "number_too_large",
-    "message": "`$ffffffffffffffffff` does not fit in the 64 bits a value is computed in",
-    "hint": "a value is computed in 64 bits and checked against the operand's size",
+    "message": "`$ffffffffffffffffff` does not fit in the 64 bits a value is computed in.",
+    "hint": "A value is computed in 64 bits and checked against the operand's size",
     "location": {
       "file": "number_too_large.asm",
       "line": 1,

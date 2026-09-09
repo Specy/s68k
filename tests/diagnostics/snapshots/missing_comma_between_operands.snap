@@ -7,7 +7,7 @@ input_file: tests/diagnostics/missing_comma_between_operands.asm
   {
     "severity": "error",
     "code": "wrong_operand_count",
-    "message": "`move` takes two operands, and this line has one",
+    "message": "`move` takes two operands, and this line has one.",
     "hint": null,
     "location": {
       "file": "missing_comma_between_operands.asm",
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/missing_comma_between_operands.asm
   {
     "severity": "suggestion",
     "code": "bare_comment",
-    "message": "this is EASy68K's comment field; s68k reads it as a comment",
-    "hint": "start comments with `;` to say so",
+    "message": "This is EASy68K's comment field; s68k reads it as a comment.",
+    "hint": "Start comments with `;` to say so",
     "location": {
       "file": "missing_comma_between_operands.asm",
       "line": 2,
@@ -33,8 +33,8 @@ input_file: tests/diagnostics/missing_comma_between_operands.asm
   {
     "severity": "warning",
     "code": "missing_comma_between_operands",
-    "message": "the operand field ended at the space before `d1`, and `d1` was read as a comment",
-    "hint": "write `d0,d1`",
+    "message": "The operand field ended at the space before `d1`, and `d1` was read as a comment.",
+    "hint": "Write `d0,d1`",
     "location": {
       "file": "missing_comma_between_operands.asm",
       "line": 2,
@@ -46,7 +46,7 @@ input_file: tests/diagnostics/missing_comma_between_operands.asm
   {
     "severity": "error",
     "code": "wrong_operand_count",
-    "message": "`add` takes two operands, and this line has one",
+    "message": "`add` takes two operands, and this line has one.",
     "hint": null,
     "location": {
       "file": "missing_comma_between_operands.asm",
@@ -59,8 +59,8 @@ input_file: tests/diagnostics/missing_comma_between_operands.asm
   {
     "severity": "warning",
     "code": "missing_comma_between_operands",
-    "message": "the operand field ended at the space before `d1`, and `d1` was read as a comment",
-    "hint": "write `d0,d1`",
+    "message": "The operand field ended at the space before `d1`, and `d1` was read as a comment.",
+    "hint": "Write `d0,d1`",
     "location": {
       "file": "missing_comma_between_operands.asm",
       "line": 3,
@@ -72,7 +72,7 @@ input_file: tests/diagnostics/missing_comma_between_operands.asm
   {
     "severity": "error",
     "code": "wrong_operand_count",
-    "message": "`move` takes two operands, and this line has one",
+    "message": "`move` takes two operands, and this line has one.",
     "hint": null,
     "location": {
       "file": "missing_comma_between_operands.asm",

@@ -7,8 +7,8 @@ input_file: tests/diagnostics/include_too_deep
   {
     "severity": "error",
     "code": "include_too_deep",
-    "message": "`deep9.asm` would be included more than 8 files deep",
-    "hint": "s68k stops there; include the files side by side rather than one inside the next",
+    "message": "`deep9.asm` would be included more than 8 files deep.",
+    "hint": "S68k stops there; include the files side by side rather than one inside the next",
     "location": {
       "file": "deep8.asm",
       "line": 0,

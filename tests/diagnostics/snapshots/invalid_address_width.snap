@@ -7,8 +7,8 @@ input_file: tests/diagnostics/invalid_address_width.asm
   {
     "severity": "error",
     "code": "invalid_address_width",
-    "message": "`.b` after `table` forces the width of the address, and an address is forced to `.w` or `.l`",
-    "hint": "write `table.w` or `table.l`, or `table` on its own; the size the instruction works at goes after the mnemonic",
+    "message": "`.b` after `table` forces the width of the address, and an address is forced to `.w` or `.l`.",
+    "hint": "Write `table.w` or `table.l`, or `table` on its own; the size the instruction works at goes after the mnemonic",
     "location": {
       "file": "invalid_address_width.asm",
       "line": 2,
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/invalid_address_width.asm
   {
     "severity": "error",
     "code": "invalid_address_width",
-    "message": "`.s` after `done` forces the width of the address, and an address is forced to `.w` or `.l`",
-    "hint": "write `done.w` or `done.l`, or `done` on its own; the size the instruction works at goes after the mnemonic",
+    "message": "`.s` after `done` forces the width of the address, and an address is forced to `.w` or `.l`.",
+    "hint": "Write `done.w` or `done.l`, or `done` on its own; the size the instruction works at goes after the mnemonic",
     "location": {
       "file": "invalid_address_width.asm",
       "line": 3,

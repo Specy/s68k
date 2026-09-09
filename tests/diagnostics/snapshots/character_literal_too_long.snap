@@ -7,8 +7,8 @@ input_file: tests/diagnostics/character_literal_too_long.asm
   {
     "severity": "warning",
     "code": "character_literal_too_long",
-    "message": "`'abcdefgh'` is 8 characters, and a character literal holds at most four",
-    "hint": "four characters are a long, and this one is worth its last four; write `dc.b 'abcdefgh'` and use its address for the whole of it",
+    "message": "`'abcdefgh'` is 8 characters, and a character literal holds at most four.",
+    "hint": "Four characters are a long, and this one is worth its last four; write `dc.b 'abcdefgh'` and use its address for the whole of it",
     "location": {
       "file": "character_literal_too_long.asm",
       "line": 3,
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/character_literal_too_long.asm
   {
     "severity": "warning",
     "code": "character_literal_too_long",
-    "message": "`'toolong'` is 7 characters, and a character literal holds at most four",
-    "hint": "four characters are a long, and this one is worth its last four; write `dc.b 'toolong'` and use its address for the whole of it",
+    "message": "`'toolong'` is 7 characters, and a character literal holds at most four.",
+    "hint": "Four characters are a long, and this one is worth its last four; write `dc.b 'toolong'` and use its address for the whole of it",
     "location": {
       "file": "character_literal_too_long.asm",
       "line": 4,

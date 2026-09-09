@@ -129,7 +129,7 @@ from it. A Paused Interpreter has not terminated.
 ### Diagnosis
 
 **Diagnostic**:
-A finding about the source made while assembling, of a stable kind, at a Location, with a message, optionally a Hint and related Locations, tagged with a severity: `error` stops the program from building, `warning` and `suggestion` are reported while it still builds. The same term as in the asm-editor, which displays them.
+A finding about the source made while assembling, of a stable kind, at a Location, with a message, a Hint and optionally related Locations, tagged with a severity: `error` stops the program from building, `warning` and `suggestion` are reported while it still builds. The same term as in the asm-editor, which displays them.
 _Avoid_: SemanticError, compile error, lexer error, linter message
 
 **Location**:
@@ -137,10 +137,10 @@ Where in the source something is: a file, a line and the range of columns of the
 _Avoid_: line index (a Location is more than a line), position (that is the index in the Assembled sequence, which is a different thing)
 
 **Runtime error**:
-A failure of the running program, produced by the interpreter and attributed to the instruction's Location. Not a Diagnostic.
+A failure of the running program, produced by the interpreter and attributed to the instruction's Location. It carries a Hint but is not a Diagnostic.
 
 **Hint**:
-The part of a Diagnostic that says what to do about it, as opposed to what is wrong ("add a colon if `clr` is meant as a label").
+The part of a Diagnostic or Runtime error that gives the learner a safe next action, as opposed to what is wrong. It gives a correction when the likely intent is clear, alternatives when it is ambiguous, or a concrete investigation step when no correction can be inferred.
 
 ### Reference
 

@@ -643,7 +643,7 @@ mod tests {
         let line = tokenize("$1G");
         assert_eq!(
             line.diagnostics()[0].message(),
-            "`G` is not a hexadecimal digit"
+            "`G` is not a hexadecimal digit."
         );
         assert_eq!(line.diagnostics()[0].location.column, 2);
         assert_eq!(codes("%2"), vec!["invalid_number"]);
@@ -659,7 +659,7 @@ mod tests {
                 .iter()
                 .map(|diagnostic| diagnostic.message())
                 .collect::<Vec<_>>(),
-            vec!["`$` has no digits after it"]
+            vec!["`$` has no digits after it."]
         );
     }
 
@@ -856,7 +856,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["character_above_latin1", "character_above_latin1"]
         );
-        assert_eq!(line.diagnostics()[0].hint(), Some("write `'`".to_string()));
+        assert_eq!(line.diagnostics()[0].hint(), Some("Write `'`".to_string()));
     }
 
     #[test]
@@ -870,7 +870,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["character_above_latin1"]
         );
-        assert_eq!(line.diagnostics()[0].hint(), Some("write `-`".to_string()));
+        assert_eq!(line.diagnostics()[0].hint(), Some("Write `-`".to_string()));
     }
 
     #[test]
@@ -892,7 +892,7 @@ mod tests {
         assert_eq!(codes("move.l\u{1}d0"), vec!["unexpected_character"]);
         assert_eq!(
             tokenize("move.l\u{1}d0").diagnostics()[0].message(),
-            "the character $01 cannot start anything here"
+            "The character $01 cannot start anything here."
         );
         // A lone carriage return is not a line terminator and not whitespace.
         assert_eq!(codes("nop\r"), vec!["unexpected_character"]);

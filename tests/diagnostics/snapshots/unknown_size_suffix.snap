@@ -7,8 +7,8 @@ input_file: tests/diagnostics/unknown_size_suffix.asm
   {
     "severity": "error",
     "code": "unknown_size_suffix",
-    "message": "`.q` is not a size",
-    "hint": "sizes are `.b`, `.w`, `.l`, and `.s` on branches",
+    "message": "`.q` is not a size.",
+    "hint": "Sizes are `.b`, `.w`, `.l`, and `.s` on branches",
     "location": {
       "file": "unknown_size_suffix.asm",
       "line": 1,

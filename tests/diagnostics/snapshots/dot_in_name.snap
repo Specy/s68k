@@ -7,8 +7,8 @@ input_file: tests/diagnostics/dot_in_name.asm
   {
     "severity": "error",
     "code": "dot_in_name",
-    "message": "`array.length` holds a dot: a name has none after its first character",
-    "hint": "write `array_length`; a dot after a name is a size, `.b`, `.w`, `.l` or `.s`",
+    "message": "`array.length` holds a dot: a name has none after its first character.",
+    "hint": "Write `array_length`; a dot after a name is a size, `.b`, `.w`, `.l` or `.s`",
     "location": {
       "file": "dot_in_name.asm",
       "line": 1,

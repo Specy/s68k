@@ -7,8 +7,8 @@ input_file: tests/diagnostics/invalid_addressing_mode.asm
   {
     "severity": "error",
     "code": "invalid_addressing_mode",
-    "message": "the first operand of `clr` cannot be an address register",
-    "hint": "`suba.l a0,a0` clears an address register; there it takes Dn, (An), (An)+, -(An), d(An), d(An,Xn) or Ea/<label>",
+    "message": "The first operand of `clr` cannot be an address register.",
+    "hint": "The operand should be Dn, (An), (An)+, -(An), d(An), d(An,Xn) or Ea/<label>. `suba.l a0,a0` clears an address register",
     "location": {
       "file": "invalid_addressing_mode.asm",
       "line": 1,
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/invalid_addressing_mode.asm
   {
     "severity": "error",
     "code": "invalid_addressing_mode",
-    "message": "the first operand of `divu` cannot be an address register",
-    "hint": "an address register holds an address; move it into a data register first; there it takes Dn, (An), (An)+, -(An), d(An), d(An,Xn), Ea/<label>, d(PC), d(PC,Xn) or Im",
+    "message": "The first operand of `divu` cannot be an address register.",
+    "hint": "The operand should be Dn, (An), (An)+, -(An), d(An), d(An,Xn), Ea/<label>, d(PC), d(PC,Xn) or Im. An address register holds an address; move it into a data register first",
     "location": {
       "file": "invalid_addressing_mode.asm",
       "line": 2,
@@ -33,8 +33,8 @@ input_file: tests/diagnostics/invalid_addressing_mode.asm
   {
     "severity": "error",
     "code": "invalid_addressing_mode",
-    "message": "the first operand of `jmp` cannot be a postincrement operand",
-    "hint": "there it takes (An), d(An), d(An,Xn), Ea/<label>, d(PC) or d(PC,Xn)",
+    "message": "The first operand of `jmp` cannot be a postincrement operand.",
+    "hint": "The operand should be (An), d(An), d(An,Xn), Ea/<label>, d(PC) or d(PC,Xn)",
     "location": {
       "file": "invalid_addressing_mode.asm",
       "line": 3,
@@ -46,13 +46,26 @@ input_file: tests/diagnostics/invalid_addressing_mode.asm
   {
     "severity": "error",
     "code": "invalid_addressing_mode",
-    "message": "the second operand of `move` cannot be a PC-relative operand",
-    "hint": "a PC-relative operand is read and never written; write the label on its own; there it takes Dn, An, (An), (An)+, -(An), d(An), d(An,Xn) or Ea/<label>",
+    "message": "The second operand of `move` cannot be a PC-relative operand.",
+    "hint": "The operand should be Dn, An, (An), (An)+, -(An), d(An), d(An,Xn) or Ea/<label>. A PC-relative operand is read and never written; write the label on its own",
     "location": {
       "file": "invalid_addressing_mode.asm",
       "line": 4,
       "column": 14,
       "endColumn": 26
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "invalid_addressing_mode",
+    "message": "The first operand of `addi` cannot be an address register.",
+    "hint": "The operand should be Im",
+    "location": {
+      "file": "invalid_addressing_mode.asm",
+      "line": 6,
+      "column": 9,
+      "endColumn": 11
     },
     "related": []
   }

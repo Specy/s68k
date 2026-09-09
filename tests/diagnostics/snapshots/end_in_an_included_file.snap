@@ -7,8 +7,8 @@ input_file: tests/diagnostics/end_in_an_included_file
   {
     "severity": "error",
     "code": "end_in_an_included_file",
-    "message": "`end` belongs in the entry file, `main.asm`",
-    "hint": "delete it: an included file ends where its lines end, and the entry point is the entry file's own `end`",
+    "message": "`end` belongs in the entry file, `main.asm`.",
+    "hint": "Delete it: an included file ends where its lines end, and the entry point is the entry file's own `end`",
     "location": {
       "file": "lib.asm",
       "line": 2,

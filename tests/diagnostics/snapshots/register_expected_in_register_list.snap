@@ -7,8 +7,8 @@ input_file: tests/diagnostics/register_expected_in_register_list.asm
   {
     "severity": "error",
     "code": "register_expected_in_register_list",
-    "message": "a register was expected after `-`",
-    "hint": "a register list reads `d0-d3/a0-a2`",
+    "message": "A register was expected after `-`.",
+    "hint": "A register list reads `d0-d3/a0-a2`",
     "location": {
       "file": "register_expected_in_register_list.asm",
       "line": 1,

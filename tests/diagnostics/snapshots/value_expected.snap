@@ -7,8 +7,8 @@ input_file: tests/diagnostics/value_expected.asm
   {
     "severity": "error",
     "code": "value_expected",
-    "message": "`dc.b` takes a value, and this is an indirect operand",
-    "hint": "a value is a number, a character literal, a symbol or an expression of them",
+    "message": "`dc.b` takes a value, and this is an indirect operand.",
+    "hint": "A value is a number, a character literal, a symbol or an expression of them",
     "location": {
       "file": "value_expected.asm",
       "line": 1,
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/value_expected.asm
   {
     "severity": "error",
     "code": "value_expected",
-    "message": "`equ` takes a value, and this is an immediate",
-    "hint": "write `ten equ 10`, and keep the `#` where the value is used, as in `move.l #ten,d0`",
+    "message": "`equ` takes a value, and this is an immediate.",
+    "hint": "Write `ten equ 10`, and keep the `#` where the value is used, as in `move.l #ten,d0`",
     "location": {
       "file": "value_expected.asm",
       "line": 4,
@@ -33,7 +33,7 @@ input_file: tests/diagnostics/value_expected.asm
   {
     "severity": "error",
     "code": "value_expected",
-    "message": "`equ` takes a value, and this is a data register",
+    "message": "`equ` takes a value, and this is a data register.",
     "hint": "`equ` names a value, not a register: write the register itself where `r` is used, or a `reg` list once `reg` is implemented",
     "location": {
       "file": "value_expected.asm",

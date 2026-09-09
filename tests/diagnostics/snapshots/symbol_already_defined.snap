@@ -7,8 +7,8 @@ input_file: tests/diagnostics/symbol_already_defined.asm
   {
     "severity": "error",
     "code": "symbol_already_defined",
-    "message": "`count` is already defined",
-    "hint": "a name is defined once; `set` defines a symbol that may be redefined",
+    "message": "`count` is already defined.",
+    "hint": "A name is defined once; `set` defines a symbol that may be redefined",
     "location": {
       "file": "symbol_already_defined.asm",
       "line": 2,

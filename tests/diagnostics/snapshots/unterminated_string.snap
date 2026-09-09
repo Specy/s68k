@@ -7,8 +7,8 @@ input_file: tests/diagnostics/unterminated_string.asm
   {
     "severity": "error",
     "code": "unterminated_string",
-    "message": "this string is not closed before the end of the line",
-    "hint": "add the closing `'`; `''` writes a quote inside a string",
+    "message": "This string is not closed before the end of the line.",
+    "hint": "Add the closing `'`; `''` writes a quote inside a string",
     "location": {
       "file": "unterminated_string.asm",
       "line": 1,

@@ -7,8 +7,8 @@ input_file: tests/diagnostics/reserved_name_as_symbol.asm
   {
     "severity": "error",
     "code": "reserved_name_as_symbol",
-    "message": "`d0` is a register name and cannot be a symbol",
-    "hint": "pick another name, such as `d0_value`",
+    "message": "`d0` is a register name and cannot be a symbol.",
+    "hint": "Pick another name, such as `d0_value`",
     "location": {
       "file": "reserved_name_as_symbol.asm",
       "line": 1,

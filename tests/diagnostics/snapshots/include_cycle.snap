@@ -7,8 +7,8 @@ input_file: tests/diagnostics/include_cycle
   {
     "severity": "error",
     "code": "include_cycle",
-    "message": "`main.asm` is already being included: main.asm -> a.asm -> main.asm",
-    "hint": "a file may be included more than once, but not inside itself: move the shared lines into a third file",
+    "message": "`main.asm` is already being included: main.asm -> a.asm -> main.asm.",
+    "hint": "A file may be included more than once, but not inside itself: move the shared lines into a third file",
     "location": {
       "file": "a.asm",
       "line": 1,

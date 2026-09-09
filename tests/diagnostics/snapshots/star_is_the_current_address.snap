@@ -7,7 +7,7 @@ input_file: tests/diagnostics/star_is_the_current_address.asm
   {
     "severity": "warning",
     "code": "star_is_the_current_address",
-    "message": "the `*` after `nop` is the current address, not the start of a comment",
+    "message": "The `*` after `nop` is the current address, not the start of a comment.",
     "hint": "`nop` takes no operands, so the `*` is ignored; write `;` to start a comment",
     "location": {
       "file": "star_is_the_current_address.asm",
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/star_is_the_current_address.asm
   {
     "severity": "suggestion",
     "code": "bare_comment",
-    "message": "this is EASy68K's comment field; s68k reads it as a comment",
-    "hint": "start comments with `;` to say so",
+    "message": "This is EASy68K's comment field; s68k reads it as a comment.",
+    "hint": "Start comments with `;` to say so",
     "location": {
       "file": "star_is_the_current_address.asm",
       "line": 1,

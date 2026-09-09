@@ -7,7 +7,7 @@ input_file: tests/diagnostics/wrong_operand_count.asm
   {
     "severity": "error",
     "code": "wrong_operand_count",
-    "message": "`move` takes two operands, and this line has one",
+    "message": "`move` takes two operands, and this line has one.",
     "hint": null,
     "location": {
       "file": "wrong_operand_count.asm",
@@ -20,7 +20,7 @@ input_file: tests/diagnostics/wrong_operand_count.asm
   {
     "severity": "error",
     "code": "wrong_operand_count",
-    "message": "`rts` takes no operands, and this line has one",
+    "message": "`rts` takes no operands, and this line has one.",
     "hint": null,
     "location": {
       "file": "wrong_operand_count.asm",
@@ -33,8 +33,8 @@ input_file: tests/diagnostics/wrong_operand_count.asm
   {
     "severity": "error",
     "code": "wrong_operand_count",
-    "message": "`dc.b` takes at least one value, and this line has none",
-    "hint": "write the values after it, `dc.b 1,2,3`",
+    "message": "`dc.b` takes at least one value, and this line has none.",
+    "hint": "Write the values after it, `dc.b 1,2,3`",
     "location": {
       "file": "wrong_operand_count.asm",
       "line": 5,
@@ -46,7 +46,7 @@ input_file: tests/diagnostics/wrong_operand_count.asm
   {
     "severity": "error",
     "code": "wrong_operand_count",
-    "message": "`ds.w` takes one operand, and this line has none",
+    "message": "`ds.w` takes one operand, and this line has none.",
     "hint": null,
     "location": {
       "file": "wrong_operand_count.asm",
@@ -59,7 +59,7 @@ input_file: tests/diagnostics/wrong_operand_count.asm
   {
     "severity": "error",
     "code": "wrong_operand_count",
-    "message": "`dcb.l` takes two operands, and this line has one",
+    "message": "`dcb.l` takes two operands, and this line has one.",
     "hint": null,
     "location": {
       "file": "wrong_operand_count.asm",

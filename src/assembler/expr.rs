@@ -492,7 +492,7 @@ mod tests {
         let diagnostics = diagnose(&problems, &site);
         assert_eq!(
             diagnostics[0].message(),
-            "`'abcdefgh'` is 8 characters, and a character literal holds at most four"
+            "`'abcdefgh'` is 8 characters, and a character literal holds at most four."
         );
         assert!(!diagnostics[0].is_error(), "EASy68K warns and assembles");
         assert!(holds_a_long_character_literal(&parsed_expression(

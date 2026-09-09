@@ -4,3 +4,4 @@
     jmp (a0)+
     move.l d0,greeting(pc)
 greeting: dc.b 'hello',0
+    addi a0,d0

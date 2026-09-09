@@ -7,8 +7,8 @@ input_file: tests/diagnostics/unclosed_parenthesis.asm
   {
     "severity": "error",
     "code": "unclosed_parenthesis",
-    "message": "this `(` is never closed",
-    "hint": "add the `)`",
+    "message": "This `(` is never closed.",
+    "hint": "Add the `)`",
     "location": {
       "file": "unclosed_parenthesis.asm",
       "line": 1,

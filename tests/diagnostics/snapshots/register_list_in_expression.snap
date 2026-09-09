@@ -7,7 +7,7 @@ input_file: tests/diagnostics/register_list_in_expression.asm
   {
     "severity": "error",
     "code": "register_list_in_expression",
-    "message": "`AllRegs` stands for a register list, and an expression holds no register list",
+    "message": "`AllRegs` stands for a register list, and an expression holds no register list.",
     "hint": "`AllRegs` is the register list operand of `movem` and nothing else",
     "location": {
       "file": "register_list_in_expression.asm",
@@ -20,7 +20,7 @@ input_file: tests/diagnostics/register_list_in_expression.asm
   {
     "severity": "error",
     "code": "register_list_in_expression",
-    "message": "`AllRegs` stands for a register list, and an expression holds no register list",
+    "message": "`AllRegs` stands for a register list, and an expression holds no register list.",
     "hint": "`AllRegs` is the register list operand of `movem` and nothing else",
     "location": {
       "file": "register_list_in_expression.asm",
@@ -33,7 +33,7 @@ input_file: tests/diagnostics/register_list_in_expression.asm
   {
     "severity": "error",
     "code": "register_list_in_expression",
-    "message": "`AllRegs` stands for a register list, and an expression holds no register list",
+    "message": "`AllRegs` stands for a register list, and an expression holds no register list.",
     "hint": "`AllRegs` is the register list operand of `movem` and nothing else",
     "location": {
       "file": "register_list_in_expression.asm",

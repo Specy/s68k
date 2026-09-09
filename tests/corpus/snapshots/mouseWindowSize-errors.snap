@@ -6,8 +6,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 52,
@@ -19,8 +19,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 59,
@@ -32,8 +32,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 91,
@@ -45,8 +45,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 94,
@@ -58,8 +58,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 98,
@@ -71,8 +71,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 99,
@@ -84,8 +84,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 103,
@@ -97,8 +97,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 104,
@@ -110,8 +110,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 108,
@@ -123,8 +123,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 109,
@@ -136,8 +136,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames",
-    "hint": "write `rts` instead",
+    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames.",
+    "hint": "Write `rts` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 181,
@@ -149,8 +149,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames",
-    "hint": "write `rts` instead",
+    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames.",
+    "hint": "Write `rts` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 192,
@@ -162,8 +162,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames",
-    "hint": "write `rts` instead",
+    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames.",
+    "hint": "Write `rts` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 203,
@@ -175,8 +175,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`for` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`for` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 220,
@@ -188,8 +188,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 222,
@@ -201,8 +201,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`else` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`else` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 224,
@@ -214,8 +214,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 226,
@@ -227,8 +227,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endf` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endf` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 228,
@@ -240,8 +240,8 @@ expression: diagnostics
   {
     "severity": "warning",
     "code": "entry_point_case_mismatch",
-    "message": "`START` is not defined, `start` is, and the program starts at `start`",
-    "hint": "symbols are case sensitive here, so write `end start`",
+    "message": "`START` is not defined, `start` is, and the program starts at `start`.",
+    "hint": "Symbols are case sensitive here, so write `end start`",
     "location": {
       "file": "mouseWindowSize.X68",
       "line": 262,

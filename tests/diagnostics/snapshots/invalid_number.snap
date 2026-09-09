@@ -7,8 +7,8 @@ input_file: tests/diagnostics/invalid_number.asm
   {
     "severity": "error",
     "code": "invalid_number",
-    "message": "`g` is not a hexadecimal digit",
-    "hint": "hexadecimal digits are 0-9 and a-f",
+    "message": "`g` is not a hexadecimal digit.",
+    "hint": "Hexadecimal digits are 0-9 and a-f",
     "location": {
       "file": "invalid_number.asm",
       "line": 1,

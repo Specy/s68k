@@ -858,7 +858,7 @@ mod tests {
         assert_eq!(diagnostics[0].1.code(), "unreadable_file");
         assert_eq!(
             diagnostics[0].1.hint().as_deref(),
-            Some("did you mean `lib/io.m68k`?")
+            Some("Did you mean `lib/io.m68k`?")
         );
     }
 

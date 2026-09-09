@@ -7,8 +7,8 @@ input_file: tests/diagnostics/unterminated_macro_definition.asm
   {
     "severity": "error",
     "code": "unterminated_macro_definition",
-    "message": "this macro definition is never closed",
-    "hint": "macro definitions end with `endm`",
+    "message": "This macro definition is never closed.",
+    "hint": "Macro definitions end with `endm`",
     "location": {
       "file": "unterminated_macro_definition.asm",
       "line": 1,
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/unterminated_macro_definition.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`macro` is not implemented: macros are not assembled",
-    "hint": "write the lines of the macro where it is used instead",
+    "message": "`macro` is not implemented: macros are not assembled.",
+    "hint": "Write the lines of the macro where it is used instead",
     "location": {
       "file": "unterminated_macro_definition.asm",
       "line": 1,

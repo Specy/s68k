@@ -7,7 +7,7 @@ input_file: tests/diagnostics/division_by_zero.asm
   {
     "severity": "error",
     "code": "division_by_zero",
-    "message": "this expression divides by zero",
+    "message": "This expression divides by zero.",
     "hint": null,
     "location": {
       "file": "division_by_zero.asm",

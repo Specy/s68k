@@ -63,8 +63,8 @@ built — a `warning` or a `suggestion` comes back with a program beside it:
 {
     severity: "error",
     code: "invalid_addressing_mode",          // stable, snake_case, safe to match on
-    message: "the second operand of `move` cannot be an immediate",
-    hint: "an immediate is a value, and nothing can be written to it; there it takes Dn, An, (An), ...",
+    message: "The second operand of `move` cannot be an immediate.",
+    hint: "The operand should be Dn, An, (An), ... . An immediate is a value, and nothing can be written to it",
     location: {file: "main.m68k", line: 1, column: 15, endColumn: 17},
     related: []                               // [{location, message}], e.g. the first definition of a name
 }

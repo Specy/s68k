@@ -7,7 +7,7 @@ input_file: tests/diagnostics/expression_split_by_space.asm
   {
     "severity": "error",
     "code": "wrong_operand_count",
-    "message": "`move` takes two operands, and this line has one",
+    "message": "`move` takes two operands, and this line has one.",
     "hint": null,
     "location": {
       "file": "expression_split_by_space.asm",
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/expression_split_by_space.asm
   {
     "severity": "warning",
     "code": "expression_split_by_space",
-    "message": "the operand field ended at the space before `*`; an expression contains no whitespace",
-    "hint": "write `#2*3,d0`",
+    "message": "The operand field ended at the space before `*`; an expression contains no whitespace.",
+    "hint": "Write `#2*3,d0`",
     "location": {
       "file": "expression_split_by_space.asm",
       "line": 1,

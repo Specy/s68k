@@ -7,7 +7,7 @@ input_file: tests/diagnostics/value_out_of_range.asm
   {
     "severity": "error",
     "code": "value_out_of_range",
-    "message": "the count of `addq` is 1 to 8, and `9` is outside it",
+    "message": "The count of `addq` is 1 to 8, and `9` is outside it.",
     "hint": "`add #n,<ea>` has no such limit",
     "location": {
       "file": "value_out_of_range.asm",
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/value_out_of_range.asm
   {
     "severity": "error",
     "code": "value_out_of_range",
-    "message": "the bit number is 0 to 31, and `40` is outside it",
-    "hint": "a data register has 32 bits, numbered from 0; a byte in memory has 8",
+    "message": "The bit number is 0 to 31, and `40` is outside it.",
+    "hint": "A data register has 32 bits, numbered from 0; a byte in memory has 8",
     "location": {
       "file": "value_out_of_range.asm",
       "line": 2,
@@ -33,8 +33,8 @@ input_file: tests/diagnostics/value_out_of_range.asm
   {
     "severity": "error",
     "code": "value_out_of_range",
-    "message": "the distance a `d(PC)` operand reaches is -32768 to 32767, and `192502` is outside it",
-    "hint": "write `far` on its own: an absolute address reaches anywhere in memory",
+    "message": "The distance a `d(PC)` operand reaches is -32768 to 32767, and `192502` is outside it.",
+    "hint": "Write `far` on its own: an absolute address reaches anywhere in memory",
     "location": {
       "file": "value_out_of_range.asm",
       "line": 5,
@@ -46,8 +46,8 @@ input_file: tests/diagnostics/value_out_of_range.asm
   {
     "severity": "error",
     "code": "value_out_of_range",
-    "message": "an address forced to `.w` is -32768 to 32767, and `98304` is outside it",
-    "hint": "write `$18000.l`, or `$18000` on its own: both reach the same address here",
+    "message": "An address forced to `.w` is -32768 to 32767, and `98304` is outside it.",
+    "hint": "Write `$18000.l`, or `$18000` on its own: both reach the same address here",
     "location": {
       "file": "value_out_of_range.asm",
       "line": 6,

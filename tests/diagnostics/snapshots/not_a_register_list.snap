@@ -7,7 +7,7 @@ input_file: tests/diagnostics/not_a_register_list.asm
   {
     "severity": "error",
     "code": "not_a_register_list",
-    "message": "`count` is a constant, not a register list",
+    "message": "`count` is a constant, not a register list.",
     "hint": "`movem` reads a name here only when `reg` defined it, as in `count reg d0-d3/a0-a2`",
     "location": {
       "file": "not_a_register_list.asm",

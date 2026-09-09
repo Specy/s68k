@@ -7,8 +7,8 @@ input_file: tests/diagnostics/unexpected_token_in_operand.asm
   {
     "severity": "error",
     "code": "unexpected_token_in_operand",
-    "message": "`)` was not expected here",
-    "hint": "there is no `(` for this `)`",
+    "message": "`)` was not expected here.",
+    "hint": "There is no `(` for this `)`",
     "location": {
       "file": "unexpected_token_in_operand.asm",
       "line": 1,

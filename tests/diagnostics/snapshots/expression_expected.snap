@@ -7,7 +7,7 @@ input_file: tests/diagnostics/expression_expected.asm
   {
     "severity": "error",
     "code": "expression_expected",
-    "message": "an expression was expected after `#`",
+    "message": "An expression was expected after `#`.",
     "hint": null,
     "location": {
       "file": "expression_expected.asm",

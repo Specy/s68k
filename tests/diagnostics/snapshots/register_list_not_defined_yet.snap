@@ -7,8 +7,8 @@ input_file: tests/diagnostics/register_list_not_defined_yet.asm
   {
     "severity": "error",
     "code": "register_list_not_defined_yet",
-    "message": "`AllRegs` is a register list defined further down, and a register list has to be defined before it is used",
-    "hint": "move the `AllRegs reg …` line above this one",
+    "message": "`AllRegs` is a register list defined further down, and a register list has to be defined before it is used.",
+    "hint": "Move the `AllRegs reg …` line above this one",
     "location": {
       "file": "register_list_not_defined_yet.asm",
       "line": 3,

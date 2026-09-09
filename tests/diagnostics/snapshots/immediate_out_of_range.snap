@@ -7,8 +7,8 @@ input_file: tests/diagnostics/immediate_out_of_range.asm
   {
     "severity": "error",
     "code": "immediate_out_of_range",
-    "message": "`#300` does not fit in a byte",
-    "hint": "a byte immediate holds -128 to 255",
+    "message": "`#300` does not fit in a byte.",
+    "hint": "A byte immediate holds -128 to 255",
     "location": {
       "file": "immediate_out_of_range.asm",
       "line": 1,

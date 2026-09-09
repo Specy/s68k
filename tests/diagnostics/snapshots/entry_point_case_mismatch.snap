@@ -7,8 +7,8 @@ input_file: tests/diagnostics/entry_point_case_mismatch.asm
   {
     "severity": "warning",
     "code": "entry_point_case_mismatch",
-    "message": "`START` is not defined, `start` is, and the program starts at `start`",
-    "hint": "symbols are case sensitive here, so write `end start`",
+    "message": "`START` is not defined, `start` is, and the program starts at `start`.",
+    "hint": "Symbols are case sensitive here, so write `end start`",
     "location": {
       "file": "entry_point_case_mismatch.asm",
       "line": 5,

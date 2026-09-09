@@ -7,8 +7,8 @@ input_file: tests/diagnostics/operand_expected.asm
   {
     "severity": "error",
     "code": "operand_expected",
-    "message": "an operand was expected after this comma",
-    "hint": "remove the comma if the operand list ends here",
+    "message": "An operand was expected after this comma.",
+    "hint": "Remove the comma if the operand list ends here",
     "location": {
       "file": "operand_expected.asm",
       "line": 1,

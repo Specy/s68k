@@ -636,7 +636,7 @@ fn incbin_of_a_missing_file_says_what_include_says() {
     assert_eq!(assembly.diagnostics[0].code(), "unreadable_file");
     assert_eq!(
         assembly.diagnostics[0].hint().as_deref(),
-        Some("did you mean `data/pixels.bin`?"),
+        Some("Did you mean `data/pixels.bin`?"),
         "the same suggestions `include` gives"
     );
 }

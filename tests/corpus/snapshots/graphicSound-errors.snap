@@ -6,8 +6,8 @@ expression: diagnostics
   {
     "severity": "suggestion",
     "code": "bare_comment",
-    "message": "this is EASy68K's comment field; s68k reads it as a comment",
-    "hint": "start comments with `;` to say so",
+    "message": "This is EASy68K's comment field; s68k reads it as a comment.",
+    "hint": "Start comments with `;` to say so",
     "location": {
       "file": "graphicSound.X68",
       "line": 15,
@@ -19,8 +19,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`repeat` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`repeat` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "graphicSound.X68",
       "line": 159,
@@ -32,8 +32,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`until` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`until` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "graphicSound.X68",
       "line": 174,

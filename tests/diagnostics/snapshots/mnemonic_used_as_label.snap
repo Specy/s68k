@@ -7,7 +7,7 @@ input_file: tests/diagnostics/mnemonic_used_as_label.asm
   {
     "severity": "error",
     "code": "wrong_operand_count",
-    "message": "`clr` takes one operand, and this line has none",
+    "message": "`clr` takes one operand, and this line has none.",
     "hint": null,
     "location": {
       "file": "mnemonic_used_as_label.asm",
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/mnemonic_used_as_label.asm
   {
     "severity": "suggestion",
     "code": "mnemonic_used_as_label",
-    "message": "`clr` in column 1 is the instruction `clr`, not a label",
-    "hint": "write `clr:` if `clr` is a label",
+    "message": "`clr` in column 1 is the instruction `clr`, not a label.",
+    "hint": "Write `clr:` if `clr` is a label",
     "location": {
       "file": "mnemonic_used_as_label.asm",
       "line": 1,

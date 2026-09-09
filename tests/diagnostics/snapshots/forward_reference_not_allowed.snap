@@ -7,7 +7,7 @@ input_file: tests/diagnostics/forward_reference_not_allowed.asm
   {
     "severity": "error",
     "code": "forward_reference_not_allowed",
-    "message": "`org` cannot use `end_of_data`, which is defined further down",
+    "message": "`org` cannot use `end_of_data`, which is defined further down.",
     "hint": "`org` decides where the program goes, so move the definition above it",
     "location": {
       "file": "forward_reference_not_allowed.asm",

@@ -7,7 +7,7 @@ input_file: tests/diagnostics/malformed_operand.asm
   {
     "severity": "error",
     "code": "malformed_operand",
-    "message": "this looks like an indirect operand, `(a0)`, but `d0` is not an address register",
+    "message": "This looks like an indirect operand, `(a0)`, but `d0` is not an address register.",
     "hint": null,
     "location": {
       "file": "malformed_operand.asm",
@@ -20,7 +20,7 @@ input_file: tests/diagnostics/malformed_operand.asm
   {
     "severity": "error",
     "code": "malformed_operand",
-    "message": "this looks like a predecrement operand, `-(a0)`, but the `)` is missing",
+    "message": "This looks like a predecrement operand, `-(a0)`, but the `)` is missing.",
     "hint": null,
     "location": {
       "file": "malformed_operand.asm",
@@ -43,7 +43,7 @@ input_file: tests/diagnostics/malformed_operand.asm
   {
     "severity": "error",
     "code": "malformed_operand",
-    "message": "this looks like an indexed operand, `4(a0,d1.w)`, but the `)` is missing",
+    "message": "This looks like an indexed operand, `4(a0,d1.w)`, but the `)` is missing.",
     "hint": null,
     "location": {
       "file": "malformed_operand.asm",

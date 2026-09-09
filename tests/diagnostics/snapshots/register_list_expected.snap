@@ -7,8 +7,8 @@ input_file: tests/diagnostics/register_list_expected.asm
   {
     "severity": "error",
     "code": "register_list_expected",
-    "message": "`reg` names a register list, and this is an immediate",
-    "hint": "write the registers themselves, `regs reg d0-d3/a0-a2`",
+    "message": "`reg` names a register list, and this is an immediate.",
+    "hint": "Write the registers themselves, `regs reg d0-d3/a0-a2`",
     "location": {
       "file": "register_list_expected.asm",
       "line": 2,

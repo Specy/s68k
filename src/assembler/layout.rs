@@ -2577,11 +2577,11 @@ second:
         let diagnostics = assemble(source).1;
         assert_eq!(
             diagnostics[0].message(),
-            "`START` is not defined, `start` is, and the program starts at `start`"
+            "`START` is not defined, `start` is, and the program starts at `start`."
         );
         assert_eq!(
             diagnostics[0].hint(),
-            Some("symbols are case sensitive here, so write `end start`".to_string())
+            Some("Symbols are case sensitive here, so write `end start`".to_string())
         );
         // Everywhere else a name is still case sensitive, `end`'s own operand
         // included once it is an expression rather than one bare name.
@@ -2616,11 +2616,11 @@ second:
         let invocation = assemble(source).1.remove(1);
         assert_eq!(
             invocation.message(),
-            "`DELAY` is not implemented: it is a macro, and macros are not assembled"
+            "`DELAY` is not implemented: it is a macro, and macros are not assembled."
         );
         assert_eq!(
             invocation.hint(),
-            Some("write the lines of the macro here instead".to_string())
+            Some("Write the lines of the macro here instead".to_string())
         );
         assert_eq!(invocation.related[0].0.line, 0, "the `macro` line");
         // A word that is no Macro of this File keeps the label hint, which is
@@ -3204,7 +3204,7 @@ here section 1
         let (_, diagnostics) = assemble("    section 16\n");
         assert_eq!(
             diagnostics[0].message(),
-            "the number of `section` is 0 to 15, and `16` is outside it"
+            "The number of `section` is 0 to 15, and `16` is outside it."
         );
         // The section in force does not change, so the line below the refused
         // one is laid out where it would have been.

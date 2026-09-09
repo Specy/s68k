@@ -7,8 +7,8 @@ input_file: tests/diagnostics/register_range_out_of_order.asm
   {
     "severity": "error",
     "code": "register_range_out_of_order",
-    "message": "`d5-d2` runs backwards: a range goes from the lower register to the higher one, in the order `d0`-`d7`, `a0`-`a7`",
-    "hint": "write `d2-d5`",
+    "message": "`d5-d2` runs backwards: a range goes from the lower register to the higher one, in the order `d0`-`d7`, `a0`-`a7`.",
+    "hint": "Write `d2-d5`",
     "location": {
       "file": "register_range_out_of_order.asm",
       "line": 1,

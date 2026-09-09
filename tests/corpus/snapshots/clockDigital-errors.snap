@@ -6,8 +6,8 @@ expression: diagnostics
   {
     "severity": "suggestion",
     "code": "bare_comment",
-    "message": "this is EASy68K's comment field; s68k reads it as a comment",
-    "hint": "start comments with `;` to say so",
+    "message": "This is EASy68K's comment field; s68k reads it as a comment.",
+    "hint": "Start comments with `;` to say so",
     "location": {
       "file": "clockDigital.X68",
       "line": 16,
@@ -19,8 +19,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`macro` is not implemented: macros are not assembled",
-    "hint": "write the lines of the macro where it is used instead",
+    "message": "`macro` is not implemented: macros are not assembled.",
+    "hint": "Write the lines of the macro where it is used instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 19,
@@ -32,8 +32,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`repeat` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`repeat` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 44,
@@ -45,8 +45,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 47,
@@ -58,8 +58,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 49,
@@ -71,8 +71,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled",
-    "hint": "write the lines of the macro here instead",
+    "message": "`DELAY` is not implemented: it is a macro, and macros are not assembled.",
+    "hint": "Write the lines of the macro here instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 66,
@@ -94,8 +94,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`until` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`until` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 67,
@@ -107,8 +107,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 73,
@@ -120,8 +120,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 75,
@@ -133,8 +133,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 77,
@@ -146,8 +146,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 80,
@@ -159,8 +159,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 93,
@@ -172,8 +172,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 96,
@@ -185,8 +185,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`if` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`if` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 111,
@@ -198,8 +198,8 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`endi` is not implemented: structured control is not assembled here",
-    "hint": "write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
+    "message": "`endi` is not implemented: structured control is not assembled here.",
+    "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {
       "file": "clockDigital.X68",
       "line": 114,
