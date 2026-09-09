@@ -1225,7 +1225,7 @@ mod tests {
             .finish()
             .iter()
             .map(|diagnostic| match diagnostic.hint() {
-                Some(hint) => format!("{} — {hint}", diagnostic.message()),
+                Some(hint) => format!("{} {hint}", diagnostic.message()),
                 None => diagnostic.message(),
             })
             .collect()
@@ -1296,14 +1296,14 @@ mod tests {
         assert_eq!(
             messages("    frobnicate d0"),
             [
-                "`frobnicate` is not an instruction or a directive. — Start it in column 1, \
+                "`frobnicate` is not an instruction or a directive. Start it in column 1, \
                  or end it with a colon, if `frobnicate` is a label"
             ]
         );
         assert_eq!(
             messages("    mvoe d0,d1"),
             [
-                "`mvoe` is not an instruction or a directive. — Did you mean `move`? start it \
+                "`mvoe` is not an instruction or a directive. Did you mean `move`? start it \
                  in column 1, or end it with a colon, if `mvoe` is a label"
             ]
         );
@@ -1334,7 +1334,7 @@ mod tests {
             messages("    rte"),
             [
                 "`rte` is not implemented: s68k runs every program in supervisor mode and keeps \
-                 no exception frames. — Write `rts` instead"
+                 no exception frames. Write `rts` instead"
             ]
         );
         assert_eq!(codes("    trap #3"), ["unimplemented_operation"]);
@@ -1362,7 +1362,7 @@ mod tests {
             messages("    addx.l #1,d0"),
             [
                 "`addx` takes two data registers or two predecrement operands, and this line has \
-                 an immediate and a data register. — Write `addx d0,d1` or `addx -(a0),-(a1)`; \
+                 an immediate and a data register. Write `addx d0,d1` or `addx -(a0),-(a1)`; \
                  `add` takes every addressing mode"
             ]
         );
@@ -1370,7 +1370,7 @@ mod tests {
             messages("    addx.l d0,-(a1)"),
             [
                 "`addx` takes two data registers or two predecrement operands, and this line has \
-                 a data register and a predecrement operand. — Write `addx d0,d1` or \
+                 a data register and a predecrement operand. Write `addx d0,d1` or \
                  `addx -(a0),-(a1)`; `add` takes every addressing mode"
             ]
         );
@@ -1383,7 +1383,7 @@ mod tests {
             messages("    abcd (a0),d1"),
             [
                 "`abcd` takes two data registers or two predecrement operands, and this line has \
-                 an indirect operand and a data register. — Write `abcd d0,d1` or \
+                 an indirect operand and a data register. Write `abcd d0,d1` or \
                  `abcd -(a0),-(a1)`; move the byte into a data register first"
             ]
         );
@@ -1391,15 +1391,15 @@ mod tests {
         // memory form of a rotate is a word, as every other shift's is.
         assert_eq!(
             messages("    abcd.w d0,d1"),
-            ["`.w` is not a size for `abcd`. — `abcd` takes `.b`"]
+            ["`.w` is not a size for `abcd`. `abcd` takes `.b`"]
         );
         assert_eq!(
             messages("    nbcd.l d0"),
-            ["`.l` is not a size for `nbcd`. — `nbcd` takes `.b`"]
+            ["`.l` is not a size for `nbcd`. `nbcd` takes `.b`"]
         );
         assert_eq!(
             messages("    roxl.b (a0)"),
-            ["`.b` is not a size for `roxl`. — `roxl` takes `.w`"]
+            ["`.b` is not a size for `roxl`. `roxl` takes `.w`"]
         );
         // `negx` and `nbcd` write one data alterable operand, so an address
         // register is answered the way `clr`'s and `neg`'s is.
@@ -1424,7 +1424,7 @@ mod tests {
         assert_eq!(
             messages("    move.l usp,a0"),
             [
-                "`usp` is the user stack pointer, which s68k does not assemble. — S68k runs one \
+                "`usp` is the user stack pointer, which s68k does not assemble. S68k runs one \
                  program with one stack pointer, `a7`"
             ]
         );
@@ -1464,7 +1464,7 @@ mod tests {
         assert_eq!(
             messages_with("    move.l d0,data(pc)", symbols([("data", 0x1010)])),
             [
-                "The second operand of `move` cannot be a PC-relative operand. — The operand \
+                "The second operand of `move` cannot be a PC-relative operand. The operand \
                  should be Dn, An, (An), (An)+, -(An), d(An), d(An,Xn) or Ea/<label>. A \
                  PC-relative operand is read and never written; write the label on its own"
             ]
@@ -1485,7 +1485,7 @@ mod tests {
         // not lectured about the program counter.
         assert_eq!(
             messages_with("    lea (a0),data(pc)", symbols([("data", 0x1010)])),
-            ["The second operand of `lea` cannot be a PC-relative operand. — The operand should be An"]
+            ["The second operand of `lea` cannot be a PC-relative operand. The operand should be An"]
         );
     }
 
@@ -1506,7 +1506,7 @@ mod tests {
             messages_with("    move.l far(pc),d0", symbols([("far", 0x9002)])),
             [
                 "The distance a `d(PC)` operand reaches is -32768 to 32767, and `32768` is \
-                 outside it. — Write `far` on its own: an absolute address reaches anywhere in \
+                 outside it. Write `far` on its own: an absolute address reaches anywhere in \
                  memory"
             ]
         );
@@ -1521,7 +1521,7 @@ mod tests {
             messages_with("    move.l far(pc,d1.w),d0", symbols([("far", 0x2000)])),
             [
                 "The distance a `d(PC,Xn)` operand reaches is -128 to 127, and `4094` is outside \
-                 it. — Write `far` on its own: an absolute address reaches anywhere in memory"
+                 it. Write `far` on its own: an absolute address reaches anywhere in memory"
             ]
         );
     }
@@ -1539,7 +1539,7 @@ mod tests {
         assert_eq!(
             messages("    move.l $18000.w,d0"),
             [
-                "An address forced to `.w` is -32768 to 32767, and `98304` is outside it. — Write \
+                "An address forced to `.w` is -32768 to 32767, and `98304` is outside it. Write \
                  `$18000.l`, or `$18000` on its own: both reach the same address here"
             ]
         );
@@ -1547,7 +1547,7 @@ mod tests {
             messages("    move.l table.b,d0"),
             [
                 "`.b` after `table` forces the width of the address, and an address is forced to \
-                 `.w` or `.l`. — Write `table.w` or `table.l`, or `table` on its own; the size the \
+                 `.w` or `.l`. Write `table.w` or `table.l`, or `table` on its own; the size the \
                  instruction works at goes after the mnemonic"
             ]
         );
@@ -1591,7 +1591,7 @@ mod tests {
         assert_eq!(
             messages("    move.w a0,sr"),
             [
-                "The first operand of `move` cannot be an address register. — The operand \
+                "The first operand of `move` cannot be an address register. The operand \
                  should be Dn, (An), (An)+, -(An), d(An), d(An,Xn), Ea/<label>, d(PC), d(PC,Xn) \
                  or Im. An address register holds an address; move it into a data register first"
             ]
@@ -1599,14 +1599,14 @@ mod tests {
         assert_eq!(
             messages("    move.w sr,#5"),
             [
-                "The second operand of `move` cannot be an immediate. — The operand should be \
+                "The second operand of `move` cannot be an immediate. The operand should be \
                  Dn, (An), (An)+, -(An), d(An), d(An,Xn) or Ea/<label>. An immediate is a value, \
                  and nothing can be written to it"
             ]
         );
         assert_eq!(
             messages("    move.b d0,ccr"),
-            ["`.b` is not a size for `move`. — `move` takes `.w`"],
+            ["`.b` is not a size for `move`. `move` takes `.w`"],
             "the sizes named are the chosen form's, not every size `move` has"
         );
         assert_eq!(
@@ -1636,7 +1636,7 @@ mod tests {
         assert_eq!(
             messages("    tst.w ccr"),
             [
-                "The first operand of `tst` cannot be the condition codes. — The operand should \
+                "The first operand of `tst` cannot be the condition codes. The operand should \
                  be Dn, (An), (An)+, -(An), d(An), d(An,Xn) or Ea/<label>. Only `move`, `andi`, \
                  `ori` and `eori` reach the status register"
             ]
@@ -1652,7 +1652,7 @@ mod tests {
         assert_eq!(
             messages("    movep.w d0,(a1)"),
             [
-                "The second operand of `movep` cannot be an indirect operand. — The operand \
+                "The second operand of `movep` cannot be an indirect operand. The operand \
                  should be d(An). Write the displacement, `0(a1)`"
             ]
         );
@@ -1668,7 +1668,7 @@ mod tests {
         assert_eq!(
             messages("    clr a0"),
             [
-                "The first operand of `clr` cannot be an address register. — The operand \
+                "The first operand of `clr` cannot be an address register. The operand \
                  should be Dn, (An), (An)+, -(An), d(An), d(An,Xn) or Ea/<label>. `suba.l a0,a0` \
                  clears an address register"
             ]
@@ -1676,7 +1676,7 @@ mod tests {
         assert_eq!(
             messages("    addi a0,d0"),
             [
-                "The first operand of `addi` cannot be an address register. — The operand \
+                "The first operand of `addi` cannot be an address register. The operand \
                  should be Im"
             ]
         );
@@ -1723,14 +1723,14 @@ mod tests {
             messages("    move.b d0,a0"),
             [
                 "`move.b` uses an address register, and an address register is never used \
-                 one byte at a time. — Use `.w` or `.l`"
+                 one byte at a time. Use `.w` or `.l`"
             ]
         );
         assert_eq!(
             messages("    cmp.b a0,d1"),
             [
                 "`cmp.b` uses an address register, and an address register is never used \
-                 one byte at a time. — Use `.w` or `.l`"
+                 one byte at a time. Use `.w` or `.l`"
             ]
         );
     }
@@ -1750,7 +1750,7 @@ mod tests {
         assert_eq!(
             messages("    move.l  d0 d1")[1],
             "The operand field ended at the space before `d1`, and `d1` was read as a comment. \
-             — Write `d0,d1`"
+             Write `d0,d1`"
         );
         // Every shape an Operand can start with, and a name the program defines.
         for text in [
@@ -1797,7 +1797,7 @@ mod tests {
     fn a_quick_form_says_what_it_holds() {
         assert_eq!(
             messages("    addq.l #9,d0"),
-            ["The count of `addq` is 1 to 8, and `9` is outside it. — `add #n,<ea>` has no such limit"]
+            ["The count of `addq` is 1 to 8, and `9` is outside it. `add #n,<ea>` has no such limit"]
         );
         assert_eq!(codes("    subq.w #0,d0"), ["value_out_of_range"]);
         assert_eq!(codes("    moveq #256,d0"), ["value_out_of_range"]);
@@ -1817,7 +1817,7 @@ mod tests {
     fn an_immediate_is_checked_against_the_size_it_is_used_at() {
         assert_eq!(
             messages("    move.b #300,d0"),
-            ["`#300` does not fit in a byte. — A byte immediate holds -128 to 255"]
+            ["`#300` does not fit in a byte. A byte immediate holds -128 to 255"]
         );
         assert!(codes("    move.b #-1,d0").is_empty());
         assert!(codes("    move.b #255,d0").is_empty());
@@ -1838,8 +1838,8 @@ mod tests {
         assert_eq!(
             messages("    move.l 5,d0"),
             [
-                "`5` here means the contents of address 5, not the number 5. — Write `#5` for the \
-              number itself"
+                "`5` here means the contents of address 5, not the number 5. Write `#5` for the \
+                 number itself"
             ]
         );
         assert!(
