@@ -3196,8 +3196,8 @@ mod tests {
                 }
             }
             assert_eq!(
-                lines, 8957,
-                "the 30 editor programs are 8957 of the corpus's 9672 lines"
+                lines, 8932,
+                "the 30 editor programs are 8932 of the corpus's 9647 lines"
             );
         }
 

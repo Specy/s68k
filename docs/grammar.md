@@ -1323,7 +1323,7 @@ decides. The map, so that a rule can be found from its name:
 
 Every rule above was run against the 33 programs of `tests/corpus/` — the 30 the
 asm-editor ships and the 3 EASy68K originals — as a throwaway model of 1.4, 1.5,
-2.5 and 2.7: split each of their 9672 lines into the four fields, then parse every
+2.5 and 2.7: split each of their 9647 lines into the four fields, then parse every
 Operand field that is not a Macro body or a structured-control line. Every line
 split, and all 8711 Operand fields parsed. What the pass turned up is in this document
 already: the parenthesised Expression of `bad-apple.x68` line 30 (3.8), the
@@ -1343,7 +1343,7 @@ the 8711 Operand fields fail; without them exactly two lines do, `move.l  #\1,d1
 (line 22 of `tests/corpus/easy68k/clockDigital.X68`, inside a Macro body) and
 `if <cs> then.s` (line 223 of
 `tests/corpus/easy68k/mouseWindowSize.X68`), which is the whole of what those
-rules buy on this corpus. And 0 of the 9672 lines have a comment field whose
+rules buy on this corpus. And 0 of the 9647 lines have a comment field whose
 first token is a `binary_operator`, so neither the wide form of
 `expression_split_by_space` nor the narrow one of 3.5 fires anywhere here: that
 warning is specified from the help and from reasoning alone, and its tests are
@@ -1351,7 +1351,7 @@ hand written too.
 
 The pass was run a third time with the parser itself, once it existed
 (`src/assembler/parser.rs`, and the implementation notes' step 4). The
-throwaway model's numbers hold: all **8957** lines of the 30 `editor/` programs
+throwaway model's numbers hold: all **8932** lines of the 30 `editor/` programs
 parse with **no Diagnostic at all**, and so do the same lines with their
 indentation removed, each giving the same Label, Operation and Operands as the
 indented original — which is the measure of `label_rule` resting on column 1 and

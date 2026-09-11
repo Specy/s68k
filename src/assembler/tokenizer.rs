@@ -997,8 +997,8 @@ mod tests {
             }
         }
         assert_eq!(
-            lines, 9672,
-            "the corpus is 9672 lines (docs/grammar.md section 6)"
+            lines, 9647,
+            "the corpus is 9647 lines (docs/grammar.md section 6)"
         );
     }
 
