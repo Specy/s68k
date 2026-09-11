@@ -151,6 +151,12 @@ directive or a label alone stops nothing, and one on a line of a file included
 twice stops at both copies. Undo needs a history, which `new Interpreter(program)` keeps by
 default (`{keep_history: true, history_size: 100}`).
 
+`program.getInstructionAddresses()` returns the assembled instruction addresses
+in ascending order. It is intended for whole-build editor annotations: use
+`interpreter.getInstructionAt(address)` to obtain each instruction's source
+location without copying every full instruction across the WebAssembly boundary
+up front.
+
 ### Reading one line
 
 `S68k.parseLine(text)` reads a single line into its four fields, for hover and

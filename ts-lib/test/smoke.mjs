@@ -37,6 +37,11 @@ assert.deepEqual(assembly.diagnostics, [], 'the program should assemble with not
 assert.notEqual(assembly.program, undefined, 'a program with no errors comes with a program')
 assert.equal(assembly.program.getEntryPoint(), 0x1000, 'START is the entry point')
 assert.equal(assembly.program.getInstructionCount(), 6)
+assert.deepEqual(
+    assembly.program.getInstructionAddresses(),
+    [0x1000, 0x1004, 0x1008, 0x100c, 0x1010, 0x1014],
+    'instruction addresses are exposed without copying full instructions'
+)
 assert.equal(assembly.program.getSymbols()['START'].value, 0x1000)
 assert.equal(assembly.program.getSymbols()['START'].kind, 'label')
 assert.equal(assembly.program.getSymbols()['START'].location.line, 3, 'START is on the fourth line')

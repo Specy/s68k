@@ -184,6 +184,11 @@ export class Program {
         return this.getInfo().instructionCount
     }
 
+    /** Every assembled instruction address, in ascending order. */
+    getInstructionAddresses(): number[] {
+        return this.assembly.wasm_get_instruction_addresses() as number[]
+    }
+
     /** Every symbol of the program, by full name. */
     getSymbols(): Record<string, ProgramSymbol> {
         return this.getInfo().symbols

@@ -26,6 +26,7 @@
 //! | `wasm_assemble(files, entry)` | [`wasm_assemble`] |
 //! | `assembly.wasm_get_diagnostics()` | [`WasmAssembly::wasm_get_diagnostics`] |
 //! | `assembly.wasm_get_program_info()` | [`WasmAssembly::wasm_get_program_info`] |
+//! | `assembly.wasm_get_instruction_addresses()` | [`WasmAssembly::wasm_get_instruction_addresses`] |
 //! | `new Interpreter(assembly, options)` | [`Interpreter::wasm_new`] |
 //! | `wasm_parse_line(text)` | [`wasm_parse_line`] |
 //!
@@ -159,6 +160,26 @@ impl WasmAssembly {
         set_panic_hook();
         match &self.program {
             Some(program) => to_plain_js(&ProgramInfo::of(program)),
+            None => Ok(JsValue::NULL),
+        }
+    }
+
+    /// Every assembled instruction address, in ascending order, or `null`
+    /// when the source did not build a Program.
+    ///
+    /// This is a compact index for editor features that annotate the whole
+    /// build. The full instructions remain on the WebAssembly side and are
+    /// still read individually through the Interpreter.
+    pub fn wasm_get_instruction_addresses(&self) -> Result<JsValue, JsValue> {
+        set_panic_hook();
+        match &self.program {
+            Some(program) => to_plain_js(
+                &program
+                    .instructions()
+                    .iter()
+                    .map(|instruction| instruction.address)
+                    .collect::<Vec<_>>(),
+            ),
             None => Ok(JsValue::NULL),
         }
     }
