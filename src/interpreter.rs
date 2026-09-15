@@ -37,7 +37,7 @@ use crate::assembler::source::Location;
 use crate::debugger::PrettyStackFrame;
 use crate::instructions::TargetDirection;
 use crate::{
-    debugger::{Debugger, ExecutionStep, MutationOperation},
+    debugger::{Debugger, ExecutionStep, MutationOperation, PokeJournal, PokeTarget, PokeWrite},
     instructions::{
         Condition, IndexRegister, Instruction, Interrupt, InterruptResult, KeyStateRequest,
         KeyStateResult, Operand, RegisterOperand, ShiftDirection, Sign, Size,
@@ -598,6 +598,17 @@ pub struct Interpreter {
     program: Program,
     debugger: Debugger,
     keep_history: bool,
+    /// The open Poke, if the host has begun one: what its writes have journaled
+    /// so far, which [`end_poke`](Interpreter::end_poke) turns into one step of
+    /// the history.
+    poke: Option<PokeJournal>,
+    /// Whether an instruction is running: from the moment `step` hands it to
+    /// `execute_instruction` until it is finished, which for an instruction
+    /// that raised an Interrupt is when the host answers it.
+    ///
+    /// It is what tells a write the program made from a write the host made:
+    /// only the first belongs in the mutations of the step being executed.
+    executing: bool,
     /// The address of the instruction being executed, and after the step, of
     /// the one that has just run. It is 0 before the first step, when none has.
     current_instruction_address: usize,
@@ -633,6 +644,8 @@ impl Interpreter {
             pc: start,
             end_address: end,
             keep_history: options.keep_history,
+            poke: None,
+            executing: false,
             current_instruction_address: 0,
             debugger: Debugger::new(options.history_size, program.symbols()),
             current_interrupt: None,
@@ -779,7 +792,12 @@ impl Interpreter {
                     self.debugger.set_location(location);
                 }
                 self.increment_pc(size);
-                self.execute_instruction(&ins)?;
+                self.executing = true;
+                let executed = self.execute_instruction(&ins);
+                //an instruction that raised an Interrupt is not finished until the host answers
+                //it, and what `answer_interrupt` writes belongs to this step
+                self.executing = self.status == InterpreterStatus::Interrupt;
+                executed?;
                 let status = self.get_status();
                 //TODO not sure if doing this before or after running the instruction
                 if self.has_reached_bottom()
@@ -869,6 +887,113 @@ impl Interpreter {
             }
             None => Err(RuntimeError::Raw("No more steps to undo".to_string())),
         }
+    }
+
+    /// Whether there is a step to undo, instruction or Poke alike.
+    pub fn can_undo(&self) -> bool {
+        self.debugger.can_undo()
+    }
+
+    /// The newest `count` steps of the history, newest first, a Poke among them
+    /// in the place it was made.
+    pub fn get_last_steps(&self, count: usize) -> Vec<&ExecutionStep> {
+        self.debugger.get_last_steps(count)
+    }
+
+    /// The id of the newest step, or 0 when there is none. A Poke has an id of
+    /// its own, so this moves past it.
+    pub fn get_last_step_id(&self) -> u64 {
+        self.debugger
+            .get_last_step()
+            .map_or(0, |step| step.get_id())
+    }
+
+    /// Whether an instruction is running, which is also true while an Interrupt
+    /// it raised waits for its answer.
+    #[inline(always)]
+    pub fn is_executing(&self) -> bool {
+        self.executing || self.status == InterpreterStatus::Interrupt
+    }
+
+    /// Whether a Poke is open.
+    pub fn is_poking(&self) -> bool {
+        self.poke.is_some()
+    }
+
+    /// Opens a Poke: the host is about to change register or memory values
+    /// between two instructions, and everything
+    /// [`set_register_value`](Interpreter::set_register_value) and
+    /// [`write_memory_bytes`](Interpreter::write_memory_bytes) write until
+    /// [`end_poke`](Interpreter::end_poke) becomes one step of the history.
+    ///
+    /// It refuses a Poke inside a Poke, and a Poke while an instruction is
+    /// running: those writes are the program's own and belong to its step.
+    pub fn begin_poke(&mut self) -> RuntimeResult<()> {
+        if self.poke.is_some() {
+            return Err(RuntimeError::Raw(
+                "A poke is already open, end it before beginning another".to_string(),
+            ));
+        }
+        if self.is_executing() {
+            return Err(RuntimeError::Raw(
+                "Cannot begin a poke while an instruction is executing".to_string(),
+            ));
+        }
+        self.poke = Some(PokeJournal::new());
+        Ok(())
+    }
+
+    /// Closes the open Poke and records it as one step of the history, and
+    /// answers whether it recorded one.
+    ///
+    /// A Poke that wrote nothing — no write at all, or only writes that left
+    /// the value they found — records no step and answers `false`, and so does
+    /// one made by an Interpreter that keeps no history. The step it does
+    /// record has an id of its own, the mutations that undo replays and the old
+    /// and new value of everything the Poke wrote.
+    pub fn end_poke(&mut self) -> RuntimeResult<bool> {
+        let journal = match self.poke.take() {
+            Some(journal) => journal,
+            None => {
+                return Err(RuntimeError::Raw(
+                    "No poke is open, begin one before ending it".to_string(),
+                ))
+            }
+        };
+        if journal.is_empty() || !self.keep_history {
+            return Ok(false);
+        }
+        let (mutations, targets) = journal.into_parts();
+        //the new value is what the Poke leaves behind, read now, so that a register written
+        //twice reports the value it ends on and not one it passed through
+        let writes = targets
+            .into_iter()
+            .map(|target| match target {
+                PokeTarget::Register { register, old } => PokeWrite::Register {
+                    name: register.name(),
+                    old,
+                    new: self.get_register_value(register, Size::Long),
+                },
+                PokeTarget::Memory { address, old } => {
+                    let new = self
+                        .memory
+                        .read_bytes(address, old.len())
+                        .map(|bytes| bytes.to_vec())
+                        .unwrap_or_default();
+                    PokeWrite::Memory { address, old, new }
+                }
+            })
+            .collect::<Vec<PokeWrite>>();
+        //no instruction ran, so the step carries the program counter, the condition codes and
+        //the status register as they are: undoing it puts back only what the Poke wrote
+        let mut step =
+            ExecutionStep::new_poke(self.pc, self.cpu.ccr, self.cpu.get_sr(), self.status);
+        for mutation in mutations {
+            step.add_mutation(mutation);
+        }
+        step.set_writes(writes);
+        self.debugger.add_step(step);
+        Ok(true)
     }
     pub fn answer_interrupt(&mut self, interrupt_result: InterruptResult) -> RuntimeResult<()> {
         match interrupt_result {
@@ -969,6 +1094,7 @@ impl Interpreter {
             }
         };
         self.current_interrupt = None;
+        self.executing = false;
         //edge case if the last instruction is an interrupt
         self.status = if self.has_reached_bottom() {
             InterpreterStatus::Terminated
@@ -1901,13 +2027,30 @@ impl Interpreter {
                 old_value
             }
         };
-        if self.keep_history {
-            self.debugger
-                .add_mutation(MutationOperation::WriteRegister {
-                    register,
-                    old: old_value,
-                    size,
-                });
+        //what the program writes belongs to the step being executed; what the host writes
+        //belongs to the open Poke, if there is one, and to nothing at all if there is not
+        if self.executing {
+            if self.keep_history {
+                self.debugger
+                    .add_mutation(MutationOperation::WriteRegister {
+                        register,
+                        old: old_value,
+                        size,
+                    });
+            }
+        } else if self.poke.is_some() {
+            //a write that changed nothing journals nothing
+            let new_value = self.get_register_value(register, Size::Long);
+            if new_value == old_value {
+                return;
+            }
+            let poke = self.poke.as_mut().expect("a poke is open");
+            poke.add_mutation(MutationOperation::WriteRegister {
+                register,
+                old: old_value,
+                size,
+            });
+            poke.add_register_target(register, old_value);
         }
     }
 
@@ -2002,6 +2145,30 @@ impl Interpreter {
             mask >>= 1;
         }
         Ok(addr)
+    }
+
+    /// Writes bytes to memory on behalf of the host.
+    ///
+    /// Inside a Poke it journals the bytes it overwrote, so that undoing the
+    /// Poke puts them back; outside one it is a direct write and records
+    /// nothing, which is what a Testcase's preset memory needs. Bytes equal to
+    /// the ones already there are no write at all and journal nothing.
+    pub fn write_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
+        if self.poke.is_none() {
+            return self.memory.write_bytes(address, bytes);
+        }
+        let old = self.memory.read_bytes(address, bytes.len())?.to_vec();
+        if old == bytes {
+            return Ok(());
+        }
+        self.memory.write_bytes(address, bytes)?;
+        let poke = self.poke.as_mut().expect("a poke is open");
+        poke.add_mutation(MutationOperation::WriteMemoryBytes {
+            address,
+            old: old.clone(),
+        });
+        poke.add_memory_target(address, old);
+        Ok(())
     }
 
     pub fn set_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
@@ -2775,7 +2942,7 @@ impl Interpreter {
         address: usize,
         bytes: Vec<u8>,
     ) -> Result<(), JsValue> {
-        match self.memory.write_bytes(address, &bytes) {
+        match self.write_memory_bytes(address, &bytes) {
             Ok(_) => Ok(()),
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
@@ -2796,7 +2963,7 @@ impl Interpreter {
         }
     }
     pub fn wasm_can_undo(&self) -> bool {
-        self.debugger.can_undo()
+        self.can_undo()
     }
     /// Run one instruction and answer the status the Interpreter is left in.
     ///
@@ -2853,14 +3020,14 @@ impl Interpreter {
             None => JsValue::NULL,
         }
     }
+    /// The newest `count` steps, newest first: the instructions that have run
+    /// and the Pokes made between them, each saying which it is in its `kind`.
     pub fn wasm_get_undo_history(&self, count: usize) -> JsValue {
-        serde_wasm_bindgen::to_value(&self.debugger.get_last_steps(count)).unwrap()
+        serde_wasm_bindgen::to_value(&self.get_last_steps(count)).unwrap()
     }
 
     pub fn wasm_get_last_step_id(&self) -> f64 {
-        self.debugger
-            .get_last_step()
-            .map_or(0, |step| step.get_id()) as f64
+        self.get_last_step_id() as f64
     }
     pub fn wasm_get_status(&self) -> InterpreterStatus {
         *self.get_status()
@@ -2883,6 +3050,22 @@ impl Interpreter {
     pub fn wasm_undo(&mut self) -> Result<JsValue, JsValue> {
         match self.undo() {
             Ok(step) => Ok(serde_wasm_bindgen::to_value(&step).unwrap()),
+            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
+        }
+    }
+    /// Opens a Poke, which is `beginPoke()`. It throws when one is already
+    /// open and when an instruction is executing.
+    pub fn wasm_begin_poke(&mut self) -> Result<(), JsValue> {
+        match self.begin_poke() {
+            Ok(()) => Ok(()),
+            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
+        }
+    }
+    /// Closes the open Poke, which is `endPoke()`, and answers whether it
+    /// recorded a step. It throws when no Poke is open.
+    pub fn wasm_end_poke(&mut self) -> Result<bool, JsValue> {
+        match self.end_poke() {
+            Ok(recorded) => Ok(recorded),
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }
     }

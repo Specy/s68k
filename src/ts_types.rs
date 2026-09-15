@@ -365,13 +365,38 @@ export type InterpreterOptions = {
 
 /// [`ExecutionStep`](crate::debugger::ExecutionStep) as `ts-lib` hands it on:
 /// the condition codes are a bitfield there, where the wasm boundary writes
-/// them as the string `bitflags` serialises.
+/// them as the string `bitflags` serialises. Its `kind` and its `writes` are
+/// [`ExecutionStepKind`](crate::debugger::ExecutionStepKind) and
+/// [`PokeWrite`](crate::debugger::PokeWrite).
 #[wasm_bindgen(typescript_custom_section)]
 pub const IExecutionStep: &'static str = r#"
+/** Whether a step of the history is an instruction or a poke. */
+export type ExecutionStepKind = "instruction" | "poke"
+
+/**
+ * One value a poke wrote: what was there before it and what is there when the
+ * poke closed. A register is named as the editor spells it (`d0`, `a7`).
+ */
+export type PokeWrite = {
+    type: "register",
+    name: string,
+    old: number,
+    new: number
+} | {
+    type: "memory",
+    address: number,
+    old: number[],
+    new: number[]
+}
+
 export type ExecutionStep = {
     /** Identifies this execution, including repeated visits to the same PC. */
     id: number,
+    /** An instruction the program ran, or a poke the host made between two of them. */
+    kind: ExecutionStepKind,
     mutations: MutationOperation[],
+    /** What a poke wrote, old and new; empty on an instruction. */
+    writes: PokeWrite[],
     pc: number,
     old_ccr: {
         bits: number,

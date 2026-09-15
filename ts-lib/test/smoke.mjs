@@ -12,7 +12,7 @@ if (!existsSync(fileURLToPath(dist))) {
     process.exit(1)
 }
 
-const { S68k, Interpreter, RegisterType, InterpreterStatus } = await import(dist)
+const { S68k, Interpreter, RegisterType, InterpreterStatus, Size } = await import(dist)
 
 // ---------------------------------------------------------------------------
 // Assembling and running
@@ -356,6 +356,85 @@ loop.step()
 assert.ok(loop.getLastStepId() > history[0].id)
 loop.dispose()
 looping.program.dispose()
+
+
+// ---------------------------------------------------------------------------
+// Pokes: what the host writes between two instructions
+// ---------------------------------------------------------------------------
+
+// A poke is one step of the same history the instructions use: the setters
+// journal into the open transaction, endPoke records one entry, and undo
+// reverts it like anything else.
+const poking = S68k.assemble('    ORG $1000\n    MOVE.L #1,D0\n    MOVE.L #2,D0\n')
+assert.deepEqual(poking.diagnostics, [])
+const poked = new Interpreter(poking.program, {keep_history: true, history_size: 100})
+const D0 = {type: 'Data', value: 0}
+const D1 = {type: 'Data', value: 1}
+
+poked.step()
+assert.equal(poked.getRegisterValue(D0), 1, 'the first instruction wrote D0')
+
+// Outside a transaction a setter is direct and records nothing: undoing the
+// instruction before it leaves the host's write where it is.
+poked.setRegisterValue(D1, 0xbeef, Size.Long)
+poked.writeMemoryBytes(0x2000, new Uint8Array([1, 2, 3, 4]))
+poked.undo()
+assert.equal(poked.getRegisterValue(D1), 0xbeef, 'a host register write outside a poke is direct')
+assert.deepEqual(
+    Array.from(poked.readMemoryBytes(0x2000, 4)),
+    [1, 2, 3, 4],
+    'and so is a host memory write'
+)
+poked.step()
+
+const beforePokeId = poked.getLastStepId()
+assert.throws(() => poked.endPoke(), 'ending a poke that was never begun throws')
+poked.beginPoke()
+assert.throws(() => poked.beginPoke(), 'a poke inside a poke throws')
+poked.setRegisterValue(D0, 0x99, Size.Long)
+poked.writeMemoryBytes(0x2000, new Uint8Array([9, 9, 9, 9]))
+assert.equal(poked.endPoke(), true, 'a poke that wrote something records a step')
+
+const [pokeStep, instructionStep] = poked.getUndoHistory(2)
+assert.equal(pokeStep.kind, 'poke', 'the newest step is the poke')
+assert.equal(instructionStep.kind, 'instruction', 'and the one before it an instruction')
+assert.ok(pokeStep.id > beforePokeId, 'a poke takes a step id of its own')
+assert.equal(poked.getLastStepId(), pokeStep.id, 'which getLastStepId moves past')
+assert.equal(pokeStep.writes.length, 2, 'one entry per value written')
+assert.equal(pokeStep.writes[0].type, 'register')
+assert.equal(pokeStep.writes[0].name, 'd0', 'named as the editor spells it')
+assert.equal(pokeStep.writes[0].old, 1)
+assert.equal(pokeStep.writes[0].new, 0x99)
+assert.equal(pokeStep.writes[1].type, 'memory')
+assert.equal(pokeStep.writes[1].address, 0x2000)
+assert.deepEqual(pokeStep.writes[1].old, [1, 2, 3, 4])
+assert.deepEqual(pokeStep.writes[1].new, [9, 9, 9, 9])
+assert.deepEqual(instructionStep.writes, [], 'an instruction carries no poke writes')
+
+// A poke that changed nothing is no step at all.
+poked.beginPoke()
+poked.setRegisterValue(D0, 0x99, Size.Long)
+assert.equal(poked.endPoke(), false, 'writing what is already there records nothing')
+assert.equal(poked.getLastStepId(), pokeStep.id, 'and takes no id')
+
+// Poke, instruction, undo, undo: the instruction goes first, then the poke,
+// and the state is exactly what it was before the poke.
+poked.step()
+assert.equal(poked.getRegisterValue(D0), 2, 'the second instruction ran')
+assert.equal(poked.canUndo(), true)
+assert.equal(poked.undo().kind, 'instruction', 'the instruction is reverted first')
+assert.equal(poked.getRegisterValue(D0), 0x99, 'back to what the poke left')
+const undonePoke = poked.undo()
+assert.equal(undonePoke.kind, 'poke', 'and then the poke')
+assert.equal(undonePoke.writes.length, 2, 'the undone step says what it put back')
+assert.equal(poked.getRegisterValue(D0), 1, 'the register is back')
+assert.deepEqual(
+    Array.from(poked.readMemoryBytes(0x2000, 4)),
+    [1, 2, 3, 4],
+    'and so are the bytes'
+)
+poked.dispose()
+poking.program.dispose()
 
 interpreter.dispose()
 assembly.program.dispose()

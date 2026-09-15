@@ -157,6 +157,34 @@ in ascending order. It is intended for whole-build editor annotations: use
 location without copying every full instruction across the WebAssembly boundary
 up front.
 
+### Pokes: changing a value between two instructions
+
+A poke is a register or memory value the host changes while debugging, recorded
+in the same history as the instructions as a step of its own:
+
+```ts
+interpreter.beginPoke()
+interpreter.setRegisterValue({type: 'Data', value: 0}, 0x99)
+interpreter.writeMemoryBytes(0x2000, new Uint8Array([9, 9]))
+const recorded = interpreter.endPoke()   // true: it wrote something
+
+const [step] = interpreter.getUndoHistory(1)
+step.kind      // 'poke', where an instruction's is 'instruction'
+step.writes    // [{type: 'register', name: 'd0', old: 1, new: 0x99},
+               //  {type: 'memory', address: 0x2000, old: [...], new: [9, 9]}]
+interpreter.undo()                       // puts every one of them back
+```
+
+Everything written between `beginPoke()` and `endPoke()` is one step, whatever
+it wrote; a poke that wrote nothing, or only values that were already there,
+records none and `endPoke()` answers `false`. Outside a transaction the same
+setters are direct and record nothing, which is what preset starting values
+need. `beginPoke()` throws when a poke is already open and when an instruction
+is executing — an interrupt waiting for its answer included — and `endPoke()`
+throws when no poke is open. Undoing a poke puts back every value it wrote and
+touches nothing else: not the program counter, not the flags, not the call
+stack.
+
 ### Reading one line
 
 `S68k.parseLine(text)` reads a single line into its four fields, for hover and

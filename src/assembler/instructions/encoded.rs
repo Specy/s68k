@@ -57,7 +57,7 @@ pub enum TargetDirection {
 }
 
 /// One of the sixteen general registers, as an encoded operand.
-#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
+#[derive(Debug, Clone, Serialize, Deserialize, Copy, PartialEq, Eq)]
 #[serde(tag = "type", content = "value")]
 pub enum RegisterOperand {
     /// `a0` to `a7`.
@@ -73,6 +73,14 @@ impl RegisterOperand {
         match self {
             RegisterOperand::Address(index) => *index as u16 + 8,
             RegisterOperand::Data(index) => *index as u16,
+        }
+    }
+    /// The register's name as it is written in source and as the editor spells
+    /// it: `d0` to `d7`, `a0` to `a7`.
+    pub fn name(&self) -> String {
+        match self {
+            RegisterOperand::Address(index) => format!("a{index}"),
+            RegisterOperand::Data(index) => format!("d{index}"),
         }
     }
 }

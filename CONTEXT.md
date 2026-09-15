@@ -121,6 +121,14 @@ The assignment of an address to every line that produces bytes or an instruction
 What runs a Program: registers, memory, the step, run, undo and interrupt operations. It never reads source; it reaches the source only through each instruction's Location.
 _Avoid_: emulator (that is the asm-editor's object around it), simulator, CPU
 
+**Execution step**:
+One entry of the Interpreter's history: an instruction that ran, or a Poke. It carries an id of its own, the mutations undo replays, the program counter and the status register before it, and says which of the two kinds it is.
+_Avoid_: history entry, undo record
+
+**Poke**:
+A register or memory value the host — the asm-editor's user or coding agent — changes between two instructions. Everything written between `begin_poke` and `end_poke` is one Execution step of its own, undone by the Interpreter like an instruction; the same setters called outside a transaction write directly and record nothing, which is what a Testcase's preset values need.
+_Avoid_: patch, edit, host write (that is any write from outside, Poke or not)
+
 **Paused**:
 The Interpreter status after it executes `simhalt`. The Program counter already
 names the following instruction, and the next step or run operation resumes

@@ -4,4 +4,5 @@
 mod corpus;
 mod diagnostics;
 mod include;
+mod pokes;
 mod test;

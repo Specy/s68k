@@ -4,6 +4,7 @@ import {
     Cpu as RawCpu,
     Diagnostic,
     ExecutionStep,
+    ExecutionStepKind,
     Flags,
     InstructionLine,
     Interpreter as RawInterpreter,
@@ -23,6 +24,7 @@ import {
     ParsedOperand,
     ParsedOperation,
     ParsedText,
+    PokeWrite,
     ProgramInfo,
     ProgramSymbol,
     Register as RawRegister,
@@ -230,8 +232,39 @@ export class Interpreter {
         return this.interpreter.wasm_step()
     }
 
+    /**
+     * Write bytes into memory.
+     *
+     * Inside a poke ({@link Interpreter.beginPoke}) the bytes it overwrites are
+     * journaled, so undo puts them back; outside one it is a direct write that
+     * records nothing, which is what a testcase's preset memory needs.
+     */
     writeMemoryBytes(address: number, data: Uint8Array) {
         return this.interpreter.wasm_write_memory_bytes(address, data)
+    }
+
+    /**
+     * Open a poke: everything {@link Interpreter.setRegisterValue} and
+     * {@link Interpreter.writeMemoryBytes} write until {@link Interpreter.endPoke}
+     * becomes one step of the same history the instructions use, undone by one
+     * {@link Interpreter.undo} like any other.
+     *
+     * Throws when a poke is already open and when an instruction is executing,
+     * which includes an interrupt waiting for its answer.
+     */
+    beginPoke(): void {
+        this.interpreter.wasm_begin_poke()
+    }
+
+    /**
+     * Close the open poke and answer whether it recorded a step.
+     *
+     * A poke that wrote nothing, or only values that were already there,
+     * records none and answers false; so does one made by an interpreter that
+     * keeps no history. Throws when no poke is open.
+     */
+    endPoke(): boolean {
+        return this.interpreter.wasm_end_poke()
     }
 
     /** The instruction that has just run, or null before the first step. */
@@ -239,6 +272,11 @@ export class Interpreter {
         return this.interpreter.wasm_get_last_instruction() as InstructionLine | null
     }
 
+    /**
+     * Revert the newest step of the history, instruction or poke alike, and
+     * answer it. Undoing a poke puts back every value it wrote and touches
+     * nothing else.
+     */
     undo(): ExecutionStep {
         return internalExecutionStepToExecutionStep(this.interpreter.wasm_undo())
     }
@@ -247,7 +285,10 @@ export class Interpreter {
         return this.interpreter.wasm_get_previous_mutations() as MutationOperation[] | null
     }
 
-    /** Identity of the newest retained instruction, or 0 before execution. */
+    /**
+     * Identity of the newest retained step, instruction or poke, or 0 before
+     * execution. A poke has an id of its own, so this moves past it.
+     */
     getLastStepId(): number {
         return this.interpreter.wasm_get_last_step_id()
     }
@@ -333,6 +374,10 @@ export class Interpreter {
         return this.interpreter.wasm_get_call_stack() as StackFrame[]
     }
 
+    /**
+     * The newest `amount` steps of the history, newest first. A poke is one of
+     * them, in its place among the instructions, told apart by its `kind`.
+     */
     getUndoHistory(amount: number): ExecutionStep[] {
         return this.interpreter.wasm_get_undo_history(amount).map(internalExecutionStepToExecutionStep)
     }
@@ -349,6 +394,12 @@ export class Interpreter {
         return this.interpreter.wasm_get_register_value(register, size)
     }
 
+    /**
+     * Write a register.
+     *
+     * Inside a poke ({@link Interpreter.beginPoke}) the write is journaled into
+     * it; outside one it is direct and records nothing.
+     */
     setRegisterValue(register: RegisterOperand, value: number, size = Size.Long) {
         this.interpreter.wasm_set_register_value(register, value, size)
     }
@@ -490,7 +541,11 @@ export function ccrToFlagsArray(ccr: number) {
 
 export type ExecutionStepInternal = {
     id: number,
+    /** An instruction the program ran, or a poke the host made between two of them. */
+    kind: ExecutionStepKind,
     mutations: MutationOperation[],
+    /** What a poke wrote, old and new; empty on an instruction. */
+    writes: PokeWrite[],
     pc: number,
     old_ccr: string,
     new_ccr: string
@@ -535,6 +590,7 @@ export {
     Condition,
     Diagnostic,
     ExecutionStep,
+    ExecutionStepKind,
     Flags,
     InstructionLine,
     InterpreterOptions,
@@ -553,6 +609,7 @@ export {
     ParsedOperand,
     ParsedOperation,
     ParsedText,
+    PokeWrite,
     ProgramInfo,
     ProgramSymbol,
     RegisterOperand,
