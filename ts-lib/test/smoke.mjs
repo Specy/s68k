@@ -358,6 +358,69 @@ loop.dispose()
 looping.program.dispose()
 
 
+const D0_WRITER = {type: 'Data', value: 0}
+
+// ---------------------------------------------------------------------------
+// What a write reports: the value it replaced and the value it wrote
+// ---------------------------------------------------------------------------
+
+// Every write of every step carries both sides, and they cross as plain
+// unsigned numbers: a 32 bit register of all ones is 4294967295, never -1 and
+// never a string.
+const writing = S68k.assemble(
+    '    ORG $1000\n    MOVE.L #$FFFFFFFF,D0\n    MOVE.B #$01,D0\n    MOVE.W D0,$2000\n'
+)
+assert.deepEqual(writing.diagnostics, [])
+const writer = new Interpreter(writing.program, {keep_history: true, history_size: 100})
+
+writer.step()
+const [longMove] = writer.getUndoHistory(1)
+assert.equal(longMove.mutations[0].type, 'WriteRegister')
+assert.equal(longMove.mutations[0].value.old, 0)
+assert.equal(longMove.mutations[0].value.new, 0xffffffff, 'unsigned, and not -1')
+assert.equal(typeof longMove.mutations[0].value.new, 'number', 'a number, not a string')
+
+// A sized store changes part of the register and reports the whole of it, both
+// before and after, which is what the panels draw.
+writer.step()
+const [byteMove] = writer.getUndoHistory(1)
+assert.equal(byteMove.mutations[0].value.size, 'Byte', 'the width the write was made at')
+assert.equal(byteMove.mutations[0].value.old, 0xffffffff, 'the whole register before')
+assert.equal(byteMove.mutations[0].value.new, 0xffffff01, 'and the whole register after')
+assert.equal(writer.getRegisterValue(D0_WRITER), 0xffffff01)
+
+// A memory write reports the bytes it replaced and the bytes it left, at the
+// width it was made: memory starts as $ff, so the word it replaced is $ffff.
+writer.step()
+const [wordStore] = writer.getUndoHistory(1)
+assert.equal(wordStore.mutations[0].type, 'WriteMemory')
+assert.equal(wordStore.mutations[0].value.address, 0x2000)
+assert.equal(wordStore.mutations[0].value.size, 'Word')
+assert.equal(wordStore.mutations[0].value.old, 0xffff)
+assert.equal(wordStore.mutations[0].value.new, 0xff01)
+assert.deepEqual(
+    Array.from(writer.readMemoryBytes(0x2000, 3)),
+    [0xff, 0x01, 0xff],
+    'and nothing past that width'
+)
+
+// The old fields are all still there, on every write of every step.
+for (const step of writer.getUndoHistory(100)) {
+    for (const mutation of step.mutations) {
+        if (!mutation.type.startsWith('Write')) continue
+        assert.notEqual(mutation.value.old, undefined, `${mutation.type} keeps its old value`)
+        assert.notEqual(mutation.value.new, undefined, `${mutation.type} reports what it wrote`)
+        if (mutation.type === 'WriteRegister') {
+            assert.notEqual(mutation.value.register, undefined)
+            assert.notEqual(mutation.value.size, undefined)
+        } else {
+            assert.notEqual(mutation.value.address, undefined)
+        }
+    }
+}
+writer.dispose()
+writing.program.dispose()
+
 // ---------------------------------------------------------------------------
 // Pokes: what the host writes between two instructions
 // ---------------------------------------------------------------------------
@@ -410,6 +473,13 @@ assert.equal(pokeStep.writes[1].address, 0x2000)
 assert.deepEqual(pokeStep.writes[1].old, [1, 2, 3, 4])
 assert.deepEqual(pokeStep.writes[1].new, [9, 9, 9, 9])
 assert.deepEqual(instructionStep.writes, [], 'an instruction carries no poke writes')
+// a poke journals the same three write shapes, so its mutations carry new as well
+assert.equal(pokeStep.mutations[0].type, 'WriteRegister')
+assert.equal(pokeStep.mutations[0].value.old, 1)
+assert.equal(pokeStep.mutations[0].value.new, 0x99)
+assert.equal(pokeStep.mutations[1].type, 'WriteMemoryBytes')
+assert.deepEqual(pokeStep.mutations[1].value.old, [1, 2, 3, 4])
+assert.deepEqual(pokeStep.mutations[1].value.new, [9, 9, 9, 9])
 
 // A poke that changed nothing is no step at all.
 poked.beginPoke()

@@ -419,25 +419,41 @@ export type ExecutionStep = {
 "#;
 #[wasm_bindgen(typescript_custom_section)]
 pub const IMutationOperation: &'static str = r#"
+/**
+ * One thing a step changed, with the value it replaced beside the value it
+ * wrote.
+ *
+ * Both sides are read where the write happened and never reconstructed
+ * afterwards. `PushCall` and `PopCall` write no value and carry neither.
+ */
 export type MutationOperation = {
     type: "WriteRegister",
     value: {
         register: RegisterOperand,
+        /** The whole register before the store. */
         old: number,
+        /** The whole register after it, sized store or not. */
+        new: number,
         size: Size
     }
 } | {
     type: "WriteMemory",
     value: {
         address: number,
+        /** The value the write replaced, at `size`. */
         old: number,
+        /** The value it stored, at `size`. */
+        new: number,
         size: Size
     }
 } | {
     type: "WriteMemoryBytes",
     value: {
         address: number,
-        old: number[]
+        /** The bytes the write replaced. */
+        old: number[],
+        /** The bytes it stored. */
+        new: number[]
     }
 } | {
     type: "PopCall",

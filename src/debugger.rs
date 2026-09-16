@@ -24,22 +24,40 @@ use crate::{
     interpreter::{Flags, InterpreterStatus},
 };
 
+/// One thing a step changed, with the value it replaced beside the value it
+/// wrote.
+///
+/// Every write carries both sides, read where the write happened and never
+/// reconstructed afterwards: `old` is what the Core found there and `new` is
+/// what the store left behind. A register write reports the whole register on
+/// both sides, because a sized store changes only part of one and the register
+/// is what the panels draw; a memory write reports the value at the width it
+/// was made. `PushCall` and `PopCall` write no value and carry neither.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "value")]
 pub enum MutationOperation {
     WriteRegister {
         register: RegisterOperand,
+        /// The whole register before the store.
         old: u32,
+        /// The whole register after it, sized store or not.
+        new: u32,
         size: Size,
     },
     WriteMemory {
         address: usize,
+        /// The value the write replaced, at `size`.
         old: u32,
+        /// The value it stored, at `size`.
+        new: u32,
         size: Size,
     },
     WriteMemoryBytes {
         address: usize,
+        /// The bytes the write replaced.
         old: Vec<u8>,
+        /// The bytes it stored.
+        new: Vec<u8>,
     },
     PushCall {
         to: usize,

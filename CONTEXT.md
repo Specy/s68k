@@ -125,6 +125,10 @@ _Avoid_: emulator (that is the asm-editor's object around it), simulator, CPU
 One entry of the Interpreter's history: an instruction that ran, or a Poke. It carries an id of its own, the mutations undo replays, the program counter and the status register before it, and says which of the two kinds it is.
 _Avoid_: history entry, undo record
 
+**Mutation**:
+One thing an Execution step changed: a register write, a memory write at a size, a run of bytes, or a call pushed or popped. Every write carries the value it replaced beside the value it wrote, both read where the write happened — a register write reports the whole register on both sides, because a sized store changes only part of one — so nothing about what a step did is reconstructed after the fact.
+_Avoid_: diff, change record, delta
+
 **Poke**:
 A register or memory value the host — the asm-editor's user or coding agent — changes between two instructions. Everything written between `begin_poke` and `end_poke` is one Execution step of its own, undone by the Interpreter like an instruction; the same setters called outside a transaction write directly and record nothing, which is what a Testcase's preset values need.
 _Avoid_: patch, edit, host write (that is any write from outside, Poke or not)

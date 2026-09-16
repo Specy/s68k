@@ -841,6 +841,7 @@ impl Interpreter {
                         MutationOperation::WriteRegister {
                             register,
                             old,
+                            new: _,
                             size: _,
                         } => match register {
                             RegisterOperand::Address(reg) => {
@@ -850,10 +851,19 @@ impl Interpreter {
                                 self.cpu.d_reg[*reg as usize].store_long(*old)
                             }
                         },
-                        MutationOperation::WriteMemory { address, old, size } => {
+                        MutationOperation::WriteMemory {
+                            address,
+                            old,
+                            new: _,
+                            size,
+                        } => {
                             self.memory.write_size(*address, *size, *old)?;
                         }
-                        MutationOperation::WriteMemoryBytes { address, old } => {
+                        MutationOperation::WriteMemoryBytes {
+                            address,
+                            old,
+                            new: _,
+                        } => {
                             self.memory.write_bytes(*address, old)?;
                         }
                         MutationOperation::PopCall { to, from } => {
@@ -1384,6 +1394,8 @@ impl Interpreter {
                     self.debugger.add_mutation(MutationOperation::WriteMemory {
                         address: old_address,
                         old: old_value,
+                        //the return address, which is what the push below stores there
+                        new: self.pc as u32,
                         size: Size::Long,
                     });
                     self.debugger.add_mutation(MutationOperation::PushCall {
@@ -1410,6 +1422,8 @@ impl Interpreter {
                     self.debugger.add_mutation(MutationOperation::WriteMemory {
                         address: old_address,
                         old: old_value,
+                        //the return address, which is what the push below stores there
+                        new: self.pc as u32,
                         size: Size::Long,
                     });
                     self.debugger.add_mutation(MutationOperation::PushCall {
@@ -1437,10 +1451,14 @@ impl Interpreter {
             Instruction::PEA(source) => {
                 let addr = self.get_operand_address(source)?;
                 if self.keep_history {
-                    let old_value = self.memory.read_long(self.get_sp())?;
+                    //the push writes below the stack pointer, so the value it replaces is the
+                    //one at that address and not the one the pointer is on
+                    let old_address = self.get_sp().wrapping_sub(4);
+                    let old_value = self.memory.read_long(old_address)?;
                     self.debugger.add_mutation(MutationOperation::WriteMemory {
-                        address: self.get_sp().wrapping_sub(4),
+                        address: old_address,
                         old: old_value,
+                        new: addr,
                         size: Size::Long,
                     })
                 }
@@ -2031,10 +2049,14 @@ impl Interpreter {
         //belongs to the open Poke, if there is one, and to nothing at all if there is not
         if self.executing {
             if self.keep_history {
+                //the whole register the store leaves behind, read back the way the old value
+                //was read, because a sized store changes only part of one
+                let new_value = self.get_register_value(register, Size::Long);
                 self.debugger
                     .add_mutation(MutationOperation::WriteRegister {
                         register,
                         old: old_value,
+                        new: new_value,
                         size,
                     });
             }
@@ -2048,6 +2070,7 @@ impl Interpreter {
             poke.add_mutation(MutationOperation::WriteRegister {
                 register,
                 old: old_value,
+                new: new_value,
                 size,
             });
             poke.add_register_target(register, old_value);
@@ -2065,6 +2088,9 @@ impl Interpreter {
             self.debugger.add_mutation(MutationOperation::WriteMemory {
                 address,
                 old: old_value,
+                //what the store puts there: `write_size` keeps the low bytes of the value, so
+                //the two sides are read at the same width
+                new: get_value_sized(value, size),
                 size,
             });
         }
@@ -2166,6 +2192,7 @@ impl Interpreter {
         poke.add_mutation(MutationOperation::WriteMemoryBytes {
             address,
             old: old.clone(),
+            new: bytes.to_vec(),
         });
         poke.add_memory_target(address, old);
         Ok(())
@@ -2178,6 +2205,7 @@ impl Interpreter {
                 .add_mutation(MutationOperation::WriteMemoryBytes {
                     address,
                     old: old_bytes.to_vec(),
+                    new: bytes.to_vec(),
                 });
         }
         self.memory.write_bytes(address, bytes)
@@ -2491,10 +2519,13 @@ impl Interpreter {
         let old_value = self.cpu.a_reg[reg as usize].get_long();
         self.cpu.a_reg[reg as usize].store_size(size, value);
         if self.keep_history {
+            //the whole register after the sized store, as `set_register_value` reports it
+            let new_value = self.cpu.a_reg[reg as usize].get_long();
             self.debugger
                 .add_mutation(MutationOperation::WriteRegister {
                     register: RegisterOperand::Address(reg),
                     old: old_value,
+                    new: new_value,
                     size,
                 });
         }
