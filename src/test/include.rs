@@ -494,7 +494,7 @@ fn a_breakpoint_stops_in_an_included_file() {
         "a breakpoint is a (file, line) and the included file is a file"
     );
     let status = interpreter
-        .run_with_breakpoints(&breakpoints, None)
+        .run_with_breakpoints(&breakpoints, None, true)
         .expect("to stop at the breakpoint");
     assert_eq!(
         status,

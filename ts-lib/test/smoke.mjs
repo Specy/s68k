@@ -147,6 +147,29 @@ assert.equal(next.location.line, 6, 'the instruction about to run is the one sto
 assert.equal(next.source.trim(), 'MOVE.W  #-2, D2')
 assert.equal(typeof next.address, 'number')
 assert.equal(next.size, 4)
+
+// The breakpoint the program counter is on is the caller's to skip: the default
+// continues past it, `skipBreakpointAtPc: false` stops on it having run nothing,
+// which is what the host does when it resumes after answering a trap.
+assert.equal(
+    located_run.runWithBreakpoints(
+        [{file: 'lecture/one.x68', line: 6}],
+        undefined,
+        {skipBreakpointAtPc: false}
+    ),
+    InterpreterStatus.Running,
+    'a run told not to skip stops on the breakpoint it starts on'
+)
+assert.equal(
+    located_run.getNextInstruction().location.line,
+    6,
+    'and it has run nothing: the same instruction is still the next one'
+)
+assert.equal(
+    located_run.runWithBreakpoints([{file: 'lecture/one.x68', line: 6}]),
+    InterpreterStatus.Terminated,
+    'the default continues past the breakpoint it is parked on'
+)
 located_run.dispose()
 located.program.dispose()
 

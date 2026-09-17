@@ -2767,12 +2767,22 @@ impl Interpreter {
     /// Runs until a breakpoint, `simhalt`, the end of the program, an interrupt
     /// or `limit` instructions. Calling it while paused resumes the Program.
     ///
-    /// A breakpoint on the line the program counter is already on does not stop
-    /// it again, which is what makes "continue" from a breakpoint move.
+    /// `skip_breakpoint_at_pc` decides what a breakpoint on the instruction the
+    /// program counter is *already* on does. `true` runs it anyway, which is
+    /// what makes "continue" from a breakpoint move; `false` stops before it,
+    /// having run nothing, which is what a caller that has just arrived here
+    /// some other way wants. A caller that answers an interrupt and runs on has
+    /// to pass `false`, or the instruction after every interrupt is unbreakable:
+    /// each call resumes mid-program with the program counter on the next
+    /// instruction, and that one has not run yet.
+    ///
+    /// Only the instruction the run starts on is affected; every breakpoint the
+    /// run reaches after that stops it before the instruction executes.
     pub fn run_with_breakpoints(
         &mut self,
         breakpoints: &[Breakpoint],
         limit: Option<usize>,
+        skip_breakpoint_at_pc: bool,
     ) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
         if self.status == InterpreterStatus::Paused && self.has_reached_bottom() {
@@ -2788,8 +2798,11 @@ impl Interpreter {
             || (resuming_after_pause && iterations == 0))
             && limit_counter > 0
         {
-            //skip the first iteration if the pc is on a breakpoint
-            if (iterations > 0 || resuming_after_pause) && addresses.contains(&self.pc) {
+            let at_starting_pc = iterations == 0;
+            if !(at_starting_pc && skip_breakpoint_at_pc) && addresses.contains(&self.pc) {
+                //a run that stops on a breakpoint is running, not paused: the
+                //status a `simhalt` left behind belongs to the halt, not to the
+                //breakpoint the resumed run stopped at
                 self.status = InterpreterStatus::Running;
                 break;
             }
@@ -3017,15 +3030,18 @@ impl Interpreter {
         }
     }
     /// `breakpoints` is an array of `{ file, line }`, a Location without its
-    /// columns.
+    /// columns. `skip_breakpoint_at_pc` defaults to `true`, the "continue"
+    /// behaviour described on [`Interpreter::run_with_breakpoints`].
     pub fn wasm_run_with_breakpoints(
         &mut self,
         breakpoints: JsValue,
         limit: Option<usize>,
+        skip_breakpoint_at_pc: Option<bool>,
     ) -> Result<InterpreterStatus, JsValue> {
         let breakpoints: Vec<Breakpoint> = serde_wasm_bindgen::from_value(breakpoints)
             .map_err(|e| JsValue::from_str(&format!("Invalid breakpoints: {}", e)))?;
-        match self.run_with_breakpoints(&breakpoints, limit) {
+        match self.run_with_breakpoints(&breakpoints, limit, skip_breakpoint_at_pc.unwrap_or(true))
+        {
             Ok(status) => Ok(status),
             Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
         }

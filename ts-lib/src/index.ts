@@ -202,6 +202,16 @@ export class Program {
     }
 }
 
+/** What {@link Interpreter.runWithBreakpoints} does with the breakpoint the program counter is on. */
+export type RunWithBreakpointsOptions = {
+    /**
+     * `true` (the default) runs the instruction the program counter is on even
+     * when a breakpoint names it, which is what "continue" from a breakpoint
+     * needs; `false` stops before it, having run nothing.
+     */
+    skipBreakpointAtPc?: boolean
+}
+
 export class Interpreter {
     private interpreter: RawInterpreter
 
@@ -433,9 +443,22 @@ export class Interpreter {
      * A breakpoint is a line of a file: a breakpoint on a comment, a directive
      * or a label alone stops nothing, and neither does one on a line of a file
      * this program was not assembled from.
+     *
+     * `skipBreakpointAtPc` says what a breakpoint on the instruction the
+     * program counter is *already* on does, and only that one: it defaults to
+     * `true`, which runs it anyway and is what makes "continue" from a
+     * breakpoint move. A caller that resumes mid-program — after answering an
+     * interrupt, or after its own budget ran out — passes `false`, because the
+     * instruction it is about to run has not run yet and a breakpoint on it
+     * has not been reported. Every breakpoint the run reaches later stops it
+     * before the instruction executes, whichever value this takes.
      */
-    runWithBreakpoints(breakpoints: Breakpoint[], limit?: number): InterpreterStatus {
-        return this.interpreter.wasm_run_with_breakpoints(breakpoints, limit)
+    runWithBreakpoints(
+        breakpoints: Breakpoint[],
+        limit?: number,
+        {skipBreakpointAtPc = true}: RunWithBreakpointsOptions = {}
+    ): InterpreterStatus {
+        return this.interpreter.wasm_run_with_breakpoints(breakpoints, limit, skipBreakpointAtPc)
     }
 
     async runWithInterruptHandler(onInterrupt: InterruptHandler): Promise<InterpreterStatus> {

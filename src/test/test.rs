@@ -439,7 +439,7 @@ start:
                 [0x1004].into_iter().collect()
             );
             interpreter
-                .run_with_breakpoints(&breakpoints, None)
+                .run_with_breakpoints(&breakpoints, None, true)
                 .expect("to stop at the breakpoint");
             assert_eq!(interpreter.get_pc(), 0x1004);
             assert_eq!(
@@ -452,9 +452,77 @@ start:
             );
             //a breakpoint on the line the pc is already on does not stop it again
             let status = interpreter
-                .run_with_breakpoints(&breakpoints, None)
+                .run_with_breakpoints(&breakpoints, None, true)
                 .expect("to run on");
             assert_eq!(status, InterpreterStatus::Terminated);
+        }
+
+        #[test]
+        fn a_run_that_does_not_skip_the_breakpoint_at_its_pc_stops_where_it_stands() {
+            let mut interpreter = prepare(THREE_MOVES);
+            let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 3)];
+            interpreter
+                .run_with_breakpoints(&breakpoints, None, true)
+                .expect("to stop at the breakpoint");
+            assert_eq!(interpreter.get_pc(), 0x1004);
+
+            //the same breakpoint, told to stop at the pc rather than continue
+            //from it: nothing runs, which is what a caller that arrived here
+            //some other way asks for
+            let status = interpreter
+                .run_with_breakpoints(&breakpoints, None, false)
+                .expect("to stop before the instruction");
+            assert_eq!(status, InterpreterStatus::Running);
+            assert_eq!(interpreter.get_pc(), 0x1004);
+            assert_eq!(
+                interpreter.get_cpu().get_register_values()[0],
+                1,
+                "the instruction the breakpoint is on still has not run"
+            );
+        }
+
+        #[test]
+        fn a_breakpoint_after_an_interrupt_stops_the_run_that_resumes() {
+            //the whole reason the skip is the caller's to decide: answering a
+            //trap and running on starts a run mid-program, and the instruction
+            //it starts on has not executed. Skipping it there made every
+            //instruction after a trap unbreakable.
+            let mut interpreter = prepare(
+                "    org $1000
+    move.b #6,d0
+    trap #15
+    move.l #7,d1
+    move.b #9,d0
+    trap #15
+",
+            );
+            let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 3)];
+            let after_the_trap = *interpreter
+                .get_breakpoint_addresses(&breakpoints)
+                .iter()
+                .next()
+                .expect("the line after the trap assembles to an instruction");
+
+            assert_eq!(
+                interpreter
+                    .run_with_breakpoints(&breakpoints, None, true)
+                    .expect("the trap"),
+                InterpreterStatus::Interrupt
+            );
+            interpreter
+                .answer_interrupt(crate::instructions::InterruptResult::DisplayChar)
+                .expect("the trap to be answered");
+
+            let status = interpreter
+                .run_with_breakpoints(&breakpoints, None, false)
+                .expect("the breakpoint after the trap");
+            assert_eq!(status, InterpreterStatus::Running);
+            assert_eq!(interpreter.get_pc(), after_the_trap);
+            assert_eq!(
+                interpreter.get_cpu().get_register_values()[1],
+                0,
+                "the instruction the breakpoint is on has not run"
+            );
         }
 
         #[test]
@@ -471,7 +539,7 @@ start:
 
             assert_eq!(
                 interpreter
-                    .run_with_breakpoints(&breakpoints, None)
+                    .run_with_breakpoints(&breakpoints, None, true)
                     .expect("the simhalt"),
                 InterpreterStatus::Paused
             );
@@ -479,7 +547,7 @@ start:
 
             assert_eq!(
                 interpreter
-                    .run_with_breakpoints(&breakpoints, None)
+                    .run_with_breakpoints(&breakpoints, None, false)
                     .expect("the breakpoint after the pause"),
                 InterpreterStatus::Running
             );
@@ -488,8 +556,34 @@ start:
 
             assert_eq!(
                 interpreter
-                    .run_with_breakpoints(&breakpoints, None)
+                    .run_with_breakpoints(&breakpoints, None, true)
                     .expect("continue from the breakpoint"),
+                InterpreterStatus::Terminated
+            );
+            assert_eq!(interpreter.get_cpu().get_register_values()[0], 2);
+        }
+
+        #[test]
+        fn a_run_that_skips_the_breakpoint_at_its_pc_resumes_a_simhalt_past_it() {
+            let mut interpreter = prepare(
+                "    org $1000
+    move.l #1,d0
+    simhalt
+    move.l #2,d0
+    nop
+",
+            );
+            let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 3)];
+            assert_eq!(
+                interpreter
+                    .run_with_breakpoints(&breakpoints, None, true)
+                    .expect("the simhalt"),
+                InterpreterStatus::Paused
+            );
+            assert_eq!(
+                interpreter
+                    .run_with_breakpoints(&breakpoints, None, true)
+                    .expect("to resume past the breakpoint it is parked on"),
                 InterpreterStatus::Terminated
             );
             assert_eq!(interpreter.get_cpu().get_register_values()[0], 2);
@@ -522,7 +616,7 @@ start:
                 .get_breakpoint_addresses(&breakpoints)
                 .is_empty());
             let status = interpreter
-                .run_with_breakpoints(&breakpoints, None)
+                .run_with_breakpoints(&breakpoints, None, true)
                 .expect("to run to the end");
             assert_eq!(status, InterpreterStatus::Terminated);
         }
