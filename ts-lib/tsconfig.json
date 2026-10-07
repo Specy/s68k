@@ -8,6 +8,10 @@
       "dom",
       "esnext.disposable"
     ],
+    // The library uses no ambient types. Without this, TypeScript also reads the
+    // @types of every directory above this one, and a checkout nested inside
+    // another project fails on whatever @types/node that project installed.
+    "types": [],
     "declaration": true,
     "esModuleInterop": true,
     "outDir": "dist",

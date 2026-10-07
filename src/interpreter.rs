@@ -36,12 +36,16 @@ use crate::assembler::program::{AssembledInstruction, MemoryContent, Program};
 use crate::assembler::source::Location;
 use crate::debugger::PrettyStackFrame;
 use crate::instructions::TargetDirection;
+use crate::{c_runtime, charset};
 use crate::{
-    debugger::{Debugger, ExecutionStep, MutationOperation, PokeJournal, PokeTarget, PokeWrite},
+    debugger::{
+        Debugger, ExecutionStep, ExecutionStepKind, MutationOperation, PokeJournal, PokeTarget,
+        PokeWrite,
+    },
     instructions::{
-        Condition, IndexRegister, Instruction, Interrupt, InterruptResult, KeyStateRequest,
-        KeyStateResult, Operand, RegisterOperand, ShiftDirection, Sign, Size,
-        EXTENSION_WORD_OFFSET,
+        Bytes, Condition, FileDialogMode, FileExistence, IndexRegister, InputSettings, Instruction,
+        Interrupt, InterruptResult, KeyStateRequest, KeyStateResult, Operand, RegisterOperand,
+        ShiftDirection, Sign, Size, EXTENSION_WORD_OFFSET,
     },
     math::*,
 };
@@ -258,7 +262,9 @@ impl Memory {
     pub fn verify_address_bounds(&self, address: usize, length: usize) -> RuntimeResult<usize> {
         //m68k does not use the last 2 bytes of the address space, clamp it to 24 bits
         let address = address & 0x00ffffff;
-        let end_address = address.wrapping_add(length);
+        //a sum that overflows is past the end too: on wasm32 a length from JavaScript near
+        //4 GB wrapped round to a small end, passed, and panicked slicing
+        let end_address = address.checked_add(length).unwrap_or(usize::MAX);
         //+1 because the end address is exclusive
         if end_address > self.data.len() {
             return Err(RuntimeError::OutOfBounds(format!(
@@ -453,8 +459,15 @@ impl Cpu {
 
 #[wasm_bindgen]
 impl Cpu {
-    pub fn wasm_get_d_reg(&self, index: usize) -> Register {
-        self.d_reg[index]
+    /// Data register `index`. It throws an `InvalidArgument` for an index past
+    /// 7, where it used to panic and leave the module unusable.
+    pub fn wasm_get_d_reg(&self, index: usize) -> Result<Register, JsValue> {
+        self.d_reg.get(index).copied().ok_or_else(|| {
+            js(&RuntimeError::InvalidArgument(format!(
+                "there is no data register d{}",
+                index
+            )))
+        })
     }
     pub fn wasm_get_d_regs_value(&self) -> Vec<u32> {
         self.d_reg.iter().map(|reg| reg.get_long()).collect()
@@ -463,8 +476,15 @@ impl Cpu {
     pub fn wasm_get_a_regs_value(&self) -> Vec<u32> {
         self.a_reg.iter().map(|reg| reg.get_long()).collect()
     }
-    pub fn wasm_get_a_reg(&self, index: usize) -> Register {
-        self.a_reg[index]
+    /// Address register `index`. It throws an `InvalidArgument` for an index
+    /// past 7.
+    pub fn wasm_get_a_reg(&self, index: usize) -> Result<Register, JsValue> {
+        self.a_reg.get(index).copied().ok_or_else(|| {
+            js(&RuntimeError::InvalidArgument(format!(
+                "there is no address register a{}",
+                index
+            )))
+        })
     }
     pub fn wasm_get_ccr(&self) -> Flags {
         self.ccr
@@ -475,14 +495,28 @@ impl Cpu {
     }
 }
 
-/// What stopped a running program.
+/// What stopped a running program, or what the host asked of the Interpreter
+/// that it could not do.
 ///
-/// The three exception variants below are the instructions that end a run on
-/// purpose (`SIMHELP/Exceptions.htm`, group 2 and the Illegal exception): s68k
-/// keeps no exception vectors and no supervisor stack frame, so the run ends
-/// with [`InterpreterStatus::TerminatedWithException`] where a 68000 would jump
-/// through a vector, and the error names the instruction and its cause.
-#[derive(Debug, Serialize)]
+/// **An error an instruction raised ends the program.** s68k keeps no
+/// exception vectors and no supervisor stack frame, so where a 68000 would jump
+/// through a vector (`SIMHELP/Exceptions.htm`) the run ends with
+/// [`InterpreterStatus::TerminatedWithException`], the error is the
+/// [`Termination`]'s cause, and undoing the step that raised it brings the
+/// program back to the instruction, running. That covers a memory fault, a
+/// division by zero, `chk`, `trapv` and `illegal`, and every `trap #15` task
+/// the Interpreter cannot carry out:
+/// [`UnsupportedTrapTask`](RuntimeError::UnsupportedTrapTask) and
+/// [`InvalidTrapArgument`](RuntimeError::InvalidTrapArgument).
+///
+/// The others are the host's: an answer refused
+/// ([`NoPendingInterrupt`](RuntimeError::NoPendingInterrupt),
+/// [`InvalidAnswer`](RuntimeError::InvalidAnswer)), a value from JavaScript
+/// that is not what a call takes ([`InvalidArgument`](RuntimeError::InvalidArgument)),
+/// the run's own [`ExecutionLimit`](RuntimeError::ExecutionLimit), and
+/// [`Raw`](RuntimeError::Raw) for a call made at the wrong time, such as a step
+/// after the end. None of them changes the program.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", content = "value")]
 pub enum RuntimeError {
     Raw(String),
@@ -506,9 +540,219 @@ pub enum RuntimeError {
     OverflowException,
     /// The `illegal` instruction, which always ends the run.
     IllegalInstruction,
+    /// A `trap #15` task s68k does not carry out, which is every number in
+    /// D0.B that is not one of EASy68K's tasks and the tasks a page in a
+    /// browser cannot do faithfully: the printer (10), the text window's font
+    /// and contents (21, 22, 25), the cycle counter (30, 31), the hardware
+    /// window (32), the serial ports (40 to 43), the interrupt requests (60,
+    /// 62) and the network (100 to 107). The host says why from the number.
+    UnsupportedTrapTask {
+        /// The task, D0.B.
+        task: u8,
+    },
+    /// A `trap #15` task given a value it cannot take: a base outside 2 to 36
+    /// for task 15, a mode task 16, 58, 61 or 92 does not have, a string with
+    /// no NUL. EASy68K does nothing for most of these; s68k stops and says why.
+    InvalidTrapArgument {
+        /// The task, D0.B.
+        task: u8,
+        /// What was wrong, in a sentence that names the register.
+        reason: String,
+    },
+    /// An answer when no interrupt is waiting for one.
+    NoPendingInterrupt,
+    /// An answer the pending interrupt cannot take: one of another name, one
+    /// whose value the task cannot take, such as more bytes than a read asked
+    /// for, or a value that is not an answer at all. The interrupt still waits.
+    InvalidAnswer {
+        /// The name of the pending interrupt.
+        interrupt: String,
+        /// What was wrong with the answer.
+        reason: String,
+    },
+    /// A value from the host that is not what the call takes: a register that
+    /// does not exist, a breakpoint that is not `{ file, line }`.
+    InvalidArgument(String),
 }
 
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
+
+/// Why a program ended: what [`Interpreter::get_termination`] answers once the
+/// Interpreter has [terminated](Interpreter::has_terminated).
+///
+/// Undoing the step that ended the program takes it back, with the end.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", content = "value")]
+pub enum Termination {
+    /// Task 9, which ends the program on purpose.
+    TerminateTask,
+    /// The program counter left the last instruction, or the Program had no
+    /// instruction to run.
+    EndOfProgram,
+    /// The host answered an interrupt with [`InterruptResult::Terminate`].
+    TerminatedByHost,
+    /// An instruction raised a runtime error, and the program ended with an
+    /// exception: [`InterpreterStatus::TerminatedWithException`].
+    Exception(RuntimeError),
+}
+
+/// The most characters tasks 0 and 1 display: EASy68K copies the string into a
+/// buffer of 256 bytes and ends it at the 255th character at the latest
+/// (`CODE9.CPP`).
+const DISPLAY_LIMIT: usize = 255;
+
+/// The most characters a line read by tasks 2, 4 and 18 keeps: EASy68K ends a
+/// line at the 80th key and keeps the 79 typed before it (`simIOu.cpp`,
+/// `FormKeyPress`).
+pub(crate) const LINE_LIMIT: usize = 79;
+
+/// The bytes a line typed for tasks 2, 4 and 18 leaves in EASy68K's input
+/// buffer: its characters up to the first line terminator, because Enter ends
+/// a line and is never part of it, at most [`LINE_LIMIT`] of them, in
+/// Windows-1252 with `?` for a character that has no byte.
+fn typed_line(line: &str) -> Vec<u8> {
+    line.chars()
+        .take_while(|character| !matches!(character, '\r' | '\n'))
+        .take(LINE_LIMIT)
+        .map(charset::typed_byte)
+        .collect()
+}
+
+/// The byte a key typed for task 5 is stored as.
+///
+/// EASy68K stores the character Windows hands it, which is `'\r'` for Enter, so
+/// a program waits for `$0D`; a host that types Enter as `'\n'` gets the same
+/// `$0D`.
+fn typed_key(key: char) -> u8 {
+    match key {
+        '\n' => b'\r',
+        _ => charset::typed_byte(key),
+    }
+}
+
+/// The bytes of memory there are: the 16 MB of the 68000's 24 bit address
+/// space, EASy68K's `MEMSIZE` (`def.h`).
+const MEMORY_SIZE: usize = 0x0100_0000;
+
+/// The most characters EASy68K takes of a file name, a dialog's title and
+/// filter, or a sound file name: it copies each into a buffer of 256 bytes and
+/// ends it at the 255th character (`CODE9.CPP`, `strncpy(buf, inStr, 255)`).
+const NAME_LIMIT: usize = 255;
+
+/// How many bytes task 58 writes at (A3): the chosen path, at most
+/// [`NAME_LIMIT`] characters, and NULs to the end of a 256 byte buffer, which
+/// is what `strncpy(inPath, name, 255)` and `inPath[255] = '\0'` leave
+/// (`simIOu.cpp`, `displayFileDialog`).
+const DIALOG_PATH_BYTES: usize = NAME_LIMIT + 1;
+
+/// How many files can be open at once, numbered 0 to 7: EASy68K's `MAXFILES`
+/// (`def.h`).
+const FILE_HANDLES: u32 = 8;
+
+/// The longest NUL terminated string the text tasks read: EASy68K reads a
+/// string for as long as it goes, and 16384 bytes with no NUL is a missing
+/// terminator rather than a string anybody wrote.
+const STRING_LIMIT: usize = 16384;
+
+/// EASy68K's results for the file tasks, written to D0.W (`def.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileResult {
+    Success = 0,
+    EndOfFile = 1,
+    Error = 2,
+    ReadOnly = 3,
+}
+
+/// The path at an address, as the file and sound tasks take it: at most
+/// [`NAME_LIMIT`] characters, decoded from Windows-1252, and with `\` written as
+/// `/`, because Windows takes either as a separator and a host need only know
+/// the one.
+fn as_path(name: String) -> String {
+    name.replace('\\', "/")
+}
+
+/// The bytes task 58 writes for a chosen path: the path in Windows-1252, `?`
+/// for a character with no byte, at most [`NAME_LIMIT`] of them, and NULs to
+/// [`DIALOG_PATH_BYTES`].
+fn dialog_path_bytes(path: &str) -> Vec<u8> {
+    let mut bytes: Vec<u8> = path
+        .chars()
+        .take(NAME_LIMIT)
+        .map(charset::typed_byte)
+        .collect();
+    bytes.resize(DIALOG_PATH_BYTES, 0);
+    bytes
+}
+
+/// Whether `count` bytes from `address` fit below the end of memory, which is
+/// EASy68K's check before a file read or write. The address is the 24 bits the
+/// 68000 puts on its bus, and the sum is taken without wrapping, where
+/// EASy68K's 32 bit sum wraps for a count near 4 GB and goes on to read past
+/// its memory.
+fn fits_in_memory(address: u32, count: u32) -> bool {
+    (address as usize & (MEMORY_SIZE - 1)) + count as usize <= MEMORY_SIZE
+}
+
+/// Whether `answer` can answer the `pending` interrupt: it has to be the
+/// variant of the same name, or `Terminate`, and carry a value the task can
+/// take. The task decides where an answer is written and how it is read, so an
+/// answer for another task is never a near miss to make the best of.
+fn check_answer(pending: &Interrupt, answer: &InterruptResult) -> RuntimeResult<()> {
+    let refuse = |reason: String| {
+        Err(RuntimeError::InvalidAnswer {
+            interrupt: pending.name().to_string(),
+            reason,
+        })
+    };
+    if matches!(answer, InterruptResult::Terminate) {
+        return Ok(());
+    }
+    if answer.name() != pending.name() {
+        return refuse(format!(
+            "a {} answer cannot answer a {} interrupt",
+            answer.name(),
+            pending.name()
+        ));
+    }
+    match (pending, answer) {
+        (
+            Interrupt::GetKeyState(KeyStateRequest::Keys(_)),
+            InterruptResult::GetKeyState(KeyStateResult::LastKeys { .. }),
+        ) => refuse(
+            "the program asked whether four keys are down, and the answer is the last keys"
+                .to_string(),
+        ),
+        (
+            Interrupt::GetKeyState(KeyStateRequest::LastKeys),
+            InterruptResult::GetKeyState(KeyStateResult::Keys(_)),
+        ) => refuse(
+            "the program asked for the last keys, and the answer is whether four keys are down"
+                .to_string(),
+        ),
+        (Interrupt::ReadFile { count, .. }, InterruptResult::ReadFile(Some(bytes)))
+            if bytes.as_slice().len() > *count as usize =>
+        {
+            refuse(format!(
+                "the program asked for at most {} bytes, and the answer carries {}",
+                count,
+                bytes.as_slice().len()
+            ))
+        }
+        (_, InterruptResult::OpenFile(Some(file))) if file.handle as u32 >= FILE_HANDLES => {
+            refuse(format!(
+                "file number {} is not one of EASy68K's eight, 0 to 7",
+                file.handle
+            ))
+        }
+        (_, InterruptResult::NewFile(Some(handle))) if *handle as u32 >= FILE_HANDLES => {
+            refuse(format!(
+                "file number {} is not one of EASy68K's eight, 0 to 7",
+                handle
+            ))
+        }
+        _ => Ok(()),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Copy)]
 #[wasm_bindgen]
@@ -617,6 +861,11 @@ pub struct Interpreter {
     end_address: usize,
     current_interrupt: Option<Interrupt>,
     status: InterpreterStatus,
+    /// Why the program ended, once it has: set with the terminated status and
+    /// taken back with it by undo.
+    termination: Option<Termination>,
+    /// How the read tasks show what is typed, which tasks 12 and 16 change.
+    input_settings: InputSettings,
 }
 
 impl Interpreter {
@@ -638,6 +887,7 @@ impl Interpreter {
             //happen for a Program the Assembler built
             panic!("Error preparing memory: {:?}", e);
         }
+        let runnable = !program.is_empty() && start < end;
         let mut interpreter = Self {
             memory,
             cpu: Cpu::new(),
@@ -649,11 +899,17 @@ impl Interpreter {
             current_instruction_address: 0,
             debugger: Debugger::new(options.history_size, program.symbols()),
             current_interrupt: None,
-            status: if !program.is_empty() && start < end {
+            status: if runnable {
                 InterpreterStatus::Running
             } else {
                 InterpreterStatus::Terminated
             },
+            termination: if runnable {
+                None
+            } else {
+                Some(Termination::EndOfProgram)
+            },
+            input_settings: InputSettings::default(),
             program,
         };
         interpreter.cpu.a_reg[7].store_long(sp as u32);
@@ -710,17 +966,64 @@ impl Interpreter {
         self.cpu.set_sr(value);
     }
 
+    /// Ends the program, for `cause`: [`InterpreterStatus::TerminatedWithException`]
+    /// for an [exception](Termination::Exception) and
+    /// [`InterpreterStatus::Terminated`] for the rest.
+    ///
+    /// It is the one way a program ends, so the status and its cause never
+    /// disagree. A program that has ended already keeps the cause it ended
+    /// with.
+    fn terminate(&mut self, cause: Termination) {
+        if self.has_terminated() {
+            return;
+        }
+        self.status = match cause {
+            Termination::Exception(_) => InterpreterStatus::TerminatedWithException,
+            _ => InterpreterStatus::Terminated,
+        };
+        self.termination = Some(cause);
+    }
+
     /// Ends the run with an exception and answers the error that says why.
     ///
     /// A 68000 would push a stack frame and jump through the vector of
-    /// `SIMHELP/Exceptions.htm`; s68k has neither, so `chk`, `trapv` and
-    /// `illegal` stop the program where an address error already stopped it —
-    /// [`InterpreterStatus::TerminatedWithException`] and a
-    /// [`RuntimeError`] naming the instruction — and the Location of the line
-    /// is the one the step recorded.
+    /// `SIMHELP/Exceptions.htm`; s68k has neither, so every error an
+    /// instruction raises — an address error, `chk`, `trapv`, `illegal`, a
+    /// `trap` task it cannot carry out — stops the program:
+    /// [`InterpreterStatus::TerminatedWithException`], with the
+    /// [`RuntimeError`] naming the cause as the [`Termination`], and the
+    /// Location of the line is the one the step recorded.
     fn end_with_an_exception(&mut self, error: RuntimeError) -> RuntimeError {
-        self.set_status(InterpreterStatus::TerminatedWithException);
+        self.terminate(Termination::Exception(error.clone()));
         error
+    }
+
+    /// Why the program ended, or `None` while it has not.
+    pub fn get_termination(&self) -> Option<&Termination> {
+        self.termination.as_ref()
+    }
+
+    /// How the read tasks show what is typed: the echo of task 12 and the
+    /// prompt and line feed of task 16, all on when a program starts.
+    pub fn get_input_settings(&self) -> InputSettings {
+        self.input_settings
+    }
+
+    /// Replaces the [`InputSettings`], journaling the ones it replaced into the
+    /// step being executed so that undo puts them back. Settings equal to the
+    /// ones in force change nothing and journal nothing.
+    fn set_input_settings(&mut self, settings: InputSettings) {
+        if settings == self.input_settings {
+            return;
+        }
+        if self.executing && self.keep_history {
+            self.debugger
+                .add_mutation(MutationOperation::SetInputSettings {
+                    old: self.input_settings,
+                    new: settings,
+                });
+        }
+        self.input_settings = settings;
     }
 
     pub fn get_flags_as_array(&self) -> Vec<u8> {
@@ -750,12 +1053,18 @@ impl Interpreter {
 
     /// Runs one instruction. If the Interpreter is paused, this resumes at the
     /// instruction after the `simhalt` that paused it.
+    ///
+    /// An instruction that raises a runtime error ends the program with an
+    /// exception, [`InterpreterStatus::TerminatedWithException`], and the error
+    /// is answered as well as recorded as the [`Termination`]. The step stays in
+    /// the history, so undoing it brings the program back to the instruction
+    /// that failed, running.
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
         let old_status = self.status;
         self.verify_can_run()?;
         if old_status == InterpreterStatus::Paused {
             if self.has_reached_bottom() {
-                self.set_status(InterpreterStatus::Terminated);
+                self.terminate(Termination::EndOfProgram);
                 return Ok(self.status);
             }
             self.set_status(InterpreterStatus::Running);
@@ -773,17 +1082,6 @@ impl Interpreter {
             .get_instruction_at(self.pc)
             .map(|i| (i.size, i.instruction));
         match instruction {
-            _ if self.status == InterpreterStatus::Terminated
-                || self.status == InterpreterStatus::TerminatedWithException =>
-            {
-                Err(RuntimeError::Raw(
-                    "Attempt to run terminated program".to_string(),
-                ))
-            }
-            _ if self.status == InterpreterStatus::Interrupt => Err(RuntimeError::Raw(
-                "Attempted to step while interrupt is pending".to_string(),
-            )),
-
             Some((size, ins)) => {
                 if self.keep_history {
                     //cloned only when a history is kept: a Location holds the path of its File,
@@ -797,31 +1095,24 @@ impl Interpreter {
                 //an instruction that raised an Interrupt is not finished until the host answers
                 //it, and what `answer_interrupt` writes belongs to this step
                 self.executing = self.status == InterpreterStatus::Interrupt;
-                executed?;
-                let status = self.get_status();
-                //TODO not sure if doing this before or after running the instruction
-                if self.has_reached_bottom()
-                    && *status != InterpreterStatus::Interrupt
-                    && *status != InterpreterStatus::Paused
-                {
-                    self.set_status(InterpreterStatus::Terminated);
-                }
                 if self.keep_history {
                     self.debugger.set_new_ccr(self.cpu.ccr);
                     self.debugger.set_new_sr(self.cpu.get_sr());
                 }
+                if let Err(error) = executed {
+                    return Err(self.end_with_an_exception(error));
+                }
+                if self.status == InterpreterStatus::Running && self.has_reached_bottom() {
+                    self.terminate(Termination::EndOfProgram);
+                }
                 Ok(self.status)
             }
-            None if self.pc < self.end_address => {
-                self.set_status(InterpreterStatus::TerminatedWithException);
-                Err(RuntimeError::OutOfBounds(format!(
-                    "Invalid instruction address: {}",
-                    self.pc,
-                )))
-            }
+            None if self.pc < self.end_address => Err(self.end_with_an_exception(
+                RuntimeError::OutOfBounds(format!("Invalid instruction address: {}", self.pc,)),
+            )),
             None => {
-                self.set_status(InterpreterStatus::TerminatedWithException);
-                Err(RuntimeError::Raw("Program has terminated".to_string()))
+                Err(self
+                    .end_with_an_exception(RuntimeError::Raw("Program has terminated".to_string())))
             }
         }
     }
@@ -890,9 +1181,24 @@ impl Interpreter {
                         MutationOperation::PushCall { to: _, from: _ } => {
                             self.debugger.pop_call();
                         }
+                        MutationOperation::SetInputSettings { old, new: _ } => {
+                            self.input_settings = *old;
+                        }
                     }
                 }
+                //whatever an instruction left behind is gone with it: the interrupt an undone trap
+                //was waiting on, the instruction that was executing until it was answered, and the
+                //end of the program it caused. A step never begins while an interrupt waits, so
+                //the status it recorded is never one. A Poke is made between instructions and
+                //takes back only what it wrote
                 self.status = step.get_interpreter_status();
+                if step.get_kind() == ExecutionStepKind::Instruction {
+                    self.current_interrupt = None;
+                    self.executing = false;
+                }
+                if !self.has_terminated() {
+                    self.termination = None;
+                }
                 Ok(step)
             }
             None => Err(RuntimeError::Raw("No more steps to undo".to_string())),
@@ -1005,8 +1311,52 @@ impl Interpreter {
         self.debugger.add_step(step);
         Ok(true)
     }
-    pub fn answer_interrupt(&mut self, interrupt_result: InterruptResult) -> RuntimeResult<()> {
-        match interrupt_result {
+    /// Answers the pending interrupt, writes what the answer carries, and
+    /// finishes the instruction that raised it.
+    ///
+    /// The answer has to be the pending interrupt's own: the variant of the
+    /// same name, with a value the task can take — the request form task 19
+    /// asked for, no more bytes than task 53 asked for, a file number 0 to 7.
+    /// It is refused, changing nothing and leaving the interrupt pending, with
+    /// [`RuntimeError::NoPendingInterrupt`] when nothing waits for it, with
+    /// [`RuntimeError::InvalidAnswer`] when it is not the pending interrupt's,
+    /// and with the [`RuntimeError::OutOfBounds`] of the write when what it
+    /// writes does not fit in memory.
+    ///
+    /// [`InterruptResult::Terminate`] answers any task, and ends the program:
+    /// it is how a host that cannot do a task stops the run.
+    pub fn answer_interrupt(&mut self, answer: InterruptResult) -> RuntimeResult<()> {
+        let pending = match self.current_interrupt.take() {
+            Some(interrupt) if self.status == InterpreterStatus::Interrupt => interrupt,
+            other => {
+                self.current_interrupt = other;
+                return Err(RuntimeError::NoPendingInterrupt);
+            }
+        };
+        let terminates = matches!(answer, InterruptResult::Terminate);
+        let answered = check_answer(&pending, &answer).and_then(|()| self.apply_answer(answer));
+        if let Err(error) = answered {
+            self.current_interrupt = Some(pending);
+            return Err(error);
+        }
+        self.executing = false;
+        //an answer of Terminate ends the program, and so does the answer to an interrupt the
+        //last instruction raised
+        if terminates {
+            self.terminate(Termination::TerminatedByHost);
+        } else if self.has_reached_bottom() {
+            self.terminate(Termination::EndOfProgram);
+        } else {
+            self.status = InterpreterStatus::Running;
+        }
+        Ok(())
+    }
+
+    /// Writes what an answer [`check_answer`] took carries, as EASy68K writes
+    /// it for the task. It fails, having written nothing, only when a run of
+    /// bytes does not fit in memory.
+    fn apply_answer(&mut self, answer: InterruptResult) -> RuntimeResult<()> {
+        match answer {
             InterruptResult::DisplayNumber
             | InterruptResult::DisplayNumberInBase
             | InterruptResult::DisplayStringWithCRLF
@@ -1034,34 +1384,39 @@ impl Interpreter {
             | InterruptResult::SetTextCursorPosition
             | InterruptResult::SetSimulatorShortcuts
             | InterruptResult::DisplaySignedNumberInField
-            | InterruptResult::DisplayStringAndNumber => {}
-            InterruptResult::ReadKeyboardString(str) => {
-                let safe_len = std::cmp::min(str.len(), 80);
-                let safe_str_bytes = &str.as_bytes()[..safe_len];
-                let mut buffer = Vec::with_capacity(safe_len + 1);
-                buffer.extend_from_slice(safe_str_bytes);
+            | InterruptResult::DisplayStringAndNumber
+            | InterruptResult::LoadSound => {}
+            InterruptResult::ReadKeyboardString(line) => {
+                //EASy68K writes the characters and the NUL after them, and the count through a
+                //`long *` to D1, which is the whole long (`simIOu.cpp`, `FormKeyPress`)
+                let typed = typed_line(&line);
+                let mut buffer = Vec::with_capacity(typed.len() + 1);
+                buffer.extend_from_slice(&typed);
                 buffer.push(0);
                 let address = self.cpu.a_reg[1].get_long() as usize;
                 self.set_memory_bytes(address, &buffer)?;
-                self.set_register_value(RegisterOperand::Data(1), safe_len as u32, Size::Word);
+                self.set_register_value(RegisterOperand::Data(1), typed.len() as u32, Size::Long);
             }
-            InterruptResult::ReadNumber(num) => {
-                self.set_register_value(RegisterOperand::Data(1), num as u32, Size::Long);
+            InterruptResult::ReadNumber(line)
+            | InterruptResult::DisplayStringAndReadNumber(line) => {
+                let number = c_runtime::atoi(&typed_line(&line));
+                self.set_register_value(RegisterOperand::Data(1), number as u32, Size::Long);
             }
-            InterruptResult::ReadChar(char) => {
-                self.set_register_value(RegisterOperand::Data(1), char as u8 as u32, Size::Byte);
+            InterruptResult::ReadChar(key) => {
+                //only the low byte, as EASy68K writes the key through a `char *` to D1
+                self.set_register_value(
+                    RegisterOperand::Data(1),
+                    typed_key(key).into(),
+                    Size::Byte,
+                );
             }
             InterruptResult::GetTime(time) => {
                 self.set_register_value(RegisterOperand::Data(1), time, Size::Long);
             }
-            InterruptResult::Terminate => {
-                self.set_status(InterpreterStatus::Terminated);
-            }
+            //it ends the program in `answer_interrupt`, which sets the status of every answer
+            InterruptResult::Terminate => {}
             InterruptResult::GetPixelColor(color) => {
                 self.set_register_value(RegisterOperand::Data(0), color, Size::Long);
-            }
-            InterruptResult::DisplayStringAndReadNumber(num) => {
-                self.set_register_value(RegisterOperand::Data(1), num as u32, Size::Long);
             }
             InterruptResult::CheckKeyboardInput(has_input) => {
                 self.set_register_value(RegisterOperand::Data(1), has_input as u32, Size::Byte);
@@ -1102,16 +1457,109 @@ impl Interpreter {
                     Size::Word,
                 );
             }
-        };
-        self.current_interrupt = None;
-        self.executing = false;
-        //edge case if the last instruction is an interrupt
-        self.status = if self.has_reached_bottom() {
-            InterpreterStatus::Terminated
-        } else {
-            InterpreterStatus::Running
+            // ---- files: what the host's file system did, as EASy68K's result codes
+            // (`SIMOPS2.CPP`), D0.W through a `short *` and the file number through a `long *`
+            InterruptResult::CloseAllFiles(done)
+            | InterruptResult::WriteFile(done)
+            | InterruptResult::PositionFile(done)
+            | InterruptResult::CloseFile(done)
+            | InterruptResult::DeleteFile(done) => {
+                self.set_file_result(if done {
+                    FileResult::Success
+                } else {
+                    FileResult::Error
+                });
+            }
+            InterruptResult::OpenFile(opened) => match opened {
+                Some(file) => {
+                    self.set_file_number(file.handle as u32);
+                    self.set_file_result(if file.read_only {
+                        FileResult::ReadOnly
+                    } else {
+                        FileResult::Success
+                    });
+                }
+                None => {
+                    self.set_file_number(u32::MAX);
+                    self.set_file_result(FileResult::Error);
+                }
+            },
+            InterruptResult::NewFile(handle) => match handle {
+                Some(handle) => {
+                    self.set_file_number(handle as u32);
+                    self.set_file_result(FileResult::Success);
+                }
+                None => {
+                    self.set_file_number(u32::MAX);
+                    self.set_file_result(FileResult::Error);
+                }
+            },
+            //`fread` answering fewer bytes than asked for is a success that says how many it
+            //read; none at all, with the end of the file reached, is the end of file and leaves
+            //D2.L alone (`readFile`)
+            InterruptResult::ReadFile(read) => match read {
+                None => self.set_file_result(FileResult::Error),
+                Some(bytes) if bytes.as_slice().is_empty() => {
+                    self.set_file_result(FileResult::EndOfFile)
+                }
+                Some(bytes) => {
+                    let address = self.cpu.a_reg[1].get_long() as usize;
+                    self.set_memory_bytes(address, bytes.as_slice())?;
+                    self.set_register_value(
+                        RegisterOperand::Data(2),
+                        bytes.as_slice().len() as u32,
+                        Size::Long,
+                    );
+                    self.set_file_result(FileResult::Success);
+                }
+            },
+            //D0.W is 0 whatever the user did, 2 only when the name does not fit, and D1.L says
+            //whether a file was chosen (`displayFileDialog`)
+            InterruptResult::FileDialog(chosen) => match chosen {
+                None => {
+                    self.set_register_value(RegisterOperand::Data(1), 0, Size::Long);
+                    self.set_file_result(FileResult::Success);
+                }
+                Some(path) => {
+                    let address = self.cpu.a_reg[3].get_long();
+                    if fits_in_memory(address, DIALOG_PATH_BYTES as u32) {
+                        self.set_memory_bytes(address as usize, &dialog_path_bytes(&path))?;
+                        self.set_register_value(RegisterOperand::Data(1), 1, Size::Long);
+                        self.set_file_result(FileResult::Success);
+                    } else {
+                        self.set_file_result(FileResult::Error);
+                    }
+                }
+            },
+            InterruptResult::FileExists(existence) => self.set_file_result(match existence {
+                FileExistence::Writable => FileResult::Success,
+                FileExistence::ReadOnly => FileResult::ReadOnly,
+                FileExistence::Missing => FileResult::Error,
+            }),
+            // ---- sound: 1 in D0.W when it happened, 0 when it did not
+            InterruptResult::PlaySound(done)
+            | InterruptResult::PlayLoadedSound(done)
+            | InterruptResult::PlaySoundDirectX(done)
+            | InterruptResult::LoadSoundDirectX(done)
+            | InterruptResult::PlayLoadedSoundDirectX(done)
+            | InterruptResult::ControlSound(done)
+            | InterruptResult::ControlSoundDirectX(done) => {
+                self.set_register_value(RegisterOperand::Data(0), done as u32, Size::Word);
+            }
         };
         Ok(())
+    }
+
+    /// Writes a file task's result to D0.W, as EASy68K does through a
+    /// `short *` to D0.
+    fn set_file_result(&mut self, result: FileResult) {
+        self.set_register_value(RegisterOperand::Data(0), result as u32, Size::Word);
+    }
+
+    /// Writes a file number, or -1 for none, to the whole of D1.L, as EASy68K
+    /// does through a `long *` to D1.
+    fn set_file_number(&mut self, number: u32) {
+        self.set_register_value(RegisterOperand::Data(1), number, Size::Long);
     }
     #[inline(always)]
     fn increment_pc(&mut self, amount: usize) {
@@ -1153,7 +1601,7 @@ impl Interpreter {
     pub fn get_current_interrupt(&self) -> RuntimeResult<Interrupt> {
         match &self.current_interrupt {
             Some(interrupt) => Ok(interrupt.clone()),
-            None => Err(RuntimeError::Raw("No interrupt pending".to_string())),
+            None => Err(RuntimeError::NoPendingInterrupt),
         }
     }
     fn execute_instruction(&mut self, ins: &Instruction) -> RuntimeResult<()> {
@@ -1854,23 +2302,26 @@ impl Interpreter {
                 self.pc = value.get_long() as usize;
                 self.debugger.pop_call();
             }
-            Instruction::TRAP(value) => match value {
+            Instruction::TRAP(vector) => match vector {
                 15 => {
                     let task = self.cpu.d_reg[0].get_byte();
-                    let interrupt = self.get_trap(task)?;
-
-                    // TODO should i check if the interrupt is the Terminate one or if it terminated?
-                    match &interrupt {
-                        Interrupt::Terminate => self.set_status(InterpreterStatus::Terminated),
-                        _ => self.set_status(InterpreterStatus::Interrupt),
+                    //a task the Interpreter does itself, a setting or a file result it can decide
+                    //alone, raises no interrupt and finishes here
+                    if let Some(interrupt) = self.trap_task(task)? {
+                        //task 9 ends the program, and is left as the interrupt it was
+                        match &interrupt {
+                            Interrupt::Terminate => self.terminate(Termination::TerminateTask),
+                            _ => self.set_status(InterpreterStatus::Interrupt),
+                        }
+                        self.current_interrupt = Some(interrupt);
                     }
-                    self.current_interrupt = Some(interrupt);
                 }
+                //the Assembler refuses every other vector, as s68k has no exception vectors
                 _ => {
                     return Err(RuntimeError::Raw(format!(
                         "Unknown trap: {}, only IO with #15 allowed",
-                        value
-                    )));
+                        vector
+                    )))
                 }
             },
             Instruction::MOVEP {
@@ -2215,84 +2666,240 @@ impl Interpreter {
     pub fn get_next_instruction(&self) -> Option<&AssembledInstruction> {
         self.get_instruction_at(self.pc)
     }
-    /// Tasks 13, 14, 17, 18 and 95 all take the string at (A1), terminated by a null byte.
-    fn read_null_terminated_string(&self, address: usize) -> RuntimeResult<String> {
-        let max = 16384; //to prevent infinite loop
+    /// The text of at most `limit` bytes at `address`, up to the first NUL,
+    /// decoded from Windows-1252: what tasks 0 and 1 display.
+    ///
+    /// The bytes are read one at a time, so a string that ends before `limit`
+    /// reads nothing past its NUL.
+    fn read_string(&self, address: usize, limit: usize) -> RuntimeResult<String> {
         let mut bytes = Vec::new();
-        let mut i = 0;
-        loop {
-            let byte = self.memory.read_byte(address + i)?;
+        for offset in 0..limit {
+            let byte = self.memory.read_byte(address.wrapping_add(offset))?;
             if byte == 0x00 {
                 break;
             }
             bytes.push(byte);
-            i += 1;
-            if i > max {
-                return Err(RuntimeError::Raw(format!(
-                    "Invalid String read, reached max length of {} bytes",
-                    max
-                )));
+        }
+        Ok(charset::decode(&bytes))
+    }
+
+    /// The NUL terminated string at `address`, decoded from Windows-1252: what
+    /// tasks 13, 14, 17, 18 and 95 take at (A1).
+    ///
+    /// Every byte decodes to a character, so no string is refused for what it
+    /// holds. EASy68K reads a string for as long as it goes; this one stops at
+    /// [`STRING_LIMIT`] bytes with no NUL, which is a missing terminator rather
+    /// than a string anybody wrote, and is an argument error of `task`.
+    fn read_null_terminated_string(&self, address: usize, task: u8) -> RuntimeResult<String> {
+        let mut bytes = Vec::new();
+        loop {
+            let byte = self.memory.read_byte(address.wrapping_add(bytes.len()))?;
+            if byte == 0x00 {
+                break;
+            }
+            if bytes.len() == STRING_LIMIT {
+                return Err(RuntimeError::InvalidTrapArgument {
+                    task,
+                    reason: format!(
+                        "the string at (A1) has no NUL in its first {} bytes",
+                        STRING_LIMIT
+                    ),
+                });
+            }
+            bytes.push(byte);
+        }
+        Ok(charset::decode(&bytes))
+    }
+
+    /// The path at `address`, as the file and sound tasks take it: the NUL
+    /// terminated string there, at most [`NAME_LIMIT`] characters, decoded from
+    /// Windows-1252, with `\` written as `/` ([`as_path`]).
+    fn read_path(&self, address: u32) -> RuntimeResult<String> {
+        Ok(as_path(self.read_string(address as usize, NAME_LIMIT)?))
+    }
+
+    /// Carries out `trap #15` task `task`, and answers the interrupt it raises
+    /// for the host, or `None` when the Interpreter did the whole task itself:
+    /// the input settings of tasks 12 and 16, and a file task whose result it
+    /// can decide without the host's file system.
+    ///
+    /// Every error it answers is the program's, and ends it.
+    fn trap_task(&mut self, task: u8) -> RuntimeResult<Option<Interrupt>> {
+        match task {
+            12 | 16 => {
+                self.set_input_setting(task)?;
+                Ok(None)
+            }
+            50..=59 => self.file_task(task),
+            _ => self.get_trap(task).map(Some),
+        }
+    }
+
+    /// Tasks 12 and 16: the echo, the input prompt and the line feed after
+    /// Enter, from D1.B (`CODE9.CPP`). Task 12 turns the echo off for 0 and on
+    /// for anything else; task 16 takes 0 to 3 and does nothing in EASy68K for
+    /// any other value, which s68k reports instead, like the base of task 15.
+    fn set_input_setting(&mut self, task: u8) -> RuntimeResult<()> {
+        let value = self.cpu.d_reg[1].get_byte();
+        let mut settings = self.input_settings;
+        match (task, value) {
+            (12, 0) => settings.echo = false,
+            (12, _) => settings.echo = true,
+            (_, 0) => settings.prompt = false,
+            (_, 1) => settings.prompt = true,
+            (_, 2) => settings.line_feed = false,
+            (_, 3) => settings.line_feed = true,
+            (_, value) => {
+                return Err(RuntimeError::InvalidTrapArgument {
+                    task,
+                    reason: format!(
+                        "D1.B is {}, and task 16 takes 0 or 1 to turn the input prompt off or on, \
+                         and 2 or 3 to turn the line feed after Enter off or on",
+                        value
+                    ),
+                })
             }
         }
-        String::from_utf8(bytes.to_vec()).map_err(|e| {
-            RuntimeError::Raw(format!(
-                "Invalid String read, received: {:?}, expected UTF-8",
-                e.into_bytes()
-            ))
-        })
+        self.set_input_settings(settings);
+        Ok(())
     }
+
+    /// The file number in D1.L, when it is one of EASy68K's eight: `readFile`
+    /// and the other tasks that take one answer 2 for any other at once
+    /// (`SIMOPS2.CPP`, `fn < 0 || fn >= MAXFILES`).
+    fn file_handle(&self) -> Option<u8> {
+        let number = self.cpu.d_reg[1].get_long();
+        (number < FILE_HANDLES).then_some(number as u8)
+    }
+
+    /// Tasks 50 to 59, the files (`CODE9.CPP` and `SIMOPS2.CPP`).
+    ///
+    /// The host's file system does the work, so each task is an interrupt
+    /// carrying its arguments decoded, and the answer is turned into EASy68K's
+    /// result in D0.W. What EASy68K decides before it touches a file is
+    /// decided here, with 2 in D0.W and no interrupt: a file number outside 0
+    /// to 7 for tasks 53 to 56, a read or a write of no bytes, which `fread`
+    /// and `fwrite` fail, a buffer that runs past the end of memory, and a
+    /// negative position, which `fseek` refuses.
+    fn file_task(&mut self, task: u8) -> RuntimeResult<Option<Interrupt>> {
+        let handle = self.file_handle();
+        let address = self.cpu.a_reg[1].get_long();
+        let interrupt = match task {
+            50 => Some(Interrupt::CloseAllFiles),
+            51 => Some(Interrupt::OpenFile(self.read_path(address)?)),
+            52 => Some(Interrupt::NewFile(self.read_path(address)?)),
+            53 | 54 => {
+                let count = self.cpu.d_reg[2].get_long();
+                match handle {
+                    Some(handle) if count > 0 && fits_in_memory(address, count) => {
+                        Some(if task == 53 {
+                            Interrupt::ReadFile { handle, count }
+                        } else {
+                            let bytes = self
+                                .memory
+                                .read_bytes(address as usize, count as usize)?
+                                .to_vec();
+                            Interrupt::WriteFile {
+                                handle,
+                                bytes: Bytes(bytes),
+                            }
+                        })
+                    }
+                    _ => None,
+                }
+            }
+            55 => {
+                //`fseek(fp, offset, SEEK_SET)` with the offset an `int`
+                let offset = self.cpu.d_reg[2].get_long() as i32;
+                match handle {
+                    Some(handle) if offset >= 0 => Some(Interrupt::PositionFile {
+                        handle,
+                        offset: offset as u32,
+                    }),
+                    _ => None,
+                }
+            }
+            56 => handle.map(Interrupt::CloseFile),
+            57 => Some(Interrupt::DeleteFile(self.read_path(address)?)),
+            58 => {
+                //`switch (*mode)` over the whole of D1.L, and a title or a filter only when its
+                //register is not 0 (`simIOu.cpp`, `displayFileDialog`)
+                let mode = match self.cpu.d_reg[1].get_long() {
+                    0 => FileDialogMode::Open,
+                    1 => FileDialogMode::Save,
+                    other => {
+                        return Err(RuntimeError::InvalidTrapArgument {
+                            task,
+                            reason: format!(
+                                "D1.L is {}, and task 58 takes 0 for the dialog that opens a \
+                                 file or 1 for the one that saves one",
+                                other
+                            ),
+                        })
+                    }
+                };
+                let title = match address {
+                    0 => String::new(),
+                    _ => self.read_string(address as usize, NAME_LIMIT)?,
+                };
+                let filter = match self.cpu.a_reg[2].get_long() {
+                    0 => String::new(),
+                    filter => self.read_string(filter as usize, NAME_LIMIT)?,
+                };
+                let path = self.read_path(self.cpu.a_reg[3].get_long())?;
+                Some(Interrupt::FileDialog {
+                    mode,
+                    title,
+                    filter,
+                    path,
+                })
+            }
+            //EASy68K reserves D1.L for other operations and reads none of it, so neither does
+            //this: any D1.L asks whether the file exists (`fileOp`)
+            59 => Some(Interrupt::FileExists(self.read_path(address)?)),
+            _ => return Err(RuntimeError::UnsupportedTrapTask { task }),
+        };
+        if interrupt.is_none() {
+            self.set_file_result(FileResult::Error);
+        }
+        Ok(interrupt)
+    }
+
+    /// Every other task: the text and number tasks, the keyboard, the mouse, the
+    /// screen and the sound, each an interrupt for the host.
     fn get_trap(&mut self, value: u8) -> RuntimeResult<Interrupt> {
         match value {
             0 | 1 => {
-                //TODO not sure if this is correct or if it should read untill 0x00
-                let address = self.cpu.a_reg[1].get_long();
-                let length = self.cpu.d_reg[1].get_word() as i32;
-                if !(0..=255).contains(&length) {
-                    //only for interrupt 1 and 2, check bounds
-                    Err(RuntimeError::Raw(format!("Invalid String read, length of string in d1 register is: {}, expected between 0 and 255", length)))
+                //EASy68K copies at most 255 characters and ends the copy at the D1.W'th,
+                //`strncpy(buf, (A1), 255)` then `buf[(short)D1] = 0`, so both tasks stop at a NUL
+                //too. A D1.W of $8000 or more is a negative index there, which writes outside the
+                //buffer and leaves all 255 characters of the copy: it is read as more than 255,
+                //which shows what EASy68K shows for a string with a NUL in its first 255 bytes.
+                let address = self.cpu.a_reg[1].get_long() as usize;
+                let length = (self.cpu.d_reg[1].get_word() as usize).min(DISPLAY_LIMIT);
+                let text = self.read_string(address, length)?;
+                if value == 0 {
+                    Ok(Interrupt::DisplayStringWithCRLF(text))
                 } else {
-                    let mut bytes = self
-                        .memory
-                        .read_bytes(address as usize, length as usize)?
-                        .to_vec();
-                    if value == 0 {
-                        //get all bytes until 0x00
-                        match bytes.iter().position(|&x| x == 0x00) {
-                            Some(pos) => bytes = bytes[..pos].to_vec(),
-                            None => {}
-                        }
-                    }
-                    //TODO implement call to interrupt handler
-                    match String::from_utf8(bytes.to_vec()) {
-                        Ok(str) if value == 0 => Ok(Interrupt::DisplayStringWithCRLF(str)),
-                        Ok(str) if value == 1 => Ok(Interrupt::DisplayStringWithoutCRLF(str)),
-                        Err(_) | Ok(_) => Err(RuntimeError::Raw(format!(
-                            "Invalid String read, received: {:?}, expected UTF-8",
-                            bytes
-                        ))),
-                    }
+                    Ok(Interrupt::DisplayStringWithoutCRLF(text))
                 }
             }
             2 => Ok(Interrupt::ReadKeyboardString),
-            3 => {
-                let value = self.cpu.d_reg[1].get_long();
-                Ok(Interrupt::DisplayNumber(value as i32))
-            }
+            3 => Ok(Interrupt::DisplayNumber(c_runtime::decimal(
+                self.cpu.d_reg[1].get_long(),
+            ))),
             4 => Ok(Interrupt::ReadNumber),
             5 => Ok(Interrupt::ReadChar),
-            6 => {
-                let value = self.cpu.d_reg[1].get_byte();
-                Ok(Interrupt::DisplayChar(value as char))
-            }
+            6 => Ok(Interrupt::DisplayChar(charset::character(
+                self.cpu.d_reg[1].get_byte(),
+            ))),
             7 => Ok(Interrupt::CheckKeyboardInput),
             8 => Ok(Interrupt::GetTime),
-            9 => {
-                self.set_status(InterpreterStatus::Terminated);
-                Ok(Interrupt::Terminate)
-            }
+            //the program ends where the interrupt is raised (`execute_instruction`)
+            9 => Ok(Interrupt::Terminate),
             13 | 14 => {
                 let address = self.cpu.a_reg[1].get_long() as usize;
-                let str = self.read_null_terminated_string(address)?;
+                let str = self.read_null_terminated_string(address, value)?;
                 if value == 13 {
                     Ok(Interrupt::DisplayStringWithCRLF(str))
                 } else {
@@ -2301,28 +2908,25 @@ impl Interpreter {
             }
             15 => {
                 //Display the unsigned number in D1.L converted to the number base (2 through 36)
-                //in D2.B: to display D1.L in base 16, put 16 in D2.B. EASy68K ignores a base
-                //outside 2 to 36; this reports it instead.
-                let value = self.cpu.d_reg[1].get_long();
+                //in D2.B: to display D1.L in base 16, put 16 in D2.B. EASy68K displays nothing for
+                //a base outside 2 to 36; this reports it instead, a documented deviation.
+                let number = self.cpu.d_reg[1].get_long();
                 let base = self.cpu.d_reg[2].get_byte() as u32;
-                if !(2..=36).contains(&base) {
-                    return Err(RuntimeError::Raw(format!(
-                        "Invalid base for display number: {} in register D2.b, expected between 2 and 36",
-                        base
-                    )));
-                };
-                Ok(Interrupt::DisplayNumberInBase {
-                    value,
-                    base: base as u8,
-                })
+                match c_runtime::in_base(number, base) {
+                    Some(text) => Ok(Interrupt::DisplayNumberInBase(text)),
+                    None => Err(RuntimeError::InvalidTrapArgument {
+                        task: value,
+                        reason: format!("D2.B is {}, and a base is 2 to 36", base),
+                    }),
+                }
             }
             17 | 18 => {
                 //tasks 14 and 3, or 14 and 4, in a single trap
                 let address = self.cpu.a_reg[1].get_long() as usize;
-                let string = self.read_null_terminated_string(address)?;
+                let string = self.read_null_terminated_string(address, value)?;
                 if value == 17 {
-                    let number = self.cpu.d_reg[1].get_long() as i32;
-                    Ok(Interrupt::DisplayStringAndNumber { string, number })
+                    let number = c_runtime::decimal(self.cpu.d_reg[1].get_long());
+                    Ok(Interrupt::DisplayStringAndNumber(string + &number))
                 } else {
                     Ok(Interrupt::DisplayStringAndReadNumber(string))
                 }
@@ -2337,9 +2941,12 @@ impl Interpreter {
                 }))
             }
             20 => {
-                let value = self.cpu.d_reg[1].get_long() as i32;
+                //`sprintf(buf, "%*d", (char)D2, D1)`: the width is a signed byte
+                let value = self.cpu.d_reg[1].get_long();
                 let width = self.cpu.d_reg[2].get_byte();
-                Ok(Interrupt::DisplaySignedNumberInField { value, width })
+                Ok(Interrupt::DisplaySignedNumberInField(c_runtime::in_field(
+                    value, width,
+                )))
             }
             23 => {
                 let time = self.cpu.d_reg[1].get_long();
@@ -2354,10 +2961,14 @@ impl Interpreter {
                 let mode = self.cpu.d_reg[1].get_byte();
                 match mode {
                     0..=2 => Ok(Interrupt::ReadMouse(mode)),
-                    _ => Err(RuntimeError::Raw(format!(
-                        "Invalid mouse read mode: {} in register D1.b, expected 0 (current state), 1 (last button up) or 2 (last button down)",
-                        mode
-                    ))),
+                    _ => Err(RuntimeError::InvalidTrapArgument {
+                        task: value,
+                        reason: format!(
+                            "D1.B is {}, and task 61 reads the mouse with 0 (its state now), 1 (at \
+                             the last button up) or 2 (at the last button down)",
+                            mode
+                        ),
+                    }),
                 }
             }
             // Graphics interrupts
@@ -2479,11 +3090,17 @@ impl Interpreter {
                 let mode = self.cpu.d_reg[1].get_byte();
                 match mode {
                     2 | 4 | 16 | 17 => Ok(Interrupt::SetDrawingMode(mode)),
-                    //the bitwise raster modes draw against the background color, which this screen does not implement
-                    _ => Err(RuntimeError::Raw(format!(
-                        "Unsupported drawing mode: {} in register D1.b, expected 2 (move without drawing), 4 (draw normally), 16 (double buffering off) or 17 (double buffering on)",
-                        mode
-                    ))),
+                    //the bitwise raster modes draw against the background color, which this screen
+                    //does not implement
+                    _ => Err(RuntimeError::InvalidTrapArgument {
+                        task: value,
+                        reason: format!(
+                            "D1.B is {}, and the drawing modes are 2 (move without drawing), 4 \
+                             (draw), 16 (double buffering off) and 17 (double buffering on); the \
+                             bitwise modes are not supported",
+                            mode
+                        ),
+                    }),
                 }
             }
             93 => {
@@ -2494,12 +3111,39 @@ impl Interpreter {
             96 => Ok(Interrupt::GetPenPosition),
             95 => {
                 let address = self.cpu.a_reg[1].get_long() as usize;
-                let str = self.read_null_terminated_string(address)?;
+                let str = self.read_null_terminated_string(address, value)?;
                 let x = self.cpu.d_reg[1].get_word();
                 let y = self.cpu.d_reg[2].get_word();
                 Ok(Interrupt::DrawText(x as i16 as i32, y as i16 as i32, str))
             }
-            _ => Err(RuntimeError::Raw(format!("Unknown interrupt: {}", value))),
+            // Sound: the arguments, for a host with a sound device to play them on
+            70 => Ok(Interrupt::PlaySound(
+                self.read_path(self.cpu.a_reg[1].get_long())?,
+            )),
+            71 => Ok(Interrupt::LoadSound {
+                path: self.read_path(self.cpu.a_reg[1].get_long())?,
+                index: self.cpu.d_reg[1].get_byte(),
+            }),
+            72 => Ok(Interrupt::PlayLoadedSound(self.cpu.d_reg[1].get_byte())),
+            73 => Ok(Interrupt::PlaySoundDirectX(
+                self.read_path(self.cpu.a_reg[1].get_long())?,
+            )),
+            74 => Ok(Interrupt::LoadSoundDirectX {
+                path: self.read_path(self.cpu.a_reg[1].get_long())?,
+                index: self.cpu.d_reg[1].get_byte(),
+            }),
+            75 => Ok(Interrupt::PlayLoadedSoundDirectX(
+                self.cpu.d_reg[1].get_byte(),
+            )),
+            76 => Ok(Interrupt::ControlSound {
+                index: self.cpu.d_reg[1].get_byte(),
+                control: self.cpu.d_reg[2].get_long(),
+            }),
+            77 => Ok(Interrupt::ControlSoundDirectX {
+                index: self.cpu.d_reg[1].get_byte(),
+                control: self.cpu.d_reg[2].get_long(),
+            }),
+            _ => Err(RuntimeError::UnsupportedTrapTask { task: value }),
         }
     }
     /**
@@ -2786,7 +3430,7 @@ impl Interpreter {
     ) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
         if self.status == InterpreterStatus::Paused && self.has_reached_bottom() {
-            self.set_status(InterpreterStatus::Terminated);
+            self.terminate(Termination::EndOfProgram);
             return Ok(self.status);
         }
         let resuming_after_pause = self.status == InterpreterStatus::Paused;
@@ -2820,7 +3464,7 @@ impl Interpreter {
         let mut limit_counter = limit;
         self.verify_can_run()?;
         if self.status == InterpreterStatus::Paused && self.has_reached_bottom() {
-            self.set_status(InterpreterStatus::Terminated);
+            self.terminate(Termination::EndOfProgram);
             return Ok(self.status);
         }
         let resuming_after_pause = self.status == InterpreterStatus::Paused;
@@ -2973,6 +3617,39 @@ impl Interpreter {
     }
 }
 
+/// A value as the plain JavaScript data the boundary answers with.
+///
+/// Serialising one of this crate's own shapes cannot fail, but a panic in
+/// WebAssembly leaves the module unusable for every call after it, so a
+/// failure is answered as a message instead of unwrapped.
+fn js(value: &impl Serialize) -> JsValue {
+    serde_wasm_bindgen::to_value(value)
+        .unwrap_or_else(|error| JsValue::from_str(&format!("cannot serialise: {}", error)))
+}
+
+/// A register named from JavaScript, refused when its number is not 0 to 7:
+/// `{type: 'Data', value: 9}` deserialises, and would index past the eight
+/// registers.
+fn register_from_js(register: JsValue) -> Result<RegisterOperand, JsValue> {
+    let parsed: RegisterOperand = serde_wasm_bindgen::from_value(register).map_err(|error| {
+        js(&RuntimeError::InvalidArgument(format!(
+            "a register is {{type: 'Data' | 'Address', value: 0 to 7}}: {}",
+            error
+        )))
+    })?;
+    match parsed {
+        RegisterOperand::Data(number) | RegisterOperand::Address(number) if number < 8 => {
+            Ok(parsed)
+        }
+        RegisterOperand::Data(number) | RegisterOperand::Address(number) => Err(js(
+            &RuntimeError::InvalidArgument(format!("there is no register number {}", number)),
+        )),
+    }
+}
+
+/// Every method below throws a [`RuntimeError`] as a plain object,
+/// `{type, value}`, and none of them panics: a panic would leave the
+/// WebAssembly module unusable for every call after it.
 #[wasm_bindgen]
 impl Interpreter {
     pub fn wasm_read_memory_bytes(&self, address: usize, size: usize) -> Vec<u8> {
@@ -2986,10 +3663,7 @@ impl Interpreter {
         address: usize,
         bytes: Vec<u8>,
     ) -> Result<(), JsValue> {
-        match self.write_memory_bytes(address, &bytes) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
-        }
+        self.write_memory_bytes(address, &bytes).map_err(|e| js(&e))
     }
     pub fn wasm_get_cpu_snapshot(&self) -> Cpu {
         self.cpu
@@ -3002,7 +3676,7 @@ impl Interpreter {
     }
     pub fn wasm_get_instruction_at(&self, address: usize) -> JsValue {
         match self.get_instruction_at(address) {
-            Some(ins) => serde_wasm_bindgen::to_value(ins).unwrap(),
+            Some(ins) => js(ins),
             None => JsValue::NULL,
         }
     }
@@ -3018,16 +3692,10 @@ impl Interpreter {
     /// `InterpreterStatus` as [`wasm_run`](Interpreter::wasm_run) now, and
     /// `wasm_step_only_status`, which existed to work around it, is gone.
     pub fn wasm_step(&mut self) -> Result<InterpreterStatus, JsValue> {
-        match self.step() {
-            Ok(status) => Ok(status),
-            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
-        }
+        self.step().map_err(|e| js(&e))
     }
     pub fn wasm_run(&mut self) -> Result<InterpreterStatus, JsValue> {
-        match self.run() {
-            Ok(status) => Ok(status),
-            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
-        }
+        self.run().map_err(|e| js(&e))
     }
     /// `breakpoints` is an array of `{ file, line }`, a Location without its
     /// columns. `skip_breakpoint_at_pc` defaults to `true`, the "continue"
@@ -3038,39 +3706,38 @@ impl Interpreter {
         limit: Option<usize>,
         skip_breakpoint_at_pc: Option<bool>,
     ) -> Result<InterpreterStatus, JsValue> {
-        let breakpoints: Vec<Breakpoint> = serde_wasm_bindgen::from_value(breakpoints)
-            .map_err(|e| JsValue::from_str(&format!("Invalid breakpoints: {}", e)))?;
-        match self.run_with_breakpoints(&breakpoints, limit, skip_breakpoint_at_pc.unwrap_or(true))
-        {
-            Ok(status) => Ok(status),
-            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
-        }
+        let breakpoints: Vec<Breakpoint> =
+            serde_wasm_bindgen::from_value(breakpoints).map_err(|e| {
+                js(&RuntimeError::InvalidArgument(format!(
+                    "breakpoints are an array of {{file, line}}: {}",
+                    e
+                )))
+            })?;
+        self.run_with_breakpoints(&breakpoints, limit, skip_breakpoint_at_pc.unwrap_or(true))
+            .map_err(|e| js(&e))
     }
     pub fn wasm_get_call_stack(&self) -> JsValue {
-        serde_wasm_bindgen::to_value(&self.get_pretty_call_stack()).unwrap()
+        js(&self.get_pretty_call_stack())
     }
     pub fn wasm_run_with_limit(&mut self, limit: usize) -> Result<InterpreterStatus, JsValue> {
-        match self.run_with_limit(limit) {
-            Ok(status) => Ok(status),
-            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
-        }
+        self.run_with_limit(limit).map_err(|e| js(&e))
     }
     pub fn wasm_get_next_instruction(&self) -> JsValue {
         match self.get_next_instruction() {
-            Some(ins) => serde_wasm_bindgen::to_value(ins).unwrap(),
+            Some(ins) => js(ins),
             None => JsValue::NULL,
         }
     }
     pub fn wasm_get_previous_mutations(&self) -> JsValue {
         match self.debugger.get_previous_mutations() {
-            Some(m) => serde_wasm_bindgen::to_value(&m).unwrap(),
+            Some(m) => js(m),
             None => JsValue::NULL,
         }
     }
     /// The newest `count` steps, newest first: the instructions that have run
     /// and the Pokes made between them, each saying which it is in its `kind`.
     pub fn wasm_get_undo_history(&self, count: usize) -> JsValue {
-        serde_wasm_bindgen::to_value(&self.get_last_steps(count)).unwrap()
+        js(&self.get_last_steps(count))
     }
 
     pub fn wasm_get_last_step_id(&self) -> f64 {
@@ -3078,6 +3745,18 @@ impl Interpreter {
     }
     pub fn wasm_get_status(&self) -> InterpreterStatus {
         *self.get_status()
+    }
+    /// Why the program ended, a [`Termination`] as `{type, value}`, or `null`
+    /// while it has not.
+    pub fn wasm_get_termination(&self) -> JsValue {
+        match self.get_termination() {
+            Some(termination) => js(termination),
+            None => JsValue::NULL,
+        }
+    }
+    /// The [`InputSettings`] of tasks 12 and 16, `{echo, prompt, line_feed}`.
+    pub fn wasm_get_input_settings(&self) -> JsValue {
+        js(&self.get_input_settings())
     }
     pub fn wasm_get_flag(&self, flag: Flags) -> bool {
         self.get_flag(flag)
@@ -3095,30 +3774,21 @@ impl Interpreter {
         self.get_sr()
     }
     pub fn wasm_undo(&mut self) -> Result<JsValue, JsValue> {
-        match self.undo() {
-            Ok(step) => Ok(serde_wasm_bindgen::to_value(&step).unwrap()),
-            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
-        }
+        self.undo().map(|step| js(&step)).map_err(|e| js(&e))
     }
     /// Opens a Poke, which is `beginPoke()`. It throws when one is already
     /// open and when an instruction is executing.
     pub fn wasm_begin_poke(&mut self) -> Result<(), JsValue> {
-        match self.begin_poke() {
-            Ok(()) => Ok(()),
-            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
-        }
+        self.begin_poke().map_err(|e| js(&e))
     }
     /// Closes the open Poke, which is `endPoke()`, and answers whether it
     /// recorded a step. It throws when no Poke is open.
     pub fn wasm_end_poke(&mut self) -> Result<bool, JsValue> {
-        match self.end_poke() {
-            Ok(recorded) => Ok(recorded),
-            Err(e) => Err(serde_wasm_bindgen::to_value(&e).unwrap()),
-        }
+        self.end_poke().map_err(|e| js(&e))
     }
     pub fn wasm_get_last_step(&self) -> JsValue {
         match self.debugger.get_last_step() {
-            Some(step) => serde_wasm_bindgen::to_value(step).unwrap(),
+            Some(step) => js(step),
             None => JsValue::NULL,
         }
     }
@@ -3134,30 +3804,22 @@ impl Interpreter {
     pub fn wasm_get_last_instruction(&self) -> JsValue {
         self.wasm_get_instruction_at(self.current_instruction_address)
     }
-    pub fn wasm_get_register_value(&self, reg: JsValue, size: Size) -> Result<u32, String> {
-        match serde_wasm_bindgen::from_value(reg.clone()) {
-            Ok(reg) => Ok(self.get_register_value(reg, size)),
-            Err(e) => Err(format!(
-                "Cannot get register, invalid register {:?}, {}",
-                reg, e
-            )),
-        }
+    /// The register's value at `size`. It throws an `InvalidArgument` for a
+    /// register that is not `{type: 'Data' | 'Address', value: 0 to 7}`.
+    pub fn wasm_get_register_value(&self, reg: JsValue, size: Size) -> Result<u32, JsValue> {
+        let register = register_from_js(reg)?;
+        Ok(self.get_register_value(register, size))
     }
+    /// Writes the register at `size`, into the open Poke if there is one. It
+    /// throws an `InvalidArgument` for a register that is not one.
     pub fn wasm_set_register_value(
         &mut self,
         reg: JsValue,
         value: u32,
         size: Size,
-    ) -> Result<(), String> {
-        match serde_wasm_bindgen::from_value(reg.clone()) {
-            Ok(parsed) => self.set_register_value(parsed, value, size),
-            Err(e) => {
-                return Err(format!(
-                    "Cannot set register, invalid register {:?}, {}",
-                    reg, e
-                ));
-            }
-        }
+    ) -> Result<(), JsValue> {
+        let register = register_from_js(reg)?;
+        self.set_register_value(register, value, size);
         Ok(())
     }
     pub fn wasm_has_reached_bottom(&self) -> bool {
@@ -3166,30 +3828,41 @@ impl Interpreter {
     pub fn wasm_has_terminated(&self) -> bool {
         self.has_terminated()
     }
-    pub fn wasm_get_current_interrupt(&self) -> Result<JsValue, String> {
-        match &self.get_current_interrupt() {
-            Ok(interrupt) => match serde_wasm_bindgen::to_value(interrupt) {
-                Ok(value) => Ok(value),
-                Err(e) => Err(format!("Error converting interrupt to js value {:?}", e)),
-            },
-            Err(_) => Ok(JsValue::NULL),
+    /// The pending [`Interrupt`] as `{type, value}`, or `null` when there is
+    /// none. A file write's bytes are a `Uint8Array`.
+    pub fn wasm_get_current_interrupt(&self) -> JsValue {
+        match &self.current_interrupt {
+            Some(interrupt) => js(interrupt),
+            None => JsValue::NULL,
         }
     }
-    pub fn wasm_answer_interrupt(&mut self, value: JsValue) -> Result<(), String> {
-        match serde_wasm_bindgen::from_value(value.clone()) {
-            Ok(answer) => self.answer_interrupt(answer).unwrap(),
-            Err(e) => {
-                return Err(format!("Invalid interrupt answer: {:?}, {}", value, e));
-            }
-        }
-        Ok(())
+    /// Answers the pending interrupt, which is `answerInterrupt(answer)`.
+    ///
+    /// It throws a [`RuntimeError`] and changes nothing whenever
+    /// [`answer_interrupt`](Interpreter::answer_interrupt) refuses the answer,
+    /// and with an `InvalidAnswer` when the value is not an `InterruptResult`
+    /// at all — a number where a typed line is a string, say. The interrupt
+    /// still waits after a refusal. A file read's bytes are taken as a
+    /// `Uint8Array`, or an array of numbers.
+    pub fn wasm_answer_interrupt(&mut self, value: JsValue) -> Result<(), JsValue> {
+        let pending = match &self.current_interrupt {
+            Some(interrupt) if self.status == InterpreterStatus::Interrupt => interrupt.name(),
+            _ => return Err(js(&RuntimeError::NoPendingInterrupt)),
+        };
+        let answer: InterruptResult = serde_wasm_bindgen::from_value(value).map_err(|e| {
+            js(&RuntimeError::InvalidAnswer {
+                interrupt: pending.to_string(),
+                reason: format!("the answer is not an interrupt answer: {}", e),
+            })
+        })?;
+        self.answer_interrupt(answer).map_err(|e| js(&e))
     }
 
     /// The [`Location`] of the instruction the program counter is on, as
     /// `{ file, line, column, end_column }`, or `null` when it is on none.
     pub fn wasm_get_current_location(&self) -> JsValue {
         match self.get_current_location() {
-            Some(location) => serde_wasm_bindgen::to_value(location).unwrap(),
+            Some(location) => js(location),
             None => JsValue::NULL,
         }
     }

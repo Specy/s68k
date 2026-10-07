@@ -397,10 +397,10 @@ pub enum Expr {
     },
     /// A quoted literal: a character literal in an Expression (`'A'` is 65) and
     /// a string in a `dc` item, which is one token with two readings
-    /// (`docs/grammar.md` 1.9). The bytes are Latin-1 and `''` has already been
-    /// read as one quote.
+    /// (`docs/grammar.md` 1.9). The bytes are Windows-1252 and `''` has already
+    /// been read as one quote.
     CharacterLiteral {
-        /// The Latin-1 bytes the literal stands for.
+        /// The Windows-1252 bytes the literal stands for.
         bytes: Vec<u8>,
         /// Which quote it was written with.
         quote: QuoteKind,

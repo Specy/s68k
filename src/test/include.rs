@@ -588,23 +588,23 @@ fn a_label_on_an_incbin_names_its_first_byte_and_nothing_is_aligned() {
 }
 
 #[test]
-fn incbin_of_a_text_file_contributes_its_latin_1_bytes() {
+fn incbin_of_a_text_file_contributes_its_windows_1252_bytes() {
     let files = project(&[
         ("main.m68k", "    incbin note.txt\n"),
-        ("note.txt", "città\n"),
+        ("note.txt", "città \u{20AC}\n"),
     ]);
     assert_eq!(
         memory(&files),
-        vec![(0x1000, "63697474e00a".to_string())],
-        "`à` is one byte, $e0, and the newline is one byte (ADR 0004)"
+        vec![(0x1000, "63697474e020800a".to_string())],
+        "`à` is one byte, $e0, `€` is $80 and the newline is one byte (ADR 0004)"
     );
 }
 
 #[test]
-fn a_character_above_latin_1_in_an_incbin_file_is_an_error_where_it_is() {
+fn a_character_without_a_byte_in_an_incbin_file_is_an_error_where_it_is() {
     let files = project(&[
         ("main.m68k", "    nop\n    incbin note.txt\n"),
-        ("note.txt", "ok\nthen \u{2014}\n"),
+        ("note.txt", "ok \u{2014}\nthen \u{2192}\n"),
     ]);
     let assembly = assemble(&files);
     assert_eq!(

@@ -35,6 +35,7 @@ use super::source::{Location, Span};
 use super::token::{
     is_name_continuation, is_name_start, is_whitespace, NumberBase, QuoteKind, Token, TokenKind,
 };
+use crate::charset;
 
 /// A place in a [`Tokenizer`]'s walk, to come back to.
 ///
@@ -212,7 +213,7 @@ impl<'a> Tokenizer<'a> {
             let span = Span::new(start, self.offset);
             let kind = if character == '\u{A0}' {
                 DiagnosticKind::NonBreakingSpace
-            } else if character as u32 > 255 {
+            } else if charset::byte(character).is_none() {
                 DiagnosticKind::CharacterAboveLatin1 { character }
             } else {
                 DiagnosticKind::UnexpectedCharacter { character }
@@ -326,10 +327,11 @@ impl<'a> Tokenizer<'a> {
 
     /// A quoted literal, `''` or `""` reading as one quote.
     ///
-    /// Inside a literal every Latin-1 character is ordinary — a no-break space
-    /// and a control character included, because both are bytes a `dc.b` can
-    /// store — and only a character above 255, which has no byte at all, is
-    /// refused (see the implementation notes, phase 1 step 3).
+    /// Inside a literal every character with a Windows-1252 byte is ordinary —
+    /// a no-break space, a control character and `€` included, because all are
+    /// bytes a `dc.b` can store — and only a character with no byte at all is
+    /// refused (see the implementation notes, phase 1 step 3, and ADR 0004's
+    /// amendment).
     fn string_literal(&mut self, start: usize, quote: QuoteKind) -> TokenKind {
         let quote_character = quote.character();
         self.advance();
@@ -346,7 +348,7 @@ impl<'a> Tokenizer<'a> {
             }
             let at = self.offset;
             self.advance();
-            if character as u32 > 255 {
+            if charset::byte(character).is_none() {
                 self.raise(
                     DiagnosticKind::CharacterAboveLatin1 { character },
                     Span::new(at, self.offset),
@@ -847,8 +849,8 @@ mod tests {
     }
 
     #[test]
-    fn character_set_refuses_a_character_above_latin_1() {
-        let line = tokenize("dc.b \u{2018}A\u{2019}");
+    fn character_set_refuses_a_character_without_a_windows_1252_byte() {
+        let line = tokenize("dc.b \u{2192}A\u{2192}");
         assert_eq!(
             line.diagnostics()
                 .iter()
@@ -856,13 +858,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["character_above_latin1", "character_above_latin1"]
         );
-        assert_eq!(line.diagnostics()[0].hint(), Some("Write `'`".to_string()));
+        // a control code Windows-1252 gave to one of its 27 characters has no
+        // byte either, although it is below 256
+        assert_eq!(codes("dc.b \u{80}"), vec!["character_above_latin1"]);
     }
 
     #[test]
-    fn character_set_refuses_a_character_above_latin_1_inside_a_literal() {
+    fn character_set_names_the_plain_character_a_typographic_quote_stands_for() {
+        // `‘` and `’` have bytes in Windows-1252, so outside a literal they are
+        // characters that start nothing, and the hint says what was meant.
+        let line = tokenize("dc.b \u{2018}A\u{2019}");
+        assert_eq!(
+            line.diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.code())
+                .collect::<Vec<_>>(),
+            vec!["unexpected_character", "unexpected_character"]
+        );
+        assert_eq!(line.diagnostics()[0].hint(), Some("Write `'`".to_string()));
+        assert_eq!(line.diagnostics()[1].hint(), Some("Write `'`".to_string()));
+        assert_eq!(
+            tokenize("move.l #\u{2013}1,d0").diagnostics()[0].hint(),
+            Some("Write `-`".to_string())
+        );
+    }
+
+    #[test]
+    fn character_set_refuses_a_character_without_a_byte_inside_a_literal() {
         // A byte has to be written for it and there is none (1.1).
-        let line = tokenize("dc.b 'caf\u{e9} \u{2014}'");
+        let line = tokenize("dc.b 'caf\u{e9} \u{2192}'");
         assert_eq!(
             line.diagnostics()
                 .iter()
@@ -870,7 +894,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["character_above_latin1"]
         );
-        assert_eq!(line.diagnostics()[0].hint(), Some("Write `-`".to_string()));
+        assert_eq!(codes("dc.b '\u{80}'"), vec!["character_above_latin1"]);
+    }
+
+    #[test]
+    fn character_set_stores_the_windows_1252_characters_inside_a_literal() {
+        // EASy68K's code page: `€`, the typographic quotes and dashes are bytes
+        // of their own, $80 to $9F, as an EASy68K source file holds them.
+        assert!(tokenize("dc.b '\u{20AC} \u{2018}ok\u{2019} \u{2014}'")
+            .diagnostics()
+            .is_empty());
     }
 
     #[test]
@@ -883,7 +916,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["non_breaking_space"]
         );
-        // Inside a literal it is an ordinary Latin-1 byte.
+        // Inside a literal it is an ordinary byte, $A0.
         assert!(tokenize("dc.b '\u{A0}'").diagnostics().is_empty());
     }
 

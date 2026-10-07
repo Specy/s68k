@@ -7,3 +7,4 @@ mod include;
 mod mutations;
 mod pokes;
 mod test;
+mod trap_tasks;

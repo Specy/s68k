@@ -10,7 +10,9 @@ use console::Term;
 
 use crate::assembler::program::Program;
 use crate::instructions::{Interrupt, InterruptResult};
-use crate::interpreter::{Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError};
+use crate::interpreter::{
+    Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError, Termination,
+};
 
 //TODO add better tests for all cases and if i find bugs etc
 #[cfg(test)]
@@ -1851,7 +1853,8 @@ greeting: dc.b 'hi',0
         use crate::instructions::{
             Interrupt, InterruptResult, KeyStateRequest, KeyStateResult, RegisterOperand, Size,
         };
-        use crate::test::test::{run_answering, run_expecting_error};
+        use crate::interpreter::{Interpreter, InterpreterStatus, RuntimeError, LINE_LIMIT};
+        use crate::test::test::{prepare, run_answering, run_expecting_error};
 
         fn data_long(interpreter: &crate::interpreter::Interpreter, register: u8) -> u32 {
             interpreter.get_register_value(RegisterOperand::Data(register), Size::Long)
@@ -1938,11 +1941,12 @@ greeting: dc.b 'hi',0
     move.b #3, d1
     trap #15",
             );
-            assert!(
-                error.contains("Invalid mouse read mode: 3"),
-                "Unexpected error: {}",
-                error
-            );
+            match error {
+                RuntimeError::InvalidTrapArgument { task: 61, reason } => {
+                    assert!(reason.starts_with("D1.B is 3,"), "{}", reason)
+                }
+                other => panic!("Unexpected error: {:?}", other),
+            }
         }
 
         #[test]
@@ -1964,11 +1968,12 @@ greeting: dc.b 'hi',0
     move.b #14, d1
     trap #15",
             );
-            assert!(
-                error.contains("Unsupported drawing mode: 14"),
-                "Unexpected error: {}",
-                error
-            );
+            match error {
+                RuntimeError::InvalidTrapArgument { task: 92, reason } => {
+                    assert!(reason.starts_with("D1.B is 14,"), "{}", reason)
+                }
+                other => panic!("Unexpected error: {:?}", other),
+            }
         }
 
         #[test]
@@ -2031,7 +2036,7 @@ greeting: dc.b 'hi',0
         }
 
         #[test]
-        fn trap_20_reads_the_number_and_the_field_width() {
+        fn trap_20_right_justifies_the_number_in_a_field_of_d2_b_columns() {
             let (_, interrupts) = run_answering(
                 "move.b #20, d0
     move.l #$FFFFFFFB, d1
@@ -2040,10 +2045,24 @@ greeting: dc.b 'hi',0
                 |_| InterruptResult::DisplaySignedNumberInField,
             );
             match &interrupts[0] {
-                Interrupt::DisplaySignedNumberInField { value, width } => {
-                    assert_eq!(*value, -5);
-                    assert_eq!(*width, 8);
-                }
+                Interrupt::DisplaySignedNumberInField(text) => assert_eq!(text, "      -5"),
+                other => panic!("Expected a number in a field, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn trap_20_left_justifies_the_number_when_the_width_is_negative() {
+            //`sprintf("%*d", (char)D2, D1)`: D2.B is a signed byte, and C reads a negative `*`
+            //width as the `-` flag. Read unsigned, -6 was a field of 250 columns
+            let (_, interrupts) = run_answering(
+                "move.b #20, d0
+    move.l #-5, d1
+    move.l #$FFFFFFFA, d2
+    trap #15",
+                |_| InterruptResult::DisplaySignedNumberInField,
+            );
+            match &interrupts[0] {
+                Interrupt::DisplaySignedNumberInField(text) => assert_eq!(text, "-5    "),
                 other => panic!("Expected a number in a field, got {:?}", other),
             }
         }
@@ -2061,10 +2080,7 @@ start:
                 |_| InterruptResult::DisplayStringAndNumber,
             );
             match &interrupts[0] {
-                Interrupt::DisplayStringAndNumber { string, number } => {
-                    assert_eq!(string, "total ");
-                    assert_eq!(*number, 42);
-                }
+                Interrupt::DisplayStringAndNumber(text) => assert_eq!(text, "total 42"),
                 other => panic!("Expected a string and a number, got {:?}", other),
             }
         }
@@ -2078,7 +2094,7 @@ start:
     move.l #message, a1
     move.b #18, d0
     trap #15",
-                |_| InterruptResult::DisplayStringAndReadNumber(-3),
+                |_| InterruptResult::DisplayStringAndReadNumber("-3".to_string()),
             );
             match &interrupts[0] {
                 Interrupt::DisplayStringAndReadNumber(string) => assert_eq!(string, "age? "),
@@ -2171,17 +2187,444 @@ start:
             assert_eq!(data_long(&interpreter, 1), 0x0A14);
         }
 
+        // ---- the text tasks, by EASy68K's rules (`CODE9.CPP`, `simIOu.cpp`) ----
+
+        /// The text every display task of `code` hands over, in order.
+        fn displayed(code: &str) -> Vec<String> {
+            let (_, interrupts) = run_answering(code, |interrupt| match interrupt {
+                Interrupt::DisplayStringWithCRLF(_) => InterruptResult::DisplayStringWithCRLF,
+                Interrupt::DisplayStringWithoutCRLF(_) => InterruptResult::DisplayStringWithoutCRLF,
+                Interrupt::DisplayNumber(_) => InterruptResult::DisplayNumber,
+                Interrupt::DisplayNumberInBase(_) => InterruptResult::DisplayNumberInBase,
+                Interrupt::DisplayChar(_) => InterruptResult::DisplayChar,
+                Interrupt::DisplaySignedNumberInField(_) => {
+                    InterruptResult::DisplaySignedNumberInField
+                }
+                Interrupt::DisplayStringAndNumber(_) => InterruptResult::DisplayStringAndNumber,
+                Interrupt::DrawText(_, _, _) => InterruptResult::DrawText,
+                other => panic!("Expected a display task, got {:?}", other),
+            });
+            interrupts
+                .into_iter()
+                .map(|interrupt| match interrupt {
+                    Interrupt::DisplayStringWithCRLF(text)
+                    | Interrupt::DisplayStringWithoutCRLF(text)
+                    | Interrupt::DisplayNumber(text)
+                    | Interrupt::DisplayNumberInBase(text)
+                    | Interrupt::DisplaySignedNumberInField(text)
+                    | Interrupt::DisplayStringAndNumber(text)
+                    | Interrupt::DrawText(_, _, text) => text,
+                    Interrupt::DisplayChar(character) => character.to_string(),
+                    other => unreachable!("{:?} was refused above", other),
+                })
+                .collect()
+        }
+
+        /// The Interpreter of `code`, run to the trap it raises and left
+        /// waiting for the answer.
+        fn waiting(code: &str) -> Interpreter {
+            let mut interpreter = prepare(code);
+            assert_eq!(
+                interpreter.run().expect("the program runs to its trap"),
+                InterpreterStatus::Interrupt
+            );
+            interpreter
+        }
+
+        fn bytes_at(interpreter: &Interpreter, address: usize, length: usize) -> Vec<u8> {
+            interpreter
+                .get_memory()
+                .read_bytes(address, length)
+                .expect("memory to read back")
+                .to_vec()
+        }
+
+        #[test]
+        fn trap_3_displays_d1_l_as_a_signed_decimal_number() {
+            let program =
+                |value: &str| format!("move.l #{value},d1\n    move.b #3,d0\n    trap #15");
+            assert_eq!(displayed(&program("42")), ["42"]);
+            assert_eq!(displayed(&program("-5")), ["-5"]);
+            assert_eq!(displayed(&program("$80000000")), ["-2147483648"]);
+        }
+
+        #[test]
+        fn trap_15_displays_d1_l_unsigned_with_upper_case_digits() {
+            //`ultoa` and then `UpperCase()`: EASy68K shows `FF`, never `ff`
+            let program = |value: &str, base: u8| {
+                format!(
+                    "move.l #{value},d1\n    move.b #{base},d2\n    move.b #15,d0\n    trap #15"
+                )
+            };
+            assert_eq!(displayed(&program("255", 16)), ["FF"]);
+            assert_eq!(displayed(&program("$DEADBEEF", 16)), ["DEADBEEF"]);
+            assert_eq!(displayed(&program("-1", 10)), ["4294967295"], "unsigned");
+            assert_eq!(displayed(&program("5", 2)), ["101"]);
+            assert_eq!(displayed(&program("35", 36)), ["Z"]);
+            assert_eq!(displayed(&program("0", 16)), ["0"]);
+        }
+
+        #[test]
+        fn trap_15_still_refuses_a_base_outside_two_to_thirty_six() {
+            //EASy68K displays nothing; s68k stops and says why, a documented deviation
+            let error = run_expecting_error(
+                "move.l #10,d1
+    move.b #37,d2
+    move.b #15,d0
+    trap #15",
+            );
+            assert_eq!(
+                error,
+                RuntimeError::InvalidTrapArgument {
+                    task: 15,
+                    reason: "D2.B is 37, and a base is 2 to 36".to_string()
+                }
+            );
+        }
+
+        #[test]
+        fn tasks_0_and_1_display_d1_w_characters_and_stop_at_a_nul() {
+            //`strncpy` stops at a NUL, so task 1 does as well, where it used to display past it
+            let program = |task: u8, count: u16| {
+                format!(
+                    "ORG $1000
+start:
+    move.l #text,a1
+    move.w #{count},d1
+    move.b #{task},d0
+    trap #15
+text: dc.b 'ab',0,'cd'"
+                )
+            };
+            for task in [0u8, 1] {
+                assert_eq!(
+                    displayed(&program(task, 5)),
+                    ["ab"],
+                    "task {task}, past a NUL"
+                );
+                assert_eq!(
+                    displayed(&program(task, 1)),
+                    ["a"],
+                    "task {task}, one character"
+                );
+                assert_eq!(displayed(&program(task, 0)), [""], "task {task}, none");
+            }
+        }
+
+        #[test]
+        fn tasks_0_and_1_display_at_most_255_characters() {
+            //EASy68K's buffer holds 255: a D1.W above that is clipped where it used to be an
+            //error, and one of $8000 or more, which EASy68K reads as negative, is clipped too
+            let program = |count: &str| {
+                format!(
+                    "ORG $1000
+text: dcb.b 300,'x'
+start:
+    move.l #text,a1
+    move.w #{count},d1
+    move.b #1,d0
+    trap #15"
+                )
+            };
+            for count in ["255", "256", "300", "$7FFF", "$8000", "$FFFF"] {
+                assert_eq!(
+                    displayed(&program(count)),
+                    ["x".repeat(255)],
+                    "D1.W = {count}"
+                );
+            }
+            assert_eq!(displayed(&program("254")), ["x".repeat(254)]);
+        }
+
+        #[test]
+        fn the_text_tasks_decode_windows_1252() {
+            //`é` is $E9, `€` is $80 and the curly quotes are $93 and $94 in EASy68K's code page:
+            //every one of these used to stop the program with "expected UTF-8"
+            let program = |task: u8| {
+                format!(
+                    "ORG $1000
+text: dc.b 'caf',$E9,' ',$80,' ',$93,'ok',$94,0
+start:
+    move.l #text,a1
+    move.l #255,d1
+    move.b #{task},d0
+    trap #15"
+                )
+            };
+            for task in [0u8, 1, 13, 14] {
+                assert_eq!(displayed(&program(task)), ["café € “ok”"], "task {task}");
+            }
+            //17 is the string and then D1.L
+            assert_eq!(displayed(&program(17)), ["café € “ok”255"]);
+        }
+
+        #[test]
+        fn the_assembler_and_the_text_tasks_agree_on_every_character() {
+            //what the Assembler stores for a character is what the display task shows for it
+            assert_eq!(
+                displayed(
+                    "ORG $1000
+start:
+    move.l #text,a1
+    move.b #14,d0
+    trap #15
+text: dc.b '€ “ok” — naïve ½',0"
+                ),
+                ["€ “ok” — naïve ½"]
+            );
+        }
+
+        #[test]
+        fn trap_6_displays_d1_b_as_a_windows_1252_character() {
+            let program = |byte: &str| format!("move.b #{byte},d1\n    move.b #6,d0\n    trap #15");
+            assert_eq!(displayed(&program("$80")), ["€"]);
+            assert_eq!(displayed(&program("$E9")), ["é"]);
+            assert_eq!(displayed(&program("'z'")), ["z"]);
+            //one of the five codes Windows-1252 leaves undefined is its own control character
+            assert_eq!(displayed(&program("$81")), ["\u{81}"]);
+        }
+
+        #[test]
+        fn trap_95_draws_windows_1252_text() {
+            assert_eq!(
+                displayed(
+                    "ORG $1000
+text: dc.b '5 ',$80,0
+start:
+    move.l #text,a1
+    move.w #10,d1
+    move.w #20,d2
+    move.b #95,d0
+    trap #15"
+                ),
+                ["5 €"]
+            );
+        }
+
+        #[test]
+        fn trap_2_stores_the_line_in_windows_1252_and_its_length_in_d1_l() {
+            let mut interpreter = waiting(
+                "move.l #$2000,a1
+    move.l #$FFFFFFFF,d1
+    move.b #2,d0
+    trap #15",
+            );
+            interpreter
+                .answer_interrupt(InterruptResult::ReadKeyboardString("é€→".to_string()))
+                .expect("the line");
+            //a character with no byte is `?`, and the NUL follows the line
+            assert_eq!(bytes_at(&interpreter, 0x2000, 4), [0xE9, 0x80, b'?', 0]);
+            //the whole long: EASy68K writes the count through a `long *`
+            assert_eq!(data_long(&interpreter, 1), 3);
+        }
+
+        #[test]
+        fn trap_2_keeps_the_79_characters_easy68k_keeps() {
+            let mut interpreter = waiting(
+                "move.l #$2000,a1
+    move.b #2,d0
+    trap #15",
+            );
+            interpreter
+                .answer_interrupt(InterruptResult::ReadKeyboardString("x".repeat(100)))
+                .expect("the line");
+            let mut expected = vec![b'x'; LINE_LIMIT];
+            expected.push(0);
+            //and nothing past the NUL is written: memory starts as $FF
+            expected.push(0xFF);
+            assert_eq!(bytes_at(&interpreter, 0x2000, LINE_LIMIT + 2), expected);
+            assert_eq!(data_long(&interpreter, 1), 79);
+        }
+
+        #[test]
+        fn trap_2_ends_the_line_at_a_line_terminator() {
+            for (line, stored) in [("ab\ncd", &b"ab\0"[..]), ("ab\r\n", b"ab\0"), ("", b"\0")] {
+                let mut interpreter = waiting(
+                    "move.l #$2000,a1
+    move.b #2,d0
+    trap #15",
+                );
+                interpreter
+                    .answer_interrupt(InterruptResult::ReadKeyboardString(line.to_string()))
+                    .expect("the line");
+                assert_eq!(
+                    bytes_at(&interpreter, 0x2000, stored.len()),
+                    stored,
+                    "{line:?}"
+                );
+                assert_eq!(
+                    data_long(&interpreter, 1),
+                    stored.len() as u32 - 1,
+                    "{line:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn trap_4_reads_the_line_as_atoi_does() {
+            let cases: [(&str, u32); 9] = [
+                ("42", 42),
+                ("12abc", 12),
+                ("abc", 0),
+                ("", 0),
+                ("  -42", -42i32 as u32),
+                ("+7", 7),
+                ("1.5", 1),
+                ("4294967295", 0xFFFF_FFFF),
+                ("2147483648", 0x8000_0000),
+            ];
+            for (line, expected) in cases {
+                let mut interpreter = waiting(
+                    "move.l #$12345678,d1
+    move.b #4,d0
+    trap #15",
+                );
+                interpreter
+                    .answer_interrupt(InterruptResult::ReadNumber(line.to_string()))
+                    .unwrap_or_else(|e| panic!("{line:?} is never an error, got {:?}", e));
+                assert_eq!(data_long(&interpreter, 1), expected, "{line:?}");
+            }
+        }
+
+        #[test]
+        fn trap_4_reads_only_the_79_characters_easy68k_keeps() {
+            //a five after 79 zeros is the 80th key, which ended the line in EASy68K
+            let mut interpreter = waiting("move.b #4,d0\n    trap #15");
+            interpreter
+                .answer_interrupt(InterruptResult::ReadNumber(format!(
+                    "{}5",
+                    "0".repeat(LINE_LIMIT)
+                )))
+                .expect("the line");
+            assert_eq!(data_long(&interpreter, 1), 0);
+        }
+
+        #[test]
+        fn trap_18_reads_the_line_as_atoi_does() {
+            let mut interpreter = waiting(
+                "ORG $1000
+ask: dc.b '?',0
+start:
+    move.l #ask,a1
+    move.b #18,d0
+    trap #15",
+            );
+            interpreter
+                .answer_interrupt(InterruptResult::DisplayStringAndReadNumber(
+                    " 12abc".to_string(),
+                ))
+                .expect("the line");
+            assert_eq!(data_long(&interpreter, 1), 12);
+        }
+
+        #[test]
+        fn trap_5_stores_enter_as_0d() {
+            //EASy68K reads Enter as '\r', so a program waits for $0D; '\n' is Enter too
+            for key in ['\r', '\n'] {
+                let mut interpreter = waiting(
+                    "move.l #$FFFFFFFF,d1
+    move.b #5,d0
+    trap #15",
+                );
+                interpreter
+                    .answer_interrupt(InterruptResult::ReadChar(key))
+                    .expect("the key");
+                assert_eq!(
+                    data_long(&interpreter, 1),
+                    0xFFFF_FF0D,
+                    "{key:?}, in D1.B only"
+                );
+            }
+        }
+
+        #[test]
+        fn trap_5_stores_the_key_in_windows_1252() {
+            for (key, stored) in [('a', b'a'), ('€', 0x80), ('é', 0xE9), ('→', b'?')] {
+                let mut interpreter = waiting("move.b #5,d0\n    trap #15");
+                interpreter
+                    .answer_interrupt(InterruptResult::ReadChar(key))
+                    .expect("the key");
+                assert_eq!(data_long(&interpreter, 1), u32::from(stored), "{key:?}");
+            }
+        }
+
+        #[test]
+        fn an_answer_for_another_task_is_refused_and_the_interrupt_waits() {
+            let mut interpreter = waiting("move.b #5,d0\n    trap #15");
+            match interpreter.answer_interrupt(InterruptResult::ReadNumber("7".to_string())) {
+                Err(RuntimeError::InvalidAnswer { interrupt, reason }) => {
+                    assert_eq!(interrupt, "ReadChar");
+                    assert_eq!(
+                        reason,
+                        "a ReadNumber answer cannot answer a ReadChar interrupt"
+                    );
+                }
+                other => panic!("Expected the answer to be refused, got {:?}", other),
+            }
+            assert_eq!(*interpreter.get_status(), InterpreterStatus::Interrupt);
+            assert!(matches!(
+                interpreter.get_current_interrupt(),
+                Ok(Interrupt::ReadChar)
+            ));
+            assert_eq!(data_long(&interpreter, 1), 0, "and nothing was written");
+            interpreter
+                .answer_interrupt(InterruptResult::ReadChar('y'))
+                .expect("the right answer is still taken");
+            assert_eq!(data_long(&interpreter, 1), u32::from(b'y'));
+        }
+
+        #[test]
+        fn an_answer_with_no_interrupt_pending_is_refused() {
+            let mut fresh = prepare("nop");
+            assert!(fresh
+                .answer_interrupt(InterruptResult::DisplayChar)
+                .is_err());
+
+            //task 9 ends the program, and an answer cannot bring it back
+            let mut ended = prepare("move.b #9,d0\n    trap #15\n    nop");
+            assert_eq!(ended.run().expect("the run"), InterpreterStatus::Terminated);
+            assert!(ended.answer_interrupt(InterruptResult::Terminate).is_err());
+            assert!(ended.has_terminated(), "the program stays ended");
+        }
+
+        #[test]
+        fn a_line_that_does_not_fit_in_memory_is_refused_and_the_interrupt_waits() {
+            let mut interpreter = waiting(
+                "move.l #$FFFFF0,a1
+    move.b #2,d0
+    trap #15",
+            );
+            let refused =
+                interpreter.answer_interrupt(InterruptResult::ReadKeyboardString("x".repeat(40)));
+            assert!(
+                matches!(refused, Err(RuntimeError::OutOfBounds(_))),
+                "{:?}",
+                refused
+            );
+            assert_eq!(*interpreter.get_status(), InterpreterStatus::Interrupt);
+            interpreter
+                .answer_interrupt(InterruptResult::ReadKeyboardString("ok".to_string()))
+                .expect("a line that fits");
+            assert_eq!(bytes_at(&interpreter, 0xFFFFF0, 3), b"ok\0");
+        }
+
+        #[test]
+        fn a_terminate_answer_ends_the_program() {
+            //how a host stops a task it cannot do; the status used to be overwritten with Running
+            let mut interpreter = waiting("move.b #80,d0\n    trap #15\n    nop");
+            interpreter
+                .answer_interrupt(InterruptResult::Terminate)
+                .expect("the answer");
+            assert!(interpreter.has_terminated());
+        }
+
         #[test]
         fn unknown_tasks_still_fail() {
             let error = run_expecting_error(
                 "move.b #99, d0
     trap #15",
             );
-            assert!(
-                error.contains("Unknown interrupt: 99"),
-                "Unexpected error: {}",
-                error
-            );
+            assert_eq!(error, RuntimeError::UnsupportedTrapTask { task: 99 });
         }
     }
 }
@@ -2252,11 +2695,26 @@ fn run_answering(
 }
 
 /// Assembles and runs a program that is expected to stop with a runtime error,
-/// and returns its message.
-fn run_expecting_error(code: &str) -> String {
+/// and returns the error, having checked that it ended the program: the status
+/// is the exception one and the error is the cause it ended for.
+fn run_expecting_error(code: &str) -> RuntimeError {
     let mut interpreter = prepare(code);
     match interpreter.run() {
-        Err(RuntimeError::Raw(message)) => message,
+        Err(error) => {
+            assert_eq!(
+                *interpreter.get_status(),
+                InterpreterStatus::TerminatedWithException,
+                "{:?} ends the program",
+                error
+            );
+            assert!(interpreter.has_terminated());
+            assert_eq!(
+                interpreter.get_termination(),
+                Some(&Termination::Exception(error.clone())),
+                "and is the cause it ended for"
+            );
+            error
+        }
         other => panic!("Expected a runtime error, got: {:?}", other),
     }
 }
@@ -2272,70 +2730,39 @@ fn prepare(code: &str) -> Interpreter {
 
 /// Answers one interrupt from the terminal, the way the command line does.
 fn handle_interrupt(interpreter: &mut Interpreter, interrupt: &Interrupt) {
-    match interrupt {
-        Interrupt::DisplayNumber(number) => {
-            print!("{}", number);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayNumber)
-                .unwrap();
+    let answer = match interrupt {
+        Interrupt::DisplayStringWithCRLF(text) => {
+            println!("{}", text);
+            InterruptResult::DisplayStringWithCRLF
         }
-        Interrupt::DisplayStringWithCRLF(string) => {
-            println!("{}", string);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayStringWithCRLF)
-                .unwrap();
+        Interrupt::DisplayStringWithoutCRLF(text) => {
+            print!("{}", text);
+            InterruptResult::DisplayStringWithoutCRLF
         }
-        Interrupt::DisplayStringWithoutCRLF(string) => {
-            print!("{}", string);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayStringWithoutCRLF)
-                .unwrap();
+        Interrupt::DisplayNumber(text) => {
+            print!("{}", text);
+            InterruptResult::DisplayNumber
         }
-        Interrupt::GetTime => {
-            interpreter
-                .answer_interrupt(InterruptResult::GetTime(0))
-                .unwrap();
+        Interrupt::DisplayChar(character) => {
+            print!("{}", character);
+            InterruptResult::DisplayChar
         }
-        Interrupt::DisplayChar(char) => {
-            print!("{}", char);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayChar)
-                .unwrap();
-        }
+        Interrupt::GetTime => InterruptResult::GetTime(0),
         Interrupt::ReadChar => {
-            let char = Term::stdout().read_char().expect("Unable to read char");
-            interpreter
-                .answer_interrupt(InterruptResult::ReadChar(char))
-                .unwrap();
+            InterruptResult::ReadChar(Term::stdout().read_char().expect("Unable to read char"))
         }
         Interrupt::ReadNumber => {
-            let num = Term::stdout().read_line().expect("Unable to read line");
-            let num = num.trim().parse::<i32>().expect("Unable to parse number");
-            interpreter
-                .answer_interrupt(InterruptResult::ReadNumber(num))
-                .unwrap();
+            InterruptResult::ReadNumber(Term::stdout().read_line().expect("Unable to read line"))
         }
-        Interrupt::ReadKeyboardString => {
-            let string = Term::stdout().read_line().expect("Unable to read line");
-            interpreter
-                .answer_interrupt(InterruptResult::ReadKeyboardString(string))
-                .unwrap();
-        }
-        Interrupt::Terminate => {
-            interpreter
-                .answer_interrupt(InterruptResult::Terminate)
-                .unwrap();
-        }
-        Interrupt::Delay(_) => {
-            interpreter
-                .answer_interrupt(InterruptResult::Delay)
-                .unwrap();
-        }
+        Interrupt::ReadKeyboardString => InterruptResult::ReadKeyboardString(
+            Term::stdout().read_line().expect("Unable to read line"),
+        ),
+        Interrupt::Terminate => InterruptResult::Terminate,
+        Interrupt::Delay(_) => InterruptResult::Delay,
         _ => {
             println!("Unhandled interrupt: {:?}", interrupt);
-            interpreter
-                .answer_interrupt(InterruptResult::Terminate)
-                .unwrap();
+            InterruptResult::Terminate
         }
-    }
+    };
+    interpreter.answer_interrupt(answer).unwrap();
 }

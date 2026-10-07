@@ -843,7 +843,7 @@ impl<'a> Layout<'a> {
     /// "Inserts the specified binary file… The data from the included file is
     /// not processed in any way" (`Directives/incbin.htm`), which is a `dc.b`
     /// of the whole File: no alignment, the Label on the first byte, and a text
-    /// File contributing its Latin-1 bytes ([ADR
+    /// File contributing its Windows-1252 bytes ([ADR
     /// 0004](../../../docs/adr/0004-characters-are-latin-1-bytes.md)). Pass 1
     /// takes the room and pass 2 reads the bytes
     /// ([`included_bytes`](Layout::included_bytes)), which is how `dc` already
@@ -856,7 +856,7 @@ impl<'a> Layout<'a> {
             return self.plan(address, Item::Data(0));
         };
         let length = match self.unit.resolve(index, &written) {
-            Resolved::Text { text, .. } => source::latin1_bytes(text).0.len(),
+            Resolved::Text { text, .. } => source::windows_1252_bytes(text).0.len(),
             Resolved::Bytes { bytes, .. } => bytes.len(),
             Resolved::Missing { path } => {
                 let kind = self.unit.miss(&path, "incbin");
@@ -873,7 +873,7 @@ impl<'a> Layout<'a> {
     ///
     /// Pass 1 has already said whatever there was to say about the File, so a
     /// miss here is silent: the length it planned was 0 and there is nothing to
-    /// insert. A character above Latin-1 in a text File has no byte at all and
+    /// insert. A character Windows-1252 cannot store has no byte at all and
     /// is reported **where it is**, in the File that holds it, with this line
     /// as the related Location — one message per `incbin`, however many such
     /// characters the File holds.
@@ -885,7 +885,7 @@ impl<'a> Layout<'a> {
             Resolved::Bytes { bytes, .. } => bytes.to_vec(),
             Resolved::Missing { .. } => Vec::new(),
             Resolved::Text { path, text } => {
-                let (bytes, refused) = source::latin1_bytes(text);
+                let (bytes, refused) = source::windows_1252_bytes(text);
                 if let Some((offset, character)) = refused {
                     let location = SourceFile::new(path, text).location_of(offset);
                     let here = self.unit.location(index, self.file_name_span(index));
@@ -1253,8 +1253,8 @@ impl<'a> Layout<'a> {
         )
     }
 
-    /// The bytes of a `dc`: every item in turn, a quoted literal as its Latin-1
-    /// bytes and everything else as a value of the Directive's size.
+    /// The bytes of a `dc`: every item in turn, a quoted literal as its
+    /// Windows-1252 bytes and everything else as a value of the Directive's size.
     fn constant_bytes(&mut self, index: usize, plan: &LinePlan) -> Vec<u8> {
         let size = self.stored_size(index);
         let unit = bytes_of(size);
@@ -2032,7 +2032,7 @@ fn alignment_of(size: SizeSuffix) -> i64 {
     }
 }
 
-/// The Latin-1 bytes of a `dc` item that is one quoted literal, or `None` when
+/// The Windows-1252 bytes of a `dc` item that is one quoted literal, or `None` when
 /// the item is a value.
 ///
 /// A literal that is part of an Expression (`'A'+1`) is a value, not a string:
@@ -2381,7 +2381,7 @@ mod tests {
     }
 
     #[test]
-    fn dc_lays_strings_out_in_latin_1_and_pads_them_to_its_size() {
+    fn dc_lays_strings_out_in_windows_1252_and_pads_them_to_its_size() {
         assert_eq!(
             memory("    org $2000\n    dc.b 'Hello',0\n    dc.w 'abc'\n"),
             vec![
@@ -2392,12 +2392,18 @@ mod tests {
     }
 
     #[test]
-    fn a_character_above_latin_1_in_data_is_an_error() {
-        // ADR 0004: one byte in Latin-1 everywhere, and a character with no
-        // byte is refused where it would have to produce one.
+    fn a_character_without_a_windows_1252_byte_in_data_is_an_error() {
+        // ADR 0004: one byte in Windows-1252 everywhere, and a character with
+        // no byte is refused where it would have to produce one.
         assert_eq!(codes("    dc.b 'né'\n"), Vec::<&str>::new());
+        assert_eq!(codes("    dc.b '\u{20AC}\u{2014}'\n"), Vec::<&str>::new());
         assert_eq!(
-            codes("    dc.b '\u{2014}'\n"),
+            memory("    org $2000\n    dc.b '\u{20AC}\u{2014}\u{2019}'\n"),
+            vec![(0x2000, "809792".to_string())],
+            "the euro sign, the em dash and the closing quote are bytes of their own"
+        );
+        assert_eq!(
+            codes("    dc.b '\u{2192}'\n"),
             vec!["character_above_latin1"]
         );
     }

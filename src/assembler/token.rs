@@ -265,14 +265,15 @@ pub fn parse_digits(base: NumberBase, digits: &str) -> Option<i64> {
     Some(value)
 }
 
-/// The Latin-1 bytes a quoted literal stands for, `''` and `""` read as one
-/// quote ([ADR 0004](../../../docs/adr/0004-characters-are-latin-1-bytes.md),
+/// The Windows-1252 bytes a quoted literal stands for, `''` and `""` read as
+/// one quote ([ADR 0004](../../../docs/adr/0004-characters-are-latin-1-bytes.md),
 /// `docs/grammar.md` 1.9).
 ///
 /// `text` is the token's own text, opening quote included; a closing quote is
 /// optional, so an unterminated literal still gives the bytes it holds and the
-/// parser can carry on after the diagnostic. A character above 255 has no byte
-/// and is dropped — `character_above_latin1` has already been raised for it.
+/// parser can carry on after the diagnostic. A character Windows-1252 has no
+/// byte for is dropped — `character_above_latin1` has already been raised for
+/// it.
 pub fn string_literal_bytes(text: &str) -> Vec<u8> {
     let mut characters = text.chars();
     let quote = match characters.next() {
@@ -290,7 +291,7 @@ pub fn string_literal_bytes(text: &str) -> Vec<u8> {
                 _ => break,
             }
         }
-        if let Ok(byte) = u8::try_from(character as u32) {
+        if let Some(byte) = crate::charset::byte(character) {
             bytes.push(byte);
         }
     }
@@ -348,11 +349,17 @@ mod tests {
     }
 
     #[test]
-    fn string_literal_bytes_are_latin_1() {
+    fn string_literal_bytes_are_windows_1252() {
         assert_eq!(
             string_literal_bytes("'città'"),
             vec![b'c', b'i', b't', b't', 0xE0]
         );
+        assert_eq!(
+            string_literal_bytes("'5 \u{20AC} \u{2014} \u{2019}'"),
+            vec![b'5', b' ', 0x80, b' ', 0x97, b' ', 0x92]
+        );
+        // a character with no byte is dropped, the diagnostic having been raised
+        assert_eq!(string_literal_bytes("'a\u{2192}b'"), vec![b'a', b'b']);
     }
 
     #[test]

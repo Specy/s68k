@@ -16,5 +16,31 @@ input_file: tests/diagnostics/unexpected_character.asm
       "endColumn": 12
     },
     "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unexpected_character",
+    "message": "`‘` cannot start anything here.",
+    "hint": "Write `'`",
+    "location": {
+      "file": "unexpected_character.asm",
+      "line": 4,
+      "column": 12,
+      "endColumn": 13
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unexpected_character",
+    "message": "`’` cannot start anything here.",
+    "hint": "Write `'`",
+    "location": {
+      "file": "unexpected_character.asm",
+      "line": 4,
+      "column": 14,
+      "endColumn": 15
+    },
+    "related": []
   }
 ]

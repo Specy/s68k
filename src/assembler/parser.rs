@@ -3030,8 +3030,13 @@ mod tests {
             );
             assert_eq!(codes("    move.l (1<2),d0"), ["unexpected_character"]);
             assert_eq!(
-                codes("    move.l d0,d\u{2019}1"),
+                codes("    move.l d0,d\u{2192}1"),
                 ["character_above_latin1"]
+            );
+            assert_eq!(
+                codes("    move.l d0,d\u{2019}1"),
+                ["unexpected_character"],
+                "a quote Windows-1252 has a byte for is a character that starts nothing"
             );
         }
 

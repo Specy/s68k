@@ -90,7 +90,7 @@ A Label whose name starts with a dot, visible only between the Global label abov
 A value computed at assembly time from numbers, character literals, Symbols and EASy68K's operators, with EASy68K's precedence. It contains no whitespace.
 
 **Character**:
-One byte, read and written as Latin-1. A source character with a code above 255 cannot be stored and is an error.
+One byte, read and written as Windows-1252, the code page EASy68K runs in: Latin-1 with `€`, the typographic quotes and dashes and a few more in place of the control codes `$80` to `$9F`. A source character Windows-1252 has no byte for cannot be stored and is an error; the text tasks display bytes decoded the same way, and a typed character with no byte is stored as `?`.
 _Avoid_: code point, UTF-8 character
 
 **Current address**:
@@ -138,6 +138,20 @@ The Interpreter status after it executes `simhalt`. The Program counter already
 names the following instruction, and the next step or run operation resumes
 from it. A Paused Interpreter has not terminated.
 
+**Trap task**:
+One of EASy68K's `trap #15` services, chosen by the number in D0.B. The Interpreter carries some out itself — the Input settings, a file result it can decide alone — and raises an Interrupt for the rest; a task it does not carry out, or one given a value it cannot take, is a Runtime error.
+_Avoid_: syscall, service call
+
+**Interrupt**:
+What a Trap task asks the host for, with its arguments decoded: text to display, a line or a key to read, a file operation, a sound. The instruction is not finished until the host answers it, with the answer of the same name or with Terminate; any other answer is refused and the Interrupt still waits.
+_Avoid_: callback, event, request (in prose, for the Rust type)
+
+**Input settings**:
+How the read tasks show what is typed: the echo of task 12, and the input prompt and the line feed after Enter of task 16. They are the Interpreter's state, all on when a program starts, journaled like a register so that undo puts them back, and read by the host while a read task waits.
+
+**Termination**:
+Why a program ended: task 9, the program counter leaving the last instruction, the host answering Terminate, or the Runtime error it ended with. Undoing the step that ended the program takes it back.
+
 ### Diagnosis
 
 **Diagnostic**:
@@ -149,7 +163,7 @@ Where in the source something is: a file, a line and the range of columns of the
 _Avoid_: line index (a Location is more than a line), position (that is the index in the Assembled sequence, which is a different thing)
 
 **Runtime error**:
-A failure of the running program, produced by the interpreter and attributed to the instruction's Location. It carries a Hint but is not a Diagnostic.
+A failure of the running program, produced by the interpreter and attributed to the instruction's Location. It ends the program with an exception, as there are no exception vectors to take, and is the program's Termination. It carries a Hint but is not a Diagnostic.
 
 **Hint**:
 The part of a Diagnostic or Runtime error that gives the learner a safe next action, as opposed to what is wrong. It gives a correction when the likely intent is clear, alternatives when it is ambiguous, or a concrete investigation step when no correction can be inferred.

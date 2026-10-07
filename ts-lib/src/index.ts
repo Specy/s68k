@@ -5,7 +5,10 @@ import {
     Diagnostic,
     ExecutionStep,
     ExecutionStepKind,
+    FileDialogMode,
+    FileExistence,
     Flags,
+    InputSettings,
     InstructionLine,
     Interpreter as RawInterpreter,
     InterpreterOptions,
@@ -17,6 +20,7 @@ import {
     LineSpan,
     Location,
     MutationOperation,
+    OpenedFile,
     ParsedComment,
     ParsedLabel,
     ParsedLine,
@@ -34,6 +38,7 @@ import {
     Severity,
     Size,
     StackFrame,
+    Termination,
     WasmAssembly as RawAssembly,
     wasm_assemble,
     wasm_parse_line
@@ -119,6 +124,7 @@ export class Cpu {
         return [...dReg, ...aReg]
     }
 
+    /** Throws an `InvalidArgument` for a register number past 7. */
     getRegister(register: number, type: RegisterType): Register {
         if (type == RegisterType.Data) {
             return new Register(this.cpu.wasm_get_d_reg(register))
@@ -225,8 +231,47 @@ export class Interpreter {
         this.interpreter = new RawInterpreter(program.getRaw(), options)
     }
 
+    /**
+     * Answer the pending interrupt, which finishes the instruction that raised
+     * it.
+     *
+     * Every interrupt is answered by the `InterruptResult` of its own `type`. A
+     * display task has nothing to answer but that `type`: the text it carries is
+     * ready to display, decoded from Windows-1252 and formatted the way EASy68K
+     * formats it. A read task is answered with what was typed, as it was typed —
+     * the line for `ReadKeyboardString`, `ReadNumber` and
+     * `DisplayStringAndReadNumber`, the key for `ReadChar` — and the interpreter
+     * stores and reads it with EASy68K's rules. A file task is answered with
+     * what the host's file system did, and the interpreter writes EASy68K's
+     * result code for it. `{type: 'Terminate'}` answers any task and ends the
+     * program.
+     *
+     * Throws a `RuntimeError` object, and changes nothing, when no interrupt is
+     * pending (`NoPendingInterrupt`), when the answer is not the pending
+     * interrupt's or not an answer at all (`InvalidAnswer`), and when what it
+     * writes does not fit in memory (`OutOfBounds`); the interrupt then still
+     * waits.
+     */
     answerInterrupt(interruptResult: InterruptResult) {
         this.interpreter.wasm_answer_interrupt(interruptResult)
+    }
+
+    /**
+     * Why the program ended, or null while it has not: task 9, the end of the
+     * program, a `Terminate` answer, or the runtime error it ended with. Undoing
+     * the step that ended it takes the end back.
+     */
+    getTermination(): Termination | null {
+        return this.interpreter.wasm_get_termination() as Termination | null
+    }
+
+    /**
+     * How the read tasks show what is typed: the echo of task 12, the input
+     * prompt and the line feed after Enter of task 16, all on when a program
+     * starts. A host reads them when a read task waits.
+     */
+    getInputSettings(): InputSettings {
+        return this.interpreter.wasm_get_input_settings() as InputSettings
     }
 
     /**
@@ -320,8 +365,9 @@ export class Interpreter {
         return new Cpu(this.interpreter.wasm_get_cpu_snapshot())
     }
 
+    /** The interrupt waiting for its answer, or null. A file write's bytes are a `Uint8Array`. */
     getCurrentInterrupt(): Interrupt | null {
-        return this.interpreter.wasm_get_current_interrupt()
+        return this.interpreter.wasm_get_current_interrupt() as Interrupt | null
     }
 
     getPc(): number {
@@ -400,6 +446,7 @@ export class Interpreter {
         return this.interpreter.wasm_get_status()
     }
 
+    /** Throws an `InvalidArgument` for a register that is not `{type: 'Data' | 'Address', value: 0 to 7}`. */
     getRegisterValue(register: RegisterOperand, size = Size.Long) {
         return this.interpreter.wasm_get_register_value(register, size)
     }
@@ -614,7 +661,10 @@ export {
     Diagnostic,
     ExecutionStep,
     ExecutionStepKind,
+    FileDialogMode,
+    FileExistence,
     Flags,
+    InputSettings,
     InstructionLine,
     InterpreterOptions,
     InterpreterStatus,
@@ -625,6 +675,7 @@ export {
     LineSpan,
     Location,
     MutationOperation,
+    OpenedFile,
     ParsedComment,
     ParsedLabel,
     ParsedLine,
@@ -641,4 +692,5 @@ export {
     Severity,
     Size,
     StackFrame,
+    Termination,
 }

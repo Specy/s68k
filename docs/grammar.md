@@ -26,14 +26,23 @@ is a bug in this document.
 
 ### 1.1 `character_set` — what a source File is made of
 
-A text File is a sequence of lines. A **character** is one Latin-1 byte ([ADR
-0004](adr/0004-characters-are-latin-1-bytes.md)): the source arrives as UTF-8
-text, and every character whose code point is 255 or less is that Latin-1 byte.
+A text File is a sequence of lines. A **character** is one Windows-1252 byte
+([ADR 0004](adr/0004-characters-are-latin-1-bytes.md), amended 2026-10-05): the
+source arrives as UTF-8 text, a character whose code point is 255 or less is
+that byte, as in Latin-1, and the 27 characters Windows-1252 puts in `$80` to
+`$9F` — `€ ‚ ƒ „ … † ‡ ˆ ‰ Š ‹ Œ Ž ‘ ’ “ ” • – — ˜ ™ š › œ ž Ÿ` — are the bytes
+EASy68K stores for them. (The five codes Windows-1252 leaves undefined, `$81`,
+`$8D`, `$8F`, `$90` and `$9D`, are the control characters of the same number.)
 
-* A character above 255 is an **error** (`character_above_latin1`), named in the
-  message. When it is one of the typographic look-alikes — `‘ ’ “ ” – —` — the
-  hint names the plain character to write instead (`'`, `"`, `-`), because the
-  cause is nearly always a paste from a web page or a word processor.
+* A character with no Windows-1252 byte is an **error**
+  (`character_above_latin1`, a name older than the amendment), named in the
+  message: one above 255 that is not among the 27, or one of the control codes
+  `$80` to `$9F` they took the place of.
+* The typographic look-alikes `‘ ’ “ ” – —` have bytes, so outside a quoted
+  literal they are `unexpected_character` (below), and the hint names the plain
+  character to write instead (`'`, `"`, `-`), because the cause is nearly always
+  a paste from a web page or a word processor. Inside one they are the bytes
+  EASy68K stores.
 * `line_end` is LF, CRLF, or the end of the File. A File that does not end in a
   line terminator ends its last line all the same:
   `tests/corpus/editor/bad-apple.x68` is such a File and must keep assembling.
@@ -44,11 +53,12 @@ text, and every character whose code point is 255 or less is that Latin-1 byte.
   (`non_breaking_space`) naming it, because it is invisible, it is what a paste
   from a web page leaves behind, and every other diagnosis of it would be a lie.
 * Any other character that starts no token is `unexpected_character`: a control
-  character below `$20`, a lone `<` or `>` (they come only in pairs, 1.13), and
-  the characters no rule of this document uses at all — `=`, `?`, `` ` ``, `[`,
-  `{` and their like. A lone `.` where a name may begin, with no name character
-  after it, is the same error: there is no name to read and no size to report
-  (1.7).
+  character below `$20`, a lone `<` or `>` (they come only in pairs, 1.13), the
+  characters no rule of this document uses at all — `=`, `?`, `` ` ``, `[`,
+  `{` and their like — and every character with a byte that is not one of them,
+  `é`, `€` and the typographic look-alikes included. A lone `.` where a name may
+  begin, with no name character after it, is the same error: there is no name
+  to read and no size to report (1.7).
 
 Those three errors are raised only where the character could reach the Program:
 nowhere inside a `comment_line` or a `comment_field`, which are not tokenized at
@@ -61,8 +71,9 @@ a character it cannot store — so the choice is s68k's and is recorded here.
 
 Inside a quoted literal the same test says which of the three applies, and it
 lets two of them through: a no-break space and a control character **are** bytes
-(`$A0`, `$09`), so inside quotes they are ordinary characters and only
-`character_above_latin1`, the one character with no byte at all, is raised there.
+(`$A0`, `$09`), as are `€` and the look-alikes (`$80`, `$91`), so inside quotes
+they are ordinary characters and only `character_above_latin1`, the one
+character with no byte at all, is raised there.
 Outside quotes nothing is a byte yet and all three hold. An earlier draft of this
 section said "everywhere else, a quoted literal included", which contradicted the
 rule it had just given: a `dc.b` string holding a no-break space writes one
@@ -508,7 +519,7 @@ code_line    = [ label_field ] [ whitespace ]
 comment_field    = explicit_comment | bare_comment ;
 explicit_comment = ( ";" | "*" ) { character } ;
 bare_comment     = { character } ;
-character        = ? one Latin-1 character other than a line terminator ? ;
+character        = ? one character other than a line terminator ? ;
 ```
 
 `code_line` admits `label_field` only under `label_rule` (1.4), which is
@@ -834,7 +845,7 @@ Notes the shapes do not carry:
   same *name* in another directory before any spelling distance — and which says
   so plainly when the Project holds no other File at all. An `include` of a
   binary File is the same kind, pointing at `incbin`; `incbin` takes either kind
-  of File, a text one contributing its Latin-1 bytes (ADR 0004).
+  of File, a text one contributing its Windows-1252 bytes (ADR 0004).
 * **`include` is textual**: the included File's lines are assembled where the
   `include` line is, in the same section, at the same current address, in one
   Symbol namespace, with the Local label scopes running across the boundary
@@ -1210,9 +1221,9 @@ carries the data each message needs.
 
 | Code | Severity | When | Message sketch | Hint sketch |
 | --- | --- | --- | --- | --- |
-| `character_above_latin1` | error | a source character above code 255 | "`’` cannot be stored: a character is one byte" | "write `'`" — names the plain look-alike when there is one |
+| `character_above_latin1` | error | a source character with no Windows-1252 byte | "`→` cannot be stored: a character is one byte" | "write it with the characters of Windows-1252, EASy68K's character set" |
 | `non_breaking_space` | error | a `$A0` where whitespace was expected | "this is a no-break space, not a space" | "replace it with a space; it usually comes from a paste" |
-| `unexpected_character` | error | a character that starts no token | "`?` cannot start anything here" | — |
+| `unexpected_character` | error | a character that starts no token | "`?` cannot start anything here" | "write `'`" — names the plain look-alike when there is one, none otherwise |
 | `unterminated_string` | error | a quoted literal reaches `line_end` | "this string is not closed before the end of the line" | "add the closing `'`; `''` writes a quote inside a string" |
 | `invalid_number` | error | a digit that is not of the number's base, or a prefix with no digits | "`G` is not a hexadecimal digit" | "hexadecimal digits are 0-9 and A-F" |
 | `number_too_large` | error | a number that does not fit in the 64 bits a value is computed in (1.8) | "`$ffffffffffffffffff` does not fit in the 64 bits a value is computed in" | "a value is computed in 64 bits and checked against the operand's size" |
@@ -1297,7 +1308,7 @@ decides. The map, so that a rule can be found from its name:
 | `org_directive` | `org_moves_the_address_anywhere`, `an_odd_origin_warns_and_rounds_up`, `an_org_that_moves_nothing_says_nothing_about_an_odd_address`, `org_reads_the_current_address_before_it_moves` |
 | `equ_directive` | `equ_names_a_value_and_the_program_keeps_it`, `equ_without_a_name_says_so`, `a_constant_is_defined_even_when_its_value_cannot_be_worked_out` |
 | `set_directive` | `a_set_variable_may_be_redefined` |
-| `dc_directive`, `dc_item` | `dc_lays_strings_out_in_latin_1_and_pads_them_to_its_size`, `a_character_above_latin_1_in_data_is_an_error`, `a_data_item_that_does_not_fit_its_size_says_so` |
+| `dc_directive`, `dc_item` | `dc_lays_strings_out_in_windows_1252_and_pads_them_to_its_size`, `a_character_without_a_windows_1252_byte_in_data_is_an_error`, `a_data_item_that_does_not_fit_its_size_says_so` |
 | `ds_directive` | `ds_reserves_its_room_and_writes_nothing`, `ds_w_zero_is_the_alignment_idiom` |
 | `dcb_directive` | `dcb_fills_its_block`, `a_count_that_does_not_fit_in_memory_says_so` |
 | `end_directive` | `the_entry_point_is_end_then_start_then_the_first_instruction`, `end_without_an_address_warns_and_falls_back`, `end_finds_a_label_that_differs_only_in_case_and_warns`, `a_line_after_end_is_not_assembled_and_says_so_once`, `a_comment_after_end_is_what_every_easy68k_program_has` |

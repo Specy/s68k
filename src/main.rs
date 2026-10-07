@@ -27,6 +27,13 @@
 //! flag instead. In `--step` mode the keys are read one line at a time and
 //! anything that is not one of them — the end of the input included — stops the
 //! run rather than repeating the question.
+//!
+//! It is a host of the `trap #15` tasks a terminal can do: the text tasks, with
+//! the echo of task 12, and **the file tasks, 50 to 59, on the disk**
+//! ([`FileHost`]), a path being relative to the project's directory as the
+//! editor's are to its project. The file dialog of task 58 asks for a path on
+//! the terminal, an empty line cancelling it. Everything else — the graphics,
+//! the mouse, the sound — is reported and ends the run.
 
 use console::Term;
 use s68k::assembler::assemble;
@@ -34,12 +41,15 @@ use s68k::assembler::diagnostics::Diagnostic;
 use s68k::assembler::program::Program;
 use s68k::assembler::source::{normalise_path, Files};
 use s68k::{
-    instructions::{Interrupt, InterruptResult},
-    interpreter::{Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError},
+    charset,
+    instructions::{FileExistence, InputSettings, Interrupt, InterruptResult, OpenedFile},
+    interpreter::{Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError, Termination},
 };
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -128,9 +138,18 @@ fn main() -> ExitCode {
     };
     let start = Instant::now();
     let mut interpreter = Interpreter::new(program, Some(options));
+    //the project's directory, which is where a program's relative paths start
+    let root = match Path::new(&path).parent() {
+        Some(directory) if !directory.as_os_str().is_empty() => directory.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let mut host = FileHost::new(root);
     match mode {
-        Mode::Run | Mode::Benchmark => run_to_the_end(&mut interpreter, &on_disk),
-        Mode::Step => step_through(&mut interpreter, &on_disk),
+        Mode::Run | Mode::Benchmark => run_to_the_end(&mut interpreter, &mut host, &on_disk),
+        Mode::Step => step_through(&mut interpreter, &mut host, &on_disk),
+    }
+    if let Some(termination) = interpreter.get_termination() {
+        println!("\n{}", describe_termination(termination));
     }
     if !flags.contains(&"--no-debug") {
         interpreter.debug_status();
@@ -430,22 +449,27 @@ fn is_source(path: &str) -> bool {
 
 /// The text of a source File read from disk.
 ///
-/// UTF-8 when the File is UTF-8, and Latin-1 when it is not, because a
-/// character is one Latin-1 byte here ([ADR
+/// UTF-8 when the File is UTF-8, and Windows-1252 when it is not, because a
+/// character is one Windows-1252 byte here ([ADR
 /// 0004](../docs/adr/0004-characters-are-latin-1-bytes.md)) and a File written
-/// by EASy68K holds bytes and not code points: either way `dc.b 'é'` assembles
-/// to the one byte $E9 it means. The conversion is total, so no File on disk
-/// can stop the command line from assembling.
+/// by EASy68K holds bytes in that code page and not code points: either way
+/// `dc.b 'é'` assembles to the one byte $E9 it means, and `dc.b '€'` to $80.
+/// The conversion is total, so no File on disk can stop the command line from
+/// assembling.
 fn as_text(bytes: Vec<u8>) -> String {
     match String::from_utf8(bytes) {
         Ok(text) => text,
-        Err(e) => e.into_bytes().iter().map(|&byte| byte as char).collect(),
+        Err(e) => charset::decode(e.as_bytes()),
     }
 }
 
 /// Runs until the program pauses or terminates, answering every interrupt on
 /// the way.
-fn run_to_the_end(interpreter: &mut Interpreter, on_disk: &BTreeMap<String, String>) {
+fn run_to_the_end(
+    interpreter: &mut Interpreter,
+    host: &mut FileHost,
+    on_disk: &BTreeMap<String, String>,
+) {
     while !interpreter.has_terminated() {
         let status = match interpreter.run() {
             Ok(status) => status,
@@ -459,10 +483,10 @@ fn run_to_the_end(interpreter: &mut Interpreter, on_disk: &BTreeMap<String, Stri
                 let interrupt = interpreter
                     .get_current_interrupt()
                     .expect("an interrupt to answer");
-                handle_interrupt(interpreter, &interrupt);
-            }
-            InterpreterStatus::TerminatedWithException => {
-                println!("Program Terminated with exception");
+                if let Err(e) = handle_interrupt(interpreter, host, &interrupt) {
+                    print_runtime_error(interpreter, &e, on_disk);
+                    return;
+                }
             }
             InterpreterStatus::Paused => {
                 println!("Program paused at ${:x}", interpreter.get_pc());
@@ -474,7 +498,11 @@ fn run_to_the_end(interpreter: &mut Interpreter, on_disk: &BTreeMap<String, Stri
 }
 
 /// One instruction at a time, until the program terminates or the input ends.
-fn step_through(interpreter: &mut Interpreter, on_disk: &BTreeMap<String, String>) {
+fn step_through(
+    interpreter: &mut Interpreter,
+    host: &mut FileHost,
+    on_disk: &BTreeMap<String, String>,
+) {
     println!("D for step, A for undo, S for print, Q for quit");
     while !interpreter.has_terminated() {
         match ask_step_kind() {
@@ -500,10 +528,24 @@ fn step_through(interpreter: &mut Interpreter, on_disk: &BTreeMap<String, String
             let interrupt = interpreter
                 .get_current_interrupt()
                 .expect("an interrupt to answer");
-            handle_interrupt(interpreter, &interrupt);
+            if let Err(e) = handle_interrupt(interpreter, host, &interrupt) {
+                print_runtime_error(interpreter, &e, on_disk);
+                return;
+            }
         }
-        if *interpreter.get_status() == InterpreterStatus::TerminatedWithException {
-            println!("Program Terminated with exception");
+    }
+}
+
+/// Why the program ended, in a line: what the command line prints after a run.
+fn describe_termination(termination: &Termination) -> String {
+    match termination {
+        Termination::TerminateTask => "The program ended with task 9.".to_string(),
+        Termination::EndOfProgram => "The program ran past its last instruction.".to_string(),
+        Termination::TerminatedByHost => {
+            "The program was ended: the command line cannot do a task it asked for.".to_string()
+        }
+        Termination::Exception(error) => {
+            format!("The program ended with an exception: {:?}", error)
         }
     }
 }
@@ -525,120 +567,272 @@ fn ask_step_kind() -> StepKind {
     }
 }
 
-/// An unsigned number in a base of 2 to 36, digits `0` to `9` then `a` to `z`,
-/// which is what task 15 displays.
-fn in_base(value: u32, base: u8) -> String {
-    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let base = base as u32;
-    if value == 0 {
-        return "0".to_string();
+/// One line typed at the terminal, as the read tasks are answered: the line
+/// without its Enter, which the Interpreter reads with EASy68K's rules. The end
+/// of the input is the empty line.
+///
+/// With the echo of task 12 off, what is typed is not shown, and the terminal
+/// still moves to the next line at Enter, as EASy68K does.
+fn read_line(settings: InputSettings) -> String {
+    // the prompt a display task printed without a new line has to be seen first
+    let _ = std::io::stdout().flush();
+    let terminal = Term::stdout();
+    match settings.echo {
+        true => terminal.read_line(),
+        false => terminal.read_secure_line(),
     }
-    let mut digits = Vec::new();
-    let mut left = value;
-    while left > 0 {
-        digits.push(DIGITS[(left % base) as usize]);
-        left /= base;
-    }
-    digits.reverse();
-    String::from_utf8(digits).expect("the digits are ASCII")
+    .unwrap_or_default()
 }
 
-/// Answers one interrupt from the terminal: the display tasks print, the input
-/// tasks read a line, and everything a terminal cannot do — the graphics tasks
-/// — is reported and ends the program.
-fn handle_interrupt(interpreter: &mut Interpreter, interrupt: &Interrupt) {
-    match interrupt {
-        Interrupt::DisplayNumber(number) => {
-            print!("{}", number);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayNumber)
-                .unwrap();
+/// One key typed at the terminal, for task 5, echoed as EASy68K echoes it: the
+/// key, and for Enter a carriage return with a line feed when task 16 left it
+/// on. Enter reads as `'\n'`, which the Interpreter stores as EASy68K's $0D.
+fn read_key(settings: InputSettings) -> char {
+    let _ = std::io::stdout().flush();
+    let key = Term::stdout().read_char().unwrap_or('\0');
+    if settings.echo {
+        match key {
+            '\n' | '\r' if settings.line_feed => print!("\r\n"),
+            '\n' | '\r' => print!("\r"),
+            key => print!("{}", key),
         }
-        Interrupt::DisplayStringWithCRLF(string) => {
-            println!("{}", string);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayStringWithCRLF)
-                .unwrap();
+        let _ = std::io::stdout().flush();
+    }
+    key
+}
+
+/// The command line's side of the file tasks: EASy68K's eight files, on the
+/// disk.
+///
+/// A path is taken relative to the project's directory, so `cargo run --
+/// dir/main.asm` that opens `scores.txt` opens `dir/scores.txt`, which is what
+/// the editor does with a path relative to its project; an absolute path is
+/// taken as it is. Each task does what EASy68K's `SIMOPS2.CPP` does with the C
+/// library, and the Interpreter turns the outcome into the result codes:
+///
+/// * task 51 opens for reading and writing, and for reading only when the
+///   file cannot be written;
+/// * task 52 creates the file, or empties it;
+/// * a file number goes to the lowest of the eight that is free;
+/// * a directory is not a file, which Windows' `fopen` agrees with.
+struct FileHost {
+    root: PathBuf,
+    files: Vec<Option<fs::File>>,
+}
+
+impl FileHost {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            files: (0..8).map(|_| None).collect(),
         }
-        Interrupt::DisplayStringWithoutCRLF(string) => {
-            print!("{}", string);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayStringWithoutCRLF)
-                .unwrap();
+    }
+
+    fn path(&self, path: &str) -> PathBuf {
+        self.root.join(path)
+    }
+
+    /// The lowest file number with no file open on it.
+    fn free(&self) -> Option<usize> {
+        self.files.iter().position(Option::is_none)
+    }
+
+    /// A file that is a file and not a directory, which `open` reaches too.
+    fn a_file(file: fs::File) -> Option<fs::File> {
+        match file.metadata() {
+            Ok(metadata) if metadata.is_file() => Some(file),
+            _ => None,
         }
-        Interrupt::GetTime => {
-            interpreter
-                .answer_interrupt(InterruptResult::GetTime(0))
-                .unwrap();
+    }
+
+    fn open(&mut self, path: &str) -> Option<OpenedFile> {
+        let slot = self.free()?;
+        let path = self.path(path);
+        let (file, read_only) = match fs::OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => (file, false),
+            Err(_) => (fs::File::open(&path).ok()?, true),
+        };
+        self.files[slot] = Some(Self::a_file(file)?);
+        Some(OpenedFile {
+            handle: slot as u8,
+            read_only,
+        })
+    }
+
+    fn create(&mut self, path: &str) -> Option<u8> {
+        let slot = self.free()?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(self.path(path))
+            .ok()?;
+        self.files[slot] = Some(Self::a_file(file)?);
+        Some(slot as u8)
+    }
+
+    /// At most `count` bytes from the file's position: fewer at the end of the
+    /// file, and none past it.
+    fn read(&mut self, handle: u8, count: u32) -> Option<Vec<u8>> {
+        let file = self.files.get_mut(handle as usize)?.as_mut()?;
+        let mut bytes = Vec::new();
+        Read::by_ref(file)
+            .take(count as u64)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        Some(bytes)
+    }
+
+    fn write(&mut self, handle: u8, bytes: &[u8]) -> bool {
+        match self.files.get_mut(handle as usize) {
+            Some(Some(file)) => file.write_all(bytes).is_ok(),
+            _ => false,
         }
-        Interrupt::DisplayChar(char) => {
-            print!("{}", char);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayChar)
-                .unwrap();
+    }
+
+    fn seek(&mut self, handle: u8, offset: u32) -> bool {
+        match self.files.get_mut(handle as usize) {
+            Some(Some(file)) => file.seek(SeekFrom::Start(offset as u64)).is_ok(),
+            _ => false,
         }
-        Interrupt::ReadChar => {
-            let char = Term::stdout().read_char().unwrap_or('\0');
-            interpreter
-                .answer_interrupt(InterruptResult::ReadChar(char))
-                .unwrap();
+    }
+
+    fn close(&mut self, handle: u8) -> bool {
+        match self.files.get_mut(handle as usize) {
+            Some(slot) => slot.take().is_some(),
+            None => false,
         }
-        Interrupt::ReadNumber => {
-            let line = Term::stdout().read_line().unwrap_or_default();
-            let number = line.trim().parse::<i32>().unwrap_or(0);
-            interpreter
-                .answer_interrupt(InterruptResult::ReadNumber(number))
-                .unwrap();
+    }
+
+    fn close_all(&mut self) -> bool {
+        self.files.iter_mut().for_each(|slot| *slot = None);
+        true
+    }
+
+    fn delete(&mut self, path: &str) -> bool {
+        fs::remove_file(self.path(path)).is_ok()
+    }
+
+    /// What task 59 finds: a file that opens for writing, one that opens only
+    /// for reading, or nothing that opens as a file.
+    fn exists(&self, path: &str) -> FileExistence {
+        let path = self.path(path);
+        if path.is_dir() {
+            return FileExistence::Missing;
         }
-        Interrupt::ReadKeyboardString => {
-            let string = Term::stdout().read_line().unwrap_or_default();
-            interpreter
-                .answer_interrupt(InterruptResult::ReadKeyboardString(string))
-                .unwrap();
+        if fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .is_ok()
+        {
+            FileExistence::Writable
+        } else if fs::File::open(&path).is_ok() {
+            FileExistence::ReadOnly
+        } else {
+            FileExistence::Missing
         }
-        Interrupt::DisplayNumberInBase { value, base } => {
-            print!("{}", in_base(*value, *base));
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayNumberInBase)
-                .unwrap();
+    }
+}
+
+/// Answers one interrupt from the terminal and the disk: the display tasks
+/// print the text the Interpreter formatted, the read tasks hand it the line or
+/// the key that was typed, the file tasks are done by the [`FileHost`], and
+/// everything a terminal cannot do — the graphics, the mouse and the sound — is
+/// reported and ends the program.
+///
+/// It answers the error of an answer the Interpreter refused, which leaves the
+/// interrupt pending, so the caller stops there.
+fn handle_interrupt(
+    interpreter: &mut Interpreter,
+    host: &mut FileHost,
+    interrupt: &Interrupt,
+) -> Result<(), RuntimeError> {
+    let settings = interpreter.get_input_settings();
+    let answer = match interrupt {
+        Interrupt::DisplayStringWithCRLF(text) => {
+            println!("{}", text);
+            InterruptResult::DisplayStringWithCRLF
         }
-        Interrupt::DisplaySignedNumberInField { value, width } => {
-            print!("{:>width$}", value, width = *width as usize);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplaySignedNumberInField)
-                .unwrap();
+        Interrupt::DisplayStringWithoutCRLF(text) => {
+            print!("{}", text);
+            InterruptResult::DisplayStringWithoutCRLF
         }
-        Interrupt::DisplayStringAndNumber { string, number } => {
-            print!("{}{}", string, number);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayStringAndNumber)
-                .unwrap();
+        Interrupt::DisplayNumber(text) => {
+            print!("{}", text);
+            InterruptResult::DisplayNumber
         }
-        Interrupt::DisplayStringAndReadNumber(string) => {
-            print!("{}", string);
-            let line = Term::stdout().read_line().unwrap_or_default();
-            let number = line.trim().parse::<i32>().unwrap_or(0);
-            interpreter
-                .answer_interrupt(InterruptResult::DisplayStringAndReadNumber(number))
-                .unwrap();
+        Interrupt::DisplayNumberInBase(text) => {
+            print!("{}", text);
+            InterruptResult::DisplayNumberInBase
         }
-        Interrupt::Terminate => {
-            interpreter
-                .answer_interrupt(InterruptResult::Terminate)
-                .unwrap();
+        Interrupt::DisplaySignedNumberInField(text) => {
+            print!("{}", text);
+            InterruptResult::DisplaySignedNumberInField
         }
-        Interrupt::Delay(_) => {
-            interpreter
-                .answer_interrupt(InterruptResult::Delay)
-                .unwrap();
+        Interrupt::DisplayStringAndNumber(text) => {
+            print!("{}", text);
+            InterruptResult::DisplayStringAndNumber
+        }
+        Interrupt::DisplayChar(character) => {
+            print!("{}", character);
+            InterruptResult::DisplayChar
+        }
+        Interrupt::DisplayStringAndReadNumber(prompt) => {
+            print!("{}", prompt);
+            InterruptResult::DisplayStringAndReadNumber(read_line(settings))
+        }
+        Interrupt::ReadNumber => InterruptResult::ReadNumber(read_line(settings)),
+        Interrupt::ReadKeyboardString => InterruptResult::ReadKeyboardString(read_line(settings)),
+        Interrupt::ReadChar => InterruptResult::ReadChar(read_key(settings)),
+        Interrupt::GetTime => InterruptResult::GetTime(0),
+        Interrupt::Terminate => InterruptResult::Terminate,
+        Interrupt::Delay(_) => InterruptResult::Delay,
+        Interrupt::CloseAllFiles => InterruptResult::CloseAllFiles(host.close_all()),
+        Interrupt::OpenFile(path) => InterruptResult::OpenFile(host.open(path)),
+        Interrupt::NewFile(path) => InterruptResult::NewFile(host.create(path)),
+        Interrupt::ReadFile { handle, count } => {
+            InterruptResult::ReadFile(host.read(*handle, *count).map(Into::into))
+        }
+        Interrupt::WriteFile { handle, bytes } => {
+            InterruptResult::WriteFile(host.write(*handle, bytes.as_slice()))
+        }
+        Interrupt::PositionFile { handle, offset } => {
+            InterruptResult::PositionFile(host.seek(*handle, *offset))
+        }
+        Interrupt::CloseFile(handle) => InterruptResult::CloseFile(host.close(*handle)),
+        Interrupt::DeleteFile(path) => InterruptResult::DeleteFile(host.delete(path)),
+        Interrupt::FileExists(path) => InterruptResult::FileExists(host.exists(path)),
+        Interrupt::FileDialog {
+            mode,
+            title,
+            filter,
+            path,
+        } => {
+            print!("{:?} file", mode);
+            for (label, text) in [
+                ("", title),
+                (" matching ", filter),
+                (", starting at ", path),
+            ] {
+                if !text.is_empty() {
+                    print!("{}{}", label, text);
+                }
+            }
+            print!(" (an empty line cancels): ");
+            let line = read_line(InputSettings::default());
+            InterruptResult::FileDialog(match line.trim() {
+                "" => None,
+                chosen => Some(chosen.to_string()),
+            })
         }
         _ => {
             println!("Unhandled interrupt: {:?}", interrupt);
-            interpreter
-                .answer_interrupt(InterruptResult::Terminate)
-                .unwrap();
+            InterruptResult::Terminate
         }
-    }
+    };
+    interpreter.answer_interrupt(answer)
 }
 
 #[cfg(test)]
@@ -732,10 +926,95 @@ mod tests {
     }
 
     #[test]
-    fn a_source_file_that_is_not_utf_8_is_read_as_latin_1() {
+    fn a_source_file_that_is_not_utf_8_is_read_as_windows_1252() {
         // `dc.b 'é'` written by EASy68K: one byte, $E9, and not a UTF-8
         // sequence. It has to reach the Assembler as the one character it is.
         assert_eq!(as_text(vec![b'\'', 0xE9, b'\'']), "'é'");
         assert_eq!(as_text("'é'".as_bytes().to_vec()), "'é'");
+        // `€` is $80 in EASy68K's code page, where Latin-1 has a control code
+        assert_eq!(as_text(vec![b'\'', 0x80, b'\'']), "'€'");
+    }
+
+    /// A [`FileHost`] over a fresh temporary directory.
+    fn a_file_host(name: &str) -> (FileHost, String) {
+        let root = a_directory(name, &[("in.txt", b"0123456789")]);
+        (FileHost::new(PathBuf::from(&root)), root)
+    }
+
+    #[test]
+    fn the_file_host_reads_writes_and_seeks_on_the_disk() {
+        let (mut host, root) = a_file_host("file-host");
+        let handle = host.create("out.txt").expect("a new file");
+        assert_eq!(handle, 0, "the lowest free number");
+        assert!(host.write(handle, b"hello"));
+        assert!(host.seek(handle, 1));
+        assert_eq!(
+            host.read(handle, 10).as_deref(),
+            Some(&b"ello"[..]),
+            "a short read"
+        );
+        assert_eq!(
+            host.read(handle, 10).as_deref(),
+            Some(&b""[..]),
+            "the end of the file"
+        );
+        assert!(host.close(handle));
+        assert!(!host.close(handle), "a file closes once");
+        assert_eq!(fs::read(format!("{root}out.txt")).unwrap(), b"hello");
+
+        let opened = host.open("in.txt").expect("an existing file");
+        assert!(!opened.read_only);
+        assert_eq!(host.read(opened.handle, 4).as_deref(), Some(&b"0123"[..]));
+        assert_eq!(host.exists("in.txt"), FileExistence::Writable);
+        assert!(host.close_all());
+        assert!(host.delete("in.txt"));
+        assert_eq!(host.exists("in.txt"), FileExistence::Missing);
+        assert!(host.open("in.txt").is_none(), "an open does not create");
+        assert!(!host.delete("in.txt"));
+        let _ = fs::remove_dir_all(root.trim_end_matches('/'));
+    }
+
+    #[test]
+    fn the_file_host_has_eight_files() {
+        let (mut host, root) = a_file_host("file-host-eight");
+        for expected in 0..8u8 {
+            assert_eq!(host.open("in.txt").map(|file| file.handle), Some(expected));
+        }
+        assert!(host.open("in.txt").is_none(), "a ninth file does not open");
+        assert!(host.create("new.txt").is_none());
+        assert!(host.close(3));
+        assert_eq!(
+            host.create("new.txt"),
+            Some(3),
+            "the number closed is free again"
+        );
+        let _ = fs::remove_dir_all(root.trim_end_matches('/'));
+    }
+
+    #[test]
+    fn a_directory_is_not_a_file() {
+        let (mut host, root) = a_file_host("file-host-directory");
+        fs::create_dir_all(format!("{root}data")).unwrap();
+        assert_eq!(host.exists("data"), FileExistence::Missing);
+        assert!(host.open("data").is_none());
+        let _ = fs::remove_dir_all(root.trim_end_matches('/'));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_written_opens_for_reading_only() {
+        let (mut host, root) = a_file_host("file-host-read-only");
+        let path = format!("{root}in.txt");
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).unwrap();
+        // an administrator writes a read-only file anyway, and has nothing to show here
+        if fs::OpenOptions::new().write(true).open(&path).is_err() {
+            assert_eq!(host.exists("in.txt"), FileExistence::ReadOnly);
+            let opened = host.open("in.txt").expect("it opens for reading");
+            assert!(opened.read_only);
+            assert!(!host.write(opened.handle, b"x"), "and a write fails");
+            assert_eq!(host.read(opened.handle, 2).as_deref(), Some(&b"01"[..]));
+        }
+        let _ = fs::remove_dir_all(root.trim_end_matches('/'));
     }
 }

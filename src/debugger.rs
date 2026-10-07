@@ -20,7 +20,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
     assembler::{program::ProgramSymbol, source::Location, symbols::SymbolKind},
-    instructions::{RegisterOperand, Size},
+    instructions::{InputSettings, RegisterOperand, Size},
     interpreter::{Flags, InterpreterStatus},
 };
 
@@ -33,6 +33,8 @@ use crate::{
 /// both sides, because a sized store changes only part of one and the register
 /// is what the panels draw; a memory write reports the value at the width it
 /// was made. `PushCall` and `PopCall` write no value and carry neither.
+/// `SetInputSettings` is tasks 12 and 16, which change how input is shown and
+/// nothing a panel draws.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "value")]
 pub enum MutationOperation {
@@ -66,6 +68,11 @@ pub enum MutationOperation {
     PopCall {
         to: usize,
         from: usize,
+    },
+    /// The [`InputSettings`] tasks 12 and 16 replaced, and the ones they left.
+    SetInputSettings {
+        old: InputSettings,
+        new: InputSettings,
     },
 }
 /// What a step of the history is: an instruction the program ran, or a

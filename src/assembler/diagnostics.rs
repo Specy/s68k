@@ -130,7 +130,11 @@ impl OperandShape {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagnosticKind {
     // ---- the tokenizer's, `docs/grammar.md` 1.1, 1.8, 1.9 ----
-    /// A source character above code 255, which has no byte (ADR 0004).
+    /// A source character Windows-1252 has no byte for (ADR 0004, amended):
+    /// one above `ÿ` that is not one of its 27 characters, or a control code
+    /// from `$80` to `$9F` that those 27 took the place of. The name and the
+    /// code are older than the amendment, when the character set was Latin-1,
+    /// and the code stays because it never changes once it has shipped.
     CharacterAboveLatin1 {
         /// The character as it was written.
         character: char,
@@ -138,7 +142,9 @@ pub enum DiagnosticKind {
     /// A no-break space (`$A0`) outside a quoted literal: invisible, and what a
     /// paste from a web page leaves behind.
     NonBreakingSpace,
-    /// A character that starts no token.
+    /// A character that starts no token. A typographic look-alike of a quote
+    /// or a minus, which has a byte and so is not `character_above_latin1`,
+    /// is one, and its hint names the plain character.
     UnexpectedCharacter {
         /// The character as it was written.
         character: char,
@@ -1088,14 +1094,11 @@ impl DiagnosticKind {
     /// What to do about it, when there is something short to say.
     pub fn hint(&self) -> Option<String> {
         match self {
-            DiagnosticKind::CharacterAboveLatin1 { character } => {
-                Some(match look_alike(*character) {
-                    Some(plain) => format!("Write `{plain}`"),
-                    None => {
-                        "A character is one Latin-1 byte, so its code is 255 at most".to_string()
-                    }
-                })
-            }
+            DiagnosticKind::CharacterAboveLatin1 { .. } => Some(
+                "Write it with the characters of Windows-1252, EASy68K's character set: ASCII, \
+                 the accented Latin letters and symbols such as `€`"
+                    .to_string(),
+            ),
             DiagnosticKind::NonBreakingSpace => {
                 Some("Replace it with a space; a paste from a web page leaves it".to_string())
             }
@@ -1396,8 +1399,10 @@ impl DiagnosticKind {
                 at_least: true,
                 ..
             } => Some(format!("Write the values after it, `{mnemonic} 1,2,3`")),
+            DiagnosticKind::UnexpectedCharacter { character } => {
+                look_alike(*character).map(|plain| format!("Write `{plain}`"))
+            }
             DiagnosticKind::WrongOperandCount { .. }
-            | DiagnosticKind::UnexpectedCharacter { .. }
             | DiagnosticKind::OperationExpected { .. }
             | DiagnosticKind::MalformedOperand { .. }
             | DiagnosticKind::ExpressionExpected { .. }
@@ -2128,10 +2133,15 @@ mod tests {
             "This looks like an indexed operand, `4(a0,d1.w)`, but the `)` is missing."
         );
 
-        let look_alike = DiagnosticKind::CharacterAboveLatin1 {
+        let look_alike = DiagnosticKind::UnexpectedCharacter {
             character: '\u{2019}',
         };
         assert_eq!(look_alike.hint(), Some("Write `'`".to_string()));
+        assert_eq!(
+            DiagnosticKind::UnexpectedCharacter { character: '?' }.hint(),
+            None,
+            "a character that looks like nothing in particular gets no hint"
+        );
 
         let unknown = DiagnosticKind::UnknownMnemonic {
             name: "loop".to_string(),

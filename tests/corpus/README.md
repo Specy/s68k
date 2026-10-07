@@ -895,7 +895,7 @@ ends with an exception, or reaches a total of **200 000 executed instructions**.
 | `status` | Meaning |
 | --- | --- |
 | `terminated` | the program stopped on its own, almost always the Terminate task |
-| `exception` | the Interpreter stopped it: an address error, an unknown trap task, an instruction outside the program, a division by zero |
+| `exception` | the Interpreter stopped it: an address error, a trap task it cannot carry out, an instruction outside the program, a division by zero |
 | `limit` | the program was still running after 200 000 instructions |
 
 `steps` is how many instructions were executed, counting the one that raised a
@@ -922,27 +922,30 @@ Every answer is fixed. Nothing here reads the clock, the terminal, the file
 system or a random source, so a program gives the same fixture on every machine
 and on every run.
 
-**Display tasks** append to `output` and nothing else:
+**Display tasks** append the text the interrupt carries to `output`, and
+nothing else. The Interpreter has already decoded it from Windows-1252 and
+formatted it with EASy68K's rules, so the policy formats nothing:
 
 | Task | Appends |
 | --- | --- |
-| Display string with CR/LF | the string, then a newline |
-| Display string without CR/LF | the string |
-| Display number | the signed number in decimal |
-| Display number in base | the unsigned number in that base, digits `0` to `9` then `a` to `z` |
+| Display string with CR/LF | the text, then a newline |
+| Display string without CR/LF | the text |
+| Display number | the text: the signed number in decimal |
+| Display number in base | the text: the unsigned number in that base, digits `0` to `9` then `A` to `Z` |
 | Display character | the character |
-| Display signed number in field | the signed number in decimal, right justified with spaces in a field of that many columns |
-| Display string and number | the string, then the number in decimal |
-| Display string and read number | the string; the number it answers is below |
+| Display signed number in field | the text: the number right justified in a field of D2.B columns, left justified when D2.B is negative |
+| Display string and number | the text: the string, then the number in decimal |
+| Display string and read number | the string; the line it answers is below |
 
-**Input tasks** answer the same thing every time:
+**Input tasks** answer the same thing every time. A read task is answered as a
+user would type it, a line or a key, and the Interpreter reads it:
 
 | Task | Answer |
 | --- | --- |
-| Read number | 7 |
-| Read character | `a` |
-| Read keyboard string | `test` |
-| Display string and read number | 7 |
+| Read number | the line `7`, which reads as 7 |
+| Read character | the key `a` |
+| Read keyboard string | the line `test` |
+| Display string and read number | the line `7`, which reads as 7 |
 | Get time | 0 |
 | Check keyboard input | no input pending |
 | Get key state | every key up; last key released 0 and last key pressed 0 |
@@ -952,6 +955,15 @@ and on every run.
 | Get screen size | 640 by 480 |
 | Get text cursor position | column 0, row 0 |
 | Delay | returns immediately |
+| Open existing file, open new file | no file: the file system is empty and nothing can be created |
+| Read, write, position and close a file, delete a file | failed: no file is ever open |
+| Close all files | done: there are none to close |
+| File exists | missing |
+| File dialog | cancelled |
+| Play, load or control a sound | not played; loading answers with no result |
+
+Tasks 12 and 16, the input settings, raise no interrupt and need no answer: the
+Interpreter carries them out itself, and nothing about them reaches `output`.
 
 **Every other task is acknowledged with no effect**: the drawing tasks, the pen
 and fill colours, the pen width, the drawing mode, the repaint, the screen size
@@ -1051,3 +1063,62 @@ older cases changed on purpose, and neither is about `include`:
 hint used to offer `count section …` — an operand that would have removed the
 requirement — and now has one of its own; `invalid_address_width.asm` has a
 comment that counts its own lines correctly.
+
+### What EASy68K's text rules changed in these fixtures, and why
+
+On 2026-10-05 the text tasks of `trap #15` moved to EASy68K's own rules: a
+character is a Windows-1252 byte in the Assembler and in the Interpreter (ADR
+0004, amended), a display task carries the text EASy68K would display rather
+than a number for the host to format, and a read task is answered with the line
+or the key typed, which the Interpreter reads itself (`atoi` for a number, at
+most 79 characters to a line, Enter as `$0D`). Tasks 0 and 1 stop at a NUL and
+clip D1.W at 255, task 15 is upper case and task 20's width is signed.
+
+**No fixture in this directory moved**: the 30 assembly fixtures, the 30
+execution fixtures and the three `-errors.snap` are byte for byte what they
+were, and each for a reason worth keeping.
+
+* No corpus program holds a character outside ASCII, so Windows-1252 changes no
+  byte any of them stores or displays.
+* None displays a number with task 15 or 20, which are the two whose text
+  changed; task 3 and 17 print the same signed decimal as before.
+* The one program that reads, `sum-of-two-numbers-1`, reads twice with task 18,
+  and `atoi` reads the line `7` as the 7 the policy used to answer as a number.
+* No call of task 0 or 1 asks for more than 255 characters or for characters
+  past a NUL.
+
+What changed is the policy, above, and `run_policy` in `src/test/corpus.rs`,
+which holds it: task 15 now shows `FF` where it showed `ff`, and the read tasks
+are answered with the line `7`, the key `a` and the line `test`.
+
+In `tests/diagnostics/` two cases changed on purpose.
+`character_above_latin1.asm` stored a `‘`, which Windows-1252 has a byte for,
+`$91`, so it would now assemble: the case is an `→`, which has none, beside a
+`€` that assembles, and its hint now names the character set instead of a
+look-alike. `unexpected_character.asm` gained a line with typographic quotes
+outside a string, where they have a byte and start nothing, because that is
+where the hint naming the plain `'` now lives.
+
+### What the file, sound and setting tasks and the typed errors changed in these fixtures, and why
+
+On 2026-10-06 the rest of `trap #15` moved to EASy68K's rules: tasks 12 and 16
+set the input settings, tasks 50 to 59 are files the host's file system works
+on, tasks 70 to 77 carry a sound's arguments, every error a task raises is typed
+(`UnsupportedTrapTask`, `InvalidTrapArgument`) and every runtime error ends the
+program with an exception, its cause kept as the program's termination.
+
+**No fixture in this directory moved**: the 30 assembly fixtures, the 30
+execution fixtures and the three `-errors.snap` are byte for byte what they
+were.
+
+* No `editor/` program uses a file, a sound or a setting task, and none raises a
+  runtime error. The three `easy68k/` originals use tasks 16, 70, 71 and 72,
+  but they do not assemble, so nothing of theirs runs.
+* An exception was already the status `exception` with its instruction counted
+  in `steps`; that a division by zero now ends the program rather than leaving
+  it running changes nothing a fixture records, and
+  `a_runtime_error_ends_the_run_with_an_exception` still holds the row.
+
+What changed is the policy, above, and `run_policy`'s `answer` in
+`src/test/corpus.rs`, which answers every new interrupt as an empty file system
+with no sound would.

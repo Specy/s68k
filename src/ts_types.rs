@@ -36,21 +36,79 @@ export type KeyStateResult = { type: "Keys", value: [boolean, boolean, boolean, 
 { type: "LastKeys", value: { up: number, down: number } }
 "#;
 
+/// [`InputSettings`](crate::instructions::InputSettings),
+/// [`FileDialogMode`](crate::instructions::FileDialogMode),
+/// [`OpenedFile`](crate::instructions::OpenedFile) and
+/// [`FileExistence`](crate::instructions::FileExistence): the shapes the input
+/// settings and the file tasks cross with.
+#[wasm_bindgen(typescript_custom_section)]
+pub const IFileTypes: &'static str = r#"
+/**
+ * How the read tasks show what is typed: the echo of task 12, the input prompt
+ * and the line feed after Enter of task 16. All three are on when a program
+ * starts, and undo puts back what a task changed.
+ */
+export type InputSettings = {
+    /** Whether what is typed is echoed. Enter still ends a line read on a new line with it off. */
+    echo: boolean,
+    /** Whether the input prompt, EASy68K's flashing cursor, shows while a read waits. */
+    prompt: boolean,
+    /** Whether a key read (task 5) of Enter echoes a line feed after the carriage return. */
+    line_feed: boolean
+}
+
+/** Task 58's dialog: D1.L = 0 opens a file, 1 saves one. */
+export type FileDialogMode = "Open" | "Save"
+
+/** A file the host opened for task 51 or 52. */
+export type OpenedFile = {
+    /** The file number, 0 to 7, the lowest free one as EASy68K numbers its eight files. */
+    handle: number,
+    /** Whether it could only be opened for reading: task 51 then reports 3. */
+    read_only: boolean
+}
+
+/** What task 59 found: D0.W is 0, 3 or 2. */
+export type FileExistence = "Writable" | "ReadOnly" | "Missing"
+"#;
+
+/// [`Interrupt`](crate::instructions::Interrupt): what a `trap #15` asks the
+/// host for. Every text a display task carries is ready to display, decoded
+/// from Windows-1252 and, for a number, formatted with EASy68K's rules.
 #[wasm_bindgen(typescript_custom_section)]
 pub const IInterrupt: &'static str = r#"
-export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
+/**
+ * What a `trap #15` asks the host for. Each is answered by the `InterruptResult`
+ * of the same `type`, or by `{type: "Terminate"}`.
+ *
+ * A path is the NUL terminated string at the address, at most 255 characters,
+ * decoded from Windows-1252, with `\` written as `/`.
+ */
+export type Interrupt =
+/** Tasks 0 and 13: display the text, then a new line. Task 0's text is at most 255 characters and stops at a NUL. */
+{ type: "DisplayStringWithCRLF", value: string } |
+/** Tasks 1 and 14: display the text. */
 { type: "DisplayStringWithoutCRLF", value: string } |
+/** Task 2: read a line, answered with `{ type: "ReadKeyboardString", value: line }`, shown as the `InputSettings` say. */
 { type: "ReadKeyboardString" } |
-{ type: "DisplayNumber", value: number } |
-{ type: "DisplayNumberInBase", value: { value: number, base: number } } |
+/** Task 3: D1.L as a signed decimal number, `-5`. */
+{ type: "DisplayNumber", value: string } |
+/** Task 15: D1.L as an unsigned number in the base in D2.B, upper case, `FF`. */
+{ type: "DisplayNumberInBase", value: string } |
+/** Task 4: read a number, answered with the line typed, shown as the `InputSettings` say. */
 { type: "ReadNumber" } |
+/** Task 5: read one key, answered with the key typed, echoed as the `InputSettings` say. */
 { type: "ReadChar" } |
 { type: "GetTime" } |
-{ type: "Terminate" } | 
-{ type: "DisplayChar", value: string } | 
+{ type: "Terminate" } |
+/** Task 6: the character in D1.B. */
+{ type: "DisplayChar", value: string } |
 { type: "Delay", value: number } |
-{ type: "DisplaySignedNumberInField", value: { value: number, width: number } } |
-{ type: "DisplayStringAndNumber", value: { string: string, number: number } } |
+/** Task 20: D1.L in a field of D2.B columns, right justified, or left justified when D2.B is negative. */
+{ type: "DisplaySignedNumberInField", value: string } |
+/** Task 17: the string at (A1) and then D1.L as a signed decimal number, as one text. */
+{ type: "DisplayStringAndNumber", value: string } |
+/** Task 18: display the string at (A1), then read a number, answered with the line typed, shown as the `InputSettings` say. */
 { type: "DisplayStringAndReadNumber", value: string } |
 { type: "CheckKeyboardInput" } |
 { type: "GetKeyState", value: KeyStateRequest } |
@@ -71,6 +129,7 @@ export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
 { type: "SetDrawingMode", value: number } |
 { type: "SetPenWidth", value: number } |
 { type: "Repaint" } |
+/** Task 95: the text, decoded from Windows-1252, at x, y. */
 { type: "DrawText", value: [number, number, string] } |
 { type: "GetPenPosition" } |
 { type: "SetScreenSize", value: [number, number] } |
@@ -78,25 +137,80 @@ export type Interrupt = { type: "DisplayStringWithCRLF", value: string } |
 { type: "SetScreenMode", value: number } |
 { type: "ClearScreen" } |
 { type: "SetTextCursorPosition", value: [number, number] } |
-{ type: "GetTextCursorPosition" }
+{ type: "GetTextCursorPosition" } |
+/** Task 50: close every open file. */
+{ type: "CloseAllFiles" } |
+/** Task 51: open the existing file at the path for reading and writing, or for reading only when it cannot be written. */
+{ type: "OpenFile", value: string } |
+/** Task 52: open the file at the path for reading and writing, creating it, or emptying it when it exists. */
+{ type: "NewFile", value: string } |
+/** Task 53: read at most `count` bytes from the file's position. */
+{ type: "ReadFile", value: { handle: number, count: number } } |
+/** Task 54: write the bytes at the file's position. */
+{ type: "WriteFile", value: { handle: number, bytes: Uint8Array } } |
+/** Task 55: move the file's position to `offset` bytes from its start. */
+{ type: "PositionFile", value: { handle: number, offset: number } } |
+/** Task 56: close the file. */
+{ type: "CloseFile", value: number } |
+/** Task 57: delete the file at the path. */
+{ type: "DeleteFile", value: string } |
+/** Task 58: let the user choose a file; `title` and `filter` (such as `*.txt`) may be empty, `path` is where the dialog starts. */
+{ type: "FileDialog", value: { mode: FileDialogMode, title: string, filter: string, path: string } } |
+/** Task 59: whether there is a file at the path, and whether it can be written. */
+{ type: "FileExists", value: string } |
+/** Task 70: play the WAV file at the path. */
+{ type: "PlaySound", value: string } |
+/** Task 71: load the WAV file at the path into sound memory `index`, 0 to 255. */
+{ type: "LoadSound", value: { path: string, index: number } } |
+/** Task 72: play the sound loaded into the index. */
+{ type: "PlayLoadedSound", value: number } |
+/** Task 73: play the WAV file at the path with EASy68K's DirectX player. */
+{ type: "PlaySoundDirectX", value: string } |
+/** Task 74: load the WAV file at the path into DirectX sound memory `index`. */
+{ type: "LoadSoundDirectX", value: { path: string, index: number } } |
+/** Task 75: play the DirectX sound loaded into the index. */
+{ type: "PlayLoadedSoundDirectX", value: number } |
+/** Task 76: control the standard player: 0 plays sound `index` once, 1 loops it, 2 stops it, 3 stops every sound. */
+{ type: "ControlSound", value: { index: number, control: number } } |
+/** Task 77: the same for the DirectX player. */
+{ type: "ControlSoundDirectX", value: { index: number, control: number } }
 "#;
 
+/// [`InterruptResult`](crate::instructions::InterruptResult): the host's
+/// answer. A read task is answered with what was typed, as it was typed, and the
+/// Interpreter reads it with EASy68K's rules.
 #[wasm_bindgen(typescript_custom_section)]
 pub const IInterruptResult: &'static str = r#"
 export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "DisplayStringWithoutCRLF" } |
+/**
+ * Task 2: the line typed, without the Enter that ended it. Its first 79
+ * characters are stored at (A1) in Windows-1252, `?` for a character that has
+ * no byte, then a NUL, and their count goes in D1.L. A line ends at its first
+ * line terminator.
+ */
 { type: "ReadKeyboardString", value: string } |
 { type: "DisplayNumber" } |
 { type: "DisplayNumberInBase" } |
-{ type: "ReadNumber", value: number } |
+/**
+ * Task 4: the line typed, which `atoi` reads into D1.L: `"12abc"` is 12, and a
+ * line with no number is 0, never an error.
+ */
+{ type: "ReadNumber", value: string } |
+/**
+ * Task 5: the one key typed, stored in D1.B in Windows-1252, `?` when it has
+ * no byte. Enter is `$0D`, whether it is answered as `"\r"` or `"\n"`.
+ */
 { type: "ReadChar", value: string } |
 { type: "GetTime", value: number } |
-{ type: "DisplayChar" } | 
+{ type: "DisplayChar" } |
+/** Ends the program, whatever task is pending. */
 { type: "Terminate" } |
 { type: "Delay" } |
 { type: "DisplaySignedNumberInField" } |
 { type: "DisplayStringAndNumber" } |
-{ type: "DisplayStringAndReadNumber", value: number } |
+/** Task 18: the line typed, read as `ReadNumber` reads it. */
+{ type: "DisplayStringAndReadNumber", value: string } |
 { type: "CheckKeyboardInput", value: boolean } |
 { type: "GetKeyState", value: KeyStateResult } |
 { type: "ReadMouse", value: { flags: number, x: number, y: number } } |
@@ -123,11 +237,63 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "SetScreenMode" } |
 { type: "ClearScreen" } |
 { type: "SetTextCursorPosition" } |
-{ type: "GetTextCursorPosition", value: [number, number] }
+{ type: "GetTextCursorPosition", value: [number, number] } |
+/** Task 50: whether every file closed. D0.W is 0, or 2. */
+{ type: "CloseAllFiles", value: boolean } |
+/**
+ * Task 51: the file opened, or null when it could not be. D1.L is its number
+ * and D0.W 0, or 3 when it opened for reading only; D1.L is -1 and D0.W 2 for
+ * null.
+ */
+{ type: "OpenFile", value: OpenedFile | null } |
+/** Task 52: the number of the file opened, or null: D1.L and D0.W as for task 51. */
+{ type: "NewFile", value: number | null } |
+/**
+ * Task 53: the bytes read, at most the count asked for, or null when the read
+ * failed. Some bytes go to (A1), their count to D2.L and 0 to D0.W, a short
+ * read included; no bytes at all is the end of the file, 1 in D0.W with D2.L
+ * left as it was; null is 2. An array of numbers is taken too.
+ */
+{ type: "ReadFile", value: Uint8Array | number[] | null } |
+/** Task 54: whether every byte was written. D0.W is 0, or 2. */
+{ type: "WriteFile", value: boolean } |
+/** Task 55: whether the position moved. D0.W is 0, or 2. */
+{ type: "PositionFile", value: boolean } |
+/** Task 56: whether the file closed. D0.W is 0, or 2. */
+{ type: "CloseFile", value: boolean } |
+/** Task 57: whether the file was deleted. D0.W is 0, or 2. */
+{ type: "DeleteFile", value: boolean } |
+/**
+ * Task 58: the path chosen, or null for a cancel. A path goes to (A3), at most
+ * 255 characters in Windows-1252 and NULs to 256 bytes, with 1 in D1.L; a
+ * cancel puts 0 in D1.L. D0.W is 0, or 2 when the 256 bytes do not fit.
+ */
+{ type: "FileDialog", value: string | null } |
+/** Task 59: what is at the path. D0.W is 0, 3 or 2. */
+{ type: "FileExists", value: FileExistence } |
+/** Tasks 70, 72 to 77: whether the sound task happened, 1 or 0 in D0.W. */
+{ type: "PlaySound", value: boolean } |
+/** Task 71 writes no result. */
+{ type: "LoadSound" } |
+{ type: "PlayLoadedSound", value: boolean } |
+{ type: "PlaySoundDirectX", value: boolean } |
+{ type: "LoadSoundDirectX", value: boolean } |
+{ type: "PlayLoadedSoundDirectX", value: boolean } |
+{ type: "ControlSound", value: boolean } |
+{ type: "ControlSoundDirectX", value: boolean }
 "#;
 
+/// [`RuntimeError`](crate::interpreter::RuntimeError) and
+/// [`Termination`](crate::interpreter::Termination): what every method throws,
+/// and why a program ended.
 #[wasm_bindgen(typescript_custom_section)]
 pub const IRuntimeError: &'static str = r#"
+/**
+ * What every method throws, as a plain object. An error an instruction raised
+ * ends the program with an exception and is its `Termination`; the others are
+ * the host's (an answer refused, a value that is not what a call takes, a call
+ * at the wrong time, the run's own limit) and change nothing.
+ */
 export type RuntimeError = { type: "Raw", value: string } |
 { type: "ExecutionLimit", value: number } |
 { type: "OutOfBounds", value: string } |
@@ -140,9 +306,34 @@ export type RuntimeError = { type: "Raw", value: string } |
 /** `trapv` with the overflow flag set. */
 { type: "OverflowException" } |
 /** The `illegal` instruction, which always ends the run. */
-{ type: "IllegalInstruction" }
+{ type: "IllegalInstruction" } |
+/**
+ * A `trap #15` task s68k does not carry out, by its number in D0.B: one that
+ * is not EASy68K's, or the printer (10), the text window's font and contents
+ * (21, 22, 25), the cycle counter (30, 31), the hardware window (32), the
+ * serial ports (40 to 43), the interrupt requests (60, 62) and the network
+ * (100 to 107). The host says why from the number.
+ */
+{ type: "UnsupportedTrapTask", value: { task: number } } |
+/** A `trap #15` task given a value it cannot take; `reason` names the register. */
+{ type: "InvalidTrapArgument", value: { task: number, reason: string } } |
+/** An answer when no interrupt waits for one. */
+{ type: "NoPendingInterrupt" } |
+/** An answer the pending interrupt cannot take; it still waits. */
+{ type: "InvalidAnswer", value: { interrupt: string, reason: string } } |
+/** A value that is not what the call takes: a register that does not exist, a breakpoint that is not `{file, line}`. */
+{ type: "InvalidArgument", value: string }
 
-
+/** Why a program ended. */
+export type Termination =
+/** Task 9. */
+{ type: "TerminateTask" } |
+/** The program counter left the last instruction, or there was none to run. */
+{ type: "EndOfProgram" } |
+/** The host answered an interrupt with `Terminate`. */
+{ type: "TerminatedByHost" } |
+/** A runtime error, and the program ended with an exception. */
+{ type: "Exception", value: RuntimeError }
 "#;
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -466,6 +657,13 @@ export type MutationOperation = {
     value: {
         to: number,
         from: number,
+    }
+} | {
+    /** Task 12 or 16 changed the input settings. */
+    type: "SetInputSettings",
+    value: {
+        old: InputSettings,
+        new: InputSettings
     }
 }
 "#;

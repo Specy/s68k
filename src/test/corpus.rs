@@ -37,8 +37,8 @@ use crate::assembler::program::{MemoryContent, Program};
 use crate::assembler::source::Files;
 use crate::assembler::symbols::SymbolKind;
 use crate::instructions::{
-    Condition, Instruction, Interrupt, InterruptResult, KeyStateRequest, KeyStateResult, Operand,
-    RegisterOperand, ShiftDirection, Sign, Size, TargetDirection,
+    Condition, FileExistence, Instruction, Interrupt, InterruptResult, KeyStateRequest,
+    KeyStateResult, Operand, RegisterOperand, ShiftDirection, Sign, Size, TargetDirection,
 };
 use crate::interpreter::{Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError};
 
@@ -802,55 +802,50 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// The deterministic interrupt policy: every display task appends to `output`,
-/// every input task answers the same thing every time, and everything else is
-/// acknowledged with no effect.
+/// The deterministic interrupt policy: every display task appends the text the
+/// Interpreter formatted to `output`, every read task answers the same line or
+/// key every time, and everything else is acknowledged with no effect.
 ///
 /// `tests/corpus/README.md`, "Execution fixtures", is the specification.
 fn answer(interrupt: &Interrupt, output: &mut String) -> InterruptResult {
     match interrupt {
         // Display tasks
-        Interrupt::DisplayStringWithCRLF(string) => {
-            output.push_str(string);
+        Interrupt::DisplayStringWithCRLF(text) => {
+            output.push_str(text);
             output.push('\n');
             InterruptResult::DisplayStringWithCRLF
         }
-        Interrupt::DisplayStringWithoutCRLF(string) => {
-            output.push_str(string);
+        Interrupt::DisplayStringWithoutCRLF(text) => {
+            output.push_str(text);
             InterruptResult::DisplayStringWithoutCRLF
         }
-        Interrupt::DisplayNumber(number) => {
-            output.push_str(&number.to_string());
+        Interrupt::DisplayNumber(text) => {
+            output.push_str(text);
             InterruptResult::DisplayNumber
         }
-        Interrupt::DisplayNumberInBase { value, base } => {
-            output.push_str(&print_in_base(*value, *base));
+        Interrupt::DisplayNumberInBase(text) => {
+            output.push_str(text);
             InterruptResult::DisplayNumberInBase
         }
         Interrupt::DisplayChar(character) => {
             output.push(*character);
             InterruptResult::DisplayChar
         }
-        Interrupt::DisplaySignedNumberInField { value, width } => {
-            let number = value.to_string();
-            for _ in number.chars().count()..*width as usize {
-                output.push(' ');
-            }
-            output.push_str(&number);
+        Interrupt::DisplaySignedNumberInField(text) => {
+            output.push_str(text);
             InterruptResult::DisplaySignedNumberInField
         }
-        Interrupt::DisplayStringAndNumber { string, number } => {
-            output.push_str(string);
-            output.push_str(&number.to_string());
+        Interrupt::DisplayStringAndNumber(text) => {
+            output.push_str(text);
             InterruptResult::DisplayStringAndNumber
         }
-        Interrupt::DisplayStringAndReadNumber(string) => {
-            output.push_str(string);
-            InterruptResult::DisplayStringAndReadNumber(7)
+        Interrupt::DisplayStringAndReadNumber(prompt) => {
+            output.push_str(prompt);
+            InterruptResult::DisplayStringAndReadNumber("7".to_string())
         }
 
-        // Input tasks: one answer each, the same one every run
-        Interrupt::ReadNumber => InterruptResult::ReadNumber(7),
+        // Read tasks: the same line or key every run, as it would be typed
+        Interrupt::ReadNumber => InterruptResult::ReadNumber("7".to_string()),
         Interrupt::ReadChar => InterruptResult::ReadChar('a'),
         Interrupt::ReadKeyboardString => InterruptResult::ReadKeyboardString("test".to_string()),
         Interrupt::GetTime => InterruptResult::GetTime(0),
@@ -868,6 +863,31 @@ fn answer(interrupt: &Interrupt, output: &mut String) -> InterruptResult {
         Interrupt::GetPenPosition => InterruptResult::GetPenPosition(0, 0),
         Interrupt::GetScreenSize => InterruptResult::GetScreenSize(640, 480),
         Interrupt::GetTextCursorPosition => InterruptResult::GetTextCursorPosition(0, 0),
+
+        // Files: an empty file system nothing can be written to, so no file
+        // opens, nothing is found, every operation on a file number fails, and
+        // closing every file, of which there are none, succeeds. The dialog is
+        // cancelled.
+        Interrupt::CloseAllFiles => InterruptResult::CloseAllFiles(true),
+        Interrupt::OpenFile(_) => InterruptResult::OpenFile(None),
+        Interrupt::NewFile(_) => InterruptResult::NewFile(None),
+        Interrupt::ReadFile { .. } => InterruptResult::ReadFile(None),
+        Interrupt::WriteFile { .. } => InterruptResult::WriteFile(false),
+        Interrupt::PositionFile { .. } => InterruptResult::PositionFile(false),
+        Interrupt::CloseFile(_) => InterruptResult::CloseFile(false),
+        Interrupt::DeleteFile(_) => InterruptResult::DeleteFile(false),
+        Interrupt::FileDialog { .. } => InterruptResult::FileDialog(None),
+        Interrupt::FileExists(_) => InterruptResult::FileExists(FileExistence::Missing),
+
+        // Sound: there is nothing to play it on, so no sound plays
+        Interrupt::PlaySound(_) => InterruptResult::PlaySound(false),
+        Interrupt::LoadSound { .. } => InterruptResult::LoadSound,
+        Interrupt::PlayLoadedSound(_) => InterruptResult::PlayLoadedSound(false),
+        Interrupt::PlaySoundDirectX(_) => InterruptResult::PlaySoundDirectX(false),
+        Interrupt::LoadSoundDirectX { .. } => InterruptResult::LoadSoundDirectX(false),
+        Interrupt::PlayLoadedSoundDirectX(_) => InterruptResult::PlayLoadedSoundDirectX(false),
+        Interrupt::ControlSound { .. } => InterruptResult::ControlSound(false),
+        Interrupt::ControlSoundDirectX { .. } => InterruptResult::ControlSoundDirectX(false),
 
         // Everything else: acknowledged, no effect
         Interrupt::Terminate => InterruptResult::Terminate,
@@ -893,25 +913,6 @@ fn answer(interrupt: &Interrupt, output: &mut String) -> InterruptResult {
         Interrupt::ClearScreen => InterruptResult::ClearScreen,
         Interrupt::SetTextCursorPosition(_, _) => InterruptResult::SetTextCursorPosition,
     }
-}
-
-/// An unsigned number in a base of 2 to 36, digits `0` to `9` then `a` to `z`.
-///
-/// The Interpreter refuses a base outside that range before the task ever
-/// reaches the policy; the range is clamped here so that no answer can loop.
-fn print_in_base(value: u32, base: u8) -> String {
-    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let base = (base as u32).clamp(2, 36);
-    if value == 0 {
-        return "0".to_string();
-    }
-    let mut digits = Vec::new();
-    let mut rest = value;
-    while rest > 0 {
-        digits.push(DIGITS[(rest % base) as usize] as char);
-        rest /= base;
-    }
-    digits.iter().rev().collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1702,6 +1703,40 @@ start:
     move.l #buffer,a1
     move.b #14,d0
     trap #15
+    move.b #0,d1
+    move.b #12,d0       ; echo off, which raises no interrupt
+    trap #15
+    move.l #buffer,a1
+    move.b #51,d0       ; open an existing file: there is none
+    trap #15
+    and.l #$FFFF,d0
+    move.l d0,d3
+    move.b #3,d0
+    trap #15
+    move.l d3,d1
+    move.b #3,d0
+    trap #15
+    move.b #59,d0       ; does it exist?
+    trap #15
+    and.l #$FFFF,d0
+    move.l d0,d1
+    move.b #3,d0
+    trap #15
+    move.l #0,d1
+    move.l #0,a1
+    move.l #0,a2
+    move.l #buffer,a3
+    move.b #58,d0       ; the file dialog
+    trap #15
+    move.b #3,d0
+    trap #15
+    move.l #buffer,a1
+    move.b #70,d0       ; a sound
+    trap #15
+    and.l #$FFFF,d0
+    move.l d0,d1
+    move.b #3,d0
+    trap #15
     move.b #9,d0        ; terminate
     trap #15
 ";
@@ -1710,13 +1745,13 @@ start:
         "hi",       // 14, the string alone
         "-5",       // 3, the signed number in D1.L
         "z",        // 6, the character in D1.B
-        "ff",       // 15, D1.L in the base in D2.B
+        "FF",       // 15, D1.L in the base in D2.B, upper case
         "    -5",   // 20, right justified in a field of D2.B columns
         "n=42",     // 17, the string then the number
         "?",        // 18, the string it displays
-        "7",        // and the number task after it shows the 7 it answered
-        "7",        // 4, the answer 7
-        "a",        // 5, the answer 'a'
+        "7",        // and the number task after it shows the line `7` it answered
+        "7",        // 4, the line `7`
+        "a",        // 5, the key `a`
         "0",        // 8, the answer 0
         "0",        // 7, the answer "no input pending"
         "0",        // 19, the answer "no last keys"
@@ -1726,7 +1761,11 @@ start:
         "0",        // 83, the answer "colour 0"
         "0",        // 96, the answer "pen at 0,0"
         "4",        // 2, the length of "test"
-        "test",
+        "test", "-1", // 51, no file: D1.L is -1
+        "2",  // and D0.W is 2
+        "2",  // 59, missing
+        "0",  // 58, cancelled: D1.L is 0
+        "0",  // 70, not played
     );
 
     let fixture = run("run_policy", source, RUN_LIMIT);

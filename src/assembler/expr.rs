@@ -38,7 +38,7 @@
 //!   an **unsigned 32-bit** count, so a count of 32 or more — a negative count
 //!   included, which is what `-1` is when it is read that way — shifts
 //!   everything out and gives `0`.
-//! * A character literal is its Latin-1 bytes, first byte highest (`'A'` is
+//! * A character literal is its Windows-1252 bytes, first byte highest (`'A'` is
 //!   65, `'ab'` is `$6162`), which is how 1.4.2 read one and what the help's
 //!   `'` operator means. A literal of more than eight characters keeps its last
 //!   eight, which is all a 64-bit value holds.
@@ -300,7 +300,7 @@ pub fn holds_a_long_character_literal(expression: &Expr) -> bool {
     }
 }
 
-/// The value of a character literal: its Latin-1 bytes, first byte highest
+/// The value of a character literal: its Windows-1252 bytes, first byte highest
 /// (`'A'` is 65, `'ab'` is `$6162`).
 ///
 /// A literal of more than eight characters keeps its last eight, which is all a

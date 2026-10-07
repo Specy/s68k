@@ -133,7 +133,9 @@ fn beginning_a_poke_while_an_instruction_is_executing_is_refused() {
         "a poke while an instruction is executing is refused"
     );
     interpreter
-        .answer_interrupt(crate::instructions::InterruptResult::ReadNumber(7))
+        .answer_interrupt(crate::instructions::InterruptResult::ReadNumber(
+            "7".to_string(),
+        ))
         .expect("the answer");
     interpreter
         .begin_poke()
@@ -197,7 +199,9 @@ fn what_an_interrupt_answer_writes_still_belongs_to_the_instruction() {
     interpreter.step().expect("the move");
     interpreter.step().expect("the trap");
     interpreter
-        .answer_interrupt(crate::instructions::InterruptResult::ReadNumber(42))
+        .answer_interrupt(crate::instructions::InterruptResult::ReadNumber(
+            "42".to_string(),
+        ))
         .expect("the answer");
     assert_eq!(data(&interpreter, 1), 42);
     interpreter.undo().expect("the trap to be undone");

@@ -529,6 +529,500 @@ assert.deepEqual(
 poked.dispose()
 poking.program.dispose()
 
+// ---------------------------------------------------------------------------
+// The text tasks: text out, what was typed in
+// ---------------------------------------------------------------------------
+
+// A display task hands over the text to display, formatted and decoded the
+// way EASy68K does it; a read task is answered with the line or the key that
+// was typed, which the interpreter reads itself.
+const texting = S68k.assemble(`
+    ORG $1000
+START:
+    MOVE.L  #255,D1
+    MOVE.B  #16,D2
+    MOVE.B  #15,D0          ; 255 in base 16
+    TRAP    #15
+    MOVE.L  #-5,D1
+    MOVE.B  #-6,D2
+    MOVE.B  #20,D0          ; -5 in a field of -6 columns, left justified
+    TRAP    #15
+    LEA     PRICE,A1
+    MOVE.L  #-12,D1
+    MOVE.B  #17,D0          ; the string, then the number
+    TRAP    #15
+    MOVE.B  #$80,D1
+    MOVE.B  #6,D0           ; the character $80
+    TRAP    #15
+    LEA     BUFFER,A1
+    MOVE.L  #$FFFFFFFF,D1
+    MOVE.B  #2,D0           ; a line
+    TRAP    #15
+    MOVE.B  #4,D0           ; a number
+    TRAP    #15
+    MOVE.L  D1,D3
+    MOVE.B  #5,D0           ; a key
+    TRAP    #15
+    SIMHALT
+PRICE:  DC.B    'Price in €: ',0
+BUFFER: DS.B    100
+`)
+assert.deepEqual(texting.diagnostics, [], 'a program writing `€` in a string assembles')
+const priceAddress = texting.program.getSymbols()['PRICE'].value
+const bufferAddress = texting.program.getSymbols()['BUFFER'].value
+const texter = new Interpreter(texting.program)
+assert.equal(
+    texter.readMemoryBytes(priceAddress + 9, 1)[0],
+    0x80,
+    '`€` is stored as its Windows-1252 byte'
+)
+
+const shown = []
+const display = (expected) => {
+    assert.equal(texter.run(), InterpreterStatus.Interrupt)
+    const interrupt = texter.getCurrentInterrupt()
+    assert.equal(interrupt.type, expected)
+    shown.push(interrupt.value)
+    texter.answerInterrupt({type: interrupt.type})
+}
+display('DisplayNumberInBase')
+display('DisplaySignedNumberInField')
+display('DisplayStringAndNumber')
+display('DisplayChar')
+assert.deepEqual(shown, ['FF', '-5    ', 'Price in €: -12', '€'], 'text ready to display')
+
+assert.equal(texter.run(), InterpreterStatus.Interrupt)
+assert.equal(texter.getCurrentInterrupt().type, 'ReadKeyboardString')
+// A bad answer throws and leaves the interrupt waiting: the interpreter stays usable.
+assert.throws(() => texter.answerInterrupt({type: 'ReadKeyboardString', value: 42}), 'a line is a string')
+assert.throws(() => texter.answerInterrupt({type: 'ReadNumber', value: '7'}), 'an answer for another task')
+assert.equal(texter.getStatus(), InterpreterStatus.Interrupt, 'the interrupt still waits')
+texter.answerInterrupt({type: 'ReadKeyboardString', value: 'é€→' + 'x'.repeat(100)})
+const stored = Array.from(texter.readMemoryBytes(bufferAddress, 81))
+assert.deepEqual(stored.slice(0, 3), [0xe9, 0x80, 0x3f], 'Windows-1252, `?` for a character with no byte')
+assert.equal(stored[79], 0, 'at most 79 characters, then the NUL')
+assert.equal(texter.getRegisterValue({type: 'Data', value: 1}), 79, 'the count in the whole of D1.L')
+
+assert.equal(texter.run(), InterpreterStatus.Interrupt)
+assert.equal(texter.getCurrentInterrupt().type, 'ReadNumber')
+texter.answerInterrupt({type: 'ReadNumber', value: ' 12abc'})
+assert.equal(texter.run(), InterpreterStatus.Interrupt)
+assert.equal(texter.getCurrentInterrupt().type, 'ReadChar')
+texter.answerInterrupt({type: 'ReadChar', value: '\n'})
+assert.equal(texter.run(), InterpreterStatus.Paused)
+assert.equal(texter.getRegisterValue({type: 'Data', value: 3}), 12, '`atoi` reads 12 from `12abc`')
+assert.equal(
+    texter.getRegisterValue({type: 'Data', value: 1}) & 0xff,
+    0x0d,
+    'Enter is $0D, as EASy68K stores it'
+)
+texter.dispose()
+texting.program.dispose()
+
+// A character Windows-1252 has no byte for cannot be stored.
+const arrow = S68k.assemble("    DC.B    '→',0\n")
+assert.equal(arrow.program, undefined)
+assert.deepEqual(arrow.diagnostics.map((d) => d.code), ['character_above_latin1'])
+
+// ---------------------------------------------------------------------------
+// Files: tasks 50 to 59 on the host's file system
+// ---------------------------------------------------------------------------
+
+// A host for the file tasks: files in a Map, EASy68K's eight file numbers
+// handed out lowest first, a file opened for reading only when it cannot be
+// written. It does what the host's file system does and nothing else: the
+// interpreter turns each outcome into EASy68K's result in D0.W.
+class FakeFiles {
+    constructor(files = {}, readOnly = []) {
+        this.files = new Map(Object.entries(files).map(([path, text]) => [path, new TextEncoder().encode(text)]))
+        this.readOnly = new Set(readOnly)
+        this.open = new Map()
+        this.seen = []
+    }
+    free() {
+        for (let handle = 0; handle < 8; handle++) if (!this.open.has(handle)) return handle
+        return undefined
+    }
+    answer(interrupt) {
+        const {type, value} = interrupt
+        this.seen.push(interrupt)
+        switch (type) {
+            case 'CloseAllFiles':
+                this.open.clear()
+                return {type, value: true}
+            case 'OpenFile': {
+                const handle = this.free()
+                if (handle === undefined || !this.files.has(value)) return {type, value: null}
+                const readOnly = this.readOnly.has(value)
+                this.open.set(handle, {path: value, position: 0, writable: !readOnly})
+                return {type, value: {handle, read_only: readOnly}}
+            }
+            case 'NewFile': {
+                const handle = this.free()
+                if (handle === undefined || this.readOnly.has(value)) return {type, value: null}
+                this.files.set(value, new Uint8Array())
+                this.open.set(handle, {path: value, position: 0, writable: true})
+                return {type, value: handle}
+            }
+            case 'ReadFile': {
+                const file = this.open.get(value.handle)
+                if (!file) return {type, value: null}
+                const bytes = this.files.get(file.path).slice(file.position, file.position + value.count)
+                file.position += bytes.length
+                return {type, value: bytes}
+            }
+            case 'WriteFile': {
+                const file = this.open.get(value.handle)
+                if (!file || !file.writable) return {type, value: false}
+                const old = this.files.get(file.path)
+                const next = new Uint8Array(Math.max(old.length, file.position + value.bytes.length))
+                next.set(old)
+                next.set(value.bytes, file.position)
+                this.files.set(file.path, next)
+                file.position += value.bytes.length
+                return {type, value: true}
+            }
+            case 'PositionFile': {
+                const file = this.open.get(value.handle)
+                if (file) file.position = value.offset
+                return {type, value: file !== undefined}
+            }
+            case 'CloseFile':
+                return {type, value: this.open.delete(value)}
+            case 'DeleteFile':
+                return {type, value: this.files.delete(value)}
+            case 'FileExists':
+                return {
+                    type,
+                    value: !this.files.has(value) ? 'Missing' : this.readOnly.has(value) ? 'ReadOnly' : 'Writable'
+                }
+            default:
+                throw new Error(`not a file task: ${type}`)
+        }
+    }
+}
+
+// Runs to the next pause or the end, answering every interrupt from the host.
+function runWith(interpreter, host) {
+    for (;;) {
+        const status = interpreter.run()
+        if (status !== InterpreterStatus.Interrupt) return status
+        interpreter.answerInterrupt(host.answer(interpreter.getCurrentInterrupt()))
+    }
+}
+
+const FILES = `
+    ORG $1000
+START:
+    lea     results,a2
+    lea     name,a1
+    move.b  #52,d0          ; a new file
+    trap    #15
+    move.w  d0,(a2)+
+    move.l  d1,d6           ; its number
+    lea     text,a1
+    move.l  #11,d2
+    move.b  #54,d0          ; write 'hello world'
+    trap    #15
+    move.w  d0,(a2)+
+    move.l  d6,d1
+    move.l  #6,d2
+    move.b  #55,d0          ; to position 6
+    trap    #15
+    move.w  d0,(a2)+
+    lea     buffer,a1
+    move.l  #20,d2
+    move.b  #53,d0          ; read 20: there are 5
+    trap    #15
+    move.w  d0,(a2)+
+    move.l  d2,d7
+    move.l  #20,d2
+    move.b  #53,d0          ; read at the end of the file
+    trap    #15
+    move.w  d0,(a2)+
+    move.l  d2,d5
+    move.b  #56,d0          ; close
+    trap    #15
+    move.w  d0,(a2)+
+    move.b  #56,d0          ; close it again
+    trap    #15
+    move.w  d0,(a2)+
+    lea     name,a1
+    move.b  #59,d0          ; it exists
+    trap    #15
+    move.w  d0,(a2)+
+    lea     locked,a1
+    move.b  #51,d0          ; a file that cannot be written
+    trap    #15
+    move.w  d0,(a2)+
+    move.l  d1,d4
+    lea     text,a1
+    move.l  #1,d2
+    move.b  #54,d0          ; a write to it
+    trap    #15
+    move.w  d0,(a2)+
+    lea     name,a1
+    move.b  #57,d0          ; delete the new file
+    trap    #15
+    move.w  d0,(a2)+
+    move.b  #59,d0          ; it is gone
+    trap    #15
+    move.w  d0,(a2)+
+    move.l  #9,d1
+    move.b  #56,d0          ; there is no file number 9
+    trap    #15
+    move.w  d0,(a2)+
+    move.b  #50,d0          ; close every file
+    trap    #15
+    move.w  d0,(a2)+
+    SIMHALT
+name:    dc.b    'out\\hello.txt',0
+locked:  dc.b    'locked.txt',0
+text:    dc.b    'hello world'
+buffer:  dcb.b   32,0
+results: ds.w    16
+    END     START
+`
+const filing = S68k.assemble(FILES)
+assert.deepEqual(filing.diagnostics, [], 'the file program assembles')
+const fileSymbols = filing.program.getSymbols()
+const filer = new Interpreter(filing.program)
+const host = new FakeFiles({'locked.txt': 'no'}, ['locked.txt'])
+assert.equal(runWith(filer, host), InterpreterStatus.Paused)
+const results = filer.readMemoryBytes(fileSymbols['results'].value, 2 * 14)
+const words = Array.from({length: 14}, (_, i) => (results[2 * i] << 8) | results[2 * i + 1])
+assert.deepEqual(
+    words,
+    [0, 0, 0, 0, 1, 0, 2, 0, 3, 2, 0, 2, 2, 0],
+    'created, written, moved, read, end of file, closed, no longer open, there, read only, ' +
+    'a write it refuses, deleted, gone, no such number, all closed'
+)
+assert.equal(host.seen[0].value, 'out/hello.txt', 'a path with `\\` written as `/`')
+assert.ok(host.seen[1].value.bytes instanceof Uint8Array, 'a write carries a Uint8Array')
+assert.equal(new TextDecoder().decode(host.seen[1].value.bytes), 'hello world')
+assert.deepEqual(host.seen[2].value, {handle: 0, offset: 6})
+const readData = D => filer.getRegisterValue({type: 'Data', value: D})
+assert.equal(readData(7), 5, 'a short read is a success with D2.L the count read')
+assert.equal(readData(5), 20, 'the end of the file leaves D2.L as it was')
+assert.equal(readData(4), 0, 'the read-only file is number 0, free again once closed')
+assert.equal(
+    new TextDecoder().decode(filer.readMemoryBytes(fileSymbols['buffer'].value, 6)),
+    'world\0',
+    'what was read went to (A1)'
+)
+assert.equal(
+    host.seen.filter((interrupt) => interrupt.type === 'CloseFile').length,
+    2,
+    'the file number 9 never reached the host'
+)
+assert.equal(filer.getUndoHistory(1)[0].kind, 'instruction')
+filer.dispose()
+filing.program.dispose()
+
+// Eight files at most: the ninth open is 2 in D0.W with -1 in D1.L.
+const crowding = S68k.assemble(`
+    ORG $1000
+START:
+    lea     numbers,a2
+    moveq   #8,d7
+loop:
+    lea     name,a1
+    move.b  #51,d0
+    trap    #15
+    move.l  d1,(a2)+
+    move.w  d0,(a2)+
+    dbra    d7,loop
+    SIMHALT
+name:    dc.b    'in.txt',0
+numbers: ds.w    27
+    END     START
+`)
+assert.deepEqual(crowding.diagnostics, [])
+const crowded = new Interpreter(crowding.program)
+assert.equal(runWith(crowded, new FakeFiles({'in.txt': 'x'})), InterpreterStatus.Paused)
+const numbers = crowded.readMemoryBytes(crowding.program.getSymbols()['numbers'].value, 54)
+const opened = Array.from({length: 9}, (_, i) => {
+    const at = 6 * i
+    const handle = ((numbers[at] << 24) | (numbers[at + 1] << 16) | (numbers[at + 2] << 8) | numbers[at + 3]) | 0
+    return [handle, (numbers[at + 4] << 8) | numbers[at + 5]]
+})
+assert.deepEqual(opened, [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [-1, 2]])
+crowded.dispose()
+crowding.program.dispose()
+
+// Undo takes back what a file read wrote, with the registers it set.
+const rereading = S68k.assemble(`
+    ORG $1000
+START:
+    lea     buffer,a1
+    move.l  #0,d1
+    move.l  #4,d2
+    move.b  #53,d0
+    trap    #15
+    SIMHALT
+buffer:  dc.b    'zzzz'
+    END     START
+`)
+const reread = new Interpreter(rereading.program)
+assert.equal(reread.run(), InterpreterStatus.Interrupt)
+const asked = reread.getCurrentInterrupt()
+assert.deepEqual(asked, {type: 'ReadFile', value: {handle: 0, count: 4}})
+// more bytes than were asked for is refused, as a typed error, and the read still waits
+assert.throws(
+    () => reread.answerInterrupt({type: 'ReadFile', value: new Uint8Array(5)}),
+    (error) => error.type === 'InvalidAnswer' && error.value.interrupt === 'ReadFile'
+)
+// an array of numbers is taken as well as a Uint8Array
+reread.answerInterrupt({type: 'ReadFile', value: [97, 98, 99]})
+const bufferAt = rereading.program.getSymbols()['buffer'].value
+assert.equal(new TextDecoder().decode(reread.readMemoryBytes(bufferAt, 4)), 'abcz')
+const [readStep] = reread.getUndoHistory(1)
+assert.ok(
+    readStep.mutations.some((mutation) => mutation.type === 'WriteMemoryBytes'),
+    'the bytes are journaled with the trap'
+)
+reread.undo()
+assert.equal(new TextDecoder().decode(reread.readMemoryBytes(bufferAt, 4)), 'zzzz', 'undo puts them back')
+assert.equal(reread.getStatus(), InterpreterStatus.Running)
+assert.equal(reread.getCurrentInterrupt(), null, 'and the read is no longer waiting')
+assert.equal(reread.run(), InterpreterStatus.Interrupt, 'the trap runs again')
+reread.answerInterrupt({type: 'ReadFile', value: new Uint8Array()})
+assert.equal(reread.getRegisterValue({type: 'Data', value: 0}) & 0xffff, 1, 'nothing read is the end of the file')
+reread.dispose()
+rereading.program.dispose()
+
+// The file dialog writes the path chosen to (A3).
+const choosing = S68k.assemble(`
+    ORG $1000
+START:
+    move.l  #1,d1
+    lea     title,a1
+    lea     filter,a2
+    lea     path,a3
+    move.b  #58,d0
+    trap    #15
+    SIMHALT
+title:  dc.b    'Save as',0
+filter: dc.b    '*.txt',0
+path:   dc.b    'old.txt',0
+        dcb.b   300,$55
+    END     START
+`)
+const chooser = new Interpreter(choosing.program)
+assert.equal(chooser.run(), InterpreterStatus.Interrupt)
+assert.deepEqual(chooser.getCurrentInterrupt(), {
+    type: 'FileDialog',
+    value: {mode: 'Save', title: 'Save as', filter: '*.txt', path: 'old.txt'}
+})
+chooser.answerInterrupt({type: 'FileDialog', value: 'scores/new.txt'})
+const pathAt = choosing.program.getSymbols()['path'].value
+const chosen = chooser.readMemoryBytes(pathAt, 257)
+assert.equal(new TextDecoder().decode(chosen.slice(0, 14)), 'scores/new.txt')
+assert.ok(chosen.slice(14, 256).every((byte) => byte === 0), 'NULs to 256 bytes')
+assert.equal(chosen[256], 0x55)
+assert.equal(chooser.getRegisterValue({type: 'Data', value: 1}), 1, 'D1.L is 1 for a file chosen')
+chooser.dispose()
+choosing.program.dispose()
+
+// ---------------------------------------------------------------------------
+// The input settings of tasks 12 and 16, and undo
+// ---------------------------------------------------------------------------
+
+const setting = S68k.assemble(`
+    ORG $1000
+START:
+    move.b  #0,d1
+    move.b  #12,d0          ; echo off
+    trap    #15
+    move.b  #2,d1
+    move.b  #16,d0          ; no line feed after Enter
+    trap    #15
+    SIMHALT
+    END     START
+`)
+const setter = new Interpreter(setting.program)
+assert.deepEqual(setter.getInputSettings(), {echo: true, prompt: true, line_feed: true}, 'all on at the start')
+assert.equal(setter.run(), InterpreterStatus.Paused, 'the settings raise no interrupt')
+assert.deepEqual(setter.getInputSettings(), {echo: false, prompt: true, line_feed: false})
+setter.undo() // the SIMHALT
+const [settingStep] = setter.getUndoHistory(1)
+assert.deepEqual(settingStep.mutations, [{
+    type: 'SetInputSettings',
+    value: {
+        old: {echo: false, prompt: true, line_feed: true},
+        new: {echo: false, prompt: true, line_feed: false}
+    }
+}])
+setter.undo()
+assert.deepEqual(setter.getInputSettings(), {echo: false, prompt: true, line_feed: true}, 'undo puts it back')
+setter.undo()
+setter.undo()
+setter.undo()
+assert.deepEqual(setter.getInputSettings(), {echo: true, prompt: true, line_feed: true})
+setter.dispose()
+setting.program.dispose()
+
+// ---------------------------------------------------------------------------
+// Errors are typed, a failing task ends the program, and nothing panics
+// ---------------------------------------------------------------------------
+
+const failing = S68k.assemble(`
+    ORG $1000
+START:
+    move.b  #30,d0          ; the cycle counter
+    trap    #15
+    nop
+    END     START
+`)
+const failer = new Interpreter(failing.program)
+assert.throws(
+    () => failer.run(),
+    (error) => error.type === 'UnsupportedTrapTask' && error.value.task === 30
+)
+assert.equal(failer.getStatus(), InterpreterStatus.TerminatedWithException)
+assert.ok(failer.hasTerminated())
+assert.deepEqual(failer.getTermination(), {type: 'Exception', value: {type: 'UnsupportedTrapTask', value: {task: 30}}})
+failer.undo()
+assert.equal(failer.getStatus(), InterpreterStatus.Running, 'undo brings the failed trap back')
+assert.equal(failer.getTermination(), null)
+assert.throws(() => failer.answerInterrupt({type: 'Terminate'}), (error) => error.type === 'NoPendingInterrupt')
+// a value that would index past the eight registers is refused, and the module stays usable
+assert.throws(() => failer.getRegisterValue({type: 'Data', value: 9}), (error) => error.type === 'InvalidArgument')
+assert.throws(() => failer.getCpuSnapshot().getRegister(8, RegisterType.Address), (error) => error.type === 'InvalidArgument')
+assert.throws(() => failer.runWithBreakpoints([{line: 'x'}]), (error) => error.type === 'InvalidArgument')
+assert.deepEqual(Array.from(failer.readMemoryBytes(0x10, 0xffffffff)), [], 'a length near 4 GB reads nothing')
+assert.equal(failer.getRegisterValue({type: 'Data', value: 0}) & 0xff, 30, 'and it still answers')
+failer.dispose()
+failing.program.dispose()
+
+const ending = S68k.assemble('    ORG $1000\nSTART:\n    MOVE.B #9,D0\n    TRAP #15\n    NOP\n    END START\n')
+const ender = new Interpreter(ending.program)
+assert.equal(ender.run(), InterpreterStatus.Terminated)
+assert.deepEqual(ender.getTermination(), {type: 'TerminateTask'})
+ender.dispose()
+ending.program.dispose()
+
+// Sound: the arguments, for a host with something to play them on.
+const sounding = S68k.assemble(`
+    ORG $1000
+START:
+    lea     wav,a1
+    move.b  #4,d1
+    move.b  #71,d0
+    trap    #15
+    SIMHALT
+wav: dc.b 'sounds\\ding.wav',0
+    END     START
+`)
+const sounder = new Interpreter(sounding.program)
+assert.equal(sounder.run(), InterpreterStatus.Interrupt)
+assert.deepEqual(sounder.getCurrentInterrupt(), {type: 'LoadSound', value: {path: 'sounds/ding.wav', index: 4}})
+assert.throws(() => sounder.answerInterrupt({type: 'PlaySound', value: true}), (error) => error.type === 'InvalidAnswer')
+sounder.answerInterrupt({type: 'LoadSound'})
+assert.equal(sounder.run(), InterpreterStatus.Paused)
+sounder.dispose()
+sounding.program.dispose()
+
 interpreter.dispose()
 assembly.program.dispose()
 

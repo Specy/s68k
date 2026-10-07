@@ -7,11 +7,11 @@ input_file: tests/diagnostics/character_above_latin1.asm
   {
     "severity": "error",
     "code": "character_above_latin1",
-    "message": "`‘` cannot be stored: a character is one byte.",
-    "hint": "Write `'`",
+    "message": "`→` cannot be stored: a character is one byte.",
+    "hint": "Write it with the characters of Windows-1252, EASy68K's character set: ASCII, the accented Latin letters and symbols such as `€`",
     "location": {
       "file": "character_above_latin1.asm",
-      "line": 1,
+      "line": 2,
       "column": 13,
       "endColumn": 14
     },

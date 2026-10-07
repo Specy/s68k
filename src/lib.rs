@@ -40,6 +40,8 @@ pub mod assembler;
 pub mod instructions;
 pub mod interpreter;
 
+mod c_runtime;
+pub mod charset;
 pub mod debugger;
 mod math;
 mod ts_types;

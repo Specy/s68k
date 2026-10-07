@@ -20,6 +20,8 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use crate::charset;
+
 /// The path the Entry file gets when the Assembler is handed a bare string
 /// instead of a Project (the design record, "Files, `include`, `incbin`").
 pub const DEFAULT_ENTRY_PATH: &str = "main.m68k";
@@ -104,7 +106,7 @@ fn clamp_to_boundary(line: &str, offset: usize) -> usize {
 /// included, which is the convention the fixtures use
 /// (`tests/corpus/README.md`, "Conventions"). `column` is 0-based and counts
 /// **characters**, so a tab is one column wide (`docs/grammar.md` 1.1) and a
-/// Latin-1 letter is one column wide whatever its UTF-8 length.
+/// letter is one column wide whatever its UTF-8 length.
 /// `end_column` is exclusive, so a Location covering nothing has
 /// `column == end_column`.
 ///
@@ -194,9 +196,9 @@ fn column_of(line: &str, offset: usize) -> usize {
 ///
 /// Text Files are what `include` reads and what the Assembler assembles; byte
 /// Files are what `incbin` reads. A text File can also be read by `incbin`,
-/// which contributes its Latin-1 bytes ([ADR
+/// which contributes its Windows-1252 bytes ([ADR
 /// 0004](../../../docs/adr/0004-characters-are-latin-1-bytes.md)) through
-/// [`latin1_bytes`].
+/// [`windows_1252_bytes`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileContent {
     /// A source File, as text.
@@ -221,7 +223,7 @@ impl FileContent {
     }
 
     /// The bytes of a binary File, or `None` for a text one, whose bytes are a
-    /// Latin-1 encoding rather than a slice of the stored `String`.
+    /// Windows-1252 encoding rather than a slice of the stored `String`.
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
             FileContent::Text(_) => None,
@@ -314,21 +316,22 @@ impl Files {
     }
 }
 
-/// The Latin-1 bytes of a text File, and the first character that has none.
+/// The Windows-1252 bytes of a text File, and the first character that has
+/// none.
 ///
 /// One character is one byte ([ADR
 /// 0004](../../../docs/adr/0004-characters-are-latin-1-bytes.md)), so a
-/// character above 255 has no byte at all. `incbin` is the one caller — it is
-/// what turns a whole text File into bytes — and it reports that character at
-/// the place it sits; a `0` is written for it so that every byte after it keeps
-/// the address it will have once the character is fixed.
-pub fn latin1_bytes(text: &str) -> (Vec<u8>, Option<(usize, char)>) {
+/// character Windows-1252 cannot store has no byte at all. `incbin` is the one
+/// caller — it is what turns a whole text File into bytes — and it reports that
+/// character at the place it sits; a `0` is written for it so that every byte
+/// after it keeps the address it will have once the character is fixed.
+pub fn windows_1252_bytes(text: &str) -> (Vec<u8>, Option<(usize, char)>) {
     let mut bytes = Vec::with_capacity(text.len());
     let mut refused = None;
     for (offset, character) in text.char_indices() {
-        match u8::try_from(character as u32) {
-            Ok(byte) => bytes.push(byte),
-            Err(_) => {
+        match charset::byte(character) {
+            Some(byte) => bytes.push(byte),
+            None => {
                 refused.get_or_insert((offset, character));
                 bytes.push(0);
             }
@@ -444,7 +447,7 @@ impl<'a> SourceFile<'a> {
     ///
     /// `incbin` is the one caller: it reads a text File as one run of bytes and
     /// has to be able to point at a character that has none
-    /// ([`latin1_bytes`]). Total, like every other conversion here: an offset
+    /// ([`windows_1252_bytes`]). Total, like every other conversion here: an offset
     /// past the end of the File lands on its last line.
     pub fn location_of(&self, offset: usize) -> Location {
         let index = self
