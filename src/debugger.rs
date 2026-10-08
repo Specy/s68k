@@ -13,7 +13,7 @@
 //! other hand-written declarations. Items older than the assembler rewrite are
 //! not all documented yet.
 
-use std::collections::{BTreeMap, HashMap, LinkedList};
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -181,7 +181,43 @@ impl PokeJournal {
     }
 }
 
-#[derive(Serialize)]
+/// Where the instruction of a step was written, kept in the step's slot even
+/// while the step has none.
+///
+/// The slot keeps the File path it was last written with, so a reused slot
+/// copies into that buffer instead of allocating a new one. It serialises as
+/// the `Option<Location>` it stands for: the Location, or `null`.
+#[derive(Clone)]
+struct StepLocation {
+    location: Location,
+    present: bool,
+}
+
+impl Default for StepLocation {
+    fn default() -> Self {
+        Self {
+            location: Location {
+                file: String::new(),
+                line: 0,
+                column: 0,
+                end_column: 0,
+            },
+            present: false,
+        }
+    }
+}
+
+impl Serialize for StepLocation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.present {
+            self.location.serialize(serializer)
+        } else {
+            serializer.serialize_none()
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
 pub struct ExecutionStep {
     #[serde(skip)]
     pub(crate) old_stack_top: Option<usize>,
@@ -194,9 +230,9 @@ pub struct ExecutionStep {
     /// instruction.
     writes: Vec<PokeWrite>,
     pc: usize,
-    /// Where the instruction that ran was written, or `None` when the program
+    /// Where the instruction that ran was written, or absent when the program
     /// counter was on no instruction.
-    location: Option<Location>,
+    location: StepLocation,
     old_ccr: Flags,
     new_ccr: Flags,
     /// The whole status register before the step, condition codes included.
@@ -218,11 +254,17 @@ pub struct ExecutionStep {
 }
 
 impl ExecutionStep {
-    pub fn new(pc: usize, ccr: Flags, sr: u16, interpreter_status: InterpreterStatus) -> Self {
+    pub fn new(
+        kind: ExecutionStepKind,
+        pc: usize,
+        ccr: Flags,
+        sr: u16,
+        interpreter_status: InterpreterStatus,
+    ) -> Self {
         Self {
             old_stack_top: None,
             id: 0,
-            kind: ExecutionStepKind::Instruction,
+            kind,
             mutations: vec![],
             writes: vec![],
             pc,
@@ -230,18 +272,32 @@ impl ExecutionStep {
             new_ccr: ccr,
             old_sr: sr,
             new_sr: sr,
-            location: None,
+            location: StepLocation::default(),
             old_interpreter_status: interpreter_status,
         }
     }
-    /// A step of a Poke: it ran no instruction, so the program counter, the
-    /// condition codes and the status register are the ones the Interpreter
-    /// already holds and undoing it puts back exactly what it found.
-    pub fn new_poke(pc: usize, ccr: Flags, sr: u16, interpreter_status: InterpreterStatus) -> Self {
-        Self {
-            kind: ExecutionStepKind::Poke,
-            ..Self::new(pc, ccr, sr, interpreter_status)
-        }
+    /// Makes this slot a new step, emptying what the step it held had written
+    /// and keeping the capacity of its buffers, so that a history which is full
+    /// reuses its slots and allocates nothing for a step.
+    fn reset(
+        &mut self,
+        kind: ExecutionStepKind,
+        pc: usize,
+        ccr: Flags,
+        sr: u16,
+        interpreter_status: InterpreterStatus,
+    ) {
+        self.old_stack_top = None;
+        self.kind = kind;
+        self.mutations.clear();
+        self.writes.clear();
+        self.pc = pc;
+        self.old_ccr = ccr;
+        self.new_ccr = ccr;
+        self.old_sr = sr;
+        self.new_sr = sr;
+        self.location.present = false;
+        self.old_interpreter_status = interpreter_status;
     }
     pub fn add_mutation(&mut self, mutation: MutationOperation) {
         self.mutations.push(mutation);
@@ -286,7 +342,7 @@ impl ExecutionStep {
     }
     /// Where the instruction this step ran was written.
     pub fn get_location(&self) -> Option<&Location> {
-        self.location.as_ref()
+        self.location.present.then_some(&self.location.location)
     }
 }
 
@@ -329,11 +385,28 @@ pub struct StackFrameLabel {
     pub location: Location,
 }
 
+/// Overwrites `into` with `from`, reusing the buffer of `into`'s File path.
+fn copy_location(into: &mut Location, from: &Location) {
+    into.file.clone_from(&from.file);
+    into.line = from.line;
+    into.column = from.column;
+    into.end_column = from.end_column;
+}
+
 #[wasm_bindgen]
 pub struct Debugger {
     next_step_id: u64,
-    history: LinkedList<ExecutionStep>,
-    history_size: usize,
+    /// The slots of the history, in no particular order: `oldest` says where the
+    /// history starts. A slot is made the first time the history grows to it
+    /// and is reused after that, so a full history overwrites its oldest step in
+    /// place and a step allocates nothing once the buffer has filled.
+    history: Vec<ExecutionStep>,
+    /// The index in `history` of the oldest step.
+    oldest: usize,
+    /// How many steps the history holds, never more than `capacity`.
+    len: usize,
+    /// How many steps the history keeps, which is at least one.
+    capacity: usize,
     call_stack: Vec<CallStackFrame>,
     labels: HashMap<usize, StackFrameLabel>,
 }
@@ -361,80 +434,124 @@ impl Debugger {
                 });
         }
         //include at least one to prevent initialization errors when pushing history state
-        let mut empty_history: LinkedList<ExecutionStep> = LinkedList::new();
-        empty_history.push_front(ExecutionStep::new(
+        let empty_history = vec![ExecutionStep::new(
+            ExecutionStepKind::Instruction,
             0,
             Flags::empty(),
             crate::interpreter::INITIAL_STATUS_REGISTER,
             InterpreterStatus::Running,
-        ));
+        )];
         Self {
             next_step_id: 1,
             history: empty_history,
-            history_size,
+            oldest: 0,
+            len: 1,
+            capacity: history_size.max(1),
             call_stack: vec![],
             labels: labels_map,
         }
     }
-    pub fn add_step(&mut self, mut step: ExecutionStep) {
-        step.id = self.next_step_id;
+    /// Starts a step as the newest of the history: an instruction about to run,
+    /// or a Poke. The step gets the next id, which undo never gives back.
+    pub fn begin_step(
+        &mut self,
+        kind: ExecutionStepKind,
+        pc: usize,
+        ccr: Flags,
+        sr: u16,
+        interpreter_status: InterpreterStatus,
+    ) {
+        let id = self.next_step_id;
         self.next_step_id += 1;
-        self.history.push_back(step);
-        if self.history.len() > self.history_size {
-            self.history.pop_front();
+        let index = self.claim_slot();
+        if index == self.history.len() {
+            self.history
+                .push(ExecutionStep::new(kind, pc, ccr, sr, interpreter_status));
+        } else {
+            self.history[index].reset(kind, pc, ccr, sr, interpreter_status);
+        }
+        self.history[index].id = id;
+    }
+    /// The slot the newest step is written into. While the history is growing
+    /// that is the next free one; once it is full, it is the oldest step's,
+    /// which the new step replaces.
+    fn claim_slot(&mut self) -> usize {
+        if self.len < self.capacity {
+            let index = (self.oldest + self.len) % self.capacity;
+            self.len += 1;
+            index
+        } else {
+            let index = self.oldest;
+            self.oldest = (self.oldest + 1) % self.capacity;
+            index
         }
     }
+    /// The index in `history` of the step `age` steps before the newest, where
+    /// age 0 is the newest. `age` must be less than `len`.
+    fn index_of(&self, age: usize) -> usize {
+        (self.oldest + self.len - 1 - age) % self.capacity
+    }
+    fn newest_mut(&mut self) -> &mut ExecutionStep {
+        assert!(self.len > 0, "No step in the history");
+        let index = self.index_of(0);
+        &mut self.history[index]
+    }
+    /// Takes the newest step out of the history, answering a copy of it. Its
+    /// slot keeps its buffers for the next step to reuse.
     pub fn pop_step(&mut self) -> Option<ExecutionStep> {
-        self.history.pop_back()
+        let step = self.get_last_step()?.clone();
+        self.len -= 1;
+        Some(step)
     }
     pub fn get_previous_mutations(&self) -> Option<&Vec<MutationOperation>> {
-        match self.history.back() {
-            Some(step) => Some(step.get_mutations()),
-            None => None,
-        }
+        self.get_last_step().map(|step| step.get_mutations())
     }
     pub fn can_undo(&self) -> bool {
-        !self.history.is_empty()
+        self.len > 0
     }
     pub fn get_last_step(&self) -> Option<&ExecutionStep> {
-        self.history.back()
+        if self.len == 0 {
+            None
+        } else {
+            Some(&self.history[self.index_of(0)])
+        }
     }
-    pub fn record_stack_top(&mut self, old: usize) { self.history.back_mut().expect("No step").old_stack_top = Some(old); }
+    pub fn record_stack_top(&mut self, old: usize) {
+        self.newest_mut().old_stack_top = Some(old);
+    }
     pub fn set_new_ccr(&mut self, ccr: Flags) {
-        self.history
-            .back_mut()
-            .expect("No history to set new ccr")
-            .new_ccr = ccr;
+        self.newest_mut().new_ccr = ccr;
     }
     /// Records the whole status register the step left behind.
     pub fn set_new_sr(&mut self, sr: u16) {
-        self.history
-            .back_mut()
-            .expect("No history to set new sr")
-            .new_sr = sr;
+        self.newest_mut().new_sr = sr;
     }
     /// Records where the instruction of the step being executed was written.
-    pub fn set_location(&mut self, location: Option<Location>) {
-        self.history
-            .back_mut()
-            .expect("No history to set the location of")
-            .location = location;
+    pub fn set_location(&mut self, location: Option<&Location>) {
+        let step = self.newest_mut();
+        match location {
+            Some(location) => {
+                copy_location(&mut step.location.location, location);
+                step.location.present = true;
+            }
+            None => step.location.present = false,
+        }
     }
     pub fn add_mutation(&mut self, operation: MutationOperation) {
-        self.history
-            .back_mut()
-            .expect("No history to add mutation to")
-            .add_mutation(operation);
+        self.newest_mut().add_mutation(operation);
     }
-    pub fn get_history(&self) -> &LinkedList<ExecutionStep> {
-        &self.history
+    /// Records the values a Poke wrote.
+    pub fn set_writes(&mut self, writes: Vec<PokeWrite>) {
+        self.newest_mut().set_writes(writes);
+    }
+    /// Every step of the history, oldest first.
+    pub fn get_history(&self) -> impl Iterator<Item = &ExecutionStep> {
+        (0..self.len).map(move |position| &self.history[(self.oldest + position) % self.capacity])
     }
     pub fn get_last_steps(&self, count: usize) -> Vec<&ExecutionStep> {
-        self.history
-            .iter()
-            .rev()
-            .take(count)
-            .collect::<Vec<&ExecutionStep>>()
+        (0..count.min(self.len))
+            .map(|age| &self.history[self.index_of(age)])
+            .collect()
     }
     /// The Label of every address that has one, which is what the call stack
     /// reads.

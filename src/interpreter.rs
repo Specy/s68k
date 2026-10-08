@@ -1199,12 +1199,13 @@ impl Interpreter {
             self.set_status(InterpreterStatus::Running);
         }
         if self.keep_history {
-            self.debugger.add_step(ExecutionStep::new(
+            self.debugger.begin_step(
+                ExecutionStepKind::Instruction,
                 self.pc,
                 self.cpu.ccr,
                 self.cpu.get_sr(),
                 old_status,
-            ));
+            );
         }
         self.current_instruction_address = self.pc;
         let instruction = self
@@ -1213,10 +1214,10 @@ impl Interpreter {
         match instruction {
             Some((size, ins)) => {
                 if self.keep_history {
-                    //cloned only when a history is kept: a Location holds the path of its File,
-                    //and a step nobody can undo should not pay for it
-                    let location = self.get_instruction_at(self.pc).map(|i| i.location.clone());
-                    self.debugger.set_location(location);
+                    //copied only when a history is kept, and into the step's own slot, so a
+                    //full history copies without allocating
+                    self.debugger
+                        .set_location(self.program.instruction_at(self.pc).map(|i| &i.location));
                 }
                 self.increment_pc(size);
                 self.executing = true;
@@ -1439,13 +1440,17 @@ impl Interpreter {
             .collect::<Vec<PokeWrite>>();
         //no instruction ran, so the step carries the program counter, the condition codes and
         //the status register as they are: undoing it puts back only what the Poke wrote
-        let mut step =
-            ExecutionStep::new_poke(self.pc, self.cpu.ccr, self.cpu.get_sr(), self.status);
+        self.debugger.begin_step(
+            ExecutionStepKind::Poke,
+            self.pc,
+            self.cpu.ccr,
+            self.cpu.get_sr(),
+            self.status,
+        );
         for mutation in mutations {
-            step.add_mutation(mutation);
+            self.debugger.add_mutation(mutation);
         }
-        step.set_writes(writes);
-        self.debugger.add_step(step);
+        self.debugger.set_writes(writes);
         Ok(true)
     }
     /// Answers the pending interrupt, writes what the answer carries, and

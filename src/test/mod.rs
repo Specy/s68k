@@ -3,6 +3,7 @@
 
 mod corpus;
 mod diagnostics;
+mod history;
 mod include;
 mod instruction_access;
 mod mutations;
