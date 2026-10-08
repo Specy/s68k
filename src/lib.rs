@@ -172,6 +172,10 @@ impl WasmAssembly {
     /// This is a compact index for editor features that annotate the whole
     /// build. The full instructions remain on the WebAssembly side and are
     /// still read individually through the Interpreter.
+    pub fn wasm_get_layout_items(&self) -> Vec<u32> {
+        self.program.as_ref().map(|program| program.layout_items().to_vec()).unwrap_or_default()
+    }
+
     pub fn wasm_get_instruction_addresses(&self) -> Result<JsValue, JsValue> {
         set_panic_hook();
         match &self.program {

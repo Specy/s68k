@@ -38,6 +38,7 @@ use crate::{
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "value")]
 pub enum MutationOperation {
+
     WriteRegister {
         register: RegisterOperand,
         /// The whole register before the store.
@@ -182,6 +183,8 @@ impl PokeJournal {
 
 #[derive(Serialize)]
 pub struct ExecutionStep {
+    #[serde(skip)]
+    pub(crate) old_stack_top: Option<usize>,
     /// Identifies this execution, including repeated visits to the same PC. Never reused by undo.
     id: u64,
     /// Whether the step is an instruction or a Poke. Always written.
@@ -217,6 +220,7 @@ pub struct ExecutionStep {
 impl ExecutionStep {
     pub fn new(pc: usize, ccr: Flags, sr: u16, interpreter_status: InterpreterStatus) -> Self {
         Self {
+            old_stack_top: None,
             id: 0,
             kind: ExecutionStepKind::Instruction,
             mutations: vec![],
@@ -395,6 +399,7 @@ impl Debugger {
     pub fn get_last_step(&self) -> Option<&ExecutionStep> {
         self.history.back()
     }
+    pub fn record_stack_top(&mut self, old: usize) { self.history.back_mut().expect("No step").old_stack_top = Some(old); }
     pub fn set_new_ccr(&mut self, ccr: Flags) {
         self.history
             .back_mut()

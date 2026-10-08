@@ -45,7 +45,7 @@ mod tests {
     fn correctly_apply_pre_decrement() {
         let interpreter = assemble_and_run(
             "move.l #$818081a8, d0
-move.l #$1000, a0
+move.l #$2000, a0
 move.l d0, (a0)+
 move.l d0, (a0)
 move.l #$0F0F, d0
@@ -55,8 +55,8 @@ and.w d0, -(a0)",
         let expected: u32 = 0x81800108;
         let expected2: u32 = 0x010081A8;
         let mem = interpreter.get_memory();
-        assert_eq!(mem.read_long(0x1000).unwrap(), expected);
-        assert_eq!(mem.read_long(0x1004).unwrap(), expected2);
+        assert_eq!(mem.read_long(0x2000).unwrap(), expected);
+        assert_eq!(mem.read_long(0x2004).unwrap(), expected2);
     }
 
     #[test]
@@ -72,7 +72,7 @@ and.w d0, -(a0)",
     move.l #10, 10(a0,d0.w)
     move.l #10, 10(a0,d0.l)
     move.l d0, 1000
-    move.l d0, $1000
+    move.l d0, $2000
     movem.l d0-d1/a0-a5/a7, (a0)
     movem.l D0-D1/A0-A5/A7, (a0)
 
@@ -85,7 +85,7 @@ and.w d0, -(a0)",
     fn test_case_insensitive_registers_in_indirect_displacement() {
         assemble_and_run(
             "
-    move.l #$1000, A0
+    move.l #$2000, A0
     move.b #$42, $0(A0)
     move.b $0(A0), D0
     move.b $0(a0), D0

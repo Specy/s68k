@@ -121,6 +121,7 @@ enum Item {
 struct LinePlan {
     /// The address the line's item is laid out at, alignment applied.
     address: i64,
+    section: usize,
     /// The Global label in force on the line, which is what its Local labels
     /// are scoped by.
     scope: Option<String>,
@@ -188,6 +189,7 @@ struct Layout<'a> {
     warned_after_end: bool,
     instructions: Vec<AssembledInstruction>,
     memory: Vec<MemoryRun>,
+    layout_items: Vec<u32>,
 }
 
 impl<'a> Layout<'a> {
@@ -209,6 +211,7 @@ impl<'a> Layout<'a> {
             warned_after_end: false,
             instructions: Vec::new(),
             memory: Vec::new(),
+            layout_items: Vec::new(),
         }
     }
 
@@ -251,7 +254,7 @@ impl<'a> Layout<'a> {
             std::mem::take(&mut self.memory),
             &self.symbols,
             entry,
-        );
+        ).with_layout_items(std::mem::take(&mut self.layout_items));
         let mut found = self.diagnostics;
         found.sort_by_key(|(at, diagnostic)| (*at, diagnostic.location.column));
         let diagnostics = found
@@ -1019,6 +1022,18 @@ impl<'a> Layout<'a> {
         // unknown Mnemonic, an instruction that is not implemented and a
         // Directive it has nothing to say about all reach it the same way.
         let instruction = self.analyze(index, &plan);
+        let (length, kind) = match plan.item {
+            Item::Instruction => (INSTRUCTION_SIZE, 0),
+            Item::Data(length) => (length, 1),
+            Item::Reserved(length) => (length, 2),
+            Item::Nothing => (0, 0),
+        };
+        if length > 0 {
+            let alignment = line.operation.as_ref().map(|op| {
+                if op.size == Some(super::ast::SizeSuffix::Byte) { 1 } else { 2 }
+            }).unwrap_or(1);
+            self.layout_items.extend_from_slice(&[plan.address as u32, length as u32, kind, plan.section as u32, alignment]);
+        }
         match plan.item {
             Item::Instruction => {
                 if let Some(instruction) = instruction {
@@ -1502,6 +1517,7 @@ impl<'a> Layout<'a> {
     fn plan(&mut self, address: i64, item: Item) -> LinePlan {
         LinePlan {
             address,
+            section: self.section,
             scope: self.scope.clone(),
             item,
         }

@@ -161,17 +161,107 @@ impl MemoryCell {
     }
 }
 
+/// Which bytes of the address space an instruction takes up.
+///
+/// The instructions are not in memory: the Interpreter looks them up in the
+/// Program by address, and the bytes under them are whatever [`Memory::new`]
+/// filled them with. A program that reads or writes there is reading or
+/// writing an instruction that is not there, which MARS and RARS refuse as an
+/// access to the text segment, and so does s68k.
+///
+/// Every load and store of the program asks it, so it is one bit per byte over
+/// the addresses from just before the first instruction to the end of the
+/// last, and an access outside them, the stack's and most data's, is answered
+/// by one comparison.
+#[derive(Debug, Default)]
+struct InstructionMap {
+    /// The address of the first bit, three bytes before the first instruction
+    /// so that an access of up to four bytes that ends inside an instruction
+    /// starts inside the map.
+    base: usize,
+    /// How many addresses from `base` the map covers.
+    span: usize,
+    /// One bit per address from `base`, low bit first, and a spare byte at the
+    /// end so that the two bytes [`holds`](Self::holds) reads are always there.
+    bits: Vec<u8>,
+}
+
+impl InstructionMap {
+    fn new(instructions: &[AssembledInstruction]) -> Self {
+        let start = instructions.iter().map(|ins| ins.address).min();
+        let end = instructions.iter().map(|ins| ins.address + ins.size).max();
+        let (Some(start), Some(end)) = (start, end) else {
+            return Self::default();
+        };
+        let base = start.saturating_sub(3);
+        let span = end - base;
+        let mut bits = vec![0; span / 8 + 2];
+        for ins in instructions {
+            for address in ins.address..ins.address + ins.size {
+                let offset = address - base;
+                bits[offset >> 3] |= 1 << (offset & 7);
+            }
+        }
+        Self { base, span, bits }
+    }
+    /// Whether any of the `length` bytes at `address`, one to four, is an
+    /// instruction's.
+    #[inline(always)]
+    fn holds(&self, address: usize, length: usize) -> bool {
+        //an address before `base` wraps round to a huge offset and is outside too
+        let offset = address.wrapping_sub(self.base);
+        if offset >= self.span {
+            return false;
+        }
+        let at = offset >> 3;
+        let window = u16::from_le_bytes([self.bits[at], self.bits[at + 1]]);
+        (window >> (offset & 7)) & ((1 << length) - 1) != 0
+    }
+    /// Whether any of the `length` bytes at `address` is an instruction's, for
+    /// a run of any length.
+    fn holds_any(&self, address: usize, length: usize) -> bool {
+        let start = address.max(self.base);
+        let end = address.saturating_add(length).min(self.base + self.span);
+        (start..end).any(|address| {
+            let offset = address - self.base;
+            self.bits[offset >> 3] & (1 << (offset & 7)) != 0
+        })
+    }
+}
+
 #[derive(Debug)]
 #[wasm_bindgen]
 pub struct Memory {
     data: Vec<u8>,
+    instructions: InstructionMap,
 }
 
 impl Memory {
     pub fn new() -> Self {
         Self {
             data: vec![255; 0x01000000], //16mb
+            instructions: InstructionMap::default(),
         }
+    }
+    /// Marks the bytes `instructions` take up, which the program's loads and
+    /// stores are refused from then on.
+    pub fn set_instructions(&mut self, instructions: &[AssembledInstruction]) {
+        self.instructions = InstructionMap::new(instructions);
+    }
+    /// Refuses a run of `length` bytes at `address` that touches an
+    /// instruction, for an access the typed reads and writes do not go
+    /// through: a trap task's string or buffer, or a Poke.
+    pub fn verify_not_instruction(
+        &self,
+        address: usize,
+        length: usize,
+        write: bool,
+    ) -> RuntimeResult<()> {
+        let address = address & 0x00ffffff;
+        if self.instructions.holds_any(address, length) {
+            return Err(RuntimeError::InstructionAccess { address, write });
+        }
+        Ok(())
     }
 
     pub fn push(&mut self, data: &MemoryCell, mut sp: usize) -> RuntimeResult<usize> {
@@ -215,20 +305,20 @@ impl Memory {
         Ok((result, sp))
     }
     pub fn read_long(&self, address: usize) -> RuntimeResult<u32> {
-        let address = self.verify_address(address, Size::Long)?;
+        let address = self.verify_access(address, Size::Long, false)?;
 
         Ok(u32::from_be_bytes(
             self.data[address..address + 4].try_into().unwrap(),
         ))
     }
     pub fn read_word(&self, address: usize) -> RuntimeResult<u16> {
-        let address = self.verify_address(address, Size::Word)?;
+        let address = self.verify_access(address, Size::Word, false)?;
         Ok(u16::from_be_bytes(
             self.data[address..address + 2].try_into().unwrap(),
         ))
     }
     pub fn read_byte(&self, address: usize) -> RuntimeResult<u8> {
-        let address = self.verify_address(address, Size::Byte)?;
+        let address = self.verify_access(address, Size::Byte, false)?;
         Ok(u8::from_be_bytes(
             self.data[address..address + 1].try_into().unwrap(),
         ))
@@ -258,6 +348,17 @@ impl Memory {
         Ok(())
     }
 
+    /// Stores `data` as [`write_size`](Self::write_size) does and answers the
+    /// value it replaced, read at the same size: a store that journals what it
+    /// overwrote, checked once, and as a store.
+    pub fn replace_size(&mut self, address: usize, size: Size, data: u32) -> RuntimeResult<u32> {
+        let address = self.verify_access(address, size, true)?;
+        let bytes = &mut self.data[address..address + size.to_bytes()];
+        let old = bytes.iter().fold(0, |old, byte| (old << 8) | *byte as u32);
+        bytes.copy_from_slice(&data.to_be_bytes()[4 - size.to_bytes()..]);
+        Ok(old)
+    }
+
     #[inline(always)]
     pub fn verify_address_bounds(&self, address: usize, length: usize) -> RuntimeResult<usize> {
         //m68k does not use the last 2 bytes of the address space, clamp it to 24 bits
@@ -285,26 +386,41 @@ impl Memory {
         }
         Ok(address)
     }
+    /// [`verify_address`](Self::verify_address) for a load or store of the
+    /// program, which is also refused when it touches an instruction.
+    #[inline(always)]
+    fn verify_access(&self, address: usize, size: Size, write: bool) -> RuntimeResult<usize> {
+        let address = self.verify_address(address, size)?;
+        if self.instructions.holds(address, size.to_bytes()) {
+            return Err(RuntimeError::InstructionAccess { address, write });
+        }
+        Ok(address)
+    }
     pub fn write_long(&mut self, address: usize, value: u32) -> RuntimeResult<()> {
-        let address = self.verify_address(address, Size::Long)?;
+        let address = self.verify_access(address, Size::Long, true)?;
         self.data[address..address + 4].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
     pub fn write_word(&mut self, address: usize, value: u16) -> RuntimeResult<()> {
-        let address = self.verify_address(address, Size::Word)?;
+        let address = self.verify_access(address, Size::Word, true)?;
         self.data[address..address + 2].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
     pub fn write_byte(&mut self, address: usize, value: u8) -> RuntimeResult<()> {
-        let address = self.verify_address(address, Size::Byte)?;
+        let address = self.verify_access(address, Size::Byte, true)?;
         self.data[address] = value;
         Ok(())
     }
+    /// Writes a run of bytes as they are, instructions or not: the Program's
+    /// initial contents and undo. A write of the program's or the host's checks
+    /// [`verify_not_instruction`](Self::verify_not_instruction) first.
     pub fn write_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
         let address = self.verify_address_bounds(address, bytes.len())?;
         self.data[address..address + bytes.len()].copy_from_slice(bytes);
         Ok(())
     }
+    /// Reads a run of bytes as they are, instructions or not, which is how the
+    /// host inspects memory.
     pub fn read_bytes(&self, address: usize, length: usize) -> RuntimeResult<&[u8]> {
         let address = self.verify_address_bounds(address, length)?;
         Ok(&self.data[address..address + length])
@@ -525,6 +641,15 @@ pub enum RuntimeError {
     AddressError {
         address: usize,
         size: Size,
+    },
+    /// A load or store that touches the bytes of an instruction. The
+    /// instructions are not in memory (see [`Memory::set_instructions`]), so
+    /// there is nothing there to read or to change.
+    InstructionAccess {
+        /// The first byte of the access.
+        address: usize,
+        /// Whether it was a store.
+        write: bool,
     },
     DivisionByZero,
     IncorrectAddressingMode(String),
@@ -833,6 +958,7 @@ fn prepare_memory(memory: &mut Memory, program: &Program) -> RuntimeResult<()> {
 
 #[wasm_bindgen]
 pub struct Interpreter {
+    stack_top: usize,
     memory: Memory,
     cpu: Cpu,
     pc: usize,
@@ -887,8 +1013,10 @@ impl Interpreter {
             //happen for a Program the Assembler built
             panic!("Error preparing memory: {:?}", e);
         }
+        memory.set_instructions(program.instructions());
         let runnable = !program.is_empty() && start < end;
         let mut interpreter = Self {
+            stack_top: sp,
             memory,
             cpu: Cpu::new(),
             pc: start,
@@ -1060,6 +1188,7 @@ impl Interpreter {
     /// the history, so undoing it brings the program back to the instruction
     /// that failed, running.
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
+        let sp_before = self.get_sp();
         let old_status = self.status;
         self.verify_can_run()?;
         if old_status == InterpreterStatus::Paused {
@@ -1092,6 +1221,12 @@ impl Interpreter {
                 self.increment_pc(size);
                 self.executing = true;
                 let executed = self.execute_instruction(&ins);
+                let sp = self.get_sp();
+                let top = if sp.abs_diff(sp_before) > 4096 || sp > self.stack_top { sp } else { self.stack_top };
+                if top != self.stack_top {
+                    if self.keep_history { self.debugger.record_stack_top(self.stack_top); }
+                    self.stack_top = top;
+                }
                 //an instruction that raised an Interrupt is not finished until the host answers
                 //it, and what `answer_interrupt` writes belongs to this step
                 self.executing = self.status == InterpreterStatus::Interrupt;
@@ -1122,6 +1257,7 @@ impl Interpreter {
     pub fn undo(&mut self) -> RuntimeResult<ExecutionStep> {
         match self.debugger.pop_step() {
             Some(step) => {
+                if let Some(top) = step.old_stack_top { self.stack_top = top; }
                 self.pc = step.get_pc();
                 //the whole status register, which is the condition codes and the system byte
                 //`move #n,sr` and its kind can have changed
@@ -1129,6 +1265,7 @@ impl Interpreter {
                 //doing from right to left because mutations are added from left to right
                 for mutation in step.get_mutations().iter().rev() {
                     match mutation {
+
                         MutationOperation::WriteRegister {
                             register,
                             old,
@@ -1320,8 +1457,9 @@ impl Interpreter {
     /// It is refused, changing nothing and leaving the interrupt pending, with
     /// [`RuntimeError::NoPendingInterrupt`] when nothing waits for it, with
     /// [`RuntimeError::InvalidAnswer`] when it is not the pending interrupt's,
-    /// and with the [`RuntimeError::OutOfBounds`] of the write when what it
-    /// writes does not fit in memory.
+    /// with the [`RuntimeError::OutOfBounds`] of the write when what it writes
+    /// does not fit in memory, and with [`RuntimeError::InstructionAccess`]
+    /// when it would write over an instruction.
     ///
     /// [`InterruptResult::Terminate`] answers any task, and ends the program:
     /// it is how a host that cannot do a task stops the run.
@@ -1354,7 +1492,7 @@ impl Interpreter {
 
     /// Writes what an answer [`check_answer`] took carries, as EASy68K writes
     /// it for the task. It fails, having written nothing, only when a run of
-    /// bytes does not fit in memory.
+    /// bytes does not fit in memory or lands on an instruction.
     fn apply_answer(&mut self, answer: InterruptResult) -> RuntimeResult<()> {
         match answer {
             InterruptResult::DisplayNumber
@@ -2534,8 +2672,8 @@ impl Interpreter {
         size: Size,
         value: u32,
     ) -> RuntimeResult<()> {
+        let old_value = self.memory.replace_size(address, size, value)?;
         if self.keep_history {
-            let old_value = self.memory.read_size(address, size)?;
             self.debugger.add_mutation(MutationOperation::WriteMemory {
                 address,
                 old: old_value,
@@ -2545,7 +2683,6 @@ impl Interpreter {
                 size,
             });
         }
-        self.memory.write_size(address, size, value)?;
         Ok(())
     }
 
@@ -2631,6 +2768,8 @@ impl Interpreter {
     /// nothing, which is what a Testcase's preset memory needs. Bytes equal to
     /// the ones already there are no write at all and journal nothing.
     pub fn write_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
+        self.memory
+            .verify_not_instruction(address, bytes.len(), true)?;
         if self.poke.is_none() {
             return self.memory.write_bytes(address, bytes);
         }
@@ -2650,6 +2789,8 @@ impl Interpreter {
     }
 
     pub fn set_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
+        self.memory
+            .verify_not_instruction(address, bytes.len(), true)?;
         if self.keep_history {
             let old_bytes = self.memory.read_bytes(address, bytes.len())?;
             self.debugger
@@ -2795,6 +2936,11 @@ impl Interpreter {
                         Some(if task == 53 {
                             Interrupt::ReadFile { handle, count }
                         } else {
+                            self.memory.verify_not_instruction(
+                                address as usize,
+                                count as usize,
+                                false,
+                            )?;
                             let bytes = self
                                 .memory
                                 .read_bytes(address as usize, count as usize)?
@@ -3671,6 +3817,7 @@ impl Interpreter {
     pub fn wasm_get_pc(&self) -> usize {
         self.get_pc()
     }
+    pub fn wasm_get_stack_top(&self) -> usize { self.stack_top }
     pub fn wasm_get_sp(&self) -> usize {
         self.get_sp()
     }

@@ -569,3 +569,24 @@ fn an_interpreter_that_keeps_no_history_records_nothing() {
         "nothing is recorded when no history is kept"
     );
 }
+
+#[test]
+fn memory_layout_and_stack_top_survive_undo() {
+    let code = " org $1000\nstart: lea $8000,a7\n move.l d0,-(a7)\n simhalt\nbuffer: dc.b 1,2,3\n dc.w 7\nroom: ds.w 8\n section 1\n org $9000\nother: dc.b 5\n end start";
+    let program = assemble(code);
+    let items = program.layout_items();
+    assert!(items.chunks(5).any(|item| item[2] == 0));
+    assert!(items.chunks(5).any(|item| item[2] == 1 && item[3] == 1));
+    assert!(items.chunks(5).any(|item| item[2] == 2 && item[1] == 16));
+    let mut interpreter = with_history(code);
+    let top = interpreter.wasm_get_stack_top();
+    step(&mut interpreter, "lea");
+    assert_eq!(interpreter.wasm_get_stack_top(), 0x8000);
+    assert!(serde_json::to_value(interpreter.get_last_steps(1)[0]).is_ok());
+    step(&mut interpreter, "push");
+    assert_eq!(interpreter.wasm_get_stack_top(), 0x8000);
+    interpreter.undo().unwrap();
+    assert_eq!(interpreter.wasm_get_stack_top(), 0x8000);
+    interpreter.undo().unwrap();
+    assert_eq!(interpreter.wasm_get_stack_top(), top);
+}

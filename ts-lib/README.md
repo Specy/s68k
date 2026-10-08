@@ -262,6 +262,18 @@ interpreter.getTermination()
 // {type: 'TerminatedByHost'} (a Terminate answer) or {type: 'Exception', value: error}
 ```
 
+The instructions are not in memory: the interpreter looks them up by address.
+A load or store that touches an instruction's bytes, the program's own or a
+`trap #15` task's string or buffer, is refused like a load or store in the text
+segment of MARS and RARS:
+
+```ts
+{type: 'InstructionAccess', value: {address: 4096, write: true}}  // the first byte of the access, and whether it stored
+```
+
+`readMemoryBytes` still reads those bytes, and `writeMemoryBytes` throws the
+same error for them.
+
 Undoing the step that ended the program brings it back, running. The tasks s68k
 does not carry out are the printer (10), the text window's font and contents
 (21, 22, 25), the cycle counter (30, 31), the hardware window (32), the serial
@@ -439,7 +451,21 @@ control are recognised and refused with a diagnostic naming the feature.
 1. Characters are one byte, read and written as Windows-1252, as in EASy68K; a source character with no byte of its own is an assembly error.
 2. Every instruction is four bytes wide whatever it encodes to on a real 68000, so an address computed from instruction sizes will not match the hardware.
 3. The program runs as supervisor, always.
+4. The program cannot read or write its own instructions, which are not in memory, so it cannot modify itself.
 
 # How to build
 The interpreter was made for WASM in mind, to build it you need [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) installed.
 Once installed you can build the whole package by running `npm run build-all` in the `ts-lib` folder of the project: it builds the wasm package into `ts-lib/src/pkg` and then the TypeScript library into `ts-lib/dist`. `npm test` runs a smoke test over the built `dist/`.
+
+## Memory layout and stack bounds
+
+`Program.getLayoutItems()` returns a `Uint32Array` after assembly, with five
+values per item: address, byte length, kind (`0` code, `1` data, `2` reserved),
+numbered section, and byte alignment. `org` gaps remain gaps; `offset` regions
+and zero-length reservations emit no item. `ds` remains reserved even with a fill.
+The existing `Program.labels` supplies the symbols, including qualified locals.
+
+`Interpreter.getStackTop()` starts at the initialized stack pointer. An instruction
+moving A7 by more than 4096 bytes starts a new stack; raising A7 above its top raises
+the top. Undo restores it with the instruction. This internal history field does not
+change the serialized public execution history.

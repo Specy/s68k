@@ -137,6 +137,8 @@ pub struct ProgramSymbol {
 #[derive(Debug, Clone, Serialize)]
 pub struct Program {
     instructions: Vec<AssembledInstruction>,
+    #[serde(skip)]
+    layout_items: Vec<u32>,
     memory: Vec<MemoryRun>,
     symbols: BTreeMap<String, ProgramSymbol>,
     entry: usize,
@@ -175,12 +177,17 @@ impl Program {
             })
             .collect();
         Self {
+            layout_items: Vec::new(),
             instructions,
             memory,
             symbols,
             entry,
         }
     }
+
+    pub fn with_layout_items(mut self, items: Vec<u32>) -> Self { self.layout_items = items; self }
+    /// Flat tuples: address, length, kind, section number, alignment.
+    pub fn layout_items(&self) -> &[u32] { &self.layout_items }
 
     /// Every instruction, in address order.
     pub fn instructions(&self) -> &[AssembledInstruction] {

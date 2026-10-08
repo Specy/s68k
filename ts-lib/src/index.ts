@@ -192,6 +192,10 @@ export class Program {
         return this.getInfo().instructionCount
     }
 
+    getLayoutItems(): Uint32Array {
+        return this.assembly.wasm_get_layout_items()
+    }
+
     /** Every assembled instruction address, in ascending order. */
     getInstructionAddresses(): number[] {
         return this.assembly.wasm_get_instruction_addresses() as number[]
@@ -372,6 +376,10 @@ export class Interpreter {
 
     getPc(): number {
         return this.interpreter.wasm_get_pc()
+    }
+
+    getStackTop(): number {
+        return this.interpreter.wasm_get_stack_top()
     }
 
     getSp(): number {

@@ -301,6 +301,11 @@ export type RuntimeError = { type: "Raw", value: string } |
 { type: "IncorrectAddressingMode", value: string } |
 { type: "Unimplemented" } |
 { type: "AddressError", value : { address: number, size: Size } } |
+/**
+ * A load or store that touches the bytes of an instruction, which are not in
+ * memory: `address` is the first byte of the access, `write` whether it was a store.
+ */
+{ type: "InstructionAccess", value: { address: number, write: boolean } } |
 /** `chk` found the register outside 0 to the bound it was given. */
 { type: "ChkOutOfBounds", value: { value: number, bound: number } } |
 /** `trapv` with the overflow flag set. */

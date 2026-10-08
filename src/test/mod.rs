@@ -4,6 +4,7 @@
 mod corpus;
 mod diagnostics;
 mod include;
+mod instruction_access;
 mod mutations;
 mod pokes;
 mod test;
