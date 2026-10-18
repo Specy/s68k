@@ -371,6 +371,30 @@ S68k.parseLine('start:  move.w #$10,(a0)+  ; go')
 Spans are character columns of the line, `end` exclusive, so they line up with a
 diagnostic's columns.
 
+### The instruction table
+
+`S68k.instructionTable()` lists every mnemonic the assembler accepts with the
+forms it may be written in: per form, the addressing modes of each operand
+position, by the names a diagnostic uses, the sizes, written as `parseLine`
+writes one, and whether the 68000 runs the form only in supervisor mode.
+
+```ts
+S68k.instructionTable().find(({mnemonic}) => mnemonic === 'andi')
+// {
+//   mnemonic: "andi",
+//   forms: [
+//     {operands: [["Im"], ["Dn", "(An)", "(An)+", "-(An)", "d(An)", "d(An,Xn)", "Ea/<label>"]], sizes: ["byte", "word", "long"], privileged: false},
+//     {operands: [["Im"], ["ccr"]], sizes: ["byte"], privileged: false},
+//     {operands: [["Im"], ["sr"]], sizes: ["word"], privileged: true}
+//   ]
+// }
+```
+
+The privileged forms are `move <ea>,sr` and `andi`, `ori` and `eori` into `sr`.
+s68k runs every program in supervisor mode, as EASy68K does, so they assemble
+and run like any other. `rte`, `stop` and `reset` are not implemented and are
+not listed.
+
 ### Memory
 
 `Program` and `Interpreter` hold memory on the WebAssembly side, which garbage

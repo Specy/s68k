@@ -9,6 +9,8 @@ import {
     FileExistence,
     Flags,
     InputSettings,
+    InstructionForm,
+    InstructionInfo,
     InstructionLine,
     Interpreter as RawInterpreter,
     InterpreterOptions,
@@ -41,6 +43,7 @@ import {
     Termination,
     WasmAssembly as RawAssembly,
     wasm_assemble,
+    wasm_get_instruction_table,
     wasm_parse_line
 } from './pkg/s68k.js'
 
@@ -535,7 +538,7 @@ export class Interpreter {
  * The assembler: the front end that turns source files into a program and
  * diagnostics.
  *
- * Both entry points are static; there is nothing to construct.
+ * Every entry point is static; there is nothing to construct.
  */
 export class S68k {
     private constructor() {
@@ -585,6 +588,25 @@ export class S68k {
      */
     static parseLine(text: string): ParsedLine {
         return wasm_parse_line(text) as ParsedLine
+    }
+
+    /**
+     * Every mnemonic the assembler accepts, with the forms it may be written
+     * in: per form, the addressing modes of each operand position, the sizes,
+     * and whether the 68000 reserves it for supervisor mode.
+     *
+     * ```ts
+     * S68k.instructionTable().find(({mnemonic}) => mnemonic === 'andi')?.forms[2]
+     * // {operands: [["Im"], ["sr"]], sizes: ["word"], privileged: true}
+     * ```
+     *
+     * The mnemonics come in the table's order and the forms in the order the
+     * assembler tries them. Privileged is the 68000's rule: s68k runs every
+     * program in supervisor mode, as EASy68K does, so a privileged form still
+     * runs. Each call builds a new array.
+     */
+    static instructionTable(): InstructionInfo[] {
+        return wasm_get_instruction_table() as InstructionInfo[]
     }
 }
 
@@ -673,6 +695,8 @@ export {
     FileExistence,
     Flags,
     InputSettings,
+    InstructionForm,
+    InstructionInfo,
     InstructionLine,
     InterpreterOptions,
     InterpreterStatus,

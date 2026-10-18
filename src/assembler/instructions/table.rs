@@ -15,8 +15,8 @@
 //! are the shapes it may be written in, one [`Form`] a shape: `asl` has two,
 //! `asl #1,d0` and `asl (a0)`, and the analyzer picks the Form by the number of
 //! Operands and then by how well they fit. A [`Form`] carries one [`Modes`] set
-//! per Operand position, the sizes it accepts and the size it means when the
-//! source writes none.
+//! per Operand position, the sizes it accepts, the size it means when the
+//! source writes none, and whether the 68000 reserves it for supervisor mode.
 //!
 //! A real 68000 Mnemonic s68k does not implement is in the table too, marked
 //! [`Implementation::NotImplemented`] with the reason, so that writing it gets
@@ -306,6 +306,14 @@ pub struct Form {
     pub sizes: SizeRule,
     /// What the Operands may not be together.
     pub combination: Combination,
+    /// Whether the 68000 runs this shape only in supervisor mode: `move <ea>,sr`
+    /// and `andi`, `ori` and `eori` into `sr`. `move sr,<ea>` is not, on a
+    /// 68000 (the 68010 made it so), and no `ccr` shape ever was.
+    ///
+    /// It records the 68000's rule and nothing s68k enforces: s68k runs every
+    /// program in supervisor mode, as EASy68K does, so a privileged Form
+    /// assembles and runs like any other.
+    pub privileged: bool,
 }
 
 impl Form {
@@ -336,6 +344,7 @@ const fn form(operands: &'static [Modes], sizes: SizeRule) -> Form {
         operands,
         sizes,
         combination: Combination::None,
+        privileged: false,
     }
 }
 
@@ -345,6 +354,17 @@ const fn register_form(operands: &'static [Modes], sizes: SizeRule) -> Form {
         operands,
         sizes,
         combination: Combination::AtMostOneMemoryOperand,
+        privileged: false,
+    }
+}
+
+/// A form the 68000 runs only in supervisor mode ([`Form::privileged`]).
+const fn privileged_form(operands: &'static [Modes], sizes: SizeRule) -> Form {
+    Form {
+        operands,
+        sizes,
+        combination: Combination::None,
+        privileged: true,
     }
 }
 
@@ -765,10 +785,13 @@ const BIT_NUMBER: ValueRule = ValueRule {
 /// 68000 does not have — it is the 68010's — and s68k assembles it because the
 /// design record asks for `move` "to and from SR and CCR" (the implementation
 /// notes, phase 3).
+///
+/// `move <ea>,sr` is the one privileged Form: it can clear the supervisor bit.
+/// Reading `sr` is not privileged on a 68000.
 const MOVE_FORMS: &[Form] = &[
     form(&[Modes::ALL, Modes::ALTERABLE], SizeRule::Any),
     form(&[Modes::DATA, Modes::CCR], SizeRule::WordOnly),
-    form(&[Modes::DATA, Modes::SR], SizeRule::WordOnly),
+    privileged_form(&[Modes::DATA, Modes::SR], SizeRule::WordOnly),
     form(&[Modes::SR, Modes::DATA_ALTERABLE], SizeRule::WordOnly),
     form(&[Modes::CCR, Modes::DATA_ALTERABLE], SizeRule::WordOnly),
 ];
@@ -777,11 +800,12 @@ const MOVE_FORMS: &[Form] = &[
 /// register (CCR) can only work with word and byte" (`Reference/68ks6d.htm`,
 /// the `EORI` page, which is the one that carries that sentence;
 /// `Reference/68ks6b.htm` is where the address-method list is) — a byte into
-/// `ccr` and a word into `sr`.
+/// `ccr` and a word into `sr`. The one into `sr` is privileged, as
+/// `move <ea>,sr` is.
 const IMMEDIATE_LOGICAL_FORMS: &[Form] = &[
     form(&[Modes::IMMEDIATE, Modes::DATA_ALTERABLE], SizeRule::Any),
     form(&[Modes::IMMEDIATE, Modes::CCR], SizeRule::ByteOnly),
-    form(&[Modes::IMMEDIATE, Modes::SR], SizeRule::WordOnly),
+    privileged_form(&[Modes::IMMEDIATE, Modes::SR], SizeRule::WordOnly),
 ];
 /// The two Forms of `addx` and `subx`, which are the whole of what they take:
 /// two data registers, or two predecrement Operands and nothing else
@@ -1591,6 +1615,41 @@ mod tests {
                 "Im"
             ]
         );
+    }
+
+    /// The 68000 reserves four shapes for supervisor mode, the ones that write
+    /// `sr`: `move <ea>,sr` and `andi`, `ori` and `eori` into it.
+    /// `move sr,<ea>` became privileged on the 68010, and the `ccr` shapes
+    /// never were.
+    #[test]
+    fn only_the_forms_that_write_sr_are_privileged() {
+        let privileged: Vec<(&str, usize)> = TABLE
+            .iter()
+            .flat_map(|spec| {
+                spec.forms
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, form)| form.privileged)
+                    .map(|(index, _)| (spec.mnemonic, index))
+            })
+            .collect();
+        assert_eq!(
+            privileged,
+            vec![("move", 2), ("andi", 2), ("ori", 2), ("eori", 2)]
+        );
+        for spec in TABLE {
+            for form in spec.forms {
+                assert_eq!(
+                    form.privileged,
+                    form.operands.last() == Some(&Modes::SR),
+                    "`{}`: a form is privileged exactly when it writes `sr`",
+                    spec.mnemonic
+                );
+            }
+        }
+        let move_from_sr = lookup("move").expect("a row").forms[3];
+        assert_eq!(move_from_sr.operands, &[Modes::SR, Modes::DATA_ALTERABLE]);
+        assert!(!move_from_sr.privileged, "a 68000 reads `sr` in user mode");
     }
 
     #[test]

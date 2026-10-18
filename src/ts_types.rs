@@ -530,6 +530,37 @@ export type ParsedLine = {
 }
 "#;
 
+/// [`InstructionInfo`](crate::InstructionInfo) and
+/// [`InstructionForm`](crate::InstructionForm): what `instructionTable`
+/// answers, one entry per implemented mnemonic.
+#[wasm_bindgen(typescript_custom_section)]
+pub const IInstructionInfo: &'static str = r#"
+/** One shape an instruction may be written in. */
+export type InstructionForm = {
+    /**
+     * One list per operand position of the addressing modes it takes, by the
+     * names a diagnostic gives them: `Dn`, `An`, `(An)`, `(An)+`, `-(An)`,
+     * `d(An)`, `d(An,Xn)`, `Ea/<label>`, `d(PC)`, `d(PC,Xn)`, `Im`,
+     * `<register list>`, `sr`, `ccr`. Its length is the operand count.
+     */
+    operands: string[][],
+    /** The sizes it accepts, as `parseLine` writes a size; empty when it carries none. */
+    sizes: ("byte" | "word" | "long" | "short")[],
+    /**
+     * Whether the 68000 runs it only in supervisor mode: `move <ea>,sr` and
+     * `andi`, `ori` and `eori` into `sr`. s68k runs every program in
+     * supervisor mode, so a privileged form still runs.
+     */
+    privileged: boolean
+}
+
+export type InstructionInfo = {
+    /** The mnemonic, in lower case. */
+    mnemonic: string,
+    forms: InstructionForm[]
+}
+"#;
+
 /// [`PrettyStackFrame`](crate::debugger::PrettyStackFrame): one frame of the
 /// call stack, with the Label of the routine it is in already looked up.
 #[wasm_bindgen(typescript_custom_section)]

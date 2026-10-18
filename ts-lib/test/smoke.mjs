@@ -360,6 +360,29 @@ assert.equal(S68k.parseLine('* a comment').kind, 'comment')
 assert.equal(S68k.parseLine('    mvoe.w d0,d1').kind, 'unknown', 'parseLine never throws')
 
 // ---------------------------------------------------------------------------
+// The instruction table
+// ---------------------------------------------------------------------------
+
+// Plain data: the forms of each mnemonic, and the one form of `move` the 68000
+// keeps for supervisor mode, which is the one that writes `sr`.
+const table = S68k.instructionTable()
+const moveRow = table.find(({mnemonic}) => mnemonic === 'move')
+assert.notEqual(moveRow, undefined, '`move` is in the table')
+const privilegedMoves = moveRow.forms.filter((form) => form.privileged)
+assert.equal(privilegedMoves.length, 1, '`move <ea>,sr` is the one privileged form of `move`')
+assert.deepEqual(privilegedMoves[0].operands.at(-1), ['sr'])
+assert.deepEqual(privilegedMoves[0].sizes, ['word'])
+assert.deepEqual(moveRow.forms[0].sizes, ['byte', 'word', 'long'])
+assert.ok(moveRow.forms[0].operands[0].includes('Dn'))
+assert.deepEqual(
+    table.find(({mnemonic}) => mnemonic === 'andi').forms[2],
+    {operands: [['Im'], ['sr']], sizes: ['word'], privileged: true}
+)
+assert.equal(table.find(({mnemonic}) => mnemonic === 'rte'), undefined, 'a refused mnemonic is not listed')
+assert.equal(table.flatMap(({forms}) => forms).filter((form) => form.privileged).length, 4)
+assert.deepEqual(JSON.parse(JSON.stringify(table)), table, 'the table is plain data')
+
+// ---------------------------------------------------------------------------
 // Undo, and the identity of a step
 // ---------------------------------------------------------------------------
 

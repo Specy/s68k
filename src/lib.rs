@@ -29,12 +29,14 @@
 //! | `assembly.wasm_get_instruction_addresses()` | [`WasmAssembly::wasm_get_instruction_addresses`] |
 //! | `new Interpreter(assembly, options)` | [`Interpreter::wasm_new`] |
 //! | `wasm_parse_line(text)` | [`wasm_parse_line`] |
+//! | `wasm_get_instruction_table()` | [`wasm_get_instruction_table`] |
 //!
-//! The three shapes that cross as plain objects — the Diagnostic, the
-//! [`ParsedLine`] and the [`ProgramInfo`] — are serialised once, on their way
-//! out, and their TypeScript declarations are in `src/ts_types.rs`. `ts-lib`
-//! wraps this surface in the `S68k`, `Program` and `Interpreter` classes the
-//! editor actually calls; nothing here knows about them.
+//! The shapes that cross as plain objects — the Diagnostic, the
+//! [`ParsedLine`], the [`ProgramInfo`] and the [`InstructionInfo`] — are
+//! serialised once, on their way out, and their TypeScript declarations are in
+//! `src/ts_types.rs`. `ts-lib` wraps this surface in the `S68k`, `Program` and
+//! `Interpreter` classes the editor actually calls; nothing here knows about
+//! them.
 
 pub mod assembler;
 pub mod instructions;
@@ -57,6 +59,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::assembler::ast::{CommentKind, SizeSuffix};
 use crate::assembler::diagnostics::Diagnostic;
+use crate::assembler::instructions::{Form, InstructionSpec, TABLE};
 use crate::assembler::names;
 use crate::assembler::program::{Program, ProgramSymbol};
 use crate::assembler::source::{self, Files, Span};
@@ -531,6 +534,80 @@ impl ParsedLine {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The instruction table
+// ---------------------------------------------------------------------------
+
+/// Every Mnemonic s68k assembles, with the shapes it may be written in.
+///
+/// This is `S68k.instructionTable`, for documentation that wants the forms
+/// from the assembler that checks them rather than from a copy. It is the
+/// [instruction table](assembler::instructions::table) read as data: the
+/// implemented rows in the table's order, each Form with its Addressing modes
+/// by name. The rows s68k refuses (`rte`, `stop`, `reset`) have no Forms and
+/// are left out.
+#[wasm_bindgen]
+pub fn wasm_get_instruction_table() -> Result<JsValue, JsValue> {
+    set_panic_hook();
+    to_plain_js(&InstructionInfo::table())
+}
+
+/// One implemented Mnemonic, as `instructionTable` reports it.
+#[derive(Debug, Serialize)]
+pub struct InstructionInfo {
+    /// The Mnemonic, in lower case.
+    pub mnemonic: &'static str,
+    /// The shapes it may be written in, in the table's order.
+    pub forms: Vec<InstructionForm>,
+}
+
+/// One [`Form`], as `instructionTable` reports it.
+#[derive(Debug, Serialize)]
+pub struct InstructionForm {
+    /// One list per Operand position of the Addressing modes it takes, by the
+    /// names a Diagnostic gives them
+    /// ([`Modes::names`](assembler::instructions::Modes::names)):
+    /// `[["Im"], ["sr"]]`. Its length is the Operand count.
+    pub operands: Vec<Vec<String>>,
+    /// The sizes it accepts, written as `parseLine` writes a size (`byte`,
+    /// `word`, `long`, `short`), in the order a message lists them. Empty when
+    /// the instruction carries no size.
+    pub sizes: Vec<SizeSuffix>,
+    /// Whether the 68000 runs it only in supervisor mode
+    /// ([`Form::privileged`]), which s68k records and does not enforce.
+    pub privileged: bool,
+}
+
+impl InstructionInfo {
+    /// Every implemented row of the table, in its order.
+    pub fn table() -> Vec<InstructionInfo> {
+        TABLE
+            .iter()
+            .filter(|spec| spec.is_implemented())
+            .map(InstructionInfo::of)
+            .collect()
+    }
+
+    /// Read one row.
+    fn of(spec: &InstructionSpec) -> Self {
+        Self {
+            mnemonic: spec.mnemonic,
+            forms: spec.forms.iter().map(InstructionForm::of).collect(),
+        }
+    }
+}
+
+impl InstructionForm {
+    /// Read one Form.
+    fn of(form: &Form) -> Self {
+        Self {
+            operands: form.operands.iter().map(|modes| modes.names()).collect(),
+            sizes: form.sizes.allowed().to_vec(),
+            privileged: form.privileged,
+        }
+    }
+}
+
 #[cfg(test)]
 mod api_tests {
     use super::*;
@@ -631,6 +708,59 @@ mod api_tests {
             info["symbols"]["start"]["location"]["endColumn"], 5,
             "a Location is camelCase wherever it appears"
         );
+    }
+
+    #[test]
+    fn the_instruction_table_names_each_forms_modes_sizes_and_privilege() {
+        let table = serde_json::to_value(InstructionInfo::table()).expect("the table serialises");
+        let rows = table.as_array().expect("a list");
+        let find = |mnemonic: &str| {
+            rows.iter()
+                .find(|row| row["mnemonic"] == mnemonic)
+                .unwrap_or_else(|| panic!("`{mnemonic}` is listed"))
+        };
+        for refused in ["rte", "stop", "reset"] {
+            assert!(
+                rows.iter().all(|row| row["mnemonic"] != refused),
+                "`{refused}` is not implemented and is not listed"
+            );
+        }
+        let move_forms = find("move")["forms"].as_array().expect("forms");
+        assert_eq!(move_forms.len(), 5);
+        assert_eq!(
+            move_forms[2],
+            json!({
+                "operands": [
+                    ["Dn", "(An)", "(An)+", "-(An)", "d(An)", "d(An,Xn)", "Ea/<label>",
+                     "d(PC)", "d(PC,Xn)", "Im"],
+                    ["sr"]
+                ],
+                "sizes": ["word"],
+                "privileged": true
+            })
+        );
+        assert_eq!(move_forms[0]["sizes"], json!(["byte", "word", "long"]));
+        assert_eq!(move_forms[3]["operands"][0], json!(["sr"]));
+        assert_eq!(move_forms[3]["privileged"], false);
+        assert_eq!(
+            find("andi")["forms"][2],
+            json!({"operands": [["Im"], ["sr"]], "sizes": ["word"], "privileged": true})
+        );
+        assert_eq!(find("andi")["forms"][1]["privileged"], false);
+        assert_eq!(
+            find("rts")["forms"],
+            json!([{"operands": [], "sizes": [], "privileged": false}])
+        );
+        assert_eq!(
+            find("bra")["forms"][0]["sizes"],
+            json!(["byte", "short", "word", "long"])
+        );
+        let privileged = rows
+            .iter()
+            .flat_map(|row| row["forms"].as_array().expect("forms"))
+            .filter(|form| form["privileged"] == true)
+            .count();
+        assert_eq!(privileged, 4, "`move` and `andi`, `ori`, `eori` into `sr`");
     }
 
     #[test]
