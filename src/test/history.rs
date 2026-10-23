@@ -1,7 +1,7 @@
 //! The history once it is full: a step that is written over the oldest one
 //! takes that one's slot, so these check that the steps the history answers
 //! are the ones it should, with the ids, locations and undo of a history that
-//! never wrapped.
+//! never wrapped, and the start of a history that never filled.
 
 use serde_json::Value;
 
@@ -119,4 +119,46 @@ fn a_poke_after_a_wrap_is_the_newest_step_and_undo_takes_it_back() {
     let undone = interpreter.undo().unwrap();
     assert_eq!(undone.get_kind(), ExecutionStepKind::Poke);
     assert_eq!(interpreter.get_last_step_id(), 5);
+}
+
+#[test]
+fn a_program_that_has_not_run_has_nothing_to_undo() {
+    let interpreter = with_history(5);
+    assert!(!interpreter.can_undo());
+    assert!(interpreter.get_last_steps(usize::MAX).is_empty());
+    assert_eq!(interpreter.get_last_step_id(), 0);
+}
+
+#[test]
+fn undo_stops_at_the_first_step_of_a_history_that_never_filled() {
+    let mut interpreter = with_history(100);
+    let entry = interpreter.get_pc();
+    for _ in 0..3 {
+        interpreter.step().unwrap();
+    }
+    let mut undone = vec![];
+    while interpreter.can_undo() {
+        undone.push(interpreter.undo().unwrap().get_id());
+    }
+    assert_eq!(undone, vec![3, 2, 1]);
+    assert_eq!(interpreter.get_pc(), entry);
+    assert!(interpreter.undo().is_err());
+
+    //and the program runs again from where it started
+    interpreter.step().unwrap();
+    assert_eq!(ids(&interpreter), vec![4]);
+}
+
+#[test]
+fn an_interpreter_without_history_never_has_anything_to_undo() {
+    let assembly = crate::assembler::assemble_source(LOOP);
+    let mut interpreter = Interpreter::new(
+        assembly.program.unwrap(),
+        Some(InterpreterOptions {
+            keep_history: false,
+            history_size: 0,
+        }),
+    );
+    interpreter.step().unwrap();
+    assert!(!interpreter.can_undo());
 }

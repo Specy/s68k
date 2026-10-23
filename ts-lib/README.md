@@ -310,7 +310,9 @@ interpreter.canUndo() && interpreter.undo()
 A breakpoint is a line of a file, any file of the project: one on a comment, a
 directive or a label alone stops nothing, and one on a line of a file included
 twice stops at both copies. Undo needs a history, which `new Interpreter(program)` keeps by
-default (`{keep_history: true, history_size: 100}`).
+default (`{keep_history: true, history_size: 100}`). A program that has not run yet has nothing
+to undo: `canUndo()` is false until the first step, and undoing every step leaves the program
+counter at the Entry point.
 
 `program.getInstructionAddresses()` returns the assembled instruction addresses
 in ascending order. It is intended for whole-build editor annotations: use

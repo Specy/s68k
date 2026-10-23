@@ -433,19 +433,12 @@ impl Debugger {
                     location: symbol.location.clone(),
                 });
         }
-        //include at least one to prevent initialization errors when pushing history state
-        let empty_history = vec![ExecutionStep::new(
-            ExecutionStepKind::Instruction,
-            0,
-            Flags::empty(),
-            crate::interpreter::INITIAL_STATUS_REGISTER,
-            InterpreterStatus::Running,
-        )];
+        //empty until the first step: a program that has not run has nothing to undo
         Self {
             next_step_id: 1,
-            history: empty_history,
+            history: Vec::new(),
             oldest: 0,
-            len: 1,
+            len: 0,
             capacity: history_size.max(1),
             call_stack: vec![],
             labels: labels_map,
@@ -491,10 +484,14 @@ impl Debugger {
     fn index_of(&self, age: usize) -> usize {
         (self.oldest + self.len - 1 - age) % self.capacity
     }
-    fn newest_mut(&mut self) -> &mut ExecutionStep {
-        assert!(self.len > 0, "No step in the history");
+    /// The step being recorded, or None before the first one: what is written
+    /// then belongs to no step, and there is nothing it could be undone to.
+    fn newest_mut(&mut self) -> Option<&mut ExecutionStep> {
+        if self.len == 0 {
+            return None;
+        }
         let index = self.index_of(0);
-        &mut self.history[index]
+        Some(&mut self.history[index])
     }
     /// Takes the newest step out of the history, answering a copy of it. Its
     /// slot keeps its buffers for the next step to reuse.
@@ -517,18 +514,26 @@ impl Debugger {
         }
     }
     pub fn record_stack_top(&mut self, old: usize) {
-        self.newest_mut().old_stack_top = Some(old);
+        if let Some(step) = self.newest_mut() {
+            step.old_stack_top = Some(old);
+        }
     }
     pub fn set_new_ccr(&mut self, ccr: Flags) {
-        self.newest_mut().new_ccr = ccr;
+        if let Some(step) = self.newest_mut() {
+            step.new_ccr = ccr;
+        }
     }
     /// Records the whole status register the step left behind.
     pub fn set_new_sr(&mut self, sr: u16) {
-        self.newest_mut().new_sr = sr;
+        if let Some(step) = self.newest_mut() {
+            step.new_sr = sr;
+        }
     }
     /// Records where the instruction of the step being executed was written.
     pub fn set_location(&mut self, location: Option<&Location>) {
-        let step = self.newest_mut();
+        let Some(step) = self.newest_mut() else {
+            return;
+        };
         match location {
             Some(location) => {
                 copy_location(&mut step.location.location, location);
@@ -538,11 +543,15 @@ impl Debugger {
         }
     }
     pub fn add_mutation(&mut self, operation: MutationOperation) {
-        self.newest_mut().add_mutation(operation);
+        if let Some(step) = self.newest_mut() {
+            step.add_mutation(operation);
+        }
     }
     /// Records the values a Poke wrote.
     pub fn set_writes(&mut self, writes: Vec<PokeWrite>) {
-        self.newest_mut().set_writes(writes);
+        if let Some(step) = self.newest_mut() {
+            step.set_writes(writes);
+        }
     }
     /// Every step of the history, oldest first.
     pub fn get_history(&self) -> impl Iterator<Item = &ExecutionStep> {
