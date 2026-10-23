@@ -39,6 +39,7 @@ import {
     RuntimeError,
     Severity,
     Size,
+    SoundOutcome,
     StackFrame,
     Termination,
     WasmAssembly as RawAssembly,
@@ -723,6 +724,7 @@ export {
     RuntimeError,
     Severity,
     Size,
+    SoundOutcome,
     StackFrame,
     Termination,
 }

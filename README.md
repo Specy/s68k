@@ -138,7 +138,14 @@ A file number is 0 to 7, the lowest free one, as EASy68K numbers its eight files
 
 ### Sound: tasks 70 to 77
 
-The interrupts carry the arguments and nothing plays: `PlaySound(path)` (70), `LoadSound {path, index}` (71), `PlayLoadedSound(index)` (72), their DirectX forms `PlaySoundDirectX`, `LoadSoundDirectX` and `PlayLoadedSoundDirectX` (73 to 75), and `ControlSound {index, control}` and `ControlSoundDirectX` (76, 77), where the index is D1.B and the control D2.L: 0 plays once, 1 loops, 2 stops the sound and 3 stops every sound. A host with something to play them on answers whether it did, 1 or 0 in D0.W; 71 has no result. A host with nothing to play them on answers `Terminate`.
+The interrupts carry the arguments, and the interpreter plays nothing itself: `PlaySound(path)` (70), `LoadSound {path, index}` (71), `PlayLoadedSound(index)` (72), their DirectX forms `PlaySoundDirectX`, `LoadSoundDirectX` and `PlayLoadedSoundDirectX` (73 to 75), and `ControlSound {index, control}` and `ControlSoundDirectX` (76, 77), where the index is D1.B and the control D2.L: 0 plays once, 1 loops, 2 stops the sound and 3 stops every sound. A host with something to play them on answers with a `SoundOutcome`, what its player did, and the interpreter writes D0.W as EASy68K does; 71 has no result. A host with nothing to play them on answers `Terminate`.
+
+| Outcome | It means | 70, 72 | 73 to 77 |
+|---|---|---|---|
+| `"Done"` | the task did what it asked: a sound started, a load loaded, a stop stopped | 1 | 1 |
+| `"Busy"` | the standard player was still playing an earlier sound; the DirectX player mixes, so it is never busy | 0 | 0 |
+| `"Missing"` | no file at the path, or no sound in the slot | D0 left as it was | 0 |
+| `"Unplayable"` | a file that is there but cannot be played | 0 | 0 |
 
 ### When a task cannot be done, and why a program ended
 
@@ -158,7 +165,6 @@ Where s68k departs from EASy68K, on purpose:
 - A read of no bytes (task 53 with D2.L = 0) reports 2. EASy68K's `fread` reports 1 instead once an earlier read has reached the end of the file, which is C's end-of-file indicator, and s68k does not keep one.
 - A count that runs past the end of memory is 2 also when (A1) + D2.L passes 4 GB, where EASy68K's 32 bit check wraps round and reads past its memory; task 58 checks the whole 256 bytes it writes where EASy68K checks only the name.
 - A path is sent with `/` for `\`.
-- Tasks 70 and 72 write the host's answer to D0.W; EASy68K leaves D0.W alone when the file or the loaded sound is missing.
 - On Windows EASy68K cannot delete a file that is open, and reports 2; whether a file that is open can be deleted is the host's file system's to say.
 
 ## Known limitations

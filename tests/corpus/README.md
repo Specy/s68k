@@ -960,7 +960,7 @@ user would type it, a line or a key, and the Interpreter reads it:
 | Close all files | done: there are none to close |
 | File exists | missing |
 | File dialog | cancelled |
-| Play, load or control a sound | not played; loading answers with no result |
+| Play, load or control a sound | missing: the file system is empty and no sound is loaded, so tasks 70 and 72 leave D0 as it was and 73 to 77 answer 0; task 71 answers with no result |
 
 Tasks 12 and 16, the input settings, raise no interrupt and need no answer: the
 Interpreter carries them out itself, and nothing about them reaches `output`.

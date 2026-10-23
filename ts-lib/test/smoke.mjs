@@ -1025,13 +1025,19 @@ assert.deepEqual(ender.getTermination(), {type: 'TerminateTask'})
 ender.dispose()
 ending.program.dispose()
 
-// Sound: the arguments, for a host with something to play them on.
+// Sound: the arguments, for a host with something to play them on, and the
+// outcome it answers, which the interpreter writes to D0.W as EASy68K does.
 const sounding = S68k.assemble(`
     ORG $1000
 START:
     lea     wav,a1
     move.b  #4,d1
     move.b  #71,d0
+    trap    #15
+    move.b  #72,d0
+    trap    #15
+    move.l  d0,d2
+    move.b  #75,d0
     trap    #15
     SIMHALT
 wav: dc.b 'sounds\\ding.wav',0
@@ -1040,9 +1046,19 @@ wav: dc.b 'sounds\\ding.wav',0
 const sounder = new Interpreter(sounding.program)
 assert.equal(sounder.run(), InterpreterStatus.Interrupt)
 assert.deepEqual(sounder.getCurrentInterrupt(), {type: 'LoadSound', value: {path: 'sounds/ding.wav', index: 4}})
-assert.throws(() => sounder.answerInterrupt({type: 'PlaySound', value: true}), (error) => error.type === 'InvalidAnswer')
+assert.throws(() => sounder.answerInterrupt({type: 'PlaySound', value: 'Done'}), (error) => error.type === 'InvalidAnswer')
+assert.throws(() => sounder.answerInterrupt({type: 'LoadSound', value: 'Done'}), (error) => error.type === 'InvalidAnswer')
 sounder.answerInterrupt({type: 'LoadSound'})
+assert.equal(sounder.run(), InterpreterStatus.Interrupt)
+assert.deepEqual(sounder.getCurrentInterrupt(), {type: 'PlayLoadedSound', value: 4})
+assert.throws(() => sounder.answerInterrupt({type: 'PlayLoadedSound', value: true}), (error) => error.type === 'InvalidAnswer')
+sounder.answerInterrupt({type: 'PlayLoadedSound', value: 'Missing'})
+assert.equal(sounder.run(), InterpreterStatus.Interrupt)
+sounder.answerInterrupt({type: 'PlayLoadedSoundDirectX', value: 'Done'})
 assert.equal(sounder.run(), InterpreterStatus.Paused)
+const sounded = sounder.getCpuSnapshot()
+assert.equal(sounded.getRegisterValue(2, RegisterType.Data), 72, 'a missing slot leaves D0 alone for task 72')
+assert.equal(sounded.getRegisterValue(0, RegisterType.Data), 1, 'Done is 1 in D0.W')
 sounder.dispose()
 sounding.program.dispose()
 

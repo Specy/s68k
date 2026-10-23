@@ -165,6 +165,23 @@ pub enum FileExistence {
     Missing,
 }
 
+/// What a sound task did, which the interpreter writes to D0.W as EASy68K
+/// does for the task (`simIOu.cpp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SoundOutcome {
+    /// The task did what it asked: a sound started, a load loaded, a stop
+    /// stopped. D0.W = 1.
+    Done,
+    /// The standard player was busy with another sound; the DirectX player
+    /// mixes, so it is never busy. D0.W = 0.
+    Busy,
+    /// No file at the path, or no sound in the slot. D0.W = 0, except for
+    /// tasks 70 and 72, which leave D0 as it was.
+    Missing,
+    /// A file that is there but cannot be played. D0.W = 0.
+    Unplayable,
+}
+
 /// What a `trap #15` asks the host for.
 ///
 /// Every text a display task carries is ready to display: decoded from
@@ -294,8 +311,8 @@ pub enum Interrupt {
     /// written.
     FileExists(String),
 
-    // sound, tasks 70 to 77: the arguments only, until the host has a sound
-    // device to play them on. A sound in memory is numbered 0 to 255, D1.B.
+    // sound, tasks 70 to 77: the arguments, for the host's player. A sound in
+    // memory is numbered 0 to 255, D1.B.
     /// Task 70: play the WAV file at the path.
     PlaySound(String),
     /// Task 71: load the WAV file at the path into sound memory `index`.
@@ -498,16 +515,20 @@ pub enum InterruptResult {
     /// Task 59: what is at the path. D0.W is 0, 3 or 2.
     FileExists(FileExistence),
 
-    // sound: whether it happened, which is 1 or 0 in D0.W
-    PlaySound(bool),
+    // sound: what the host's player did
+    /// Task 70: D0.W is 1 for `Done` and 0 for `Busy` or `Unplayable`; D0 is
+    /// left as it was for `Missing`.
+    PlaySound(SoundOutcome),
     /// Task 71 writes no result.
     LoadSound,
-    PlayLoadedSound(bool),
-    PlaySoundDirectX(bool),
-    LoadSoundDirectX(bool),
-    PlayLoadedSoundDirectX(bool),
-    ControlSound(bool),
-    ControlSoundDirectX(bool),
+    /// Task 72: D0.W as for task 70.
+    PlayLoadedSound(SoundOutcome),
+    /// Tasks 73 to 77: D0.W is 1 for `Done`, 0 for anything else.
+    PlaySoundDirectX(SoundOutcome),
+    LoadSoundDirectX(SoundOutcome),
+    PlayLoadedSoundDirectX(SoundOutcome),
+    ControlSound(SoundOutcome),
+    ControlSoundDirectX(SoundOutcome),
 }
 
 impl InterruptResult {

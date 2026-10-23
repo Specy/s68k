@@ -45,7 +45,7 @@ use crate::{
     instructions::{
         Bytes, Condition, FileDialogMode, FileExistence, IndexRegister, InputSettings, Instruction,
         Interrupt, InterruptResult, KeyStateRequest, KeyStateResult, Operand, RegisterOperand,
-        ShiftDirection, Sign, Size, EXTENSION_WORD_OFFSET,
+        ShiftDirection, Sign, Size, SoundOutcome, EXTENSION_WORD_OFFSET,
     },
     math::*,
 };
@@ -1679,16 +1679,19 @@ impl Interpreter {
                 FileExistence::ReadOnly => FileResult::ReadOnly,
                 FileExistence::Missing => FileResult::Error,
             }),
-            // ---- sound: 1 in D0.W when it happened, 0 when it did not
-            InterruptResult::PlaySound(done)
-            | InterruptResult::PlayLoadedSound(done)
-            | InterruptResult::PlaySoundDirectX(done)
-            | InterruptResult::LoadSoundDirectX(done)
-            | InterruptResult::PlayLoadedSoundDirectX(done)
-            | InterruptResult::ControlSound(done)
-            | InterruptResult::ControlSoundDirectX(done) => {
-                self.set_register_value(RegisterOperand::Data(0), done as u32, Size::Word);
+            // ---- sound: what the player did, as EASy68K's result through a `short *` to D0
+            //(`simIOu.cpp`). `playSound` and `playSoundMem` write nothing when the file or the
+            //slot is missing, so D0 is left as it was
+            InterruptResult::PlaySound(outcome) | InterruptResult::PlayLoadedSound(outcome) => {
+                if outcome != SoundOutcome::Missing {
+                    self.set_sound_result(outcome);
+                }
             }
+            InterruptResult::PlaySoundDirectX(outcome)
+            | InterruptResult::LoadSoundDirectX(outcome)
+            | InterruptResult::PlayLoadedSoundDirectX(outcome)
+            | InterruptResult::ControlSound(outcome)
+            | InterruptResult::ControlSoundDirectX(outcome) => self.set_sound_result(outcome),
         };
         Ok(())
     }
@@ -1697,6 +1700,13 @@ impl Interpreter {
     /// `short *` to D0.
     fn set_file_result(&mut self, result: FileResult) {
         self.set_register_value(RegisterOperand::Data(0), result as u32, Size::Word);
+    }
+
+    /// Writes a sound task's result to D0.W: 1 when it was done, 0 when it
+    /// was not.
+    fn set_sound_result(&mut self, outcome: SoundOutcome) {
+        let done = outcome == SoundOutcome::Done;
+        self.set_register_value(RegisterOperand::Data(0), done as u32, Size::Word);
     }
 
     /// Writes a file number, or -1 for none, to the whole of D1.L, as EASy68K

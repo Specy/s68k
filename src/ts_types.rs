@@ -38,9 +38,10 @@ export type KeyStateResult = { type: "Keys", value: [boolean, boolean, boolean, 
 
 /// [`InputSettings`](crate::instructions::InputSettings),
 /// [`FileDialogMode`](crate::instructions::FileDialogMode),
-/// [`OpenedFile`](crate::instructions::OpenedFile) and
-/// [`FileExistence`](crate::instructions::FileExistence): the shapes the input
-/// settings and the file tasks cross with.
+/// [`OpenedFile`](crate::instructions::OpenedFile),
+/// [`FileExistence`](crate::instructions::FileExistence) and
+/// [`SoundOutcome`](crate::instructions::SoundOutcome): the shapes the input
+/// settings, the file tasks and the sound tasks cross with.
 #[wasm_bindgen(typescript_custom_section)]
 pub const IFileTypes: &'static str = r#"
 /**
@@ -70,6 +71,16 @@ export type OpenedFile = {
 
 /** What task 59 found: D0.W is 0, 3 or 2. */
 export type FileExistence = "Writable" | "ReadOnly" | "Missing"
+
+/**
+ * What a sound task did. Done is a sound that started, a load that loaded or a
+ * stop that stopped: D0.W is 1. Busy is the standard player still playing an
+ * earlier sound; the DirectX player mixes, so it is never busy. Missing is no
+ * file at the path or no sound in the slot, and Unplayable a file that is there
+ * but cannot be played. Tasks 70 and 72 write 0 for Busy and Unplayable and
+ * leave D0 as it was for Missing; tasks 73 to 77 write 0 for all three.
+ */
+export type SoundOutcome = "Done" | "Busy" | "Missing" | "Unplayable"
 "#;
 
 /// [`Interrupt`](crate::instructions::Interrupt): what a `trap #15` asks the
@@ -271,16 +282,18 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "FileDialog", value: string | null } |
 /** Task 59: what is at the path. D0.W is 0, 3 or 2. */
 { type: "FileExists", value: FileExistence } |
-/** Tasks 70, 72 to 77: whether the sound task happened, 1 or 0 in D0.W. */
-{ type: "PlaySound", value: boolean } |
+/** Task 70: what the player did. D0.W is 1 for Done, 0 for Busy or Unplayable, and left as it was for Missing. */
+{ type: "PlaySound", value: SoundOutcome } |
 /** Task 71 writes no result. */
 { type: "LoadSound" } |
-{ type: "PlayLoadedSound", value: boolean } |
-{ type: "PlaySoundDirectX", value: boolean } |
-{ type: "LoadSoundDirectX", value: boolean } |
-{ type: "PlayLoadedSoundDirectX", value: boolean } |
-{ type: "ControlSound", value: boolean } |
-{ type: "ControlSoundDirectX", value: boolean }
+/** Task 72: D0.W as for task 70. */
+{ type: "PlayLoadedSound", value: SoundOutcome } |
+/** Tasks 73 to 77: D0.W is 1 for Done, 0 for anything else. */
+{ type: "PlaySoundDirectX", value: SoundOutcome } |
+{ type: "LoadSoundDirectX", value: SoundOutcome } |
+{ type: "PlayLoadedSoundDirectX", value: SoundOutcome } |
+{ type: "ControlSound", value: SoundOutcome } |
+{ type: "ControlSoundDirectX", value: SoundOutcome }
 "#;
 
 /// [`RuntimeError`](crate::interpreter::RuntimeError) and

@@ -38,7 +38,8 @@ use crate::assembler::source::Files;
 use crate::assembler::symbols::SymbolKind;
 use crate::instructions::{
     Condition, FileExistence, Instruction, Interrupt, InterruptResult, KeyStateRequest,
-    KeyStateResult, Operand, RegisterOperand, ShiftDirection, Sign, Size, TargetDirection,
+    KeyStateResult, Operand, RegisterOperand, ShiftDirection, Sign, Size, SoundOutcome,
+    TargetDirection,
 };
 use crate::interpreter::{Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError};
 
@@ -879,15 +880,22 @@ fn answer(interrupt: &Interrupt, output: &mut String) -> InterruptResult {
         Interrupt::FileDialog { .. } => InterruptResult::FileDialog(None),
         Interrupt::FileExists(_) => InterruptResult::FileExists(FileExistence::Missing),
 
-        // Sound: there is nothing to play it on, so no sound plays
-        Interrupt::PlaySound(_) => InterruptResult::PlaySound(false),
+        // Sound: the same empty file system, so every file is missing, no
+        // sound is ever loaded and every slot is missing too
+        Interrupt::PlaySound(_) => InterruptResult::PlaySound(SoundOutcome::Missing),
         Interrupt::LoadSound { .. } => InterruptResult::LoadSound,
-        Interrupt::PlayLoadedSound(_) => InterruptResult::PlayLoadedSound(false),
-        Interrupt::PlaySoundDirectX(_) => InterruptResult::PlaySoundDirectX(false),
-        Interrupt::LoadSoundDirectX { .. } => InterruptResult::LoadSoundDirectX(false),
-        Interrupt::PlayLoadedSoundDirectX(_) => InterruptResult::PlayLoadedSoundDirectX(false),
-        Interrupt::ControlSound { .. } => InterruptResult::ControlSound(false),
-        Interrupt::ControlSoundDirectX { .. } => InterruptResult::ControlSoundDirectX(false),
+        Interrupt::PlayLoadedSound(_) => InterruptResult::PlayLoadedSound(SoundOutcome::Missing),
+        Interrupt::PlaySoundDirectX(_) => InterruptResult::PlaySoundDirectX(SoundOutcome::Missing),
+        Interrupt::LoadSoundDirectX { .. } => {
+            InterruptResult::LoadSoundDirectX(SoundOutcome::Missing)
+        }
+        Interrupt::PlayLoadedSoundDirectX(_) => {
+            InterruptResult::PlayLoadedSoundDirectX(SoundOutcome::Missing)
+        }
+        Interrupt::ControlSound { .. } => InterruptResult::ControlSound(SoundOutcome::Missing),
+        Interrupt::ControlSoundDirectX { .. } => {
+            InterruptResult::ControlSoundDirectX(SoundOutcome::Missing)
+        }
 
         // Everything else: acknowledged, no effect
         Interrupt::Terminate => InterruptResult::Terminate,
@@ -1765,7 +1773,7 @@ start:
         "2",  // and D0.W is 2
         "2",  // 59, missing
         "0",  // 58, cancelled: D1.L is 0
-        "0",  // 70, not played
+        "70", // 70, missing: D0.W is left as it was, the task
     );
 
     let fixture = run("run_policy", source, RUN_LIMIT);

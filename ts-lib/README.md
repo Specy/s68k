@@ -241,9 +241,32 @@ switch (interrupt.type) {
 
 Tasks 70 to 77 carry their arguments, the file name or the sound's index in
 D1.B and the control in D2.L: `PlaySound`, `LoadSound`, `PlayLoadedSound`, their
-`DirectX` forms, `ControlSound` and `ControlSoundDirectX`. A host answers
-whether it played, 1 or 0 in D0.W (`LoadSound` has no result), or `Terminate`
-when it has nothing to play them on.
+`DirectX` forms, `ControlSound` and `ControlSoundDirectX`. A host answers with
+a `SoundOutcome`, what its player did, and the interpreter writes D0.W as
+EASy68K does; `LoadSound` has no result. A host with nothing to play them on
+answers `Terminate`.
+
+```ts
+switch (interrupt.type) {
+    case 'PlaySound':               // task 70: the path
+    case 'PlayLoadedSound':         // task 72: the index
+    case 'PlaySoundDirectX':        // task 73: the path
+    case 'LoadSoundDirectX':        // task 74: {path, index}
+    case 'PlayLoadedSoundDirectX':  // task 75: the index
+    case 'ControlSound':            // task 76: {index, control}
+    case 'ControlSoundDirectX':     // task 77: {index, control}
+        return {type: interrupt.type, value: 'Done'}   // 'Busy', 'Missing', 'Unplayable'
+    case 'LoadSound':               // task 71: {path, index}
+        return {type: 'LoadSound'}
+}
+```
+
+| Outcome | It means | 70, 72 | 73 to 77 |
+|---|---|---|---|
+| `'Done'` | the task did what it asked: a sound started, a load loaded, a stop stopped | 1 | 1 |
+| `'Busy'` | the standard player was still playing an earlier sound; the DirectX player mixes, so it is never busy | 0 | 0 |
+| `'Missing'` | no file at the path, or no sound in the slot | D0 left as it was | 0 |
+| `'Unplayable'` | a file that is there but cannot be played | 0 | 0 |
 
 #### Errors, and why a program ended
 
@@ -293,9 +316,7 @@ Where this departs from EASy68K:
 - a read of no bytes is 2, where EASy68K says 1 once an earlier read reached the
   end of the file;
 - a buffer whose count passes 4 GB is 2, where EASy68K's check wraps round, and
-  task 58 checks all 256 bytes it writes;
-- tasks 70 and 72 write the answer to D0.W, where EASy68K leaves it when the
-  sound is missing.
+  task 58 checks all 256 bytes it writes.
 
 ### Debugging
 
@@ -403,6 +424,16 @@ not listed.
 collection cannot reach. Call `dispose()` on both when a program is done with.
 `S68k.assemble` frees the assembly itself when the source did not build one, so
 live checking on every keystroke leaks nothing.
+
+## Migrating to 4.0.0
+
+4.0.0 answers a sound task with what the player did, and the interpreter writes
+D0.W as EASy68K does.
+
+| 3.2.0 | 4.0.0 |
+|---|---|
+| `{type: 'PlaySound', value: true}`, and the other sound answers but `LoadSound`, with a boolean | a `SoundOutcome`: `'Done'`, `'Busy'`, `'Missing'` or `'Unplayable'` |
+| tasks 70 and 72 wrote 0 to D0.W for a missing file or sound | `'Missing'` leaves D0 as it was, as EASy68K does |
 
 ## Migrating to 3.0.0
 

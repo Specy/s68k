@@ -12,7 +12,7 @@ use crate::assembler::program::Program;
 use crate::debugger::MutationOperation;
 use crate::instructions::{
     Bytes, FileDialogMode, FileExistence, InputSettings, Interrupt, InterruptResult,
-    KeyStateRequest, KeyStateResult, OpenedFile, RegisterOperand, Size,
+    KeyStateRequest, KeyStateResult, OpenedFile, RegisterOperand, Size, SoundOutcome,
 };
 use crate::interpreter::{
     Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError, Termination,
@@ -796,20 +796,97 @@ mod sound {
         }
     }
 
+    /// The answer of task `number`, which is one of the sound tasks but 71.
+    fn sound_answer(number: u8, outcome: SoundOutcome) -> InterruptResult {
+        match number {
+            70 => InterruptResult::PlaySound(outcome),
+            72 => InterruptResult::PlayLoadedSound(outcome),
+            73 => InterruptResult::PlaySoundDirectX(outcome),
+            74 => InterruptResult::LoadSoundDirectX(outcome),
+            75 => InterruptResult::PlayLoadedSoundDirectX(outcome),
+            76 => InterruptResult::ControlSound(outcome),
+            77 => InterruptResult::ControlSoundDirectX(outcome),
+            _ => panic!("task {number} has no sound outcome"),
+        }
+    }
+
     #[test]
-    fn a_sound_answer_is_1_or_0_in_d0_w_and_task_71_writes_nothing() {
-        let played = answered(
-            &task(70, "    lea path,a1"),
-            InterruptResult::PlaySound(true),
-        );
-        assert_eq!(result(&played), 1);
-        let busy = answered(
-            &task(76, "    move.l #0,d1"),
-            InterruptResult::ControlSound(false),
-        );
-        assert_eq!(result(&busy), 0);
+    fn a_sound_outcome_is_written_to_d0_w_as_easy68k_writes_it() {
+        //`playSound` and `playSoundMem` write nothing for a missing file or slot, so D0 keeps
+        //the task, which no outcome writes; the DirectX tasks and `controlSound` start from 0
+        let setup = "    lea path,a1\n    move.l #$1203,d1\n    move.l #2,d2";
+        let outcomes = [
+            SoundOutcome::Done,
+            SoundOutcome::Busy,
+            SoundOutcome::Missing,
+            SoundOutcome::Unplayable,
+        ];
+        //D0.W for each outcome, in that order; None leaves D0 as it was
+        let cases: [(u8, [Option<u32>; 4]); 7] = [
+            (70, [Some(1), Some(0), None, Some(0)]),
+            (72, [Some(1), Some(0), None, Some(0)]),
+            (73, [Some(1), Some(0), Some(0), Some(0)]),
+            (74, [Some(1), Some(0), Some(0), Some(0)]),
+            (75, [Some(1), Some(0), Some(0), Some(0)]),
+            (76, [Some(1), Some(0), Some(0), Some(0)]),
+            (77, [Some(1), Some(0), Some(0), Some(0)]),
+        ];
+        for (number, expected) in cases {
+            for (outcome, expected) in outcomes.into_iter().zip(expected) {
+                let after = answered(&task(number, setup), sound_answer(number, outcome));
+                match expected {
+                    Some(value) => {
+                        assert_eq!(result(&after), value, "task {number}, {outcome:?}")
+                    }
+                    None => assert_eq!(
+                        data(&after, 0),
+                        0xABCD_0000 | number as u32,
+                        "task {number}, {outcome:?}: D0 is still the task"
+                    ),
+                }
+                assert_eq!(data(&after, 1), 0x1203, "task {number}: D1 is not written");
+            }
+        }
+    }
+
+    #[test]
+    fn task_71_writes_nothing() {
         let loaded = answered(&task(71, "    lea path,a1"), InterruptResult::LoadSound);
         assert_eq!(data(&loaded, 0), 0xABCD_0047, "D0 is still the task");
+    }
+
+    #[test]
+    fn undo_puts_back_the_d0_a_sound_answer_wrote() {
+        for (number, outcome, written) in [
+            (70, SoundOutcome::Done, 1),
+            (72, SoundOutcome::Busy, 0),
+            (77, SoundOutcome::Missing, 0),
+        ] {
+            let mut interpreter = with_history(&task(number, "    lea path,a1"));
+            run_to_interrupt(&mut interpreter);
+            interpreter
+                .answer_interrupt(sound_answer(number, outcome))
+                .expect("the answer");
+            assert_eq!(result(&interpreter), written, "task {number}, {outcome:?}");
+            let step = interpreter.undo().expect("the trap");
+            assert!(
+                step.get_mutations().iter().any(|mutation| matches!(
+                    mutation,
+                    MutationOperation::WriteRegister {
+                        register: RegisterOperand::Data(0),
+                        new,
+                        ..
+                    } if *new == 0xABCD_0000 | written
+                )),
+                "the result is journaled with the step: {:?}",
+                step.get_mutations()
+            );
+            assert_eq!(
+                data(&interpreter, 0),
+                0xABCD_0000 | number as u32,
+                "D0 is the task again"
+            );
+        }
     }
 }
 
@@ -990,14 +1067,14 @@ mod answers {
             DeleteFile(true),
             FileDialog(None),
             FileExists(FileExistence::Missing),
-            PlaySound(false),
+            PlaySound(SoundOutcome::Done),
             LoadSound,
-            PlayLoadedSound(false),
-            PlaySoundDirectX(false),
-            LoadSoundDirectX(false),
-            PlayLoadedSoundDirectX(false),
-            ControlSound(false),
-            ControlSoundDirectX(false),
+            PlayLoadedSound(SoundOutcome::Busy),
+            PlaySoundDirectX(SoundOutcome::Missing),
+            LoadSoundDirectX(SoundOutcome::Unplayable),
+            PlayLoadedSoundDirectX(SoundOutcome::Done),
+            ControlSound(SoundOutcome::Done),
+            ControlSoundDirectX(SoundOutcome::Done),
         ]
     }
 
