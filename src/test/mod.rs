@@ -10,3 +10,4 @@ mod mutations;
 mod pokes;
 mod test;
 mod trap_tasks;
+mod watched_memory;

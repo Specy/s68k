@@ -26,7 +26,7 @@ The library has three parts:
 
 - **Program**: the assembler's output, a program containing assembled instructions with their addresses, sizes, and source locations; the initial memory; the symbols; and the entry point.
 
-- **Interpreter** (`src/interpreter.rs`): runs a program using registers, memory, and the status register. It supports stepping, running to the end, undo history, breakpoints and a call stack.
+- **Interpreter** (`src/interpreter.rs`): runs a program using registers, memory, and the status register. It supports stepping, running to the end, undo history, breakpoints, a call stack, and a watched range of memory whose every store ends the run, for a device mapped into memory.
 
 The interpreter does not load encoded instructions into memory, so instructions
 cannot be modified at runtime. Every instruction occupies four bytes regardless

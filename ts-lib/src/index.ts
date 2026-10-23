@@ -216,6 +216,22 @@ export class Program {
     }
 }
 
+/**
+ * One store into the range {@link Interpreter.watchMemory} watches, as
+ * {@link Interpreter.takeWatchedWrites} answers it.
+ */
+export type WatchedWrite = {
+    /**
+     * The address of the first byte stored, in the 24 bits the 68000 puts on
+     * its bus. A store that straddles the start of the range begins before it.
+     */
+    address: number,
+    /** How many bytes were stored: 1, 2 or 4. A run of bytes is recorded a byte at a time. */
+    size: 1 | 2 | 4,
+    /** The value stored, `size` bytes of it, most significant byte first as memory holds it. */
+    value: number
+}
+
 /** What {@link Interpreter.runWithBreakpoints} does with the breakpoint the program counter is on. */
 export type RunWithBreakpointsOptions = {
     /**
@@ -284,7 +300,8 @@ export class Interpreter {
 
     /**
      * Run one instruction and answer the resulting status. If `SIMHALT`
-     * paused the program, this resumes at the following instruction.
+     * paused the program, or the last instruction stopped on a watched write,
+     * this resumes at the following instruction.
      */
     step(): InterpreterStatus {
         return this.interpreter.wasm_step()
@@ -300,7 +317,9 @@ export class Interpreter {
      *
      * Inside a poke ({@link Interpreter.beginPoke}) the bytes it overwrites are
      * journaled, so undo puts them back; outside one it is a direct write that
-     * records nothing, which is what a testcase's preset memory needs.
+     * records nothing, which is what a testcase's preset memory needs. Either
+     * way, the bytes that land in the watched range are watched writes
+     * ({@link Interpreter.watchMemory}), and stop nothing.
      */
     writeMemoryBytes(address: number, data: Uint8Array) {
         return this.interpreter.wasm_write_memory_bytes(address, data)
@@ -338,7 +357,8 @@ export class Interpreter {
     /**
      * Revert the newest step of the history, instruction or poke alike, and
      * answer it. Undoing a poke puts back every value it wrote and touches
-     * nothing else.
+     * nothing else. Undo empties the log of watched writes: read the watched
+     * range again instead.
      */
     undo(): ExecutionStep {
         return internalExecutionStepToExecutionStep(this.interpreter.wasm_undo())
@@ -363,6 +383,42 @@ export class Interpreter {
             if (result) this.answerInterrupt(result)
         }
         return status
+    }
+
+    /**
+     * Watch the addresses from `start` up to `end`, `end` not included: every
+     * store into them is recorded from now on, and the instruction that makes
+     * one ends the run or step that ran it with `InterpreterStatus.WatchedWrite`,
+     * so the host sees what was written before the next instruction runs.
+     *
+     * A store counts when any of its bytes is in the range: each register of a
+     * `movem`, the store of an `addq` or `bset` to memory, a `bsr`, `jsr` or
+     * `pea` push, a read task's answer and {@link Interpreter.writeMemoryBytes}
+     * alike. One range at a time; watching replaces the range and forgets the
+     * writes not taken. Throws an `InvalidArgument` for an empty range or one
+     * past the 16 MB of memory.
+     */
+    watchMemory(start: number, end: number): void {
+        this.interpreter.wasm_watch_memory(start, end)
+    }
+
+    /** Stop watching, and forget the writes not taken. */
+    unwatchMemory(): void {
+        this.interpreter.wasm_unwatch_memory()
+    }
+
+    /**
+     * The stores into the watched range since the last call, in the order they
+     * were made, and the log emptied. Take them after every `WatchedWrite`
+     * stop, and after writing into the range yourself.
+     */
+    takeWatchedWrites(): WatchedWrite[] {
+        const flat = this.interpreter.wasm_take_watched_writes()
+        const writes: WatchedWrite[] = []
+        for (let i = 0; i < flat.length; i += 3) {
+            writes.push({address: flat[i], size: flat[i + 1] as WatchedWrite['size'], value: flat[i + 2]})
+        }
+        return writes
     }
 
     getConditionValue(condition: Condition): boolean {
@@ -485,19 +541,38 @@ export class Interpreter {
         return this.interpreter.wasm_has_reached_bottom()
     }
 
-    /** Run until the program pauses, requests an interrupt, or terminates. */
+    /**
+     * Run until the program pauses, requests an interrupt, stores into the
+     * watched range, or terminates.
+     */
     run(): InterpreterStatus {
         return this.interpreter.wasm_run()
     }
 
-    /** Like {@link Interpreter.run}, but execute at most `limit` instructions. */
+    /**
+     * How many instructions have run since this Interpreter was made, the one
+     * that failed or raised an interrupt included; Undo does not take them
+     * back. A run that stops early, at an interrupt, a pause or a watched
+     * write, says nothing of how far it got: the difference of two readings
+     * does.
+     */
+    getExecutedInstructions(): number {
+        return this.interpreter.wasm_get_executed_instructions()
+    }
+
+    /**
+     * Like {@link Interpreter.run}, but execute at most `limit` instructions. It
+     * throws an `ExecutionLimit` when they have run and the program would run
+     * on; a stop made by the last of them is answered as that status.
+     */
     runWithLimit(limit: number): InterpreterStatus {
         return this.interpreter.wasm_run_with_limit(limit)
     }
 
     /**
      * Run until one of `breakpoints` is reached, the program pauses, requests
-     * an interrupt or ends, or `limit` instructions have run.
+     * an interrupt, stores into the watched range or ends, or `limit`
+     * instructions have run.
      *
      * A breakpoint is a line of a file: a breakpoint on a comment, a directive
      * or a label alone stops nothing, and neither does one on a line of a file
@@ -507,10 +582,15 @@ export class Interpreter {
      * program counter is *already* on does, and only that one: it defaults to
      * `true`, which runs it anyway and is what makes "continue" from a
      * breakpoint move. A caller that resumes mid-program — after answering an
-     * interrupt, or after its own budget ran out — passes `false`, because the
-     * instruction it is about to run has not run yet and a breakpoint on it
-     * has not been reported. Every breakpoint the run reaches later stops it
-     * before the instruction executes, whichever value this takes.
+     * interrupt, after a `WatchedWrite` stop, or after its own budget ran
+     * out — passes `false`, because the instruction it is about to run has
+     * not run yet and a breakpoint on it has not been reported. Every
+     * breakpoint the run reaches later stops it before the instruction
+     * executes, whichever value this takes.
+     *
+     * A stop made by the last of the `limit` instructions — an interrupt, a
+     * pause, a watched write, the end — is answered as that status; the
+     * `ExecutionLimit` is thrown only when the program would run on.
      */
     runWithBreakpoints(
         breakpoints: Breakpoint[],

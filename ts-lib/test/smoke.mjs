@@ -1062,6 +1062,44 @@ assert.equal(sounded.getRegisterValue(0, RegisterType.Data), 1, 'Done is 1 in D0
 sounder.dispose()
 sounding.program.dispose()
 
+// ---------------------------------------------------------------------------
+// A watched range: each store into it ends the run, and the host takes it
+// ---------------------------------------------------------------------------
+
+const device = S68k.assemble(`
+    ORG $1000
+START:
+    move.b  #0,$E00110      ; a gate off
+    move.b  #1,$E00110      ; and on again
+    movem.w d0-d1,$E00100
+    move.b  #1,$E00300      ; one past the range
+    END     START
+`)
+const watcher = new Interpreter(device.program)
+assert.throws(() => watcher.watchMemory(0xe00300, 0xe00100), (error) => error.type === 'InvalidArgument')
+watcher.watchMemory(0xe00100, 0xe00300)
+assert.equal(InterpreterStatus.WatchedWrite, 5, 'appended after Paused')
+assert.equal(watcher.run(), InterpreterStatus.WatchedWrite)
+assert.equal(watcher.getPc(), 0x1004, 'on the instruction after the store')
+assert.deepEqual(watcher.takeWatchedWrites(), [{address: 0xe00110, size: 1, value: 0}])
+assert.equal(watcher.runWithBreakpoints([], undefined, {skipBreakpointAtPc: false}), InterpreterStatus.WatchedWrite)
+assert.equal(watcher.run(), InterpreterStatus.WatchedWrite)
+assert.deepEqual(watcher.takeWatchedWrites(), [
+    {address: 0xe00110, size: 1, value: 1},
+    {address: 0xe00100, size: 2, value: 0},
+    {address: 0xe00102, size: 2, value: 0}
+], 'in order, until taken')
+watcher.undo()
+assert.deepEqual(watcher.takeWatchedWrites(), [], 'undo empties the log')
+assert.equal(watcher.getPc(), 0x1008)
+watcher.writeMemoryBytes(0xe002ff, new Uint8Array([7, 8]))
+assert.deepEqual(watcher.takeWatchedWrites(), [{address: 0xe002ff, size: 1, value: 7}], 'a host write, the bytes in the range')
+watcher.unwatchMemory()
+assert.equal(watcher.run(), InterpreterStatus.Terminated, 'nothing watched, nothing stops')
+assert.deepEqual(watcher.takeWatchedWrites(), [])
+watcher.dispose()
+device.program.dispose()
+
 interpreter.dispose()
 assembly.program.dispose()
 

@@ -892,6 +892,62 @@ pub enum InterpreterStatus {
     /// This variant is last because wasm-bindgen exports this enum as numbers;
     /// keeping the older variants in place preserves their public values.
     Paused,
+    /// The instruction that has just run stored into the range
+    /// [`Interpreter::watch_memory`] watches, and the run or step that ran it
+    /// ended there, so that the host takes the writes
+    /// ([`Interpreter::take_watched_writes`]) before the next instruction runs.
+    /// The instruction is finished and in the history like any other, the
+    /// program counter is on the next one, and calling any run or step method
+    /// goes on from it, as from [`Paused`](InterpreterStatus::Paused).
+    ///
+    /// An error comes first: an instruction that stored into the range and
+    /// then failed ends the program with its exception, and the writes it made
+    /// are in the log all the same. Everything else comes after. An
+    /// instruction that stored into the range and was the last one stops here,
+    /// and the next call ends the program, as it does after a `simhalt` at the
+    /// bottom. A breakpoint on the next instruction is reported by the call
+    /// after this one, before that instruction runs, when the host goes on with
+    /// `skip_breakpoint_at_pc` false. A run's `limit` running out on the same
+    /// instruction answers this status and not the limit. Answering an
+    /// interrupt with an answer that writes into the range (a line read into
+    /// it, say) leaves this status too.
+    ///
+    /// Appended after `Paused` for the same reason.
+    WatchedWrite,
+}
+
+/// One store into the range [`Interpreter::watch_memory`] watches, as
+/// [`Interpreter::take_watched_writes`] answers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatchedWrite {
+    /// The address of the first byte stored, in the 24 bits the 68000 puts on
+    /// its bus. A store that straddles the start of the range begins before
+    /// it.
+    pub address: usize,
+    /// How many bytes were stored: 1, 2 or 4.
+    pub size: usize,
+    /// The value stored, `size` bytes of it, read as memory holds it, most
+    /// significant byte first.
+    pub value: u32,
+}
+
+/// The addresses [`Interpreter::watch_memory`] watches, from `start` up to
+/// `end`, `end` not included.
+///
+/// Nothing watched is the empty range `0..0`, so a store into memory asks one
+/// comparison, `address < end`, which is always false, and goes on.
+#[derive(Debug, Default, Clone, Copy)]
+struct WatchedRange {
+    start: usize,
+    end: usize,
+}
+
+impl WatchedRange {
+    /// Whether any of the `length` bytes at `address` is in the range.
+    #[inline(always)]
+    fn touches(&self, address: usize, length: usize) -> bool {
+        address < self.end && address + length > self.start
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -992,6 +1048,13 @@ pub struct Interpreter {
     termination: Option<Termination>,
     /// How the read tasks show what is typed, which tasks 12 and 16 change.
     input_settings: InputSettings,
+    /// The range whose stores are recorded, empty while nothing is watched.
+    watched: WatchedRange,
+    /// The stores into [`watched`](Interpreter::watched) the host has not
+    /// taken yet, in the order they were made.
+    watched_writes: Vec<WatchedWrite>,
+    /// How many instructions have run since the Interpreter was made.
+    executed_instructions: u64,
 }
 
 impl Interpreter {
@@ -1038,6 +1101,9 @@ impl Interpreter {
                 Some(Termination::EndOfProgram)
             },
             input_settings: InputSettings::default(),
+            watched: WatchedRange::default(),
+            watched_writes: Vec::new(),
+            executed_instructions: 0,
             program,
         };
         interpreter.cpu.a_reg[7].store_long(sp as u32);
@@ -1180,7 +1246,9 @@ impl Interpreter {
     }
 
     /// Runs one instruction. If the Interpreter is paused, this resumes at the
-    /// instruction after the `simhalt` that paused it.
+    /// instruction after the `simhalt` that paused it, and after a
+    /// [watched write](InterpreterStatus::WatchedWrite) at the instruction
+    /// after the one that made it.
     ///
     /// An instruction that raises a runtime error ends the program with an
     /// exception, [`InterpreterStatus::TerminatedWithException`], and the error
@@ -1191,7 +1259,7 @@ impl Interpreter {
         let sp_before = self.get_sp();
         let old_status = self.status;
         self.verify_can_run()?;
-        if old_status == InterpreterStatus::Paused {
+        if self.is_resumable_stop() {
             if self.has_reached_bottom() {
                 self.terminate(Termination::EndOfProgram);
                 return Ok(self.status);
@@ -1221,6 +1289,8 @@ impl Interpreter {
                 }
                 self.increment_pc(size);
                 self.executing = true;
+                self.executed_instructions += 1;
+                let watched = self.watched_writes.len();
                 let executed = self.execute_instruction(&ins);
                 let sp = self.get_sp();
                 let top = if sp.abs_diff(sp_before) > 4096 || sp > self.stack_top { sp } else { self.stack_top };
@@ -1238,8 +1308,14 @@ impl Interpreter {
                 if let Err(error) = executed {
                     return Err(self.end_with_an_exception(error));
                 }
-                if self.status == InterpreterStatus::Running && self.has_reached_bottom() {
-                    self.terminate(Termination::EndOfProgram);
+                if self.status == InterpreterStatus::Running {
+                    //the host takes what the instruction stored before the next one runs; the end
+                    //of the program, if this was the last instruction, is the next call's
+                    if self.watched_writes.len() != watched {
+                        self.status = InterpreterStatus::WatchedWrite;
+                    } else if self.has_reached_bottom() {
+                        self.terminate(Termination::EndOfProgram);
+                    }
                 }
                 Ok(self.status)
             }
@@ -1255,6 +1331,9 @@ impl Interpreter {
     pub fn get_pretty_call_stack(&self) -> Vec<PrettyStackFrame> {
         self.debugger.to_call_stack()
     }
+    /// Takes back the newest step of the history, instruction or Poke, and
+    /// answers it. It empties the log of watched writes
+    /// ([`take_watched_writes`](Interpreter::take_watched_writes)).
     pub fn undo(&mut self) -> RuntimeResult<ExecutionStep> {
         match self.debugger.pop_step() {
             Some(step) => {
@@ -1337,6 +1416,9 @@ impl Interpreter {
                 if !self.has_terminated() {
                     self.termination = None;
                 }
+                //a write not taken yet may be one this undo has just taken back, so none is kept:
+                //the host reads the watched range again, as memory now holds it
+                self.watched_writes.clear();
                 Ok(step)
             }
             None => Err(RuntimeError::Raw("No more steps to undo".to_string())),
@@ -1453,6 +1535,113 @@ impl Interpreter {
         self.debugger.set_writes(writes);
         Ok(true)
     }
+
+    /// Watches the addresses from `start` up to `end`, `end` not included, for
+    /// a device the host keeps in memory: every store into them is recorded
+    /// from now on, and an instruction that makes one ends the run or step
+    /// that ran it with [`InterpreterStatus::WatchedWrite`].
+    ///
+    /// A store is recorded when any of its bytes is in the range, so one that
+    /// straddles an edge counts. That is every store the program makes — a
+    /// `move`, each register of a `movem`, the one write of an `addq`, `bset`
+    /// or `clr` to memory, the long `bsr`, `jsr` and `pea` push — and every
+    /// run of bytes written on its behalf (the answer to a read task) or by the
+    /// host ([`write_memory_bytes`](Interpreter::write_memory_bytes), a Poke or
+    /// not), a byte at a time and only the bytes in the range. The Program's
+    /// initial contents and undo are not stores.
+    ///
+    /// One range at a time: this replaces the one watched before and forgets
+    /// the writes recorded and not taken. An empty range, or one past the
+    /// 16 MB of memory, is an [`InvalidArgument`](RuntimeError::InvalidArgument).
+    pub fn watch_memory(&mut self, start: usize, end: usize) -> RuntimeResult<()> {
+        if start >= end || end > MEMORY_SIZE {
+            return Err(RuntimeError::InvalidArgument(format!(
+                "a watched range is from its start up to its end, the end not included, inside \
+                 the 16 MB of memory: ${:x} to ${:x} is not one",
+                start, end
+            )));
+        }
+        self.watched = WatchedRange { start, end };
+        self.watched_writes.clear();
+        Ok(())
+    }
+
+    /// How many instructions have run since the Interpreter was made, each
+    /// counted once as it starts, the one that failed or raised an interrupt
+    /// included. Undo does not take them back: this is the work done, which is
+    /// what a host that splits a run in slices needs, since a run that stops
+    /// early, at an interrupt, a pause or a watched write, says nothing of how
+    /// far it got.
+    pub fn get_executed_instructions(&self) -> u64 {
+        self.executed_instructions
+    }
+
+    /// Stops watching, and forgets the writes recorded and not taken.
+    pub fn unwatch_memory(&mut self) {
+        self.watched = WatchedRange::default();
+        self.watched_writes.clear();
+    }
+
+    /// The stores into the watched range since the last call, in the order
+    /// they were made, and the log emptied.
+    ///
+    /// The log is the host's to drain, after every
+    /// [`WatchedWrite`](InterpreterStatus::WatchedWrite) stop and after a
+    /// write of its own; [`undo`](Interpreter::undo) empties it, since what it
+    /// held may be what the undo took back.
+    pub fn take_watched_writes(&mut self) -> Vec<WatchedWrite> {
+        std::mem::take(&mut self.watched_writes)
+    }
+
+    /// Records a store of the program at `size` when it touches the watched
+    /// range. It is on the path of every store, so watching nothing costs it
+    /// the one comparison of [`WatchedRange::touches`].
+    #[inline(always)]
+    fn watch_store(&mut self, address: usize, size: Size, value: u32) {
+        //the address the store went to, as `Memory` masks it
+        let address = address & 0x00ffffff;
+        if self.watched.touches(address, size.to_bytes()) {
+            self.record_watched_store(address, size, value);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn record_watched_store(&mut self, address: usize, size: Size, value: u32) {
+        self.watched_writes.push(WatchedWrite {
+            address,
+            size: size.to_bytes(),
+            value: get_value_sized(value, size),
+        });
+    }
+
+    /// Records the bytes of a run written at `address` that are in the watched
+    /// range, one write a byte.
+    fn watch_bytes(&mut self, address: usize, bytes: &[u8]) {
+        let address = address & 0x00ffffff;
+        if !self.watched.touches(address, bytes.len()) {
+            return;
+        }
+        let from = address.max(self.watched.start);
+        let to = (address + bytes.len()).min(self.watched.end);
+        self.watched_writes.extend((from..to).map(|at| WatchedWrite {
+            address: at,
+            size: 1,
+            value: bytes[at - address] as u32,
+        }));
+    }
+
+    /// Whether the Interpreter stopped between two instructions and the next
+    /// run or step goes on from there: [`Paused`](InterpreterStatus::Paused)
+    /// at a `simhalt`, or after a [watched write](InterpreterStatus::WatchedWrite).
+    #[inline(always)]
+    fn is_resumable_stop(&self) -> bool {
+        matches!(
+            self.status,
+            InterpreterStatus::Paused | InterpreterStatus::WatchedWrite
+        )
+    }
+
     /// Answers the pending interrupt, writes what the answer carries, and
     /// finishes the instruction that raised it.
     ///
@@ -1477,6 +1666,7 @@ impl Interpreter {
             }
         };
         let terminates = matches!(answer, InterruptResult::Terminate);
+        let watched = self.watched_writes.len();
         let answered = check_answer(&pending, &answer).and_then(|()| self.apply_answer(answer));
         if let Err(error) = answered {
             self.current_interrupt = Some(pending);
@@ -1484,9 +1674,12 @@ impl Interpreter {
         }
         self.executing = false;
         //an answer of Terminate ends the program, and so does the answer to an interrupt the
-        //last instruction raised
+        //last instruction raised; an answer that wrote into the watched range stops first, as
+        //the instruction would have
         if terminates {
             self.terminate(Termination::TerminatedByHost);
+        } else if self.watched_writes.len() != watched {
+            self.status = InterpreterStatus::WatchedWrite;
         } else if self.has_reached_bottom() {
             self.terminate(Termination::EndOfProgram);
         } else {
@@ -1713,6 +1906,15 @@ impl Interpreter {
     /// does through a `long *` to D1.
     fn set_file_number(&mut self, number: u32) {
         self.set_register_value(RegisterOperand::Data(1), number, Size::Long);
+    }
+    /// Pushes a long onto the stack and moves the stack pointer down to it, as
+    /// `bsr`, `jsr` and `pea` do: a store of the program like any other, which
+    /// the caller has journaled.
+    fn push_long(&mut self, value: u32) -> RuntimeResult<()> {
+        let sp = self.memory.push(&MemoryCell::Long(value), self.get_sp())?;
+        self.watch_store(sp, Size::Long, value);
+        self.set_sp(sp);
+        Ok(())
     }
     #[inline(always)]
     fn increment_pc(&mut self, amount: usize) {
@@ -2006,10 +2208,7 @@ impl Interpreter {
                         from: self.current_instruction_address,
                     });
                 }
-                let new_sp = self
-                    .memory
-                    .push(&MemoryCell::Long(self.pc as u32), self.get_sp())?;
-                self.set_sp(new_sp);
+                self.push_long(self.pc as u32)?;
                 let caller_address = self.pc;
                 self.pc = *address as usize;
                 self.debugger
@@ -2032,10 +2231,7 @@ impl Interpreter {
                         from: self.current_instruction_address,
                     });
                 }
-                let new_sp = self
-                    .memory
-                    .push(&MemoryCell::Long(self.pc as u32), self.get_sp())?;
-                self.set_sp(new_sp);
+                self.push_long(self.pc as u32)?;
                 let caller_address = self.pc;
                 self.pc = address as usize;
                 self.debugger
@@ -2063,8 +2259,7 @@ impl Interpreter {
                         size: Size::Long,
                     })
                 }
-                let new_sp = self.memory.push(&MemoryCell::Long(addr), self.get_sp())?;
-                self.set_sp(new_sp);
+                self.push_long(addr)?;
             }
             Instruction::BCHG(bit_source, dest) => {
                 let bit = self.get_operand_value(bit_source, Size::Byte, Used::Once)?;
@@ -2688,6 +2883,7 @@ impl Interpreter {
         value: u32,
     ) -> RuntimeResult<()> {
         let old_value = self.memory.replace_size(address, size, value)?;
+        self.watch_store(address, size, value);
         if self.keep_history {
             self.debugger.add_mutation(MutationOperation::WriteMemory {
                 address,
@@ -2786,13 +2982,16 @@ impl Interpreter {
         self.memory
             .verify_not_instruction(address, bytes.len(), true)?;
         if self.poke.is_none() {
-            return self.memory.write_bytes(address, bytes);
+            self.memory.write_bytes(address, bytes)?;
+            self.watch_bytes(address, bytes);
+            return Ok(());
         }
         let old = self.memory.read_bytes(address, bytes.len())?.to_vec();
         if old == bytes {
             return Ok(());
         }
         self.memory.write_bytes(address, bytes)?;
+        self.watch_bytes(address, bytes);
         let poke = self.poke.as_mut().expect("a poke is open");
         poke.add_mutation(MutationOperation::WriteMemoryBytes {
             address,
@@ -2815,7 +3014,9 @@ impl Interpreter {
                     new: bytes.to_vec(),
                 });
         }
-        self.memory.write_bytes(address, bytes)
+        self.memory.write_bytes(address, bytes)?;
+        self.watch_bytes(address, bytes);
+        Ok(())
     }
     /// The instruction the program counter is on, which is the one the next
     /// step will run.
@@ -3533,10 +3734,12 @@ impl Interpreter {
         Ok(())
     }
     /// Runs until `simhalt` pauses the Program, an interrupt needs an answer,
-    /// or the Program terminates. Calling it while paused resumes the Program.
+    /// an instruction stores into the watched range, or the Program
+    /// terminates. Calling it while paused, or after a watched write, resumes
+    /// the Program.
     pub fn run(&mut self) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
-        if self.status == InterpreterStatus::Paused {
+        if self.is_resumable_stop() {
             self.step()?;
         }
         while self.status == InterpreterStatus::Running {
@@ -3569,8 +3772,9 @@ impl Interpreter {
             .collect()
     }
 
-    /// Runs until a breakpoint, `simhalt`, the end of the program, an interrupt
-    /// or `limit` instructions. Calling it while paused resumes the Program.
+    /// Runs until a breakpoint, `simhalt`, the end of the program, an
+    /// interrupt, a store into the watched range or `limit` instructions.
+    /// Calling it while paused, or after a watched write, resumes the Program.
     ///
     /// `skip_breakpoint_at_pc` decides what a breakpoint on the instruction the
     /// program counter is *already* on does. `true` runs it anyway, which is
@@ -3579,7 +3783,14 @@ impl Interpreter {
     /// some other way wants. A caller that answers an interrupt and runs on has
     /// to pass `false`, or the instruction after every interrupt is unbreakable:
     /// each call resumes mid-program with the program counter on the next
-    /// instruction, and that one has not run yet.
+    /// instruction, and that one has not run yet. So does a caller that runs on
+    /// after a [`WatchedWrite`](InterpreterStatus::WatchedWrite) stop.
+    ///
+    /// A stop made by the last of the `limit` instructions — an interrupt, a
+    /// pause, a watched write or the end of the program — is answered as that
+    /// status rather than as the [`ExecutionLimit`](RuntimeError::ExecutionLimit),
+    /// so that the host answers the interrupt or sees the stop before anything
+    /// else runs. The limit is the answer only when the program would run on.
     ///
     /// Only the instruction the run starts on is affected; every breakpoint the
     /// run reaches after that stops it before the instruction executes.
@@ -3590,11 +3801,11 @@ impl Interpreter {
         skip_breakpoint_at_pc: bool,
     ) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
-        if self.status == InterpreterStatus::Paused && self.has_reached_bottom() {
+        if self.is_resumable_stop() && self.has_reached_bottom() {
             self.terminate(Termination::EndOfProgram);
             return Ok(self.status);
         }
-        let resuming_after_pause = self.status == InterpreterStatus::Paused;
+        let resuming_after_pause = self.is_resumable_stop();
         let addresses = self.get_breakpoint_addresses(breakpoints);
         let mut iterations = 0;
         let limit = limit.unwrap_or(usize::MAX);
@@ -3615,20 +3826,28 @@ impl Interpreter {
             limit_counter -= 1;
             iterations += 1;
         }
-        if limit_counter == 0 {
+        //a stop the last instruction the limit allows made is reported, not the limit: the
+        //host has an interrupt to answer, a pause or a watched write to see, or an end
+        let stopped = iterations > 0 && self.status != InterpreterStatus::Running;
+        if limit_counter == 0 && !stopped {
             return Err(RuntimeError::ExecutionLimit(limit));
         }
         Ok(self.status)
     }
 
+    /// Runs until `simhalt`, the end of the program, an interrupt, a store into
+    /// the watched range or `limit` instructions, which answers the
+    /// [`ExecutionLimit`](RuntimeError::ExecutionLimit) only when the last of
+    /// them stopped nothing, as [`run_with_breakpoints`](Interpreter::run_with_breakpoints)
+    /// does.
     pub fn run_with_limit(&mut self, limit: usize) -> RuntimeResult<InterpreterStatus> {
         let mut limit_counter = limit;
         self.verify_can_run()?;
-        if self.status == InterpreterStatus::Paused && self.has_reached_bottom() {
+        if self.is_resumable_stop() && self.has_reached_bottom() {
             self.terminate(Termination::EndOfProgram);
             return Ok(self.status);
         }
-        let resuming_after_pause = self.status == InterpreterStatus::Paused;
+        let resuming_after_pause = self.is_resumable_stop();
         let mut iterations = 0;
         while (self.status == InterpreterStatus::Running
             || (resuming_after_pause && iterations == 0))
@@ -3638,7 +3857,10 @@ impl Interpreter {
             limit_counter -= 1;
             iterations += 1;
         }
-        if limit_counter == 0 {
+        //a stop the last instruction the limit allows made is reported, not the limit: the
+        //host has an interrupt to answer, a pause or a watched write to see, or an end
+        let stopped = iterations > 0 && self.status != InterpreterStatus::Running;
+        if limit_counter == 0 && !stopped {
             return Err(RuntimeError::ExecutionLimit(limit));
         }
         Ok(self.status)
@@ -3905,6 +4127,11 @@ impl Interpreter {
     pub fn wasm_get_last_step_id(&self) -> f64 {
         self.get_last_step_id() as f64
     }
+    /// [`get_executed_instructions`](Interpreter::get_executed_instructions),
+    /// as a number, exact up to 2^53.
+    pub fn wasm_get_executed_instructions(&self) -> f64 {
+        self.get_executed_instructions() as f64
+    }
     pub fn wasm_get_status(&self) -> InterpreterStatus {
         *self.get_status()
     }
@@ -3947,6 +4174,25 @@ impl Interpreter {
     /// recorded a step. It throws when no Poke is open.
     pub fn wasm_end_poke(&mut self) -> Result<bool, JsValue> {
         self.end_poke().map_err(|e| js(&e))
+    }
+    /// Watches `start` up to `end`, `end` not included, which is
+    /// `watchMemory(start, end)`. It throws an `InvalidArgument` for an empty
+    /// range and for one past the end of memory.
+    pub fn wasm_watch_memory(&mut self, start: usize, end: usize) -> Result<(), JsValue> {
+        self.watch_memory(start, end).map_err(|e| js(&e))
+    }
+    pub fn wasm_unwatch_memory(&mut self) {
+        self.unwatch_memory()
+    }
+    /// The watched writes not taken yet, three numbers a write — its address,
+    /// its size in bytes and the value stored — in one flat `Uint32Array`, which
+    /// crosses the boundary as one copy; the log is emptied.
+    pub fn wasm_take_watched_writes(&mut self) -> Vec<u32> {
+        let mut flat = Vec::with_capacity(self.watched_writes.len() * 3);
+        for write in self.watched_writes.drain(..) {
+            flat.extend([write.address as u32, write.size as u32, write.value]);
+        }
+        flat
     }
     pub fn wasm_get_last_step(&self) -> JsValue {
         match self.debugger.get_last_step() {

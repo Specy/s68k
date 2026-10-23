@@ -138,6 +138,13 @@ The Interpreter status after it executes `simhalt`. The Program counter already
 names the following instruction, and the next step or run operation resumes
 from it. A Paused Interpreter has not terminated.
 
+**Watched range**:
+The one range of addresses, its start included and its end not, whose stores the Interpreter records for the host, for a device the host keeps in memory. Every store with a byte in it is a Watched write.
+_Avoid_: watchpoint (a debugger's stops the user; this one stops for the host), memory observer
+
+**Watched write**:
+One store into the Watched range: its address, its size and the value stored, kept in order until the host takes it. The instruction that made one has finished and ends the run or step that ran it with the status `WatchedWrite`; the next step or run operation goes on, as after a Pause. Undo empties the log, so the host reads the range back.
+
 **Trap task**:
 One of EASy68K's `trap #15` services, chosen by the number in D0.B. The Interpreter carries some out itself — the Input settings, a file result it can decide alone — and raises an Interrupt for the rest; a task it does not carry out, or one given a value it cannot take, is a Runtime error.
 _Avoid_: syscall, service call

@@ -221,7 +221,11 @@ end:",
     /// and the call stack built on it.
     mod running_a_program {
         use crate::assembler::source::DEFAULT_ENTRY_PATH;
-        use crate::interpreter::{Breakpoint, Interpreter, InterpreterOptions, InterpreterStatus};
+        use crate::instructions::InterruptResult;
+        use crate::interpreter::{
+            Breakpoint, Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError,
+            Termination,
+        };
         use crate::test::test::{assemble, prepare};
 
         /// An Interpreter over `code` that keeps a history, which is what the
@@ -352,6 +356,77 @@ second:
                     .expect("resume past the last instruction"),
                 InterpreterStatus::Terminated
             );
+        }
+
+        /// What a run limited to `limit` instructions answers, through both of
+        /// the limited runs, each on an Interpreter of its own.
+        fn both_limited_runs(
+            code: &str,
+            limit: usize,
+        ) -> [(Result<InterpreterStatus, RuntimeError>, Interpreter); 2] {
+            let mut limited = prepare(code);
+            let mut breaking = prepare(code);
+            [
+                (limited.run_with_limit(limit), limited),
+                (breaking.run_with_breakpoints(&[], Some(limit), true), breaking),
+            ]
+        }
+
+        #[test]
+        fn a_trap_on_the_last_instruction_of_a_limit_is_answered_as_the_interrupt() {
+            let code = "    org $1000
+    move.b #4,d0
+    trap #15
+    nop
+";
+            for (status, mut interpreter) in both_limited_runs(code, 2) {
+                assert_eq!(status, Ok(InterpreterStatus::Interrupt));
+                interpreter
+                    .answer_interrupt(InterruptResult::ReadNumber("7".to_string()))
+                    .expect("the interrupt waits for its answer");
+                assert_eq!(interpreter.run(), Ok(InterpreterStatus::Terminated));
+            }
+        }
+
+        #[test]
+        fn a_simhalt_on_the_last_instruction_of_a_limit_is_answered_as_the_pause() {
+            let code = "    org $1000
+    move.l #1,d0
+    simhalt
+    move.l #2,d0
+";
+            for (status, interpreter) in both_limited_runs(code, 2) {
+                assert_eq!(status, Ok(InterpreterStatus::Paused));
+                assert_eq!(interpreter.get_pc(), 0x1008);
+            }
+        }
+
+        #[test]
+        fn the_end_on_the_last_instruction_of_a_limit_is_answered_as_the_end() {
+            let code = "    org $1000
+    nop
+    nop
+";
+            for (status, interpreter) in both_limited_runs(code, 2) {
+                assert_eq!(status, Ok(InterpreterStatus::Terminated));
+                assert_eq!(
+                    interpreter.get_termination(),
+                    Some(&Termination::EndOfProgram)
+                );
+            }
+        }
+
+        #[test]
+        fn a_limit_that_runs_out_with_the_program_running_on_is_the_limit() {
+            let code = "    org $1000
+    nop
+    nop
+    nop
+";
+            for (status, interpreter) in both_limited_runs(code, 2) {
+                assert_eq!(status, Err(RuntimeError::ExecutionLimit(2)));
+                assert_eq!(interpreter.get_pc(), 0x1008);
+            }
         }
 
         #[test]

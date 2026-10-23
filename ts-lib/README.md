@@ -369,6 +369,56 @@ throws when no poke is open. Undoing a poke puts back every value it wrote and
 touches nothing else: not the program counter, not the flags, not the call
 stack.
 
+### Watching a range of memory
+
+A device mapped into memory, such as a sound chip's registers, has to see every
+store into its registers as it happens and in order: a bit turned off and on
+again is two writes, and a write that starts a copy has to be handled before the
+program changes what it copies. `watchMemory(start, end)` watches the addresses
+from `start` up to `end`, `end` not included. Each instruction that stores into
+them ends the run or step that ran it with `InterpreterStatus.WatchedWrite`, and
+`takeWatchedWrites()` answers what was stored:
+
+```ts
+interpreter.watchMemory(0xE00100, 0xE00300)
+let status = interpreter.run()
+while (status === InterpreterStatus.WatchedWrite) {
+    for (const {address, size, value} of interpreter.takeWatchedWrites()) {
+        device.write(address, size, value)   // {address: 0xE00110, size: 1, value: 1}
+    }
+    status = interpreter.run()
+}
+```
+
+- A store counts when any of its bytes is in the range, so one that straddles
+  an edge counts, at the address it began at. Each register of a `movem` is a
+  write of its own, and so is the store of `addq`, `bset` or `clr` to memory and
+  the long a `bsr`, `jsr` or `pea` pushes.
+- A run of bytes written for the program, the answer to a read task, or by
+  `writeMemoryBytes`, in a poke or not, is recorded a byte at a time, only the
+  bytes in the range. An answer that writes into the range leaves the status at
+  `WatchedWrite` as well; a write of the host's stops nothing.
+- The instruction has finished and is in the history like any other. The
+  program counter is on the next one, and any run or step goes on from it, as
+  after `simhalt`; a store by the last instruction stops there, and the next call
+  ends the program.
+- An error comes before the stop: an instruction that fails after it stored
+  ends the program with its error, and what it stored is in the log. Every
+  other stop comes after it. A breakpoint on the next instruction is reported
+  by the next call, made with `skipBreakpointAtPc: false` as after an
+  interrupt, and a watched write on the last instruction a `limit` allows
+  answers `WatchedWrite`, as any stop there does, rather than throwing
+  `ExecutionLimit`.
+- Writes wait in order until they are taken. `undo()` empties the log, so a
+  device reads the range back after an undo; `unwatchMemory()` and another
+  `watchMemory()` forget what was not taken. The program's initial contents are
+  not stores, and memory starts filled with `$FF`.
+- An interpreter that watches nothing pays one comparison a store.
+- A run that stops at every write says nothing of how many instructions it ran
+  before the stop. `getExecutedInstructions()` counts every instruction run, so
+  a host that runs in slices takes the difference of two readings, and keeps to
+  its own limit across the stops.
+
 ### Reading one line
 
 `S68k.parseLine(text)` reads a single line into its four fields, for hover and
@@ -428,12 +478,20 @@ live checking on every keystroke leaks nothing.
 ## Migrating to 4.0.0
 
 4.0.0 answers a sound task with what the player did, and the interpreter writes
-D0.W as EASy68K does.
+D0.W as EASy68K does, and a run whose limit runs out on a stop answers the
+stop.
 
 | 3.2.0 | 4.0.0 |
 |---|---|
 | `{type: 'PlaySound', value: true}`, and the other sound answers but `LoadSound`, with a boolean | a `SoundOutcome`: `'Done'`, `'Busy'`, `'Missing'` or `'Unplayable'` |
 | tasks 70 and 72 wrote 0 to D0.W for a missing file or sound | `'Missing'` leaves D0 as it was, as EASy68K does |
+| a trap, `simhalt` or the program's end on the last instruction a `runWithLimit` or `runWithBreakpoints` limit allowed threw `ExecutionLimit`, with the interrupt left pending | the status is answered, `Interrupt`, `Paused` or `Terminated`; `ExecutionLimit` only when the program would run on |
+
+It also adds a watched range of memory: `watchMemory`, `unwatchMemory`,
+`takeWatchedWrites` and the status `InterpreterStatus.WatchedWrite`, numbered 5
+after `Paused`, which only an interpreter that watches a range ever answers, and
+`getExecutedInstructions()`, the count of instructions run. Nothing that existed
+changes.
 
 ## Migrating to 3.0.0
 
