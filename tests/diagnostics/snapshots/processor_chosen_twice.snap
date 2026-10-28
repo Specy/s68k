@@ -1,0 +1,30 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/processor_chosen_twice.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "processor_chosen_twice",
+    "message": "`opt p=68020` names another processor than the 68010 chosen above: a program is written for one.",
+    "hint": "Keep one `opt p=` line, at the top of the program, naming the processor it is for",
+    "location": {
+      "file": "processor_chosen_twice.asm",
+      "line": 4,
+      "column": 8,
+      "endColumn": 15
+    },
+    "related": [
+      {
+        "location": {
+          "file": "processor_chosen_twice.asm",
+          "line": 2,
+          "column": 10,
+          "endColumn": 15
+        },
+        "message": "`opt p=68010` chose it here"
+      }
+    ]
+  }
+]

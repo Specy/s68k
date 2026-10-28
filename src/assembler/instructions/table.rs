@@ -22,11 +22,24 @@
 //! [`Implementation::NotImplemented`] with the reason, so that writing it gets
 //! "`movep` is not implemented: …" and never "unknown instruction" (the design
 //! record, "Scope").
+//!
+//! # Processors
+//!
+//! Every [`Form`] names the first [`Processor`] that has it
+//! ([`Form::processor`]), and the analyzer refuses one above the Program's
+//! processor, which `opt p=` chooses (ADR 0011). The 68000's are all but two:
+//! `move ccr,<ea>` is the 68010's and `extb.l` the 68020's, the first members
+//! of their dialects. The other instructions of the 68010 and the 68020 are
+//! rows marked [`Implementation::NotImplementedYet`], and the shapes the
+//! 68020 gives a 68000 Mnemonic, `muls.l` and the like, are
+//! [`LATER_SHAPES`], so that each is answered as an instruction still to come
+//! and never as an unknown one.
 
 use bitflags::bitflags;
 
 use super::encoded::{Condition, Sign, Size};
 use crate::assembler::ast::{Operand, SizeSuffix, SpecialRegister};
+use crate::machine::Processor;
 
 bitflags! {
     /// The Addressing modes an Operand position accepts.
@@ -315,6 +328,10 @@ pub struct Form {
     /// program in supervisor mode, as EASy68K does, so a privileged Form
     /// assembles and runs like any other.
     pub privileged: bool,
+    /// The first processor that has the shape: the 68000 for all but
+    /// `move ccr,<ea>`, the 68010's, and `extb.l`, the 68020's. The analyzer
+    /// refuses a Form above the Program's processor.
+    pub processor: Processor,
 }
 
 impl Form {
@@ -341,11 +358,17 @@ impl Form {
 
 /// A form with no rule about the Operands together.
 const fn form(operands: &'static [Modes], sizes: SizeRule) -> Form {
+    dialect_form(Processor::M68000, operands, sizes)
+}
+
+/// A form a later processor than the 68000 introduced ([`Form::processor`]).
+const fn dialect_form(processor: Processor, operands: &'static [Modes], sizes: SizeRule) -> Form {
     Form {
         operands,
         sizes,
         combination: Combination::None,
         privileged: false,
+        processor,
     }
 }
 
@@ -356,6 +379,7 @@ const fn register_form(operands: &'static [Modes], sizes: SizeRule) -> Form {
         sizes,
         combination: Combination::AtMostOneMemoryOperand,
         privileged: false,
+        processor: Processor::M68000,
     }
 }
 
@@ -366,6 +390,7 @@ const fn privileged_form(operands: &'static [Modes], sizes: SizeRule) -> Form {
         sizes,
         combination: Combination::None,
         privileged: true,
+        processor: Processor::M68000,
     }
 }
 
@@ -617,6 +642,18 @@ pub enum Implementation {
         /// What to write instead, when there is something.
         alternative: Option<&'static str>,
     },
+    /// An instruction of a later processor that s68k's dialect of it does not
+    /// implement yet: writing it is `unimplemented_in_dialect`, whatever the
+    /// Program's processor, since no `opt p=` would make it assemble. Each
+    /// arrives with the rest of its dialect (the asm-editor's
+    /// `docs/design/m68k-machine-plan.md`, batches 4 and 5).
+    NotImplementedYet {
+        /// The first processor that has it.
+        processor: Processor,
+        /// Whether it is one of the 68020's eight bit-field instructions,
+        /// which EASy68K's `opt bit` gives a 68000 program.
+        bit_field: bool,
+    },
 }
 
 /// One row of the table: everything that is known about one Mnemonic.
@@ -639,7 +676,9 @@ impl InstructionSpec {
     pub fn family(&self) -> Option<Family> {
         match self.implementation {
             Implementation::Implemented(family) => Some(family),
-            Implementation::NotImplemented { .. } => None,
+            Implementation::NotImplemented { .. } | Implementation::NotImplementedYet { .. } => {
+                None
+            }
         }
     }
 
@@ -749,6 +788,34 @@ const fn not_implemented(
     }
 }
 
+/// A row for an instruction of a later processor that s68k does not implement
+/// yet ([`Implementation::NotImplementedYet`]).
+const fn not_implemented_yet(mnemonic: &'static str, processor: Processor) -> InstructionSpec {
+    InstructionSpec {
+        mnemonic,
+        implementation: Implementation::NotImplementedYet {
+            processor,
+            bit_field: false,
+        },
+        forms: &[],
+        value_rule: None,
+    }
+}
+
+/// A row for one of the 68020's bit-field instructions, which s68k does not
+/// implement yet.
+const fn bit_field_not_implemented_yet(mnemonic: &'static str) -> InstructionSpec {
+    InstructionSpec {
+        mnemonic,
+        implementation: Implementation::NotImplementedYet {
+            processor: Processor::M68020,
+            bit_field: true,
+        },
+        forms: &[],
+        value_rule: None,
+    }
+}
+
 /// The one form every `Bcc`, `bra` and `bsr` shares: a Label, and a branch
 /// size suffix that is accepted and not range checked.
 const BRANCH_FORM: &[Form] = &[form(&[Modes::ABSOLUTE], SizeRule::Branch)];
@@ -788,9 +855,9 @@ const BIT_NUMBER: ValueRule = ValueRule {
 /// `move <ea>,ccr` and `move <ea>,sr` take any **data** Addressing mode, an
 /// immediate included, and `move sr,<ea>` writes any **data alterable** one;
 /// all four are a word (`Reference/68ks4d.htm`). `move ccr,<ea>` is the one the
-/// 68000 does not have — it is the 68010's — and s68k assembles it because the
-/// design record asks for `move` "to and from SR and CCR" (the implementation
-/// notes, phase 3).
+/// 68000 does not have: it is the 68010's, and assembles in a Program written
+/// for the 68010 or the 68020 (ADR 0011). On a 68000, `move sr,<ea>` reads
+/// the condition codes in its low byte.
 ///
 /// `move <ea>,sr` is the one privileged Form: it can clear the supervisor bit.
 /// Reading `sr` is not privileged on a 68000.
@@ -799,7 +866,11 @@ const MOVE_FORMS: &[Form] = &[
     form(&[Modes::DATA, Modes::CCR], SizeRule::WordOnly),
     privileged_form(&[Modes::DATA, Modes::SR], SizeRule::WordOnly),
     form(&[Modes::SR, Modes::DATA_ALTERABLE], SizeRule::WordOnly),
-    form(&[Modes::CCR, Modes::DATA_ALTERABLE], SizeRule::WordOnly),
+    dialect_form(
+        Processor::M68010,
+        &[Modes::CCR, Modes::DATA_ALTERABLE],
+        SizeRule::WordOnly,
+    ),
 ];
 /// The three Forms of `andi`, `ori` and `eori`: the ordinary one, then the two
 /// the help adds — "Operations that uses the status register (SR) and the flag
@@ -1102,10 +1173,15 @@ pub const TABLE: &[InstructionSpec] = &[
         Family::Ext,
         &[form(&[Modes::DN], SizeRule::WordOrLong)],
     ),
+    // The 68020's, and the first member of its dialect (ADR 0011).
     implemented(
         "extb",
         Family::ExtByteToLong,
-        &[form(&[Modes::DN], SizeRule::LongOnly)],
+        &[dialect_form(
+            Processor::M68020,
+            &[Modes::DN],
+            SizeRule::LongOnly,
+        )],
     ),
     implemented(
         "neg",
@@ -1310,7 +1386,162 @@ pub const TABLE: &[InstructionSpec] = &[
     set_conditionally("svs", Condition::OverflowSet),
     set_conditionally("st", Condition::True),
     set_conditionally("sf", Condition::False),
+    // ---- the 68010's, not implemented yet (batch 4) ----
+    not_implemented_yet("rtd", Processor::M68010),
+    not_implemented_yet("bkpt", Processor::M68010),
+    not_implemented_yet("movec", Processor::M68010),
+    not_implemented_yet("moves", Processor::M68010),
+    // ---- the 68020's, not implemented yet (batch 5) ----
+    not_implemented_yet("chk2", Processor::M68020),
+    not_implemented_yet("cmp2", Processor::M68020),
+    not_implemented_yet("cas", Processor::M68020),
+    not_implemented_yet("cas2", Processor::M68020),
+    not_implemented_yet("pack", Processor::M68020),
+    not_implemented_yet("unpk", Processor::M68020),
+    not_implemented_yet("divsl", Processor::M68020),
+    not_implemented_yet("divul", Processor::M68020),
+    not_implemented_yet("trapt", Processor::M68020),
+    not_implemented_yet("trapf", Processor::M68020),
+    not_implemented_yet("traphi", Processor::M68020),
+    not_implemented_yet("trapls", Processor::M68020),
+    not_implemented_yet("trapcc", Processor::M68020),
+    not_implemented_yet("traphs", Processor::M68020),
+    not_implemented_yet("trapcs", Processor::M68020),
+    not_implemented_yet("traplo", Processor::M68020),
+    not_implemented_yet("trapne", Processor::M68020),
+    not_implemented_yet("trapeq", Processor::M68020),
+    not_implemented_yet("trapvc", Processor::M68020),
+    not_implemented_yet("trapvs", Processor::M68020),
+    not_implemented_yet("trappl", Processor::M68020),
+    not_implemented_yet("trapmi", Processor::M68020),
+    not_implemented_yet("trapge", Processor::M68020),
+    not_implemented_yet("traplt", Processor::M68020),
+    not_implemented_yet("trapgt", Processor::M68020),
+    not_implemented_yet("traple", Processor::M68020),
+    bit_field_not_implemented_yet("bftst"),
+    bit_field_not_implemented_yet("bfextu"),
+    bit_field_not_implemented_yet("bfchg"),
+    bit_field_not_implemented_yet("bfexts"),
+    bit_field_not_implemented_yet("bfclr"),
+    bit_field_not_implemented_yet("bfffo"),
+    bit_field_not_implemented_yet("bfset"),
+    bit_field_not_implemented_yet("bfins"),
+    // The module call of the 68020 alone, which s68k's 68020, a 68EC020,
+    // leaves out for good (the asm-editor's `docs/design/m68k-machine.md`,
+    // decision 3).
+    not_implemented(
+        "callm",
+        "s68k's 68020 leaves out the module call, which no later processor kept",
+        Some("`jsr`"),
+    ),
+    not_implemented(
+        "rtm",
+        "s68k's 68020 leaves out the module call, which no later processor kept",
+        Some("`rts`"),
+    ),
 ];
+
+/// A shape a later processor gives a Mnemonic the 68000 has, which s68k does
+/// not implement yet: `muls.l`, `link.l`, `tst a0`.
+///
+/// In a Program written for that processor, a line in the shape is
+/// `unimplemented_in_dialect`; in one written for an earlier processor it is
+/// judged as the 68000 would judge it, an invalid size or addressing mode.
+#[derive(Debug, Clone, Copy)]
+pub struct LaterShape {
+    /// The Mnemonic the shape belongs to.
+    pub mnemonic: &'static str,
+    /// The first processor that has the shape.
+    pub processor: Processor,
+    /// Whether a line written with this size suffix and these Operands is in
+    /// the shape.
+    pub matches: fn(Option<SizeSuffix>, &[Operand]) -> bool,
+}
+
+/// Whether the line is written `.l`.
+fn written_long(size: Option<SizeSuffix>, _: &[Operand]) -> bool {
+    size == Some(SizeSuffix::Long)
+}
+
+/// Whether `tst` reads what only the 68020's reads: an address register, a
+/// PC-relative operand or an immediate.
+fn tests_beyond_the_68000(_: Option<SizeSuffix>, operands: &[Operand]) -> bool {
+    operands.iter().any(|operand| {
+        Modes::of(operand)
+            .is_some_and(|mode| mode.intersects(Modes::AN | Modes::PC_RELATIVE | Modes::IMMEDIATE))
+    })
+}
+
+/// Whether an immediate is compared with a PC-relative operand, the 68020's
+/// `cmpi`.
+fn compares_an_immediate_with_the_program(_: Option<SizeSuffix>, operands: &[Operand]) -> bool {
+    matches!(operands, [first, second]
+        if Modes::of(first) == Some(Modes::IMMEDIATE)
+            && Modes::of(second).is_some_and(|mode| mode.intersects(Modes::PC_RELATIVE)))
+}
+
+/// The 68020's shapes of 68000 Mnemonics (`docs/research/m68k-cpu-variants.md`
+/// §2.2 in the asm-editor): the 32-bit multiplies and divides, `chk.l`,
+/// `link.l`, `tst` of what the 68000 cannot test, and `cmpi` against the
+/// program counter.
+pub const LATER_SHAPES: &[LaterShape] = &[
+    LaterShape {
+        mnemonic: "muls",
+        processor: Processor::M68020,
+        matches: written_long,
+    },
+    LaterShape {
+        mnemonic: "mulu",
+        processor: Processor::M68020,
+        matches: written_long,
+    },
+    LaterShape {
+        mnemonic: "divs",
+        processor: Processor::M68020,
+        matches: written_long,
+    },
+    LaterShape {
+        mnemonic: "divu",
+        processor: Processor::M68020,
+        matches: written_long,
+    },
+    LaterShape {
+        mnemonic: "chk",
+        processor: Processor::M68020,
+        matches: written_long,
+    },
+    LaterShape {
+        mnemonic: "link",
+        processor: Processor::M68020,
+        matches: written_long,
+    },
+    LaterShape {
+        mnemonic: "tst",
+        processor: Processor::M68020,
+        matches: tests_beyond_the_68000,
+    },
+    LaterShape {
+        mnemonic: "cmpi",
+        processor: Processor::M68020,
+        matches: compares_an_immediate_with_the_program,
+    },
+    LaterShape {
+        mnemonic: "cmp",
+        processor: Processor::M68020,
+        matches: compares_an_immediate_with_the_program,
+    },
+];
+
+/// The later shape a line of `mnemonic` is written in, if it is in one.
+pub fn later_shape(
+    mnemonic: &str,
+    size: Option<SizeSuffix>,
+    operands: &[Operand],
+) -> Option<&'static LaterShape> {
+    LATER_SHAPES
+        .iter()
+        .find(|shape| shape.mnemonic == mnemonic && (shape.matches)(size, operands))
+}
 
 /// The row for `mnemonic`, case insensitively, or `None` when no Mnemonic has
 /// that name.
@@ -1328,9 +1559,37 @@ pub fn is_mnemonic(name: &str) -> bool {
     lookup(name).is_some()
 }
 
+/// Whether `name` is an instruction of a later processor that s68k does not
+/// implement yet ([`Implementation::NotImplementedYet`]), whose line the parser
+/// reads as raw text: its Operands are refused whole, and the bit fields'
+/// `d0{4:8}` or `cas2`'s `d0:d1` are no syntax s68k reads yet.
+pub fn is_still_to_come(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| {
+        matches!(
+            spec.implementation,
+            Implementation::NotImplementedYet { .. }
+        )
+    })
+}
+
 /// Every Mnemonic in the table, in the table's order.
 pub fn mnemonics() -> impl Iterator<Item = &'static str> {
     TABLE.iter().map(|spec| spec.mnemonic)
+}
+
+/// The Mnemonics worth offering as a "did you mean": every one but those of a
+/// later processor that s68k does not implement yet, which would only lead to
+/// another error.
+pub fn suggestible_mnemonics() -> impl Iterator<Item = &'static str> {
+    TABLE
+        .iter()
+        .filter(|spec| {
+            !matches!(
+                spec.implementation,
+                Implementation::NotImplementedYet { .. }
+            )
+        })
+        .map(|spec| spec.mnemonic)
 }
 
 /// The name in `candidates` closest to `name`, when one is close enough to be
@@ -1435,12 +1694,118 @@ mod tests {
                 Implementation::NotImplemented { reason, .. } => {
                     assert!(!reason.is_empty(), "`{mnemonic}` says why");
                 }
-                Implementation::Implemented(_) => {
-                    panic!("`{mnemonic}` is not implemented in this phase")
+                Implementation::Implemented(_) | Implementation::NotImplementedYet { .. } => {
+                    panic!("`{mnemonic}` is not implemented, for good")
                 }
             }
             assert!(spec.forms.is_empty(), "`{mnemonic}` is never form checked");
         }
+    }
+
+    /// The 68000's Forms are the 68000's but two, the first members of the
+    /// dialects (ADR 0011): `move ccr,<ea>`, the 68010's, and `extb.l`, the
+    /// 68020's.
+    #[test]
+    fn every_form_names_its_first_processor() {
+        let later: Vec<(&str, usize, Processor)> = TABLE
+            .iter()
+            .flat_map(|spec| {
+                spec.forms
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, form)| form.processor != Processor::M68000)
+                    .map(|(index, form)| (spec.mnemonic, index, form.processor))
+            })
+            .collect();
+        assert_eq!(
+            later,
+            vec![
+                ("move", 4, Processor::M68010),
+                ("extb", 0, Processor::M68020)
+            ]
+        );
+        assert_eq!(
+            lookup("move").expect("a row").forms[4].operands,
+            &[Modes::CCR, Modes::DATA_ALTERABLE]
+        );
+    }
+
+    /// Every other instruction of the 68010 and the 68020 is a row of its own,
+    /// so that it is answered as one still to come and not as a word nobody
+    /// has heard of; the module call is left out for good.
+    #[test]
+    fn the_later_instructions_are_rows_still_to_come() {
+        for (mnemonic, processor, bit_field) in [
+            ("rtd", Processor::M68010, false),
+            ("bkpt", Processor::M68010, false),
+            ("movec", Processor::M68010, false),
+            ("moves", Processor::M68010, false),
+            ("cas2", Processor::M68020, false),
+            ("trapeq", Processor::M68020, false),
+            ("divul", Processor::M68020, false),
+            ("bfextu", Processor::M68020, true),
+            ("bfins", Processor::M68020, true),
+        ] {
+            let spec = lookup(mnemonic).unwrap_or_else(|| panic!("`{mnemonic}` is in the table"));
+            assert_eq!(
+                spec.implementation,
+                Implementation::NotImplementedYet {
+                    processor,
+                    bit_field
+                },
+                "`{mnemonic}`"
+            );
+            assert!(spec.forms.is_empty());
+        }
+        assert_eq!(
+            TABLE
+                .iter()
+                .filter(|spec| matches!(
+                    spec.implementation,
+                    Implementation::NotImplementedYet {
+                        bit_field: true,
+                        ..
+                    }
+                ))
+                .count(),
+            8,
+            "the eight bit-field instructions"
+        );
+        for mnemonic in ["callm", "rtm"] {
+            assert!(matches!(
+                lookup(mnemonic).expect("a row").implementation,
+                Implementation::NotImplemented { .. }
+            ));
+        }
+        assert!(!suggestible_mnemonics().any(|name| name == "cas"));
+        assert!(suggestible_mnemonics().any(|name| name == "callm"));
+    }
+
+    #[test]
+    fn a_later_shape_is_told_by_its_size_or_its_operands() {
+        use crate::assembler::parser;
+        let shape = |text: &str| {
+            let (line, _) = parser::parse_line(text, "main.m68k", 0);
+            let operation = line.operation.expect("an operation");
+            later_shape(
+                &operation.lowercase_name(),
+                operation.size,
+                &operation.operands,
+            )
+            .map(|shape| shape.mnemonic)
+        };
+        assert_eq!(shape("    muls.l d0,d1"), Some("muls"));
+        assert_eq!(shape("    muls.w d0,d1"), None);
+        assert_eq!(shape("    divu.l (a0),d1"), Some("divu"));
+        assert_eq!(shape("    link.l a6,#-8"), Some("link"));
+        assert_eq!(shape("    chk.l d0,d1"), Some("chk"));
+        assert_eq!(shape("    tst.w a0"), Some("tst"));
+        assert_eq!(shape("    tst.l #5"), Some("tst"));
+        assert_eq!(shape("    tst.b label(pc)"), Some("tst"));
+        assert_eq!(shape("    tst.b (a0)"), None);
+        assert_eq!(shape("    cmpi.w #1,label(pc)"), Some("cmpi"));
+        assert_eq!(shape("    cmp.w #1,label(pc)"), Some("cmp"));
+        assert_eq!(shape("    cmp.w label(pc),d0"), None);
     }
 
     /// The shapes of the extend-flag and binary-coded-decimal group, read

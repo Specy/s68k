@@ -46,14 +46,18 @@
 //!
 //! # What is still to come
 //!
-//! Every Directive and every Mnemonic of the design record is implemented, and
-//! **nothing in the crate says "yet" any more**: `rte`, `stop`, `reset`,
-//! `move usp,an`, macros with conditional assembly, `memory` and the
-//! structured-control keywords are the whole of what is refused, each with the
-//! reason it carries in the instruction table or in [`layout`]'s own list.
-//! Every instruction is encoded as EASy68K encodes it and takes that
-//! encoding's bytes (ADR 0006), which was the one decision the design record
-//! left open.
+//! Every Directive and every Mnemonic of the design record is implemented:
+//! `rte`, `stop`, `reset`, `move usp,an`, macros with conditional assembly and
+//! the structured-control keywords are the whole of the 68000's that is
+//! refused, each with the reason it carries in the instruction table or in
+//! [`layout`]'s own list. Every instruction is encoded as EASy68K encodes it
+//! and takes that encoding's bytes (ADR 0006), which was the one decision the
+//! design record left open.
+//!
+//! What says "yet" is the 68010 and the 68020 (ADR 0011): `opt p=` chooses
+//! either, and of their instructions s68k has `move ccr,<ea>` and `extb.l`
+//! and the long branches; every other one is `unimplemented_in_dialect` until
+//! its batch of the asm-editor's `docs/design/m68k-machine-plan.md`.
 
 pub mod analyzer;
 pub mod ast;

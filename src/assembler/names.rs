@@ -9,7 +9,10 @@
 //!    Operation take its Operand field as text instead of as an
 //!    `operand_list`?* The answer decides whether that text is tokenized at all,
 //!    and no later phase can undo tokenizing — read as an `operand_list`,
-//!    `include io.x68` takes `.x` for a size suffix and leaves `68` over.
+//!    `include io.x68` takes `.x` for a size suffix and leaves `68` over. The
+//!    instructions of the 68010 and the 68020 that s68k does not implement yet
+//!    are among them, which is the one thing besides its names that the
+//!    parser reads from the instruction table.
 //!
 //! Nothing else about a name reaches the parser: the operand rules, the sizes
 //! and the value ranges of the instruction table stay the analyzer's ([ADR
@@ -44,8 +47,15 @@ pub enum TextOperandKind {
     /// A refused Directive's `raw_operand_field`: the same extent as
     /// `message_text`, under the name it carries on an Operation s68k does not
     /// implement. It is what keeps one "not implemented" Diagnostic on
-    /// `if.l d1 <hs> #NOON then.s` instead of five syntax errors about `<`.
+    /// `if.l d1 <hs> #NOON then.s` instead of five syntax errors about `<`,
+    /// and on `bfextu d0{4:8},d1`, an instruction of the 68020 that s68k does
+    /// not implement yet.
     RawOperandField,
+    /// `opt`: the `option_list`, comma separated words, one of which may be
+    /// `p=68020`, whose extent is `operand_field_extent` (1.5) as
+    /// `file_specification`'s is. It is text because `=` starts no token, and
+    /// the Directive reads the words itself (2.6).
+    OptionList,
 }
 
 /// Every Directive name s68k reads, implemented, ignored or refused.
@@ -108,7 +118,12 @@ pub fn text_operation(name: &str) -> Option<TextOperandKind> {
     match name.as_str() {
         "include" | "incbin" => Some(TextOperandKind::FileSpecification),
         "fail" => Some(TextOperandKind::MessageText),
+        "opt" => Some(TextOperandKind::OptionList),
         name if REFUSED_OPERATIONS.contains(&name) => Some(TextOperandKind::RawOperandField),
+        // An instruction of the 68010 or the 68020 that s68k does not
+        // implement yet is refused whole, as a refused Directive is: one
+        // Diagnostic, and none about the bit fields' `{4:8}`.
+        name if table::is_still_to_come(name) => Some(TextOperandKind::RawOperandField),
         _ => None,
     }
 }
@@ -158,11 +173,22 @@ mod tests {
             Some(TextOperandKind::FileSpecification)
         );
         assert_eq!(text_operation("fail"), Some(TextOperandKind::MessageText));
+        assert_eq!(text_operation("OPT"), Some(TextOperandKind::OptionList));
         assert_eq!(
             text_operation("macro"),
             Some(TextOperandKind::RawOperandField)
         );
         assert_eq!(text_operation("if"), Some(TextOperandKind::RawOperandField));
+        assert_eq!(
+            text_operation("bfextu"),
+            Some(TextOperandKind::RawOperandField),
+            "an instruction still to come is refused whole"
+        );
+        assert_eq!(
+            text_operation("extb"),
+            None,
+            "the dialects' first members are read"
+        );
         assert_eq!(text_operation("move"), None);
         assert_eq!(text_operation("dc"), None);
         assert_eq!(

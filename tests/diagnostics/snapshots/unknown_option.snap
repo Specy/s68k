@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unknown_option.asm
+---
+[
+  {
+    "severity": "warning",
+    "code": "unknown_option",
+    "message": "`fast` is not an option of `opt`, so it does nothing.",
+    "hint": "`opt` takes `p=68000`, `p=68010` or `p=68020`, `bit`, and EASy68K's listing options `cre`, `mex`, `sex`, `war` and `cex`, each also with `no` before it",
+    "location": {
+      "file": "unknown_option.asm",
+      "line": 2,
+      "column": 18,
+      "endColumn": 22
+    },
+    "related": []
+  },
+  {
+    "severity": "warning",
+    "code": "unknown_option",
+    "message": "`p68020` is not an option of `opt`, so it does nothing.",
+    "hint": "`opt` takes `p=68000`, `p=68010` or `p=68020`, `bit`, and EASy68K's listing options `cre`, `mex`, `sex`, `war` and `cex`, each also with `no` before it",
+    "location": {
+      "file": "unknown_option.asm",
+      "line": 3,
+      "column": 8,
+      "endColumn": 14
+    },
+    "related": []
+  }
+]

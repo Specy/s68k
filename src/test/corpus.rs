@@ -1165,7 +1165,9 @@ fn split(source: &str, cuts: &[(&str, std::ops::Range<usize>)]) -> (Files, Strin
 /// `tests/corpus/README.md` documents these; a change here is a change there.
 #[test]
 fn printer_rules() {
+    // `move ccr,<ea>` below is the 68010's (ADR 0011).
     let source = "\
+    opt p=68010
 regs reg d0-d2/a0/a6
     movem.l d0-d2/a0/a6,-(sp)
     movem.l (sp)+,d0-d2/a0/a6

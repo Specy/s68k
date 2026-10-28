@@ -1,0 +1,46 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unimplemented_in_dialect.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unimplemented_in_dialect",
+    "message": "`rtd` is a 68010 instruction, and is not implemented yet in s68k's 68010 dialect.",
+    "hint": "The 68010 dialect is partial so far: of the 68010's instructions s68k has `move ccr,<ea>`",
+    "location": {
+      "file": "unimplemented_in_dialect.asm",
+      "line": 4,
+      "column": 4,
+      "endColumn": 7
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_in_dialect",
+    "message": "`muls.l d0,d1` is a 68020 instruction, and is not implemented yet in s68k's 68020 dialect.",
+    "hint": "The 68020 dialect is partial so far: of the 68020's instructions s68k has `extb.l` and the long branches `bra.l`, `bsr.l` and `b<cc>.l`",
+    "location": {
+      "file": "unimplemented_in_dialect.asm",
+      "line": 5,
+      "column": 4,
+      "endColumn": 16
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unimplemented_in_dialect",
+    "message": "`bfextu` is a 68020 bit-field instruction, and bit fields are not implemented yet.",
+    "hint": "s68k reads `opt bit` and has no bit-field instruction yet",
+    "location": {
+      "file": "unimplemented_in_dialect.asm",
+      "line": 6,
+      "column": 4,
+      "endColumn": 10
+    },
+    "related": []
+  }
+]

@@ -953,8 +953,10 @@ routine:
 
         #[test]
         fn move_from_ccr_writes_the_low_byte_as_a_word() {
+            // `move ccr,<ea>` is the 68010's (ADR 0011).
             let mut interpreter = prepare(
-                "    move.w #$1f,ccr
+                "    opt p=68010
+    move.w #$1f,ccr
     move.w ccr,d2
 ",
             );

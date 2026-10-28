@@ -419,6 +419,21 @@ export type RelatedLocation = {
     message: string
 }
 
+/**
+ * A change to the source that puts right what a diagnostic is about, for an
+ * editor to offer as a quick fix: the text `location` covers is replaced with
+ * `text`. A location whose `column` is its `endColumn` inserts there; `text`
+ * may hold `\n`, so a fix that adds a line inserts at column 0 of the line it
+ * goes above, its own line break included. The file may be another than the
+ * diagnostic's.
+ */
+export type SuggestedFix = {
+    /** What applying it does, for the button: "Add `opt p=68020` at the top of the program". */
+    title: string,
+    location: Location,
+    text: string
+}
+
 export type Diagnostic = {
     /** Only an `error` stops the program from being built. */
     severity: Severity,
@@ -430,7 +445,13 @@ export type Diagnostic = {
     hint?: string,
     location: Location,
     /** The first definition of a name defined twice, and the like. */
-    related: RelatedLocation[]
+    related: RelatedLocation[],
+    /**
+     * The fixes the hint describes, the one to prefer first; absent when there
+     * are none. `needs_a_later_processor` carries the `opt p=` line that writes
+     * the program for the processor, then the 68000's way of doing the same.
+     */
+    fixes?: SuggestedFix[]
 }
 "#;
 
@@ -543,6 +564,12 @@ export type MemoryRange = {
     location: Location
 }
 
+/**
+ * A processor a program can be written for, the number `opt p=` takes: the
+ * 68000, which is the default and EASy68K's, the 68010 or the 68020.
+ */
+export type Processor = "68000" | "68010" | "68020"
+
 export type ProgramInfo = {
     /** The address the program starts running at. */
     entryPoint: number,
@@ -553,7 +580,11 @@ export type ProgramInfo = {
     endAddress: number,
     instructionCount: number,
     /** Every symbol, by full name. */
-    symbols: Record<string, ProgramSymbol>
+    symbols: Record<string, ProgramSymbol>,
+    /** The processor `opt p=` chose, the 68000 when no line chose one. */
+    processor: Processor,
+    /** Whether the program has the 68020's bit-field instructions, through `opt bit` or `opt p=68020`. */
+    bitFields: boolean
 }
 "#;
 
@@ -587,7 +618,7 @@ export type ParsedOperand = {
     span: LineSpan
 }
 
-/** The raw operand field of `include`, `incbin` or `fail`. */
+/** The raw operand field of `include`, `incbin`, `fail` or `opt`. */
 export type ParsedText = {
     text: string,
     span: LineSpan
@@ -641,7 +672,13 @@ export type InstructionForm = {
      * `andi`, `ori` and `eori` into `sr`. s68k runs every program in
      * supervisor mode, so a privileged form still runs.
      */
-    privileged: boolean
+    privileged: boolean,
+    /**
+     * The first processor that has it: `move ccr,<ea>` is the 68010's and
+     * `extb.l` the 68020's; every other form is the 68000's. A program written
+     * for an earlier processor is refused it.
+     */
+    processor: Processor
 }
 
 export type InstructionInfo = {

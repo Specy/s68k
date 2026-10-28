@@ -82,8 +82,9 @@ byte and is not an error.
 ### 1.2 `case_rule` — what is case sensitive
 
 Case **insensitive**: Mnemonics, Directive names, size suffixes, register names
-(`d0`, `A7`, `sp`, `PC`, `sr`, `Ccr`, `usp`), the `opt` option names, and the
-hexadecimal digits `a`–`f`. `MOVE.B` and `move.b` are one Operation.
+(`d0`, `A7`, `sp`, `PC`, `sr`, `Ccr`, `usp`), the `opt` option names and the
+processor after `p=`, and the hexadecimal digits `a`–`f`. `MOVE.B` and
+`move.b` are one Operation.
 
 Case **sensitive**: every Symbol name. `Count` and `count` are two Symbols. This
 is EASy68K's rule and the corpus depends on it in both directions:
@@ -163,15 +164,17 @@ Scanning from the first non-blank character after the operation field:
    first non-blank character after the run is `,`.
 
 Every Operation's Operand field is read this way except those named in
-`text_operation` (2.6) — `fail`, `include`, `incbin` and the refused keywords —
-whose Operand field is text and is not tokenized at all.
+`text_operation` (2.6) — `fail`, `include`, `incbin`, `opt`, the refused
+keywords and the instructions still to come — whose Operand field is text and
+is not tokenized at all.
 
-`include` and `incbin` end their field exactly where this section ends it, rules
-1 to 4 and all — rule 1 is how `include 'input output macros.x68'` keeps its
-spaces — and only what is inside is read differently, as one raw filename rather
-than as a list of Operands. `fail` and the refused keywords end theirs at a `;`
-(rule 2) or at the `line_end` (rule 3) and at nothing else: whitespace never
-ends such a field, and a quote inside it is an ordinary character, so
+`include`, `incbin` and `opt` end their field exactly where this section ends
+it, rules 1 to 4 and all — rule 1 is how `include 'input output macros.x68'`
+keeps its spaces — and only what is inside is read differently, as one raw
+filename or a list of options rather than as a list of Operands. `fail`, the
+refused keywords and the instructions still to come end theirs at a `;` (rule
+2) or at the `line_end` (rule 3) and at nothing else: whitespace never ends
+such a field, and a quote inside it is an ordinary character, so
 `FAIL don't call foo without an argument` is one message and
 `if <cs> then.s   ; if set` still keeps its Comment. A `;` therefore starts a
 Comment on every line of this language, with no exception at all.
@@ -571,22 +574,26 @@ Directive name?", and nothing else (ADR 0003). The Operand field asks a second,
 *closed* list — `text_operation` (2.6), written out in this document and not in
 the instruction table — "does this Operation take its Operand field as text
 instead of as an `operand_list`?", because the answer decides whether that text
-is tokenized at all and no later phase can undo the tokenizing. Neither question
-reaches the operand rules, the sizes or the value ranges of the instruction
-table: those stay the analyzer's.
+is tokenized at all and no later phase can undo the tokenizing. The list names
+one group by a mark the table carries rather than by name: the instructions of
+the 68010 and the 68020 that s68k does not implement yet (`still_to_come`,
+2.6). Neither question reaches the operand rules, the sizes or the value ranges
+of the instruction table: those stay the analyzer's.
 
 ### 2.5 `operand_field` and the Addressing modes
 
 ```
 operand_field      = operand_list | text_operand_field ;
 operand_list       = operand { "," operand } ;
-text_operand_field = file_specification | message_text | raw_operand_field ;
+text_operand_field = file_specification | message_text | option_list
+                   | raw_operand_field ;
 ```
 
 Which of the two alternatives applies is decided by the Operation's name and by
 nothing else: an Operation named in `text_operation` (2.6) takes the text form
 that production gives it — `file_specification` for `include` and `incbin`,
-`message_text` for `fail`, `raw_operand_field` for the refused keywords — and
+`message_text` for `fail`, `option_list` for `opt`, `raw_operand_field` for the
+refused keywords and the instructions still to come — and
 every other Operation, known or unknown, takes an `operand_list`. This is the
 parser's second table question (2.4), and it has to be the parser's because a
 text Operand field is never tokenized: read as an `operand_list`,
@@ -770,7 +777,7 @@ incbin_directive  = [ label_field ] "incbin" whitespace file_specification ;
 reg_directive     =   label_field   whitespace "reg" whitespace register_list ;
 fail_directive    = [ label_field ] "fail" [ whitespace message_text ] ;
 simhalt_directive = [ label_field ] "simhalt" ;
-opt_directive     = [ label_field ] "opt" whitespace option_name { "," option_name } ;
+opt_directive     = [ label_field ] "opt" whitespace option_list ;
 list_directive    = [ label_field ] ( "list" | "nolist" ) ;
 page_directive    = "page" ;
 offset_directive  = [ label_field ] "offset" whitespace expression ;
@@ -786,11 +793,24 @@ bare_file_name     = ? every character to the end of the Operand field (1.5) ? ;
 message_text       = ? every character of the Operand field to the first `;` or
                        to the end of the line: whitespace, commas and quotes are
                        ordinary characters and nothing in it is tokenized ? ;
-option_name        = identifier ;
+option_list        = ? the raw text of the Operand field, its extent that of
+                       1.5, read by the Directive as option { "," option } ?
+                       ;
+option             = processor_option | "bit" | listing_option
+                   | ? any other word, which is unknown_option ? ;
+processor_option   = "p" "=" processor ;
+processor          = "68000" | "68010" | "68020" ;
+listing_option     = [ "no" ] ( "cre" | "mex" | "sex" | "war" | "cex" ) ;
 raw_operand_field  = ? the same text as message_text, under the name it carries
                        on a refused Operation ? ;
 
-text_operation     = "fail" | "include" | "incbin" | refused_operation ;
+text_operation     = "fail" | "include" | "incbin" | "opt" | refused_operation
+                   | still_to_come ;
+still_to_come      = ? a Mnemonic of the 68010 or the 68020 the instruction
+                       table marks as not implemented yet: rtd, bkpt, movec,
+                       moves, chk2, cmp2, cas, cas2, pack, unpk, divsl, divul,
+                       the eighteen trapcc, and the eight bit-field
+                       instructions ? ;
 refused_operation  = "macro" | "endm" | "mexit"
                    | "ifeq" | "ifne" | "iflt" | "ifle" | "ifgt" | "ifge"
                    | "ifc" | "ifnc" | "ifarg" | "endc"
@@ -803,7 +823,8 @@ macro_definition   = ? the line whose Operation is "macro", every line after it,
 ```
 
 `text_operation` is matched on the Operation's name alone, with any
-`size_suffix` set aside, because the corpus writes `if.l` and `for.b`.
+`size_suffix` set aside, because the corpus writes `if.l` and `for.b`, and a
+68020 program writes `cas.l` and `bfextu`.
 Its members are also Directive names for `label_rule` (1.4), so an `endm` in
 column 1 is an Operation and not a Label. The conditional-assembly and
 structured-control names are the help's own lists
@@ -953,6 +974,33 @@ Notes the shapes do not carry:
   nothing and is therefore neither rounded up nor answered with `odd_origin`,
   which is what keeps `org *` silent when a `dc.b` above the `offset` left the
   address odd.
+* **`opt` reads its words as EASy68K does** — comma separated, case
+  insensitive (`Directives/opt.htm`) — and one more in the spelling of Devpac
+  and vasm, `p=`, which chooses the Processor dialect (ADR 0011). Its field
+  is text because `=` is no token kind of 1.14; it ends where an
+  `operand_list` would, so `opt cre  listing` keeps `listing` as EASy68K's bare
+  Comment, and an empty word between two commas is skipped.
+    * `p=68000`, `p=68010` or `p=68020` writes the program for that
+      processor; any other value is `unknown_processor`, which names the three.
+    * `bit` gives it the 68020's bit-field instructions, as EASy68K's `OPT BIT`
+      gives them to its 68000, and `p=68020` implies it. There is no `nobit`,
+      as there is none in EASy68K.
+    * Both are chosen **before the first instruction**, a line whose
+      Operation is a Mnemonic, since every instruction is judged and measured
+      for the processor in force; one after it is
+      `processor_chosen_after_code` and chooses nothing. Naming the same
+      processor again is harmless and naming another is
+      `processor_chosen_twice`, whichever File of the Project either is in.
+    * `cre`, `mex`, `sex`, `war` and `cex`, and each with `no` before it,
+      are EASy68K's listing options and change nothing, since there is no
+      listing. Any other word is the warning `unknown_option`: EASy68K's
+      syntax error, made a warning because the word changes nothing either
+      way, and said because a misspelt `p=` would otherwise leave the program
+      on the 68000 in silence.
+* The instructions still to come — `still_to_come` above — parse as
+  `unimplemented_operation` too: one `unimplemented_in_dialect` about the name,
+  and no syntax error about the bit fields' `d0{4:8}` or `cas2`'s `d0:d1`,
+  which s68k does not read yet. They arrive with their dialects.
 * The refused Directives — `refused_operation` above — parse as
   `unimplemented_operation`, an `operation` followed by a `raw_operand_field`
   that is **not** tokenized. That is what keeps one "not implemented" diagnostic
@@ -1318,8 +1366,10 @@ tests carry these names.
 `include_directive`, `incbin_directive`, `reg_directive`, `fail_directive`,
 `simhalt_directive`, `opt_directive`, `list_directive`, `page_directive`,
 `offset_directive`, `section_directive`, `file_specification`, `bare_file_name`,
-`message_text`, `option_name`, `raw_operand_field`, `unimplemented_operation`,
-`quoted_file_name`, `text_operation`, `refused_operation`, `macro_definition`.
+`message_text`, `option_list`, `option`, `processor_option`, `processor`,
+`listing_option`, `raw_operand_field`, `unimplemented_operation`,
+`quoted_file_name`, `text_operation`, `refused_operation`, `still_to_come`,
+`macro_definition`.
 
 The Directive rules are the one group whose tests are not named after them:
 §2.6 belongs to the Directives phase, which implements them in
@@ -1335,7 +1385,9 @@ decides. The map, so that a rule can be found from its name:
 | `ds_directive` | `ds_reserves_its_room_and_writes_nothing`, `ds_w_zero_is_the_alignment_idiom` |
 | `dcb_directive` | `dcb_fills_its_block`, `a_count_that_does_not_fit_in_memory_says_so` |
 | `end_directive` | `the_entry_point_is_end_then_start_then_the_first_instruction`, `end_without_an_address_warns_and_falls_back`, `end_finds_a_label_that_differs_only_in_case_and_warns`, `a_line_after_end_is_not_assembled_and_says_so_once`, `a_comment_after_end_is_what_every_easy68k_program_has` |
-| `opt_directive`, `list_directive`, `page_directive` | `the_ignored_directives_are_ignored_in_silence` |
+| `opt_directive`, `option_list`, `option`, `processor_option`, `listing_option` | `opt_chooses_the_processor_and_the_bit_fields`, `opt_comes_before_the_first_instruction_and_names_one_processor`, `opt_in_an_included_file_chooses_for_the_whole_program`, `the_processor_fix_edits_the_line_that_chooses_the_processor`, `the_ignored_directives_are_ignored_in_silence` |
+| `list_directive`, `page_directive` | `the_ignored_directives_are_ignored_in_silence` |
+| `still_to_come` | `text_operation_is_a_closed_list` in `src/assembler/names.rs`, `an_instruction_still_to_come_says_so` in `src/assembler/analyzer.rs` |
 | `reg_directive` | `reg_names_a_register_list_and_movem_reads_it_in_both_directions`, `reg_takes_a_single_register_as_a_list_of_one`, `reg_without_a_name_says_so`, `reg_takes_a_register_list_and_nothing_else`, `a_register_list_in_an_expression_is_refused`, `a_register_list_has_to_be_defined_above_the_movem_that_reads_it`, `a_name_that_is_not_a_register_list_says_so`, `a_name_that_is_defined_nowhere_keeps_its_own_message` |
 | `fail_directive` | `fail_reports_its_message_word_for_word_and_the_assembly_carries_on`, `fail_without_a_message_uses_easy68ks_default`, `a_label_on_a_fail_names_the_address_of_the_line` |
 | `simhalt_directive` | `simhalt_is_an_instruction_of_four_bytes`, `simhalt_ignores_the_rest_of_its_line`, and `simhalt_pauses_after_itself_and_step_resumes` in `src/test/test.rs` |

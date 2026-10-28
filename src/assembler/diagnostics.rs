@@ -28,6 +28,7 @@ use serde::{Serialize, Serializer};
 
 use super::source::Location;
 use super::token::{NumberBase, QuoteKind};
+use crate::machine::Processor;
 
 /// How much a Diagnostic matters.
 ///
@@ -682,6 +683,76 @@ pub enum DiagnosticKind {
         /// The kind of range: `rom`.
         kind: String,
     },
+
+    // ---- the Processor dialect, `opt` and the gates (ADR 0011) ----
+    /// `opt p=` naming no processor s68k has.
+    UnknownProcessor {
+        /// What was written after `p=`, empty when nothing was.
+        found: String,
+    },
+    /// An `opt p=` naming another processor than the one an `opt p=` above
+    /// chose, which is a related Location. A program is written for one.
+    ProcessorChosenTwice {
+        /// The processor chosen above.
+        chosen: Processor,
+        /// The one this line names.
+        found: Processor,
+    },
+    /// An `opt p=` or `opt bit` after the program's first instruction, which
+    /// is a related Location: the dialect is chosen before any instruction is
+    /// assembled for it.
+    ProcessorChosenAfterCode {
+        /// The option as it was written, `p=68020` or `bit`.
+        option: String,
+    },
+    /// An `opt` word that is no option of EASy68K's or s68k's, which does
+    /// nothing.
+    UnknownOption {
+        /// The word as it was written.
+        option: String,
+    },
+    /// An instruction of a later processor than the one the program is
+    /// written for, `extb.l` or `move ccr,<ea>` in a 68000 program.
+    NeedsALaterProcessor {
+        /// The instruction as a message names it: `extb.l`, `move ccr,<ea>`.
+        name: String,
+        /// The first processor that has it.
+        processor: Processor,
+        /// The program's processor.
+        program: Processor,
+        /// What to write on the program's processor instead, with what it
+        /// does: "`ext.w d0` and then `ext.l d0`, which do the same".
+        equivalent: Option<String>,
+        /// Whether an `opt p=` line chose the program's processor, which is
+        /// then the line to change rather than one to add.
+        chosen: bool,
+    },
+    /// A 68010 or 68020 instruction, or a shape a later processor gave a
+    /// 68000 one, that s68k's dialect does not implement yet: `rtd`,
+    /// `muls.l`, `bfextu`.
+    UnimplementedInDialect {
+        /// What was written, as the message quotes it: `rtd`, `muls.l d0,d1`.
+        name: String,
+        /// The first processor that has it.
+        processor: Processor,
+        /// Whether it is one of the 68020's bit-field instructions, which
+        /// `opt bit` gives a 68000 program in EASy68K.
+        bit_field: bool,
+    },
+}
+
+/// What the processor dialects have so far, as a hint about one of their
+/// instructions that is still to come says it.
+fn partial_dialect(processor: Processor, bit_field: bool) -> String {
+    match (processor, bit_field) {
+        (_, true) => "s68k reads `opt bit` and has no bit-field instruction yet".to_string(),
+        (Processor::M68010, _) => "The 68010 dialect is partial so far: of the 68010's \
+                                   instructions s68k has `move ccr,<ea>`"
+            .to_string(),
+        _ => "The 68020 dialect is partial so far: of the 68020's instructions s68k has \
+              `extb.l` and the long branches `bra.l`, `bsr.l` and `b<cc>.l`"
+            .to_string(),
+    }
 }
 
 /// Every code this module can produce, in the order the variants are declared.
@@ -762,6 +833,12 @@ pub const ALL_CODES: &[&str] = &[
     "unknown_memory_kind",
     "empty_memory_range",
     "memory_range_replaced",
+    "unknown_processor",
+    "processor_chosen_twice",
+    "processor_chosen_after_code",
+    "unknown_option",
+    "needs_a_later_processor",
+    "unimplemented_in_dialect",
 ];
 
 impl DiagnosticKind {
@@ -847,6 +924,12 @@ impl DiagnosticKind {
             DiagnosticKind::UnknownMemoryKind { .. } => "unknown_memory_kind",
             DiagnosticKind::EmptyMemoryRange { .. } => "empty_memory_range",
             DiagnosticKind::MemoryRangeReplaced { .. } => "memory_range_replaced",
+            DiagnosticKind::UnknownProcessor { .. } => "unknown_processor",
+            DiagnosticKind::ProcessorChosenTwice { .. } => "processor_chosen_twice",
+            DiagnosticKind::ProcessorChosenAfterCode { .. } => "processor_chosen_after_code",
+            DiagnosticKind::UnknownOption { .. } => "unknown_option",
+            DiagnosticKind::NeedsALaterProcessor { .. } => "needs_a_later_processor",
+            DiagnosticKind::UnimplementedInDialect { .. } => "unimplemented_in_dialect",
         }
     }
 
@@ -867,7 +950,8 @@ impl DiagnosticKind {
             | DiagnosticKind::EntryPointCase { .. }
             | DiagnosticKind::EndWithoutAnAddress
             | DiagnosticKind::EmptyMemoryRange { .. }
-            | DiagnosticKind::MemoryRangeReplaced { .. } => Severity::Warning,
+            | DiagnosticKind::MemoryRangeReplaced { .. }
+            | DiagnosticKind::UnknownOption { .. } => Severity::Warning,
             DiagnosticKind::BareComment
             | DiagnosticKind::SpaceBeforeComma
             | DiagnosticKind::DoubleQuotedString
@@ -1150,6 +1234,56 @@ impl DiagnosticKind {
                 "This `memory {kind}` replaces the one above it: a program has one range of \
                  each kind."
             ),
+            DiagnosticKind::UnknownProcessor { found } => match found.is_empty() {
+                true => "`opt p=` names no processor.".to_string(),
+                false => format!("`{found}` is not a processor s68k has."),
+            },
+            DiagnosticKind::ProcessorChosenTwice { chosen, found } => format!(
+                "`opt p={}` names another processor than the {} chosen above: a program is \
+                 written for one.",
+                found.name(),
+                chosen.name()
+            ),
+            DiagnosticKind::ProcessorChosenAfterCode { option } => match option.as_str() {
+                "bit" => "`opt bit` comes after the first instruction, and bit fields are chosen \
+                          before any, with the processor."
+                    .to_string(),
+                _ => format!(
+                    "`opt {option}` comes after the first instruction, and the processor is \
+                     chosen before any."
+                ),
+            },
+            DiagnosticKind::UnknownOption { option } => {
+                format!("`{option}` is not an option of `opt`, so it does nothing.")
+            }
+            DiagnosticKind::NeedsALaterProcessor {
+                name,
+                processor,
+                program,
+                ..
+            } => format!(
+                "`{name}` is a {} instruction, and this program is written for the {}.",
+                processor.name(),
+                program.name()
+            ),
+            DiagnosticKind::UnimplementedInDialect {
+                name,
+                processor,
+                bit_field,
+                ..
+            } => match bit_field {
+                true => format!(
+                    "`{name}` is a {} bit-field instruction, and bit fields are not implemented \
+                     yet.",
+                    processor.name()
+                ),
+                false => format!(
+                    "`{name}` is a {} instruction, and is not implemented yet in s68k's {} \
+                     dialect.",
+                    processor.name(),
+                    processor.name()
+                ),
+            },
         }
     }
 
@@ -1470,6 +1604,54 @@ impl DiagnosticKind {
             DiagnosticKind::MemoryRangeReplaced { kind } => Some(format!(
                 "Keep one `memory {kind}` line; EASy68K also keeps only the last one"
             )),
+            DiagnosticKind::UnknownProcessor { .. } => Some(
+                "s68k has three: write `opt p=68000`, `opt p=68010` or `opt p=68020`".to_string(),
+            ),
+            DiagnosticKind::ProcessorChosenTwice { .. } => Some(
+                "Keep one `opt p=` line, at the top of the program, naming the processor it is \
+                 for"
+                .to_string(),
+            ),
+            DiagnosticKind::ProcessorChosenAfterCode { .. } => Some(
+                "Move this line above the first instruction, to the top of the program"
+                    .to_string(),
+            ),
+            DiagnosticKind::UnknownOption { .. } => Some(
+                "`opt` takes `p=68000`, `p=68010` or `p=68020`, `bit`, and EASy68K's listing \
+                 options `cre`, `mex`, `sex`, `war` and `cex`, each also with `no` before it"
+                    .to_string(),
+            ),
+            DiagnosticKind::NeedsALaterProcessor {
+                processor,
+                program,
+                equivalent,
+                chosen,
+                ..
+            } => {
+                let dialect = match chosen {
+                    true => format!(
+                        "change `opt p={}` to `opt p={}`",
+                        program.name(),
+                        processor.name()
+                    ),
+                    false => format!(
+                        "add `opt p={}` at the top of the program to write it for the {}",
+                        processor.name(),
+                        processor.name()
+                    ),
+                };
+                Some(match equivalent {
+                    Some(equivalent) => {
+                        format!("On the {}, write {equivalent}; or {dialect}", program.name())
+                    }
+                    None => format!("{}{}", dialect[..1].to_uppercase(), &dialect[1..]),
+                })
+            }
+            DiagnosticKind::UnimplementedInDialect {
+                processor,
+                bit_field,
+                ..
+            } => Some(partial_dialect(*processor, *bit_field)),
             DiagnosticKind::WrongOperandCount {
                 mnemonic,
                 at_least: true,
@@ -1630,6 +1812,29 @@ pub struct Diagnostic {
     pub location: Location,
     /// Other places worth looking at, each with a sentence saying why.
     pub related: Vec<(Location, String)>,
+    /// Changes to the source that put it right, for an editor to offer and
+    /// apply, the one to prefer first. Most Diagnostics have none.
+    pub fixes: Vec<SuggestedFix>,
+}
+
+/// A change to the source that puts right what a Diagnostic is about, for an
+/// editor to offer as a quick fix: the text [`location`](SuggestedFix::location)
+/// covers is replaced with [`text`](SuggestedFix::text).
+///
+/// A Location with no columns, `column` equal to `end_column`, inserts there;
+/// the text may hold line breaks, so a fix that adds a line inserts at column
+/// 0 of the line it goes above, with the new line's own `\n`. Columns count
+/// characters, as every Location's do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SuggestedFix {
+    /// What applying it does, for the button that offers it: "Add `opt
+    /// p=68020` at the top of the program".
+    pub title: String,
+    /// What it replaces, in which File; it need not be where the Diagnostic
+    /// is.
+    pub location: Location,
+    /// What goes in its place.
+    pub text: String,
 }
 
 impl Diagnostic {
@@ -1640,12 +1845,19 @@ impl Diagnostic {
             kind,
             location,
             related: Vec::new(),
+            fixes: Vec::new(),
         }
     }
 
     /// The same Diagnostic with one more related Location.
     pub fn with_related(mut self, location: Location, message: impl Into<String>) -> Self {
         self.related.push((location, message.into()));
+        self
+    }
+
+    /// The same Diagnostic with one more suggested fix, after the ones it has.
+    pub fn with_fix(mut self, fix: SuggestedFix) -> Self {
+        self.fixes.push(fix);
         self
     }
 
@@ -1691,17 +1903,23 @@ impl Serialize for SerializedRelatedList<'_> {
 }
 
 impl Serialize for Diagnostic {
-    /// `{ severity, code, message, hint, location, related }`, with the message
-    /// and the hint already rendered: the TypeScript side receives plain
-    /// objects and never has to know what a [`DiagnosticKind`] is.
+    /// `{ severity, code, message, hint, location, related, fixes }`, with the
+    /// message and the hint already rendered: the TypeScript side receives
+    /// plain objects and never has to know what a [`DiagnosticKind`] is.
+    /// `fixes` is left out when there are none, which is most of the time.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut diagnostic = serializer.serialize_struct("Diagnostic", 6)?;
+        let fields = 6 + usize::from(!self.fixes.is_empty());
+        let mut diagnostic = serializer.serialize_struct("Diagnostic", fields)?;
         diagnostic.serialize_field("severity", &self.severity)?;
         diagnostic.serialize_field("code", self.code())?;
         diagnostic.serialize_field("message", &self.message())?;
         diagnostic.serialize_field("hint", &self.hint())?;
         diagnostic.serialize_field("location", &self.location)?;
         diagnostic.serialize_field("related", &SerializedRelatedList(&self.related))?;
+        match self.fixes.is_empty() {
+            true => diagnostic.skip_field("fixes")?,
+            false => diagnostic.serialize_field("fixes", &self.fixes)?,
+        }
         diagnostic.end()
     }
 }
@@ -2128,6 +2346,51 @@ mod tests {
                 },
                 "memory_range_replaced",
             ),
+            (
+                DiagnosticKind::UnknownProcessor {
+                    found: "68030".to_string(),
+                },
+                "unknown_processor",
+            ),
+            (
+                DiagnosticKind::ProcessorChosenTwice {
+                    chosen: Processor::M68010,
+                    found: Processor::M68020,
+                },
+                "processor_chosen_twice",
+            ),
+            (
+                DiagnosticKind::ProcessorChosenAfterCode {
+                    option: "p=68020".to_string(),
+                },
+                "processor_chosen_after_code",
+            ),
+            (
+                DiagnosticKind::UnknownOption {
+                    option: "fast".to_string(),
+                },
+                "unknown_option",
+            ),
+            (
+                DiagnosticKind::NeedsALaterProcessor {
+                    name: "extb.l".to_string(),
+                    processor: Processor::M68020,
+                    program: Processor::M68000,
+                    equivalent: Some(
+                        "`ext.w d0` and then `ext.l d0`, which do the same".to_string(),
+                    ),
+                    chosen: false,
+                },
+                "needs_a_later_processor",
+            ),
+            (
+                DiagnosticKind::UnimplementedInDialect {
+                    name: "rtd".to_string(),
+                    processor: Processor::M68010,
+                    bit_field: false,
+                },
+                "unimplemented_in_dialect",
+            ),
         ]
     }
 
@@ -2195,7 +2458,8 @@ mod tests {
                 | "entry_point_case_mismatch"
                 | "end_without_an_address"
                 | "empty_memory_range"
-                | "memory_range_replaced" => Severity::Warning,
+                | "memory_range_replaced"
+                | "unknown_option" => Severity::Warning,
                 "bare_comment"
                 | "space_before_comma"
                 | "double_quoted_string"
@@ -2334,6 +2598,44 @@ mod tests {
                     }
                 ]
             })
+        );
+    }
+
+    #[test]
+    fn a_suggested_fix_serialises_beside_the_related_locations() {
+        let diagnostic = Diagnostic::new(
+            DiagnosticKind::NeedsALaterProcessor {
+                name: "extb.l".to_string(),
+                processor: Processor::M68020,
+                program: Processor::M68000,
+                equivalent: None,
+                chosen: false,
+            },
+            Location::new("main.m68k", 4, 4, 10),
+        )
+        .with_fix(SuggestedFix {
+            title: "Add `opt p=68020` at the top of the program".to_string(),
+            location: Location::new("main.m68k", 1, 0, 0),
+            text: "    opt p=68020\n".to_string(),
+        });
+        let json = serde_json::to_value(&diagnostic).expect("a diagnostic serialises");
+        assert_eq!(
+            json["fixes"],
+            serde_json::json!([{
+                "title": "Add `opt p=68020` at the top of the program",
+                "location": {"file": "main.m68k", "line": 1, "column": 0, "endColumn": 0},
+                "text": "    opt p=68020\n"
+            }])
+        );
+        assert_eq!(
+            json["hint"],
+            "Add `opt p=68020` at the top of the program to write it for the 68020"
+        );
+        let without = Diagnostic::new(DiagnosticKind::DivisionByZero, location());
+        let json = serde_json::to_value(&without).expect("a diagnostic serialises");
+        assert!(
+            json.get("fixes").is_none(),
+            "a Diagnostic with no fix leaves the field out, as every snapshot shows"
         );
     }
 

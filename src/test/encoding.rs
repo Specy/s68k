@@ -37,7 +37,7 @@ use crate::instructions::{
     AddressWidth, BranchSize, IndexRegister, Instruction, Operand, RegisterOperand, ShiftDirection,
     Sign, Size, TargetDirection,
 };
-use crate::machine::decode::{decode_words, first_processor};
+use crate::machine::decode::decode_words;
 use crate::machine::encode::{encode, encode_bytes, size};
 use crate::machine::Processor;
 
@@ -187,10 +187,17 @@ fn lines() -> Vec<Line> {
     lines
 }
 
-/// The codes of the errors the analyzer raises on a line, by the rules no
-/// position states.
-fn refusals(line: &Line) -> BTreeSet<&'static str> {
+/// The codes of the errors the analyzer raises on a line in a Program
+/// written for `processor`, by the rules no position states.
+///
+/// A Form of a later processor is refused for that and nothing else (ADR
+/// 0011).
+fn refusals(line: &Line, processor: Processor) -> BTreeSet<&'static str> {
     let mut codes = BTreeSet::new();
+    if !processor.has(line.form.processor) {
+        codes.insert("needs_a_later_processor");
+        return codes;
+    }
     let modes: Vec<Modes> = line.operands.iter().map(|operand| operand.mode).collect();
     let in_memory = |mode: &Modes| Modes::MEMORY.contains(*mode);
     if line.written == Some(SizeSuffix::Byte)
@@ -325,9 +332,29 @@ struct Generated {
     source_lines: Vec<usize>,
 }
 
-fn generate() -> Generated {
-    let lines = lines();
-    let mut source = String::from("    org $1000\n");
+/// Every line, in one Program written for `processor`: with its `opt p=`
+/// line first, unless it is the 68000, which is the default.
+///
+/// For a later processor only the lines whose encoding the processor decides
+/// are generated: the Forms it adds, and the branches, whose `.l` is long on
+/// the 68020. Every other line assembles to the same words for all three.
+fn generate(processor: Processor) -> Generated {
+    let lines: Vec<Line> = lines()
+        .into_iter()
+        .filter(|line| {
+            processor == Processor::M68000
+                || line.form.processor != Processor::M68000
+                || matches!(
+                    line.spec.family(),
+                    Some(Family::Bra | Family::Bsr | Family::Bcc(_))
+                )
+        })
+        .collect();
+    let mut source = match processor {
+        Processor::M68000 => String::new(),
+        later => format!("    opt p={}\n", later.name()),
+    };
+    source.push_str("    org $1000\n");
     let mut source_lines = Vec::with_capacity(lines.len());
     for (number, line) in lines.iter().enumerate() {
         source.push_str(&format!("b{number}:\n"));
@@ -370,15 +397,18 @@ fn describe(diagnostic: &Diagnostic) -> String {
     )
 }
 
-/// The processor whose decoder reads `word`: the 68000's, unless only a
-/// later one has it.
-fn processor_for(word: u16) -> Processor {
-    first_processor(word).unwrap_or(Processor::M68000)
-}
-
+/// Every Form, in a Program for each processor: the Forms it has assemble,
+/// encode and decode back for it, and those of a later processor are
+/// refused.
 #[test]
 fn every_form_of_the_table_encodes_and_decodes_back() {
-    let generated = generate();
+    for processor in Processor::ALL {
+        every_form_encodes_and_decodes_back_for(processor);
+    }
+}
+
+fn every_form_encodes_and_decodes_back_for(processor: Processor) {
+    let generated = generate(processor);
     let instructions: BTreeMap<usize, &crate::assembler::program::AssembledInstruction> = generated
         .program
         .instructions()
@@ -390,9 +420,9 @@ fn every_form_of_the_table_encodes_and_decodes_back() {
     let mut families = BTreeSet::new();
     for (number, line) in generated.lines.iter().enumerate() {
         let text = line.text(number);
-        let expected = refusals(line);
+        let expected = refusals(line, processor);
         let found = generated.errors.get(&number).cloned().unwrap_or_default();
-        assert_eq!(found, expected, "`{}`", text.trim());
+        assert_eq!(found, expected, "`{}` for the {processor:?}", text.trim());
         if !expected.is_empty() {
             refused += 1;
             continue;
@@ -419,7 +449,7 @@ fn every_form_of_the_table_encodes_and_decodes_back() {
             text.trim()
         );
         assert_eq!(assembled.size, words.len() * 2, "`{}`", text.trim());
-        let decoded = decode_words(&words, address, processor_for(words[0])).unwrap();
+        let decoded = decode_words(&words, address, processor).unwrap();
         assert_eq!(
             decoded.instruction,
             instruction,
@@ -435,6 +465,8 @@ fn every_form_of_the_table_encodes_and_decodes_back() {
         if let Some(size) = branch_size(&instruction) {
             let expected = match line.written {
                 Some(SizeSuffix::Short | SizeSuffix::Byte) => BranchSize::Short,
+                // `.l` is long where there is a long branch, on the 68020.
+                Some(SizeSuffix::Long) if processor.has(Processor::M68020) => BranchSize::Long,
                 Some(_) => BranchSize::Word,
                 // A back reference a word above is short, a forward one a word.
                 None if line.operands[0].text == "{b}" => BranchSize::Short,
@@ -459,6 +491,19 @@ fn every_form_of_the_table_encodes_and_decodes_back() {
         }
         families.insert(variant(&instruction));
         checked += 1;
+    }
+    // `move ccr,<ea>` is the 68010's.
+    assert_eq!(
+        families.contains("MOVEfromCCR"),
+        processor.has(Processor::M68010),
+        "{processor:?}"
+    );
+    if processor != Processor::M68000 {
+        assert!(
+            checked > 100,
+            "only {checked} lines were checked for the {processor:?}"
+        );
+        return;
     }
     // Every encoding the Assembler can choose comes up at least once.
     for variant in [
@@ -488,7 +533,6 @@ fn every_form_of_the_table_encodes_and_decodes_back() {
         "EOR",
         "EORI",
         "MOVEtoCCR",
-        "MOVEfromCCR",
         "MOVEtoSR",
         "MOVEfromSR",
         "ANDItoCCR",
@@ -864,7 +908,9 @@ fn the_encodings_are_gnu_as_encodings() {
     let directory = std::env::temp_dir().join(format!("s68k-gnu-as-encode-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let gnu = Gnu { prefix, directory };
-    let generated = generate();
+    // `as -m68000` reads the 68000's instructions, so the Program is written
+    // for it and the later Forms are left out.
+    let generated = generate(Processor::M68000);
     // One line per distinct GNU line and placement-free encoding: the same
     // instruction at another address is the same comparison.
     let mut seen = BTreeSet::new();

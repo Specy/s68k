@@ -35,6 +35,7 @@ import {
     ParsedOperation,
     ParsedText,
     PokeWrite,
+    Processor,
     ProgramInfo,
     ProgramSymbol,
     Register as RawRegister,
@@ -45,6 +46,7 @@ import {
     Size,
     SoundOutcome,
     StackFrame,
+    SuggestedFix,
     Termination,
     WasmAssembly as RawAssembly,
     wasm_assemble,
@@ -178,7 +180,10 @@ export class Program {
         return this.assembly
     }
 
-    /** Entry point, end address, instruction count and every symbol. */
+    /**
+     * Entry point, end address, instruction count, every symbol, and the
+     * processor the program is written for.
+     */
     getInfo(): ProgramInfo {
         if (this.info === null) {
             this.info = this.assembly.wasm_get_program_info() as ProgramInfo
@@ -202,6 +207,20 @@ export class Program {
 
     getInstructionCount(): number {
         return this.getInfo().instructionCount
+    }
+
+    /**
+     * The processor the program is written for: the one its `opt p=` line
+     * chose, `'68000'` when it chose none. Its code decodes for this processor,
+     * and an instruction of a later one is refused when it is assembled.
+     */
+    getProcessor(): Processor {
+        return this.getInfo().processor
+    }
+
+    /** Whether the program has the 68020's bit-field instructions, through `opt bit` or `opt p=68020`. */
+    hasBitFields(): boolean {
+        return this.getInfo().bitFields
     }
 
     getLayoutItems(): Uint32Array {
@@ -564,9 +583,11 @@ export class Interpreter {
     }
 
     /**
-     * The instruction memory holds at `address` now, decoded and printed in
-     * EASy68K's syntax with the program's labels: what runs there, whatever the
-     * build laid out. Words that are no instruction print as `DC.W`.
+     * The instruction memory holds at `address` now, decoded for the program's
+     * processor and printed in EASy68K's syntax with the program's labels: what
+     * runs there, whatever the build laid out. Words that are no instruction of
+     * that processor print as `DC.W`, so `$42C0`, `move ccr,d0`, is one in a
+     * 68000 program.
      */
     disassembleAt(address: number): DisassembledLine {
         return this.interpreter.wasm_disassemble_at(address) as DisassembledLine
@@ -758,11 +779,12 @@ export class S68k {
     /**
      * Every mnemonic the assembler accepts, with the forms it may be written
      * in: per form, the addressing modes of each operand position, the sizes,
-     * and whether the 68000 reserves it for supervisor mode.
+     * whether the 68000 reserves it for supervisor mode, and the first
+     * processor that has it.
      *
      * ```ts
      * S68k.instructionTable().find(({mnemonic}) => mnemonic === 'andi')?.forms[2]
-     * // {operands: [["Im"], ["sr"]], sizes: ["word"], privileged: true}
+     * // {operands: [["Im"], ["sr"]], sizes: ["word"], privileged: true, processor: "68000"}
      * ```
      *
      * The mnemonics come in the table's order and the forms in the order the
@@ -887,6 +909,7 @@ export {
     ParsedOperation,
     ParsedText,
     PokeWrite,
+    Processor,
     ProgramInfo,
     ProgramSymbol,
     RegisterOperand,
@@ -896,5 +919,6 @@ export {
     Size,
     SoundOutcome,
     StackFrame,
+    SuggestedFix,
     Termination,
 }

@@ -45,6 +45,7 @@ use super::encoded::{
     TargetDirection, EXTENSION_WORD_OFFSET,
 };
 use super::table::{BitOperation, Family, ImmediateKind, LogicalKind, ShiftKind, ShiftWay};
+use crate::machine::Processor;
 
 /// What the lowering needs to know that the tree does not hold: the value of
 /// every Expression in it, whether it is a back reference, and where the
@@ -70,6 +71,12 @@ pub trait Values {
     /// address, names its own extension word, and so does a branch, whose
     /// size depends on how far it reaches.
     fn instruction_address(&self) -> i64;
+
+    /// The processor the Program is written for, which decides what a branch
+    /// written `.l` is ([`choice::branch_size`]). The 68000 unless said.
+    fn processor(&self) -> Processor {
+        Processor::M68000
+    }
 }
 
 /// One Operand lowered, with the two facts about how it was written that
@@ -110,6 +117,9 @@ pub struct Site {
     /// The address the instruction is laid out at, which is what a branch's
     /// displacement is measured from.
     pub address: u32,
+    /// The processor the Program is written for, which decides what a branch
+    /// written `.l` is.
+    pub processor: Processor,
 }
 
 /// The encoded form of one parsed Operand, or `None` when a value in it cannot
@@ -331,6 +341,7 @@ pub fn lower_operation(
     let site = Site {
         written,
         address: address as u32,
+        processor: values.processor(),
     };
     lower(family, size, &lowered, &site)
 }
@@ -756,7 +767,12 @@ fn branch(target: &Lowered, site: &Site) -> Option<(u32, BranchSize)> {
     let displacement = choice::branch_displacement(site.address, address);
     Some((
         address,
-        choice::branch_size(site.written, target.back_reference, displacement),
+        choice::branch_size(
+            site.written,
+            target.back_reference,
+            displacement,
+            site.processor,
+        ),
     ))
 }
 
@@ -876,6 +892,7 @@ mod tests {
         let site = Site {
             written: None,
             address: 0x1000,
+            processor: Processor::M68000,
         };
         lower(family, size, &operands, &site)
     }

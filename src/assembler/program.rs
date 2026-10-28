@@ -10,7 +10,9 @@
 //!   reserves room for them;
 //! * the **Symbols**, by full name, with their kind and their definition;
 //! * the **Entry point**, the address the program starts running at;
-//! * the **Memory map**, the ranges its `memory` lines declare.
+//! * the **Memory map**, the ranges its `memory` lines declare;
+//! * the **Processor dialect** its `opt` line chose, the 68000 when it chose
+//!   none, and whether it has the 68020's bit-field instructions.
 //!
 //! It never holds source: an instruction reaches its line through its
 //! [`Location`], which is what makes a per-File breakpoint and a per-File
@@ -50,6 +52,7 @@ use super::instructions::encoded::{BranchSize, Instruction};
 use super::source::Location;
 use super::symbols::{SymbolKind, SymbolTable, SymbolValue};
 use crate::machine::disassemble::{disassemble, Symbols};
+use crate::machine::Processor;
 
 /// One assembled instruction: what it is, where it goes and where it came from.
 ///
@@ -237,6 +240,13 @@ pub struct Program {
     symbols: BTreeMap<String, ProgramSymbol>,
     entry: usize,
     memory_map: Vec<MemoryRange>,
+    /// The processor the source chose with `opt p=`, the 68000 by default.
+    #[serde(skip)]
+    processor: Processor,
+    /// Whether the program has the 68020's bit-field instructions: `opt bit`,
+    /// or `opt p=68020`, which implies it.
+    #[serde(skip)]
+    bit_fields: bool,
     /// The ranges of bytes the image places, start included and end not, in
     /// address order, none touching another.
     #[serde(skip)]
@@ -283,6 +293,8 @@ impl Program {
             symbols,
             entry,
             memory_map: Vec::new(),
+            processor: Processor::M68000,
+            bit_fields: false,
             placed,
         }
     }
@@ -322,6 +334,26 @@ impl Program {
     /// order, ROM, read only, protected and invalid, each kind at most once.
     pub fn memory_map(&self) -> &[MemoryRange] {
         &self.memory_map
+    }
+
+    /// The Program written for `processor`, with the 68020's bit fields when
+    /// `bit_fields` is set or the processor is the 68020, which has them.
+    pub fn with_dialect(mut self, processor: Processor, bit_fields: bool) -> Self {
+        self.processor = processor;
+        self.bit_fields = bit_fields || processor.has(Processor::M68020);
+        self
+    }
+
+    /// The processor the Program is written for, and that its code is decoded
+    /// for: the one `opt p=` chose, the 68000 when no line chose one.
+    pub fn processor(&self) -> Processor {
+        self.processor
+    }
+
+    /// Whether the Program has the 68020's bit-field instructions, as `opt
+    /// bit` gives them to a 68000 Program in EASy68K and as the 68020 has them.
+    pub fn bit_fields(&self) -> bool {
+        self.bit_fields
     }
 
     pub fn with_layout_items(mut self, items: Vec<u32>) -> Self { self.layout_items = items; self }

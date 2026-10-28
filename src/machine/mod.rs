@@ -33,17 +33,24 @@ use serde::Serialize;
 /// The three are one family, each a superset of the one before for a program
 /// in user mode, so they are ordered: `processor >= Processor::M68010` asks
 /// whether a processor has what the 68010 added. The 68000 is the default,
-/// as it is EASy68K's only processor.
+/// as it is EASy68K's only processor; a Program chooses another with
+/// `opt p=68010` or `opt p=68020` (ADR 0011).
+///
+/// It serialises as its [`name`](Processor::name), `"68000"`, which is how the
+/// TypeScript side spells a processor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize)]
 pub enum Processor {
     /// The 68000, which EASy68K simulates.
     #[default]
+    #[serde(rename = "68000")]
     M68000,
     /// The 68010: the 68000 with `move ccr,<ea>`, `rtd`, `movec`, `moves`,
     /// `bkpt`, a vector base register and loop mode.
+    #[serde(rename = "68010")]
     M68010,
     /// The 68020, as a 68EC020 with a 24-bit bus: the 68010 with new
     /// addressing modes, 32-bit branches and multiplies, bit fields and more.
+    #[serde(rename = "68020")]
     M68020,
 }
 
@@ -82,5 +89,12 @@ mod tests {
         assert_eq!(Processor::default(), Processor::M68000);
         let names: Vec<_> = Processor::ALL.iter().map(|p| p.name()).collect();
         assert_eq!(names, ["68000", "68010", "68020"]);
+        for processor in Processor::ALL {
+            assert_eq!(
+                serde_json::to_value(processor).unwrap(),
+                processor.name(),
+                "a processor serialises as its name"
+            );
+        }
     }
 }

@@ -69,6 +69,7 @@ The counts on 2026-10-28, with the suite at its pinned commit:
 ## Future work
 
 - Exceptions through the vector table, supervisor and user mode, the memory map's bus errors, interrupts and cycles (the asm-editor's `docs/design/m68k-machine.md`)
+- The rest of the 68010 and the 68020 dialects (below, "Processor dialects")
 - Macros and conditional assembly
 
 
@@ -78,10 +79,10 @@ The counts on 2026-10-28, with the suite at its pinned commit:
 | Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu, addq, subq, addi, subi, addx, subx, negx                                                                                                                            |
 | Comparison             | tst, cmp, cmpi, cmpa, cmpm                                                                                                                                                                                        |
 | Branching and jumping  | bcc, bcs, beq, bne, blt, ble, bgt, bge, bls, bhi, bpl, bmi, blo, bhs, bvc, bvs, bsr, bra, jmp, jsr, rts, dbcc, dbcs, dbeq, dbne, dbge, dbgt, dble, dbls, dblt, dbhi, dbmi, dbpl, dbvc, dbvs, dbf, dbt, dbhs, dblo, dbra |
-| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st, shs, slo, and `move`/`andi`/`ori`/`eori` with `sr` or `ccr` as an operand                                                           |
+| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st, shs, slo, and `move`/`andi`/`ori`/`eori` with `sr` or `ccr` as an operand; `move ccr,<ea>` is the 68010's, under `opt p=68010`  |
 | Bitwise                | not, or, ori, and, andi, eor, eori, lsl, lsr, asr, asl, rol, ror, roxl, roxr, btst, bclr, bchg, bset                                                                                                              |
 | Binary coded decimal   | abcd, sbcd, nbcd                                                                                                                                                                                                 |
-| Other                  | clr, exg, neg, ext, extb, swap, move, link, unlk, lea, pea, moveq, movea, movem, movep, tas, nop                                                                                                                  |
+| Other                  | clr, exg, neg, ext, swap, move, link, unlk, lea, pea, moveq, movea, movem, movep, tas, nop, and the 68020's extb under `opt p=68020`                                                                               |
 | Exceptions             | chk, trapv, illegal, and rtr, which returns and restores the condition codes                                                                                                                                      |
 | Interrupt              | trap #15, with the I/O tasks 0-9, 11-20, 23, 24 and 33 in `d0`, the file tasks 50-59, the mouse task 61, the sound tasks 70-77 and the graphics tasks 80-96 (the `Interrupt` enum of `src/instructions.rs` is the list) |
 
@@ -91,12 +92,20 @@ Where the 68000 has several encodings of a line, s68k picks the one EASy68K pick
 
 - The first of EASy68K's forms that fits: `cmp #n,dn` is `cmp`, and `cmp #n,(a0)` is `cmpi`; `and #n,dn` and `or #n,dn` are `and` and `or`, and into memory `andi` and `ori`; `eor #n` is `eori`; `add #n,an` and `sub #n,an` are `adda` and `suba`, and `add #n,dn` is `addi`.
 - The optimisations EASy68K always makes: `move.l #n,dn` of -128 to 127 is `moveq`, and an `add`, `addi`, `adda`, `sub`, `subi` or `suba` of 1 to 8 is `addq` or `subq`. Writing the immediate `#n.l` keeps the long form, `move.l #1.l,d0`; it is the one size suffix an immediate takes.
-- An unsized branch is short when its target is above it and its displacement fits a byte and is not 0, which marks a word branch, and a word otherwise; `.s` and `.b` force a short one, and `.w` and `.l` a word one. An unsized absolute address is `.w` when it is above the line and a word holds it, and `.l` otherwise. "Above" counts a label on the line itself, and a number is always above.
+- An unsized branch is short when its target is above it and its displacement fits a byte and is not 0, which marks a word branch, and a word otherwise; `.s` and `.b` force a short one, and `.w` a word one. `.l` forces a word one too on the 68000, which has no long branch, as in EASy68K, and the 68020's long branch, six bytes, under `opt p=68020` (below, "Processor dialects"). An unsized absolute address is `.w` when it is above the line and a word holds it, and `.l` otherwise. "Above" counts a label on the line itself, and a number is always above.
 - An immediate is kept at the size the instruction reads it at, so `move.w #-1,d0` holds `$FFFF`, and `exg a0,d0` is `exg d0,a0`.
 
 There are two passes and nothing in between, as in EASy68K: the first pass decides each instruction's size by these rules, and a name defined below the line is always given the long form, whatever its value, so the second pass encodes every instruction at the size it was laid out at. An instruction takes the bytes of its encoding, two to ten, and starts on an even address. A branch whose displacement does not fit is an error, as in EASy68K: a short one out of -128 to 127 or to the very next instruction (a displacement of 0 is the mark of a word branch), and a word one or a `dbcc` out of -32768 to 32767. A PC-relative displacement is measured from its own extension word, which is two bytes past the instruction, and four for `movem` and `btst #n`.
 
 Three lines EASy68K refuses are refused here too, since the 68000 has no encoding for them: an address register added into memory (`add.l a0,(a1)`), a bit number written as an immediate on an immediate (`btst #1,#5`, where `btst d1,#5` is the instruction), and a `link` displacement outside -32768 to 32767.
+
+## Processor dialects
+
+A program is written for the 68000 unless it says otherwise, with `opt p=68010` or `opt p=68020` before its first instruction (ADR 0011). That is the Devpac spelling, which vasm reads too; `opt bit` keeps EASy68K's meaning, the 68020's bit-field instructions on a 68000, and `p=68020` implies it. The program carries what it chose, `program.getProcessor()` and the `processor` and `bitFields` of `program.getInfo()`, and its code decodes for that processor when it runs, so a word of a later processor is an illegal instruction in an earlier one's program, there as in `disassembleAt`.
+
+- **Once, before the first instruction.** Every instruction is judged and measured for the processor in force, so an `opt p=` or `opt bit` after one is an error (`processor_chosen_after_code`) and chooses nothing. Saying the same processor again is harmless and naming another is an error (`processor_chosen_twice`), whichever file of the project either is in; a processor that is none of the three is `unknown_processor`.
+- **One machine with gates.** Every form of the instruction table names the first processor that has it, `processor` in `S68k.instructionTable()`, and a form of a later processor is refused: `needs_a_later_processor`, whose hint gives the 68000's way of doing the same and the `opt p=` line to add. The diagnostic carries both as suggested fixes, `fixes` in TypeScript, the `opt p=` line first: each a title, a location and the text that replaces what the location covers, where a location with no columns inserts.
+- **The dialects are partial until their batches.** The 68010 has `move ccr,<ea>` so far and the 68020 has `extb.l` and the long branches `bra.l`, `bsr.l` and `b<cc>.l`. Every other 68010 and 68020 instruction (`rtd`, `bkpt`, `movec`, `moves`, `chk2`, `cmp2`, `cas`, `cas2`, `pack`, `unpk`, `divsl`, `divul`, the `trapcc` family and the eight bit-field instructions) says it is not implemented yet in its dialect (`unimplemented_in_dialect`), and so does a shape the 68020 gives a 68000 instruction (`muls.l`, `divs.l`, `chk.l`, `link.l`, `tst` of an address register, a PC-relative operand or an immediate, `cmpi` against the program counter) under `opt p=68020`, which the 68000 and the 68010 refuse as a size or an addressing mode they do not have. `callm` and `rtm` are left out for good. The rest of the 68010 (VBR, its frames and loop mode) and of the 68020 (its addressing modes, frames and stack pointers) arrive with their instructions.
 
 ## The S-record
 
@@ -127,7 +136,8 @@ Each record ends with CR LF, as EASy68K writes them on Windows. EASy68K breaks i
 | `include` | assembles another file of the project here, as if its lines had been pasted at this line |
 | `incbin` | puts another file's bytes in memory here, as a `dc.b` of the whole file would |
 | `memory` | declares a range of EASy68K's memory map, `memory rom $8000,$8FFF`: `rom`, `read`, `protected` or `invalid`, each kind once; the program carries it, and the interpreter does not enforce it yet |
-| `opt`, `list`, `nolist`, `page` | accepted and ignored: they are about the listing file, which there is none of |
+| `opt` | `opt p=68000`, `p=68010` or `p=68020` chooses the processor the program is written for, and `opt bit` the 68020's bit-field instructions, once and before the first instruction (above, "Processor dialects"); EASy68K's listing options `cre`, `mex`, `sex`, `war` and `cex`, and each with `no`, are accepted and ignored, and any other word is a warning |
+| `list`, `nolist`, `page` | accepted and ignored: they are about the listing file, which there is none of |
 
 Without `end`, the entry point is a label named `START`, and failing that the first instruction.
 

@@ -1,0 +1,53 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/processor_chosen_after_code.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "processor_chosen_after_code",
+    "message": "`opt p=68020` comes after the first instruction, and the processor is chosen before any.",
+    "hint": "Move this line above the first instruction, to the top of the program",
+    "location": {
+      "file": "processor_chosen_after_code.asm",
+      "line": 5,
+      "column": 8,
+      "endColumn": 15
+    },
+    "related": [
+      {
+        "location": {
+          "file": "processor_chosen_after_code.asm",
+          "line": 4,
+          "column": 0,
+          "endColumn": 7
+        },
+        "message": "the first instruction"
+      }
+    ]
+  },
+  {
+    "severity": "error",
+    "code": "processor_chosen_after_code",
+    "message": "`opt bit` comes after the first instruction, and bit fields are chosen before any, with the processor.",
+    "hint": "Move this line above the first instruction, to the top of the program",
+    "location": {
+      "file": "processor_chosen_after_code.asm",
+      "line": 6,
+      "column": 8,
+      "endColumn": 11
+    },
+    "related": [
+      {
+        "location": {
+          "file": "processor_chosen_after_code.asm",
+          "line": 4,
+          "column": 0,
+          "endColumn": 7
+        },
+        "message": "the first instruction"
+      }
+    ]
+  }
+]

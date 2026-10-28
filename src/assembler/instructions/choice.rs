@@ -23,6 +23,7 @@
 //! is a short branch.
 
 use crate::assembler::ast::SizeSuffix;
+use crate::machine::Processor;
 
 use super::encoded::{AddressWidth, BranchSize};
 
@@ -34,23 +35,26 @@ pub fn branch_displacement(address: u32, target: u32) -> i64 {
 }
 
 /// The size of a `bra`, `bsr` or `Bcc`'s displacement, by EASy68K's rule
-/// (`branch()` in its `BUILD.CPP`).
+/// (`branch()` in its `BUILD.CPP`), for a Program written for `processor`.
 ///
-/// * `.s` and `.b` force a short branch, and `.w` and `.l` a word one: the
-///   68000 has no long branch, so `.l` means a word, as it does in EASy68K.
-///   Whether a forced short displacement fits is the caller's question; it
-///   is still short.
+/// * `.s` and `.b` force a short branch, and `.w` a word one. `.l` forces a
+///   word one on the 68000 and the 68010, which have no long branch, as it
+///   does in EASy68K, and a long one on the 68020, which has one (ADR 0011).
+///   Whether a forced short displacement fits is the caller's question; it is
+///   still short.
 /// * Unsized, a branch is short when its target is a back reference, the
 ///   displacement fits a byte and it is not zero, which is the encoding of a
 ///   word branch. Otherwise it is a word, so a branch forward is always a
-///   word.
+///   word, on every processor.
 pub fn branch_size(
     written: Option<SizeSuffix>,
     back_reference: bool,
     displacement: i64,
+    processor: Processor,
 ) -> BranchSize {
     match written {
         Some(SizeSuffix::Short | SizeSuffix::Byte) => BranchSize::Short,
+        Some(SizeSuffix::Long) if processor.has(Processor::M68020) => BranchSize::Long,
         Some(SizeSuffix::Word | SizeSuffix::Long) => BranchSize::Word,
         None if back_reference && fits_a_short_branch(displacement) => BranchSize::Short,
         None => BranchSize::Word,
@@ -127,25 +131,49 @@ mod tests {
 
     #[test]
     fn an_unsized_branch_is_short_only_backwards_within_a_byte() {
-        assert_eq!(branch_size(None, true, -2), BranchSize::Short);
-        assert_eq!(branch_size(None, true, -128), BranchSize::Short);
-        assert_eq!(branch_size(None, true, 127), BranchSize::Short);
-        assert_eq!(branch_size(None, true, -129), BranchSize::Word);
-        assert_eq!(branch_size(None, true, 128), BranchSize::Word);
-        // The byte `$00` is the mark of a word branch.
-        assert_eq!(branch_size(None, true, 0), BranchSize::Word);
-        // A forward reference is a word, however close it turns out to be.
-        assert_eq!(branch_size(None, false, 4), BranchSize::Word);
+        for processor in Processor::ALL {
+            let size = |back_reference, displacement| {
+                branch_size(None, back_reference, displacement, processor)
+            };
+            assert_eq!(size(true, -2), BranchSize::Short);
+            assert_eq!(size(true, -128), BranchSize::Short);
+            assert_eq!(size(true, 127), BranchSize::Short);
+            assert_eq!(size(true, -129), BranchSize::Word);
+            assert_eq!(size(true, 128), BranchSize::Word);
+            // The byte `$00` is the mark of a word branch.
+            assert_eq!(size(true, 0), BranchSize::Word);
+            // A forward reference is a word, however close it turns out to be,
+            // and however far: the 68020 has a long branch only for `.l`.
+            assert_eq!(size(false, 4), BranchSize::Word);
+            assert_eq!(size(false, 0x10000), BranchSize::Word);
+        }
     }
 
     #[test]
     fn a_written_branch_size_is_what_the_branch_is() {
-        for written in [SizeSuffix::Short, SizeSuffix::Byte] {
-            assert_eq!(branch_size(Some(written), false, 1000), BranchSize::Short);
+        for processor in Processor::ALL {
+            for written in [SizeSuffix::Short, SizeSuffix::Byte] {
+                assert_eq!(
+                    branch_size(Some(written), false, 1000, processor),
+                    BranchSize::Short
+                );
+            }
+            assert_eq!(
+                branch_size(Some(SizeSuffix::Word), true, -2, processor),
+                BranchSize::Word
+            );
         }
-        for written in [SizeSuffix::Word, SizeSuffix::Long] {
-            assert_eq!(branch_size(Some(written), true, -2), BranchSize::Word);
+        // `.l` is a word where there is no long branch, as in EASy68K.
+        for processor in [Processor::M68000, Processor::M68010] {
+            assert_eq!(
+                branch_size(Some(SizeSuffix::Long), true, -2, processor),
+                BranchSize::Word
+            );
         }
+        assert_eq!(
+            branch_size(Some(SizeSuffix::Long), true, -2, Processor::M68020),
+            BranchSize::Long
+        );
     }
 
     #[test]

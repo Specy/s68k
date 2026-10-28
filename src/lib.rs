@@ -70,6 +70,7 @@ use crate::assembler::program::{Program, ProgramSymbol};
 use crate::assembler::source::{self, Files, Span};
 use crate::assembler::Assembly;
 use crate::interpreter::{Interpreter, InterpreterOptions};
+use crate::machine::Processor;
 
 /// Turn a Rust panic into a readable JavaScript error, once per process.
 ///
@@ -233,6 +234,12 @@ pub struct ProgramInfo<'a> {
     pub instruction_count: usize,
     /// Every Symbol, by full name.
     pub symbols: &'a BTreeMap<String, ProgramSymbol>,
+    /// The processor the Program is written for, `"68000"`, `"68010"` or
+    /// `"68020"`: the one `opt p=` chose, the 68000 by default.
+    pub processor: Processor,
+    /// Whether the Program has the 68020's bit-field instructions, through
+    /// `opt bit` or `opt p=68020`.
+    pub bit_fields: bool,
 }
 
 impl<'a> ProgramInfo<'a> {
@@ -243,6 +250,8 @@ impl<'a> ProgramInfo<'a> {
             end_address: program.end_address(),
             instruction_count: program.instructions().len(),
             symbols: program.symbols(),
+            processor: program.processor(),
+            bit_fields: program.bit_fields(),
         }
     }
 }
@@ -443,7 +452,8 @@ pub struct ParsedOperand {
 }
 
 /// The raw Operand field of an Operation that takes one — the file name of
-/// `include`, the message of `fail` — as `parseLine` reports it.
+/// `include`, the message of `fail`, the options of `opt` — as `parseLine`
+/// reports it.
 #[derive(Debug, Serialize)]
 pub struct ParsedText {
     /// The text, exactly as it was written, without the Comment.
@@ -569,8 +579,9 @@ impl ParsedLine {
 /// from the assembler that checks them rather than from a copy. It is the
 /// [instruction table](assembler::instructions::table) read as data: the
 /// implemented rows in the table's order, each Form with its Addressing modes
-/// by name. The rows s68k refuses (`rte`, `stop`, `reset`) have no Forms and
-/// are left out.
+/// by name and the first processor that has it. The rows s68k refuses (`rte`,
+/// `stop`, `reset`, and the instructions of the 68010 and the 68020 its
+/// dialects do not have yet) have no Forms and are left out.
 #[wasm_bindgen]
 pub fn wasm_get_instruction_table() -> Result<JsValue, JsValue> {
     set_panic_hook();
@@ -601,6 +612,10 @@ pub struct InstructionForm {
     /// Whether the 68000 runs it only in supervisor mode
     /// ([`Form::privileged`]), which s68k records and does not enforce.
     pub privileged: bool,
+    /// The first processor that has it ([`Form::processor`]), `"68000"`,
+    /// `"68010"` or `"68020"`: a Program written for an earlier one is refused
+    /// it.
+    pub processor: Processor,
 }
 
 impl InstructionInfo {
@@ -629,6 +644,7 @@ impl InstructionForm {
             operands: form.operands.iter().map(|modes| modes.names()).collect(),
             sizes: form.sizes.allowed().to_vec(),
             privileged: form.privileged,
+            processor: form.processor,
         }
     }
 }
@@ -733,6 +749,25 @@ mod api_tests {
             info["symbols"]["start"]["location"]["endColumn"], 5,
             "a Location is camelCase wherever it appears"
         );
+        assert_eq!(info["processor"], "68000", "the default");
+        assert_eq!(info["bitFields"], false);
+    }
+
+    #[test]
+    fn the_program_info_names_the_processor_opt_chose() {
+        for (source, processor, bit_fields) in [
+            ("    opt p=68010\n    nop\n", "68010", false),
+            ("    OPT CRE,P=68020\n    nop\n", "68020", true),
+            ("    opt bit\n    nop\n", "68000", true),
+            ("    opt p=68000,bit\n    nop\n", "68000", true),
+        ] {
+            let assembly = WasmAssembly::new(assembler::assemble_source(source));
+            assert!(assembly.diagnostics().is_empty(), "{source:?}");
+            let program = assembly.program().expect("a program");
+            let info = serde_json::to_value(ProgramInfo::of(program)).expect("info serialises");
+            assert_eq!(info["processor"], processor, "{source:?}");
+            assert_eq!(info["bitFields"], bit_fields, "{source:?}");
+        }
     }
 
     #[test]
@@ -778,7 +813,8 @@ mod api_tests {
                     ["sr"]
                 ],
                 "sizes": ["word"],
-                "privileged": true
+                "privileged": true,
+                "processor": "68000"
             })
         );
         assert_eq!(move_forms[0]["sizes"], json!(["byte", "word", "long"]));
@@ -786,12 +822,17 @@ mod api_tests {
         assert_eq!(move_forms[3]["privileged"], false);
         assert_eq!(
             find("andi")["forms"][2],
-            json!({"operands": [["Im"], ["sr"]], "sizes": ["word"], "privileged": true})
+            json!({
+                "operands": [["Im"], ["sr"]],
+                "sizes": ["word"],
+                "privileged": true,
+                "processor": "68000"
+            })
         );
         assert_eq!(find("andi")["forms"][1]["privileged"], false);
         assert_eq!(
             find("rts")["forms"],
-            json!([{"operands": [], "sizes": [], "privileged": false}])
+            json!([{"operands": [], "sizes": [], "privileged": false, "processor": "68000"}])
         );
         assert_eq!(
             find("bra")["forms"][0]["sizes"],
@@ -803,6 +844,15 @@ mod api_tests {
             .filter(|form| form["privileged"] == true)
             .count();
         assert_eq!(privileged, 4, "`move` and `andi`, `ori`, `eori` into `sr`");
+        assert_eq!(move_forms[4]["operands"][0], json!(["ccr"]));
+        assert_eq!(move_forms[4]["processor"], "68010");
+        assert_eq!(find("extb")["forms"][0]["processor"], "68020");
+        for later in ["rtd", "movec", "cas", "bfextu"] {
+            assert!(
+                rows.iter().all(|row| row["mnemonic"] != later),
+                "`{later}` is not implemented yet and is not listed"
+            );
+        }
     }
 
     #[test]

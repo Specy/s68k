@@ -406,6 +406,57 @@ data:
     );
 }
 
+/// Memory decodes for the Program's processor (ADR 0011): `$42C0` is
+/// `move ccr,d0` to a 68010 Program and a word that is no instruction to a
+/// 68000 one, in the disassembly and when it runs.
+#[test]
+fn a_decode_reads_the_words_for_the_programs_processor() {
+    let source = |processor: &str| {
+        format!(
+            "    opt p={processor}
+    org $1000
+start:
+    move.w #$1f,ccr
+    jmp data
+data:
+    dc.w $42C0,$49C1
+"
+        )
+    };
+    let expected = [
+        ("68000", "DC.W $42C0", "DC.W $49C1"),
+        ("68010", "MOVE CCR,D0", "DC.W $49C1"),
+        ("68020", "MOVE CCR,D0", "EXTB.L D1"),
+    ];
+    for (processor, first, second) in expected {
+        let mut interpreter = interpreter(&source(processor));
+        let data_address = label(&interpreter, "data");
+        assert_eq!(
+            interpreter.disassemble_at(data_address).text,
+            first,
+            "{processor}"
+        );
+        assert_eq!(
+            interpreter.disassemble_at(data_address + 2).text,
+            second,
+            "{processor}"
+        );
+        interpreter.step().unwrap();
+        interpreter.step().unwrap();
+        match processor {
+            "68000" => assert_eq!(interpreter.step(), Err(RuntimeError::IllegalInstruction)),
+            _ => {
+                interpreter.step().unwrap();
+                assert_eq!(
+                    data(&interpreter, 0),
+                    0x1f,
+                    "the decode miss ran `move ccr,d0`"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_fetch_from_an_odd_address_is_an_address_error() {
     let mut interpreter = interpreter(

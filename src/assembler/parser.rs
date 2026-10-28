@@ -589,7 +589,9 @@ impl<'a> Parser<'a> {
         let rest = &self.text[after_operation..];
         let start = after_operation + (rest.len() - rest.trim_start_matches(is_whitespace).len());
         let (end, comment_start) = match kind {
-            TextOperandKind::FileSpecification => self.file_specification_extent(start),
+            TextOperandKind::FileSpecification | TextOperandKind::OptionList => {
+                self.file_specification_extent(start)
+            }
             TextOperandKind::MessageText | TextOperandKind::RawOperandField => {
                 match self.text[start..].find(';') {
                     Some(offset) => (start + offset, Some(start + offset)),
@@ -607,13 +609,15 @@ impl<'a> Parser<'a> {
             })
         };
         let comment = comment_start.and_then(|start| {
-            // `include` and `incbin` end their field by all four rules of 1.5,
-            // so what follows the filename can be EASy68K's bare Comment field
-            // and `bare_comment` has to be able to fire on it. The other two
-            // end at a `;` and nowhere else (1.5), so their Comment always
-            // carries a marker.
+            // `include`, `incbin` and `opt` end their field by all four rules
+            // of 1.5, so what follows the filename or the options can be
+            // EASy68K's bare Comment field and `bare_comment` has to be able
+            // to fire on it. The other two end at a `;` and nowhere else
+            // (1.5), so their Comment always carries a marker.
             let kind = match kind {
-                TextOperandKind::FileSpecification => comment_kind(self.text, start),
+                TextOperandKind::FileSpecification | TextOperandKind::OptionList => {
+                    comment_kind(self.text, start)
+                }
                 TextOperandKind::MessageText | TextOperandKind::RawOperandField => {
                     CommentKind::Explicit
                 }
@@ -2981,7 +2985,7 @@ mod tests {
             // "Later" is the phase order of the design record, not the
             // calendar: the analyzer, the Directives and the Layout all raise
             // Diagnostics of their own, and none of them is the parser's.
-            const LATER_PHASES: [&str; 44] = [
+            const LATER_PHASES: [&str; 50] = [
                 "unknown_mnemonic",
                 "mnemonic_used_as_label",
                 "wrong_operand_count",
@@ -3026,6 +3030,12 @@ mod tests {
                 "unknown_memory_kind",
                 "empty_memory_range",
                 "memory_range_replaced",
+                "unknown_processor",
+                "processor_chosen_twice",
+                "processor_chosen_after_code",
+                "unknown_option",
+                "needs_a_later_processor",
+                "unimplemented_in_dialect",
             ];
             let expected: Vec<&str> = ALL_CODES
                 .iter()

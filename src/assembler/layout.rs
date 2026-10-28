@@ -57,10 +57,14 @@
 //!   `Directives/offset.htm`).
 //! * `memory` declares a range of EASy68K's memory map, one of each kind, into
 //!   the Program.
+//! * `opt p=68000`, `p=68010` or `p=68020` chooses the Processor dialect and
+//!   `opt bit` the 68020's bit fields, once, before the first instruction;
+//!   the other words of `opt` are EASy68K's listing options and change
+//!   nothing (ADR 0011).
 
 use std::collections::HashSet;
 
-use super::analyzer::{Analyzer, Context, DEFAULT_ORIGIN};
+use super::analyzer::{Analyzer, Context, ProcessorLine, DEFAULT_ORIGIN};
 use super::ast::{
     Expr, Line, Operand, Operation, Register, RegisterKind, RegisterListItem, SizeSuffix,
 };
@@ -75,8 +79,9 @@ use super::program::{
     AssembledInstruction, MemoryContent, MemoryRange, MemoryRangeKind, MemoryRun, Program,
 };
 use crate::machine::encode::{self, EncodeError};
-use super::source::{self, SourceFile, Span};
+use super::source::{self, Location, SourceFile, Span};
 use super::symbols::{self, SymbolKind, SymbolTable, SymbolValue};
+use crate::machine::Processor;
 
 /// The whole of the 68000's address space as s68k simulates it, 16 MB.
 ///
@@ -219,7 +224,25 @@ struct Layout<'a> {
     layout_items: Vec<u32>,
     /// The ranges `memory` has declared so far, one of each kind at most.
     memory_map: Vec<MemoryRange>,
+    /// The processor an `opt p=` chose, with the Location of the value that
+    /// names it, which a fix that changes it edits.
+    processor: Option<(Processor, Location)>,
+    /// Whether an `opt bit` asked for the 68020's bit fields.
+    bit_fields: bool,
+    /// The position of the first instruction pass 1 has reached, after which
+    /// `opt` chooses nothing.
+    first_instruction: Option<usize>,
+    /// Where pass 2's fixes would choose the processor, worked out once pass 1
+    /// has read every `opt` line.
+    processor_line: Option<ProcessorLine>,
 }
+
+/// The words of `opt` EASy68K reads and s68k accepts and ignores: the listing
+/// options, which are about a listing file there is none of, each with its
+/// `no` form (`Directives/opt.htm`).
+const LISTING_OPTIONS: &[&str] = &[
+    "cre", "nocre", "mex", "nomex", "sex", "nosex", "war", "nowar", "cex", "nocex",
+];
 
 impl<'a> Layout<'a> {
     fn new(unit: &'a Expansion<'a>, found: Vec<(usize, Diagnostic)>) -> Self {
@@ -242,6 +265,10 @@ impl<'a> Layout<'a> {
             memory: Vec::new(),
             layout_items: Vec::new(),
             memory_map: Vec::new(),
+            processor: None,
+            bit_fields: false,
+            first_instruction: None,
+            processor_line: None,
         }
     }
 
@@ -260,6 +287,7 @@ impl<'a> Layout<'a> {
 
     /// Pass 2: the values, the checks and the encoded instructions.
     fn pass_two(&mut self) {
+        self.processor_line = Some(self.find_the_processor_line());
         for index in 0..self.unit.len() {
             self.assemble_line(index);
         }
@@ -286,7 +314,8 @@ impl<'a> Layout<'a> {
             entry,
         )
         .with_layout_items(std::mem::take(&mut self.layout_items))
-        .with_memory_map(std::mem::take(&mut self.memory_map));
+        .with_memory_map(std::mem::take(&mut self.memory_map))
+        .with_dialect(self.chosen_processor(), self.bit_fields);
         let mut found = self.diagnostics;
         found.sort_by_key(|(at, diagnostic)| (*at, diagnostic.location.column));
         let diagnostics = found
@@ -345,6 +374,7 @@ impl<'a> Layout<'a> {
     /// An instruction: on an even address, and as many bytes as its encoding
     /// takes ([`measure`](Layout::measure)).
     fn plan_instruction(&mut self, index: usize) -> LinePlan {
+        self.first_instruction.get_or_insert(index);
         self.align(2);
         self.define_label(index);
         let address = self.address();
@@ -401,9 +431,14 @@ impl<'a> Layout<'a> {
             "include" => self.plan_include(index),
             "incbin" => self.plan_incbin(index),
             "memory" => self.plan_memory(index),
-            // `opt`, `list`, `nolist` and `page` are display settings and are
+            "opt" => {
+                self.plan_opt(index);
+                self.define_label(index);
+                self.nothing()
+            }
+            // `list`, `nolist` and `page` are display settings and are
             // accepted with nothing to say (the design record, "Directives").
-            "opt" | "list" | "nolist" | "page" => {
+            "list" | "nolist" | "page" => {
                 self.define_label(index);
                 self.nothing()
             }
@@ -742,6 +777,161 @@ impl<'a> Layout<'a> {
     ///
     /// What the ranges do to the running program is not this Directive's: the
     /// Program carries them, and the Interpreter is what will enforce them.
+    /// `opt word,word,…`: the Processor dialect, and EASy68K's listing
+    /// options, which change nothing here (ADR 0011).
+    ///
+    /// `p=68000`, `p=68010` and `p=68020` choose the processor and `bit` the
+    /// 68020's bit fields, which `p=68020` implies. Either is chosen before
+    /// the first instruction, since the instructions are judged and measured
+    /// for it; saying the same again is harmless, and naming another
+    /// processor is an error. A word that is no option is a warning, because
+    /// it does nothing. Words are read case insensitively, as EASy68K reads
+    /// them.
+    fn plan_opt(&mut self, index: usize) {
+        let Some(field) = self
+            .line(index)
+            .operation
+            .as_ref()
+            .and_then(|operation| operation.text.clone())
+        else {
+            return;
+        };
+        for (word, span) in option_words(&field.text, field.span.start) {
+            let lowered = word.to_ascii_lowercase();
+            match lowered.split_once('=') {
+                Some((name, value)) if name.trim_end() == "p" => {
+                    let value_start = span.end - value.len();
+                    let value_span = Span::new(
+                        value_start + (value.len() - value.trim_start().len()),
+                        span.end,
+                    );
+                    self.choose_processor(index, word, span, value.trim(), value_span);
+                }
+                None if lowered == "p" => self.raise(
+                    index,
+                    span,
+                    DiagnosticKind::UnknownProcessor {
+                        found: String::new(),
+                    },
+                ),
+                None if lowered == "bit" => {
+                    if self.chosen_too_late(index, word, span) {
+                        continue;
+                    }
+                    self.bit_fields = true;
+                }
+                None if LISTING_OPTIONS.contains(&lowered.as_str()) => {}
+                _ => self.raise(
+                    index,
+                    span,
+                    DiagnosticKind::UnknownOption {
+                        option: word.to_string(),
+                    },
+                ),
+            }
+        }
+    }
+
+    /// `opt p=…`: `value` is what follows the `=`, at `value_span`.
+    fn choose_processor(
+        &mut self,
+        index: usize,
+        word: &str,
+        span: Span,
+        value: &str,
+        value_span: Span,
+    ) {
+        let Some(processor) = Processor::ALL
+            .into_iter()
+            .find(|processor| processor.name() == value)
+        else {
+            let found = value_span.text(self.text(index)).to_string();
+            let span = match value_span.is_empty() {
+                true => span,
+                false => value_span,
+            };
+            self.raise(index, span, DiagnosticKind::UnknownProcessor { found });
+            return;
+        };
+        if self.chosen_too_late(index, word, span) {
+            return;
+        }
+        match &self.processor {
+            Some((chosen, at)) if *chosen != processor => {
+                let (chosen, at) = (*chosen, at.clone());
+                let location = self.unit.location(index, span);
+                let diagnostic = Diagnostic::new(
+                    DiagnosticKind::ProcessorChosenTwice {
+                        chosen,
+                        found: processor,
+                    },
+                    location,
+                )
+                .with_related(at, format!("`opt p={}` chose it here", chosen.name()));
+                self.report(index, diagnostic);
+            }
+            Some(_) => {}
+            None => self.processor = Some((processor, self.unit.location(index, value_span))),
+        }
+    }
+
+    /// Whether an option of the dialect comes after the first instruction, in
+    /// which case it says so and chooses nothing: the lines above it have been
+    /// judged and measured for the processor already in force.
+    fn chosen_too_late(&mut self, index: usize, word: &str, span: Span) -> bool {
+        let Some(first) = self.first_instruction else {
+            return false;
+        };
+        let location = self.unit.location(index, span);
+        let diagnostic = Diagnostic::new(
+            DiagnosticKind::ProcessorChosenAfterCode {
+                option: word.to_string(),
+            },
+            location,
+        )
+        .with_related(self.unit.whole_line(first), "the first instruction");
+        self.report(index, diagnostic);
+        true
+    }
+
+    /// The processor the Program is written for: the one `opt p=` chose, the
+    /// 68000 when none did.
+    fn chosen_processor(&self) -> Processor {
+        self.processor
+            .as_ref()
+            .map_or(Processor::M68000, |(processor, _)| *processor)
+    }
+
+    /// Where a fix that changes the processor edits the source: the value of
+    /// the `opt p=` that chose it, or, when none did, above the first line of
+    /// the Entry file that is neither blank nor a Comment line, which comes
+    /// before every instruction, indented as that line is, or by four spaces
+    /// when it starts in column 1.
+    fn find_the_processor_line(&self) -> ProcessorLine {
+        if let Some((_, location)) = &self.processor {
+            return ProcessorLine::Chosen(location.clone());
+        }
+        let first = (0..self.unit.len())
+            .find(|&index| {
+                let line = self.line(index);
+                line.label.is_some() || line.operation.is_some()
+            })
+            .unwrap_or(0);
+        let text = self.text(first);
+        let indentation: String = text
+            .chars()
+            .take_while(|character| *character == ' ' || *character == '\t')
+            .collect();
+        let location = self.unit.whole_line(first);
+        ProcessorLine::Missing {
+            above: Location::new(location.file, location.line, 0, 0),
+            indentation: match indentation.is_empty() {
+                true => "    ".to_string(),
+                false => indentation,
+            },
+        }
+    }
+
     fn plan_memory(&mut self, index: usize) -> LinePlan {
         self.no_size(index, "memory");
         // `check_label_rule` has said that `memory` takes no Label; it still
@@ -1334,6 +1524,9 @@ impl<'a> Layout<'a> {
                 origin: self.origin.unwrap_or(DEFAULT_ORIGIN),
                 macros: self.unit.macros(),
                 planning,
+                processor: self.chosen_processor(),
+                bit_fields: self.bit_fields || self.chosen_processor().has(Processor::M68020),
+                processor_line: self.processor_line.as_ref(),
             };
             // The analyzer builds Locations, so it is given the *line* of the
             // position and not the position itself.
@@ -2280,6 +2473,24 @@ fn bytes_of(size: SizeSuffix) -> usize {
 
 /// What a data Directive of that size is aligned to: a word and a long start on
 /// an even address, a byte anywhere (`Directives/dc.htm`).
+/// The words of an `opt` field and where each is, split at its commas and
+/// trimmed: `cre, p=68020` is `cre` and `p=68020`. An empty word, between two
+/// commas, is no option and is left out.
+fn option_words(text: &str, start: usize) -> Vec<(&str, Span)> {
+    let mut words = Vec::new();
+    let mut offset = 0;
+    for piece in text.split(',') {
+        let leading = piece.len() - piece.trim_start().len();
+        let word = piece.trim();
+        if !word.is_empty() {
+            let at = start + offset + leading;
+            words.push((word, Span::new(at, at + word.len())));
+        }
+        offset += piece.len() + 1;
+    }
+    words
+}
+
 fn alignment_of(size: SizeSuffix) -> i64 {
     match size {
         SizeSuffix::Byte => 1,
@@ -3108,6 +3319,130 @@ LIMIT equ $9000
     #[test]
     fn the_ignored_directives_are_ignored_in_silence() {
         assert!(codes("    opt cre\n    list\n    nolist\n    page\n").is_empty());
+        assert_eq!(
+            codes("    OPT CRE,NOMEX, sex  a comment\n    opt nowar,cex,nocex\n"),
+            ["bare_comment"],
+            "EASy68K's listing options, in either case, and the field ends where an \
+             operand field does, before EASy68K's bare comment"
+        );
+    }
+
+    // -- `opt`: the Processor dialect (ADR 0011) ---------------------------
+
+    #[test]
+    fn opt_chooses_the_processor_and_the_bit_fields() {
+        let dialect = |source: &str| {
+            let (program, diagnostics) = assemble(source);
+            assert!(diagnostics.is_empty(), "{source:?}: {diagnostics:?}");
+            (program.processor(), program.bit_fields())
+        };
+        assert_eq!(dialect("    nop\n"), (Processor::M68000, false));
+        assert_eq!(
+            dialect("    opt p=68010\n    nop\n"),
+            (Processor::M68010, false)
+        );
+        assert_eq!(
+            dialect("    opt p=68020\n    nop\n"),
+            (Processor::M68020, true)
+        );
+        assert_eq!(dialect("    opt bit\n    nop\n"), (Processor::M68000, true));
+        assert_eq!(
+            dialect("start:\n    opt cre,P=68010,bit\n    opt p=68010\n    nop\n"),
+            (Processor::M68010, true),
+            "a Label is no instruction, and saying the same again is harmless"
+        );
+    }
+
+    #[test]
+    fn opt_comes_before_the_first_instruction_and_names_one_processor() {
+        assert_eq!(
+            codes("    opt p=68010\n    opt p=68020\n    nop\n"),
+            ["processor_chosen_twice"]
+        );
+        assert_eq!(
+            codes("    nop\n    opt p=68010\n"),
+            ["processor_chosen_after_code"]
+        );
+        assert_eq!(
+            codes("    nop\n    opt bit\n"),
+            ["processor_chosen_after_code"]
+        );
+        assert_eq!(
+            codes("    opt p=68000\n    dc.w 1\n    opt p=68000\n    nop\n"),
+            Vec::<&str>::new(),
+            "data is no instruction"
+        );
+        // An `opt` that comes too late chooses nothing, so the Program is
+        // the 68000's that the lines above it were judged for.
+        let (program, _) = assemble("    nop\n    opt p=68020\n");
+        assert_eq!(program.processor(), Processor::M68000);
+        assert_eq!(codes("    opt p=6802\n"), ["unknown_processor"]);
+        assert_eq!(codes("    opt p\n"), ["unknown_processor"]);
+        assert_eq!(codes("    opt fast\n"), ["unknown_option"]);
+    }
+
+    #[test]
+    fn opt_in_an_included_file_chooses_for_the_whole_program() {
+        let mut files = Files::new();
+        files.insert_text("main.m68k", "    include 'cpu.m68k'\n    extb.l d0\n");
+        files.insert_text("cpu.m68k", "* The processor.\n    opt p=68020\n");
+        let (program, diagnostics) = assemble_project(&files, "main.m68k");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.processor(), Processor::M68020);
+    }
+
+    #[test]
+    fn a_branch_written_long_is_long_on_the_68020_and_moves_what_follows() {
+        let source = "    bra.l next\n    nop\nnext:\n    rts\n";
+        assert_eq!(addresses(source), [0x1000, 0x1004, 0x1006]);
+        let source = format!("    opt p=68020\n{source}");
+        assert_eq!(addresses(&source), [0x1000, 0x1006, 0x1008]);
+        let (program, diagnostics) = assemble(&source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            program.instructions()[0].bytes,
+            [0x60, 0xFF, 0x00, 0x00, 0x00, 0x06],
+            "a 32-bit displacement from the word after the operation word"
+        );
+    }
+
+    /// The fix that writes a Program for a later processor edits the line
+    /// that chose its processor, or adds one above the first line of the
+    /// Entry file that is not blank or a Comment line.
+    #[test]
+    fn the_processor_fix_edits_the_line_that_chooses_the_processor() {
+        let fix = |files: &Files| {
+            let (_, diagnostics) = assemble_project(files, "main.m68k");
+            let diagnostic = diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.code() == "needs_a_later_processor")
+                .expect("a refusal");
+            let fix = diagnostic.fixes[0].clone();
+            (fix.location, fix.text)
+        };
+        assert_eq!(
+            fix(&Files::from_source(
+                "* A header.\n\n\torg $1000\n\textb.l d0\n"
+            )),
+            (
+                Location::new("main.m68k", 2, 0, 0),
+                "\topt p=68020\n".to_string()
+            )
+        );
+        assert_eq!(
+            fix(&Files::from_source("start: extb.l d0\n")),
+            (
+                Location::new("main.m68k", 0, 0, 0),
+                "    opt p=68020\n".to_string()
+            )
+        );
+        let mut files = Files::new();
+        files.insert_text("main.m68k", "    include 'cpu.m68k'\n    extb.l d0\n");
+        files.insert_text("cpu.m68k", "    opt p=68010\n");
+        assert_eq!(
+            fix(&files),
+            (Location::new("cpu.m68k", 0, 10, 15), "68020".to_string())
+        );
     }
 
     // -- `reg`, `fail` and `simhalt` (phase 2) -----------------------------

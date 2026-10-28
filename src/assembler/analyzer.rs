@@ -12,10 +12,14 @@
 //!
 //! 1. the name is a Mnemonic — a near miss gets a "did you mean", an indented
 //!    word gets the Label hint, a real 68000 instruction s68k does not
-//!    assemble gets the reason;
+//!    assemble gets the reason, and one of a later processor that s68k's
+//!    dialect does not have yet says so;
 //! 2. every Operand is one this phase assembles — `usp` is the only one that is
 //!    not, and it says so;
-//! 3. the number of Operands picks the Form;
+//! 3. the number of Operands picks the Form, which has to be one the
+//!    Program's processor has: `extb.l` and `move ccr,<ea>` in a 68000
+//!    Program are refused with the 68000's way of doing the same and the
+//!    `opt p=` line that would let them, as suggested fixes (ADR 0011);
 //! 4. the size suffix against that Form, and the byte rule for address
 //!    registers;
 //! 5. each Operand's mode against its position;
@@ -60,7 +64,7 @@
 //! cascade of "move takes two operands" under a real mistake teaches nothing.
 
 use super::ast::{self, Line, Operand, Operation, SizeSuffix};
-use super::diagnostics::{Diagnostic, DiagnosticKind};
+use super::diagnostics::{Diagnostic, DiagnosticKind, SuggestedFix};
 use super::expr;
 use super::instructions::choice;
 use super::instructions::encoded::{BranchSize, Instruction, Size, EXTENSION_WORD_OFFSET};
@@ -71,6 +75,7 @@ use super::instructions::table::{
 use super::names;
 use super::parser::MacroDefinition;
 use super::source::{Location, Span};
+use crate::machine::Processor;
 
 /// What the analyzer knows about the Symbols of the program.
 ///
@@ -144,11 +149,39 @@ pub struct Context<'a> {
     /// the second judging it (the module's "Planning"): nothing is raised, and
     /// a value that cannot be worked out yet is lowered as a placeholder.
     pub planning: bool,
+    /// The processor the Program is written for, which `opt p=` chose: a Form
+    /// of a later one is refused, and a branch written `.l` is long only on
+    /// the 68020.
+    pub processor: Processor,
+    /// Whether the Program has the 68020's bit-field instructions, through
+    /// `opt bit` or the 68020.
+    pub bit_fields: bool,
+    /// Where the source chooses its processor, or would, which a fix that
+    /// changes it edits; `None` for a line judged with no Program around it,
+    /// which is then refused with the hint and no fix.
+    pub processor_line: Option<&'a ProcessorLine>,
+}
+
+/// Where the source chooses its processor, or would: what a suggested fix
+/// that changes the processor edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessorLine {
+    /// The value an `opt p=` line chose it with, `68010` in `opt p=68010`.
+    Chosen(Location),
+    /// No line chose one, and a line that does goes above the line at
+    /// `above`, the first of the Entry file that is neither blank nor a
+    /// Comment line, indented as `indentation` says.
+    Missing {
+        /// The line the new one goes above, its columns empty.
+        above: Location,
+        /// The whitespace the new line starts with.
+        indentation: String,
+    },
 }
 
 impl<'a> Context<'a> {
     /// A Context over `symbols`, with the default origin and a current address
-    /// of `origin`.
+    /// of `origin`, for a 68000 Program.
     pub fn new(symbols: &'a dyn SymbolValues) -> Self {
         Self {
             symbols,
@@ -156,6 +189,9 @@ impl<'a> Context<'a> {
             origin: DEFAULT_ORIGIN,
             macros: &[],
             planning: false,
+            processor: Processor::M68000,
+            bit_fields: false,
+            processor_line: None,
         }
     }
 
@@ -193,6 +229,10 @@ impl Values for Context<'_> {
 
     fn instruction_address(&self) -> i64 {
         self.current_address
+    }
+
+    fn processor(&self) -> Processor {
+        self.processor
     }
 }
 
@@ -288,6 +328,22 @@ impl<'a> Analyzer<'a> {
             self.suggest_a_label(line, operation);
             return None;
         }
+        if let Implementation::NotImplementedYet {
+            processor,
+            bit_field,
+        } = spec.implementation
+        {
+            self.raise(
+                DiagnosticKind::UnimplementedInDialect {
+                    name: name.clone(),
+                    processor,
+                    bit_field,
+                },
+                operation.name_span,
+            );
+            self.suggest_a_label(line, operation);
+            return None;
+        }
 
         let instruction = self.check(line, spec, operation, parser_reported_an_error);
         self.suggest_a_label(line, operation);
@@ -319,6 +375,24 @@ impl<'a> Analyzer<'a> {
             operands
         };
 
+        // A shape a later processor gave the Mnemonic, in a Program written
+        // for that processor: it is still to come, and nothing else about the
+        // line is worth saying. On an earlier processor the line is judged as
+        // the 68000 judges it.
+        if let Some(shape) = table::later_shape(spec.mnemonic, operation.size, operands) {
+            if self.context.processor.has(shape.processor) {
+                self.raise(
+                    DiagnosticKind::UnimplementedInDialect {
+                        name: self.text_of(operation.span),
+                        processor: shape.processor,
+                        bit_field: false,
+                    },
+                    operation.span,
+                );
+                return None;
+            }
+        }
+
         let unimplemented: Vec<bool> = operands
             .iter()
             .map(|operand| self.check_operand_is_implemented(operand))
@@ -342,6 +416,11 @@ impl<'a> Analyzer<'a> {
                 return None;
             }
         };
+
+        if !self.context.processor.has(form.processor) {
+            self.needs_a_later_processor(spec, form, operation, operands);
+            return None;
+        }
 
         let size = self.check_size(spec, form, operation, operands);
         // Where a PC-relative Operand's displacement sits, which is what the
@@ -423,7 +502,7 @@ impl<'a> Analyzer<'a> {
         }
         let suggestion = table::closest_name(
             &name,
-            table::mnemonics().chain(names::DIRECTIVES.iter().copied()),
+            table::suggestible_mnemonics().chain(names::DIRECTIVES.iter().copied()),
         )
         .map(str::to_string);
         let could_be_label = operation.name_span.start > 0 && operation.size.is_none();
@@ -1002,6 +1081,7 @@ impl<'a> Analyzer<'a> {
                 operation.size,
                 self.context.is_back_reference(value),
                 displacement,
+                self.context.processor,
             ),
         };
         let written = match operation.size {
@@ -1036,7 +1116,11 @@ impl<'a> Analyzer<'a> {
                     value: displacement,
                     min: -32768,
                     max: 32767,
-                    advice: Some(far_branch_advice(spec, &operation.lowercase_name())),
+                    advice: Some(far_branch_advice(
+                        spec,
+                        &operation.lowercase_name(),
+                        self.context.processor,
+                    )),
                 },
                 value.span(),
             ),
@@ -1341,6 +1425,127 @@ impl<'a> Analyzer<'a> {
     ///
     /// While planning nothing is raised and nothing fails: the line is only
     /// being measured, and pass 2 judges it.
+    /// A Form of a later processor than the Program's: `extb.l` or
+    /// `move ccr,<ea>` in a 68000 Program.
+    ///
+    /// The hint has two halves, the 68000's way of doing the same and the
+    /// `opt p=` line that writes the Program for the later processor, and the
+    /// Diagnostic carries both as fixes, the `opt p=` line first: an editor
+    /// applies one and the program assembles (the asm-editor's
+    /// `docs/design/m68k-machine.md`, decision 3).
+    fn needs_a_later_processor(
+        &mut self,
+        spec: &'static InstructionSpec,
+        form: &'static Form,
+        operation: &Operation,
+        operands: &[Operand],
+    ) {
+        if self.context.planning {
+            self.failed = true;
+            return;
+        }
+        let (program, needed) = (self.context.processor, form.processor);
+        let uppercase = operation.name.chars().any(|c| c.is_ascii_uppercase())
+            && !operation.name.chars().any(|c| c.is_ascii_lowercase());
+        let cased = |text: &str| match uppercase {
+            true => text.to_ascii_uppercase(),
+            false => text.to_string(),
+        };
+        let (name, equivalent) = match (spec.family(), operands) {
+            (Some(Family::ExtByteToLong), [register]) => {
+                let register = self.text_of(register.span());
+                // The second line starts under the first one's Operation,
+                // whatever stands before it on the line.
+                let indentation: String = self.text[..operation.span.start]
+                    .chars()
+                    .map(|c| if c == '\t' { '\t' } else { ' ' })
+                    .collect();
+                let text = format!(
+                    "{} {register}\n{indentation}{} {register}",
+                    cased("ext.w"),
+                    cased("ext.l")
+                );
+                let fix = SuggestedFix {
+                    title: format!("Write `ext.w {register}` and `ext.l {register}`"),
+                    location: self.location(operation.span),
+                    text,
+                };
+                (
+                    "extb.l".to_string(),
+                    Some((
+                        format!(
+                            "`ext.w {register}` and then `ext.l {register}`, which do the same"
+                        ),
+                        fix,
+                    )),
+                )
+            }
+            (Some(Family::Move), [ccr, _]) => {
+                let whole = operation.span;
+                let ccr_span = ccr.span();
+                let sr = match self
+                    .text_of(ccr_span)
+                    .chars()
+                    .any(|c| c.is_ascii_uppercase())
+                {
+                    true => "SR",
+                    false => "sr",
+                };
+                let rewritten = format!(
+                    "{}{sr}{}",
+                    &self.text[whole.start..ccr_span.start],
+                    &self.text[ccr_span.end..whole.end]
+                );
+                let fix = SuggestedFix {
+                    title: format!("Write `{rewritten}`"),
+                    location: self.location(ccr_span),
+                    text: sr.to_string(),
+                };
+                (
+                    "move ccr,<ea>".to_string(),
+                    Some((format!("`{rewritten}`, whose low byte is the CCR"), fix)),
+                )
+            }
+            _ => (spec.mnemonic.to_string(), None),
+        };
+        let dialect_fix = self.context.processor_line.map(|line| match line {
+            ProcessorLine::Chosen(location) => SuggestedFix {
+                title: format!(
+                    "Change `opt p={}` to `opt p={}`",
+                    program.name(),
+                    needed.name()
+                ),
+                location: location.clone(),
+                text: needed.name().to_string(),
+            },
+            ProcessorLine::Missing { above, indentation } => SuggestedFix {
+                title: format!("Add `opt p={}` at the top of the program", needed.name()),
+                location: Location::new(above.file.clone(), above.line, 0, 0),
+                text: format!("{indentation}opt p={}\n", needed.name()),
+            },
+        });
+        let chosen = matches!(self.context.processor_line, Some(ProcessorLine::Chosen(_)));
+        let (equivalent, equivalent_fix) = match equivalent {
+            Some((text, fix)) => (Some(text), Some(fix)),
+            None => (None, None),
+        };
+        let mut diagnostic = Diagnostic::new(
+            DiagnosticKind::NeedsALaterProcessor {
+                name,
+                processor: needed,
+                program,
+                equivalent,
+                chosen,
+            },
+            self.location(operation.span),
+        );
+        for fix in dialect_fix.into_iter().chain(equivalent_fix) {
+            diagnostic = diagnostic.with_fix(fix);
+        }
+        self.failed = true;
+        self.diagnostics.push(diagnostic);
+    }
+
     fn raise(&mut self, kind: DiagnosticKind, span: Span) {
         if self.context.planning {
             return;
@@ -1366,8 +1571,15 @@ impl<'a> Analyzer<'a> {
 /// What to write instead of a branch whose target is more than a word away,
 /// `mnemonic` as it was written: the jump that reaches anywhere in memory, for
 /// each kind of branch.
-fn far_branch_advice(spec: &'static InstructionSpec, mnemonic: &str) -> String {
+fn far_branch_advice(
+    spec: &'static InstructionSpec,
+    mnemonic: &str,
+    processor: Processor,
+) -> String {
     match spec.family() {
+        Some(Family::Bra | Family::Bsr | Family::Bcc(_)) if processor.has(Processor::M68020) => {
+            format!("write `{mnemonic}.l`: a long branch reaches anywhere in memory")
+        }
         Some(Family::Bsr) => "`jsr` reaches anywhere in memory".to_string(),
         Some(Family::Bcc(_)) => "branch on the opposite condition over a `jmp`, which reaches \
                                  anywhere in memory"
@@ -1582,7 +1794,6 @@ mod tests {
             "    trap #15",
             "    btst #24,d1",
             "    ext.l d0",
-            "    extb.l d0",
             "    moveq.l #1,d0",
             "    lea.l (a0),a1",
             "    btst.l #24,d1",
@@ -1925,7 +2136,6 @@ mod tests {
             "    move.w #$2700,sr",
             "    move.w sr,d0",
             "    move.w sr,(a0)",
-            "    move.w ccr,d0",
             "    move d0,ccr",
             "    andi.b #$1f,ccr",
             "    ori.b #$1,ccr",
@@ -2064,7 +2274,232 @@ mod tests {
             codes("    asl.l #1,d0").is_empty(),
             "the register form takes any size"
         );
-        assert_eq!(codes("    extb.w d0"), ["invalid_size"]);
+        assert_eq!(
+            analyze_for("    extb.w d0", Processor::M68020, None).0,
+            ["invalid_size"]
+        );
+    }
+
+    /// One line judged for a Program written for `processor`, with the line
+    /// that chooses it or would, and every Diagnostic it raised.
+    fn analyze_for(
+        text: &str,
+        processor: Processor,
+        processor_line: Option<&ProcessorLine>,
+    ) -> (Vec<String>, Option<Instruction>, Vec<Diagnostic>) {
+        let (line, parser_diagnostics) = parser::parse_line(text, "main.m68k", 0);
+        let symbols = Symbols(HashMap::new());
+        let mut context = Context::new(&symbols);
+        context.processor = processor;
+        context.processor_line = processor_line;
+        let mut analyzer = Analyzer::new("main.m68k", 0, text, &context);
+        let instruction =
+            analyzer.analyze_line(&line, parser_diagnostics.iter().any(|d| d.is_error()));
+        let diagnostics = analyzer.finish();
+        let codes = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code().to_string())
+            .collect();
+        (codes, instruction, diagnostics)
+    }
+
+    /// The first members of the dialects assemble in a Program written for
+    /// their processor or a later one, and nowhere else (ADR 0011).
+    #[test]
+    fn a_form_assembles_for_its_processor_and_the_later_ones() {
+        for (text, first) in [
+            ("    move.w ccr,d0", Processor::M68010),
+            ("    move ccr,(a0)+", Processor::M68010),
+            ("    extb.l d0", Processor::M68020),
+            ("    extb d7", Processor::M68020),
+        ] {
+            for processor in Processor::ALL {
+                let (codes, instruction, _) = analyze_for(text, processor, None);
+                match processor.has(first) {
+                    true => {
+                        assert!(codes.is_empty(), "{text} for the {processor:?}: {codes:?}");
+                        assert!(instruction.is_some(), "{text} is lowered");
+                    }
+                    false => {
+                        assert_eq!(codes, ["needs_a_later_processor"], "{text}, {processor:?}");
+                        assert!(instruction.is_none());
+                    }
+                }
+            }
+        }
+    }
+
+    /// The refusal says what the 68000 writes instead and which `opt p=` line
+    /// writes the Program for the later processor, and carries both as fixes,
+    /// the `opt p=` one first.
+    #[test]
+    fn a_refused_form_carries_its_two_fixes() {
+        let missing = ProcessorLine::Missing {
+            above: Location::new("main.m68k", 2, 0, 0),
+            indentation: "\t".to_string(),
+        };
+        let (_, _, found) = analyze_for(
+            "loop:  extb.l d3 ; widen",
+            Processor::M68000,
+            Some(&missing),
+        );
+        let diagnostic = &found[0];
+        assert_eq!(
+            diagnostic.message(),
+            "`extb.l` is a 68020 instruction, and this program is written for the 68000."
+        );
+        assert_eq!(
+            diagnostic.hint().unwrap(),
+            "On the 68000, write `ext.w d3` and then `ext.l d3`, which do the same; or add \
+             `opt p=68020` at the top of the program to write it for the 68020"
+        );
+        let fixes: Vec<(&str, &Location, &str)> = diagnostic
+            .fixes
+            .iter()
+            .map(|fix| (fix.title.as_str(), &fix.location, fix.text.as_str()))
+            .collect();
+        assert_eq!(
+            fixes,
+            [
+                (
+                    "Add `opt p=68020` at the top of the program",
+                    &Location::new("main.m68k", 2, 0, 0),
+                    "\topt p=68020\n"
+                ),
+                (
+                    "Write `ext.w d3` and `ext.l d3`",
+                    &Location::new("main.m68k", 0, 7, 16),
+                    "ext.w d3\n       ext.l d3"
+                ),
+            ]
+        );
+
+        let chosen = ProcessorLine::Chosen(Location::new("main.m68k", 0, 10, 15));
+        let (_, _, found) = analyze_for("    MOVE.W CCR,-(A7)", Processor::M68000, Some(&chosen));
+        let diagnostic = &found[0];
+        assert_eq!(
+            diagnostic.message(),
+            "`move ccr,<ea>` is a 68010 instruction, and this program is written for the 68000."
+        );
+        assert_eq!(
+            diagnostic.hint().unwrap(),
+            "On the 68000, write `MOVE.W SR,-(A7)`, whose low byte is the CCR; or change \
+             `opt p=68000` to `opt p=68010`"
+        );
+        assert_eq!(
+            diagnostic.fixes[0].title,
+            "Change `opt p=68000` to `opt p=68010`"
+        );
+        assert_eq!(
+            diagnostic.fixes[0].location,
+            Location::new("main.m68k", 0, 10, 15)
+        );
+        assert_eq!(diagnostic.fixes[0].text, "68010");
+        assert_eq!(diagnostic.fixes[1].title, "Write `MOVE.W SR,-(A7)`");
+        assert_eq!(
+            diagnostic.fixes[1].location,
+            Location::new("main.m68k", 0, 11, 14)
+        );
+        assert_eq!(diagnostic.fixes[1].text, "SR");
+
+        // An upper-case line is mended in upper case, and a line judged with
+        // no Program around it has no `opt p=` line to edit: the hint still
+        // says to add one, and the only fix is the 68000's.
+        let (_, _, found) = analyze_for("    EXTB.L D0", Processor::M68010, Some(&missing));
+        assert_eq!(found[0].fixes[1].text, "EXT.W D0\n    EXT.L D0");
+        let (_, _, found) = analyze_for("    extb.l d0", Processor::M68000, None);
+        assert_eq!(found[0].fixes.len(), 1);
+        assert_eq!(found[0].fixes[0].title, "Write `ext.w d0` and `ext.l d0`");
+        assert!(found[0].hint().unwrap().contains("add `opt p=68020`"));
+    }
+
+    /// The other instructions of the 68010 and the 68020, and the shapes the
+    /// 68020 gives 68000 Mnemonics, are still to come, and say so.
+    #[test]
+    fn an_instruction_still_to_come_says_so() {
+        for (text, processor) in [
+            ("    rtd #4", Processor::M68000),
+            ("    rtd #4", Processor::M68010),
+            ("    movec vbr,d0", Processor::M68020),
+            ("    cas.l d0,d1,(a0)", Processor::M68020),
+            ("    bfextu d0{4:8},d1", Processor::M68000),
+            ("    muls.l d0,d1", Processor::M68020),
+            ("    link.l a6,#-8", Processor::M68020),
+            ("    tst.l a0", Processor::M68020),
+        ] {
+            assert_eq!(
+                analyze_for(text, processor, None).0,
+                ["unimplemented_in_dialect"],
+                "{text}, {processor:?}"
+            );
+        }
+        // On an earlier processor a later shape is judged as the 68000
+        // judges it.
+        assert_eq!(
+            analyze_for("    muls.l d0,d1", Processor::M68000, None).0,
+            ["invalid_size"]
+        );
+        assert_eq!(
+            analyze_for("    muls.l d0,d1", Processor::M68010, None).0,
+            ["invalid_size"]
+        );
+        assert_eq!(
+            analyze_for("    tst.l a0", Processor::M68000, None).0,
+            ["invalid_addressing_mode"]
+        );
+        assert_eq!(
+            messages("    rtd #4"),
+            [
+                "`rtd` is a 68010 instruction, and is not implemented yet in s68k's 68010 \
+                 dialect. The 68010 dialect is partial so far: of the 68010's instructions s68k \
+                 has `move ccr,<ea>`"
+            ]
+        );
+        let (_, _, found) = analyze_for("    muls.l d0,d1", Processor::M68020, None);
+        assert_eq!(
+            found[0].message(),
+            "`muls.l d0,d1` is a 68020 instruction, and is not implemented yet in s68k's 68020 \
+             dialect."
+        );
+        let (_, _, found) = analyze_for("    bftst (a0){0:8}", Processor::M68000, None);
+        assert_eq!(
+            found[0].message(),
+            "`bftst` is a 68020 bit-field instruction, and bit fields are not implemented yet."
+        );
+    }
+
+    /// `.l` on a branch is a word where there is no long branch, as in
+    /// EASy68K, and a long one on the 68020.
+    #[test]
+    fn a_long_branch_is_the_68020s() {
+        for (processor, expected) in [
+            (Processor::M68000, BranchSize::Word),
+            (Processor::M68010, BranchSize::Word),
+            (Processor::M68020, BranchSize::Long),
+        ] {
+            for text in ["    bra.l $2000", "    bsr.l $2000", "    beq.l $2000"] {
+                let (codes, instruction, _) = analyze_for(text, processor, None);
+                assert!(codes.is_empty(), "{text}: {codes:?}");
+                let size = match instruction {
+                    Some(
+                        Instruction::BRA(_, size)
+                        | Instruction::BSR(_, size)
+                        | Instruction::Bcc(_, _, size),
+                    ) => size,
+                    other => panic!("{text} lowered to {other:?}"),
+                };
+                assert_eq!(size, expected, "{text}, {processor:?}");
+            }
+        }
+        // A branch too far for a word is told to write `.l` on the 68020.
+        let (_, _, found) = analyze_for("    bra.w $20000", Processor::M68020, None);
+        assert!(
+            found[0].hint().unwrap().contains("`bra.l`"),
+            "{:?}",
+            found[0].hint()
+        );
+        let (_, _, found) = analyze_for("    bra.w $20000", Processor::M68000, None);
+        assert!(found[0].hint().unwrap().contains("`jmp`"));
     }
 
     #[test]

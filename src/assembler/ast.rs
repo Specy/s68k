@@ -705,8 +705,9 @@ pub struct Comment {
 }
 
 /// An Operand field that is read as raw text rather than as Operands: the
-/// filename of `include` and `incbin`, the message of `fail`, and everything on
-/// a refused keyword's line (`docs/grammar.md` 2.5, 2.6).
+/// filename of `include` and `incbin`, the message of `fail`, the options of
+/// `opt`, and everything on a refused keyword's line (`docs/grammar.md` 2.5,
+/// 2.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TextOperandField {
     /// The text, exactly as it was written, without the Comment.

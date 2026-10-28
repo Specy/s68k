@@ -217,11 +217,12 @@ impl Memory {
         u16::from_be_bytes([self.data[address], self.data[(address + 1) & ADDRESS_MASK]])
     }
 
-    /// The instruction memory holds at `address` now, decoded for the 68000,
-    /// its words wrapping round the 24 bits of the bus. Every word is an
-    /// instruction or [`Instruction::IllegalWord`], so this never fails.
-    pub fn decode_at(&self, address: usize) -> Decoded {
-        let decoded = decode::decode(address as u32, Processor::M68000, |at| {
+    /// The instruction memory holds at `address` now, decoded for
+    /// `processor`, its words wrapping round the 24 bits of the bus. Every
+    /// word is an instruction or [`Instruction::IllegalWord`], so this never
+    /// fails.
+    pub fn decode_at(&self, address: usize, processor: Processor) -> Decoded {
+        let decoded = decode::decode(address as u32, processor, |at| {
             Ok::<u16, Infallible>(self.word_at(at as usize))
         });
         match decoded {
@@ -1340,7 +1341,7 @@ impl Interpreter {
         }
         match self.memory.cache.get(pc) {
             Some(slot) => slot.ends_the_program(),
-            None => self.is_an_end(pc, &self.memory.decode_at(pc)),
+            None => self.is_an_end(pc, &self.memory.decode_at(pc, self.program.processor())),
         }
     }
 
@@ -1382,7 +1383,7 @@ impl Interpreter {
     #[cold]
     #[inline(never)]
     fn decode_into_the_cache(&mut self, pc: usize) -> Slot {
-        let decoded = self.memory.decode_at(pc);
+        let decoded = self.memory.decode_at(pc, self.program.processor());
         let slot = Slot::decoded(decoded, self.is_an_end(pc, &decoded));
         self.memory.cache.store(pc, slot);
         slot
@@ -2145,13 +2146,14 @@ impl Interpreter {
         self.program.assembled_as(instruction, Some(&names))
     }
 
-    /// The instruction memory holds at `address` now, decoded for the 68000
-    /// and printed in EASy68K's syntax with the Program's Labels: what runs
-    /// there, whatever the Program laid out. Bytes that are no instruction
-    /// print as `DC.W`. It reads memory and leaves the decode cache alone.
+    /// The instruction memory holds at `address` now, decoded for the
+    /// Program's processor and printed in EASy68K's syntax with the Program's
+    /// Labels: what runs there, whatever the Program laid out. Bytes that are
+    /// no instruction, or an instruction of a later processor, print as
+    /// `DC.W`. It reads memory and leaves the decode cache alone.
     pub fn disassemble_at(&self, address: usize) -> disassemble::Line {
         let address = address & ADDRESS_MASK;
-        let decoded = self.memory.decode_at(address);
+        let decoded = self.memory.decode_at(address, self.program.processor());
         let labels = self.debugger.get_labels();
         let names = |address: u32| labels.get(&(address as usize)).map(|label| label.name.clone());
         let bytes = (0..decoded.size as usize)

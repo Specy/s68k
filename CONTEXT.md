@@ -115,7 +115,7 @@ The whole front end: it reads the source Files from the Entry file, resolves Sym
 _Avoid_: compiler, semantic checker, pre-interpreter, lexer (each was one stage of the old pipeline)
 
 **Program**:
-What the Assembler produces when no Diagnostic is an error: the instructions with their addresses, sizes and encodings, the initial contents of memory, the Symbols and the Entry point, ready for the Interpreter.
+What the Assembler produces when no Diagnostic is an error: the instructions with their addresses, sizes and encodings, the initial contents of memory, the Symbols, the Entry point and the Processor dialect, ready for the Interpreter.
 _Avoid_: compiled program, Compiler (the old type name), binary
 
 **Layout**:
@@ -182,8 +182,12 @@ Why a program ended: task 9, running into `$FFFF $FFFF` in memory the Program ne
 ### Diagnosis
 
 **Diagnostic**:
-A finding about the source made while assembling, of a stable kind, at a Location, with a message, a Hint and optionally related Locations, tagged with a severity: `error` stops the program from building, `warning` and `suggestion` are reported while it still builds. The same term as in the asm-editor, which displays them.
+A finding about the source made while assembling, of a stable kind, at a Location, with a message, a Hint, optionally related Locations and optionally Suggested fixes, tagged with a severity: `error` stops the program from building, `warning` and `suggestion` are reported while it still builds. The same term as in the asm-editor, which displays them.
 _Avoid_: SemanticError, compile error, lexer error, linter message
+
+**Suggested fix**:
+A change to the source a Diagnostic carries for an editor to apply, the Hint made into an edit: a title, a Location and the text that replaces what it covers, where a Location with no columns inserts. A refused `extb.l` carries the `opt p=68020` line that writes the program for the 68020 and the `ext.w` and `ext.l` that do the same on a 68000.
+_Avoid_: quick fix (that is the editor's offer of one), code action, autofix
 
 **Location**:
 Where in the source something is: a file, a line and the range of columns of the token or operand concerned. Two lines of a File included twice share one Location and are told apart by their Include chain.
@@ -201,7 +205,7 @@ The part of a Diagnostic or Runtime error that gives the learner a safe next act
 The assembler and simulator whose dialect s68k follows. Where s68k is more lenient than EASy68K it stays so; where it is stricter, that is a deliberate deviation and is recorded as a decision.
 
 **Processor dialect**:
-The processor a Program is written for and its words are decoded for: the 68000, EASy68K's processor and the default, or the 68010 or the 68020, each of which adds instructions, addressing modes and behaviour to the one before it. Every row of the decoder names the first processor that has it, and so will every form of the instruction table; on an earlier processor its words are an illegal instruction: `move ccr,<ea>` is the 68010's and `extb.l` the 68020's. A Program will choose its dialect in its source with `opt p=68010` or `opt p=68020`.
+The processor a Program is written for and its words are decoded for: the 68000, EASy68K's processor and the default, or the 68010 or the 68020, each of which adds instructions, addressing modes and behaviour to the one before it. A Program chooses it in its source with `opt p=68010` or `opt p=68020`, once and before its first instruction, and `opt bit` adds the 68020's bit fields to it (ADR 0011). Every form of the instruction table and every row of the decoder names the first processor that has it; on an earlier processor the form is refused and its words are an illegal instruction: `move ccr,<ea>` is the 68010's and `extb.l` the 68020's. Those two are the whole of the dialects so far; every other instruction of the 68010 and the 68020 is not implemented yet.
 _Avoid_: CPU type, architecture, target (that is the asm-editor's word for a language and its machine)
 
 **Conformance suite**:

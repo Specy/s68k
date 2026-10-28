@@ -421,11 +421,49 @@ assert.deepEqual(moveRow.forms[0].sizes, ['byte', 'word', 'long'])
 assert.ok(moveRow.forms[0].operands[0].includes('Dn'))
 assert.deepEqual(
     table.find(({mnemonic}) => mnemonic === 'andi').forms[2],
-    {operands: [['Im'], ['sr']], sizes: ['word'], privileged: true}
+    {operands: [['Im'], ['sr']], sizes: ['word'], privileged: true, processor: '68000'}
 )
+// Each form names the first processor that has it.
+assert.equal(moveRow.forms.find((form) => form.operands[0][0] === 'ccr').processor, '68010')
+assert.equal(table.find(({mnemonic}) => mnemonic === 'extb').forms[0].processor, '68020')
+assert.equal(table.find(({mnemonic}) => mnemonic === 'rtd'), undefined, 'one still to come is not listed')
 assert.equal(table.find(({mnemonic}) => mnemonic === 'rte'), undefined, 'a refused mnemonic is not listed')
 assert.equal(table.flatMap(({forms}) => forms).filter((form) => form.privileged).length, 4)
 assert.deepEqual(JSON.parse(JSON.stringify(table)), table, 'the table is plain data')
+
+// ---------------------------------------------------------------------------
+// The processor dialect
+// ---------------------------------------------------------------------------
+
+assert.equal(assembly.program.getProcessor(), '68000', 'the default processor')
+assert.equal(assembly.program.getInfo().bitFields, false)
+const for68020 = S68k.assemble('    OPT P=68020\n    EXTB.L D0\n    BRA.L done\ndone: rts\n')
+assert.deepEqual(for68020.diagnostics, [])
+assert.equal(for68020.program.getProcessor(), '68020')
+assert.equal(for68020.program.hasBitFields(), true, '`opt p=68020` implies bit fields')
+assert.deepEqual(for68020.program.getInstructionAddresses(), [0x1000, 0x1002, 0x1008], 'a long branch is six bytes')
+for68020.program.dispose()
+
+// In a 68000 program the 68020's `extb.l` is refused, with the two fixes its
+// hint describes: the `opt p=` line to add, then the 68000's two instructions.
+const refused = S68k.assemble('* A program.\n    org $1000\n    extb.l d0\n')
+assert.equal(refused.program, undefined)
+assert.equal(refused.diagnostics.length, 1)
+const [needs] = refused.diagnostics
+assert.equal(needs.code, 'needs_a_later_processor')
+assert.deepEqual(needs.fixes, [
+    {
+        title: 'Add `opt p=68020` at the top of the program',
+        location: {file: 'main.m68k', line: 1, column: 0, endColumn: 0},
+        text: '    opt p=68020\n'
+    },
+    {
+        title: 'Write `ext.w d0` and `ext.l d0`',
+        location: {file: 'main.m68k', line: 2, column: 4, endColumn: 13},
+        text: 'ext.w d0\n    ext.l d0'
+    }
+])
+assert.equal('fixes' in S68k.assemble('    move.w d0,#1').diagnostics[0], false, 'most diagnostics carry none')
 
 // ---------------------------------------------------------------------------
 // Undo, and the identity of a step
