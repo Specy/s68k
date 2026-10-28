@@ -11,7 +11,7 @@ expression: fixture
       "text": "lea $2000,a0"
     },
     {
-      "address": "$1004",
+      "address": "$1006",
       "line": 1,
       "text": "move.l a0,d1"
     },
@@ -21,22 +21,22 @@ expression: fixture
       "text": "tst.b (a0)+"
     },
     {
-      "address": "$100c",
+      "address": "$100a",
       "line": 4,
-      "text": "bne $1008"
+      "text": "bne.s $1008"
     },
     {
-      "address": "$1010",
+      "address": "$100c",
       "line": 5,
       "text": "move.l a0,d0"
     },
     {
-      "address": "$1014",
+      "address": "$100e",
       "line": 6,
       "text": "sub.l d1,d0"
     },
     {
-      "address": "$1018",
+      "address": "$1010",
       "line": 7,
       "text": "subq.l #$1,d0"
     }

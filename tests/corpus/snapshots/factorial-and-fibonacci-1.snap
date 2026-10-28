@@ -11,12 +11,12 @@ expression: fixture
       "text": "move.l #$8,-(a7)"
     },
     {
-      "address": "$1004",
+      "address": "$1006",
       "line": 1,
-      "text": "bsr $1024"
+      "text": "bsr.w $1020"
     },
     {
-      "address": "$1008",
+      "address": "$100a",
       "line": 2,
       "text": "addq.l #$4,a7"
     },
@@ -26,14 +26,14 @@ expression: fixture
       "text": "move.l d0,d6"
     },
     {
-      "address": "$1010",
+      "address": "$100e",
       "line": 4,
       "text": "move.l #$a,-(a7)"
     },
     {
       "address": "$1014",
       "line": 5,
-      "text": "bsr $105c"
+      "text": "bsr.w $104a"
     },
     {
       "address": "$1018",
@@ -41,167 +41,167 @@ expression: fixture
       "text": "addq.l #$4,a7"
     },
     {
-      "address": "$101c",
+      "address": "$101a",
       "line": 7,
       "text": "move.l d0,d7"
     },
     {
-      "address": "$1020",
+      "address": "$101c",
       "line": 8,
-      "text": "bra $10a0"
+      "text": "bra.w $107c"
     },
     {
-      "address": "$1024",
+      "address": "$1020",
       "line": 12,
       "text": "link a6,#$0"
     },
     {
-      "address": "$1028",
+      "address": "$1024",
       "line": 13,
       "text": "move.l 8(a6),d0"
     },
     {
-      "address": "$102c",
+      "address": "$1028",
       "line": 14,
       "text": "cmp.l #$1,d0"
     },
     {
-      "address": "$1030",
+      "address": "$102e",
       "line": 15,
-      "text": "ble $1050"
+      "text": "ble.w $1044"
     },
     {
-      "address": "$1034",
+      "address": "$1032",
       "line": 16,
       "text": "subq.l #$1,d0"
     },
     {
-      "address": "$1038",
+      "address": "$1034",
       "line": 17,
       "text": "move.l d0,-(a7)"
     },
     {
-      "address": "$103c",
+      "address": "$1036",
       "line": 18,
-      "text": "bsr $1024"
+      "text": "bsr.s $1020"
     },
     {
-      "address": "$1040",
+      "address": "$1038",
       "line": 19,
       "text": "addq.l #$4,a7"
     },
     {
-      "address": "$1044",
+      "address": "$103a",
       "line": 20,
       "text": "move.l 8(a6),d1"
     },
     {
-      "address": "$1048",
+      "address": "$103e",
       "line": 21,
       "text": "mulu d1,d0"
     },
     {
-      "address": "$104c",
+      "address": "$1040",
       "line": 22,
-      "text": "bra $1054"
+      "text": "bra.w $1046"
     },
     {
-      "address": "$1050",
+      "address": "$1044",
       "line": 24,
       "text": "moveq #$1,d0"
     },
     {
-      "address": "$1054",
+      "address": "$1046",
       "line": 26,
       "text": "unlk a6"
     },
     {
-      "address": "$1058",
+      "address": "$1048",
       "line": 27,
       "text": "rts"
     },
     {
-      "address": "$105c",
+      "address": "$104a",
       "line": 31,
       "text": "link a6,#$fffffffc"
     },
     {
-      "address": "$1060",
+      "address": "$104e",
       "line": 32,
       "text": "move.l 8(a6),d0"
     },
     {
-      "address": "$1064",
+      "address": "$1052",
       "line": 33,
       "text": "cmp.l #$2,d0"
     },
     {
-      "address": "$1068",
+      "address": "$1058",
       "line": 34,
-      "text": "blt $1098"
+      "text": "blt.w $1078"
     },
     {
-      "address": "$106c",
+      "address": "$105c",
       "line": 35,
       "text": "subq.l #$1,d0"
     },
     {
-      "address": "$1070",
+      "address": "$105e",
       "line": 36,
       "text": "move.l d0,-(a7)"
     },
     {
-      "address": "$1074",
+      "address": "$1060",
       "line": 37,
-      "text": "bsr $105c"
+      "text": "bsr.s $104a"
     },
     {
-      "address": "$1078",
+      "address": "$1062",
       "line": 38,
       "text": "addq.l #$4,a7"
     },
     {
-      "address": "$107c",
+      "address": "$1064",
       "line": 39,
       "text": "move.l d0,-4(a6)"
     },
     {
-      "address": "$1080",
+      "address": "$1068",
       "line": 40,
       "text": "move.l 8(a6),d0"
     },
     {
-      "address": "$1084",
+      "address": "$106c",
       "line": 41,
       "text": "subq.l #$2,d0"
     },
     {
-      "address": "$1088",
+      "address": "$106e",
       "line": 42,
       "text": "move.l d0,-(a7)"
     },
     {
-      "address": "$108c",
+      "address": "$1070",
       "line": 43,
-      "text": "bsr $105c"
+      "text": "bsr.s $104a"
     },
     {
-      "address": "$1090",
+      "address": "$1072",
       "line": 44,
       "text": "addq.l #$4,a7"
     },
     {
-      "address": "$1094",
+      "address": "$1074",
       "line": 45,
       "text": "add.l -4(a6),d0"
     },
     {
-      "address": "$1098",
+      "address": "$1078",
       "line": 47,
       "text": "unlk a6"
     },
     {
-      "address": "$109c",
+      "address": "$107a",
       "line": 48,
       "text": "rts"
     }
@@ -209,27 +209,27 @@ expression: fixture
   "memory": [],
   "labels": {
     "end": {
-      "address": "$10a0",
+      "address": "$107c",
       "line": 50
     },
     "factorial": {
-      "address": "$1024",
+      "address": "$1020",
       "line": 11
     },
     "factorial_done": {
-      "address": "$1054",
+      "address": "$1046",
       "line": 25
     },
     "fib": {
-      "address": "$105c",
+      "address": "$104a",
       "line": 30
     },
     "fib_done": {
-      "address": "$1098",
+      "address": "$1078",
       "line": 46
     },
     "one": {
-      "address": "$1050",
+      "address": "$1044",
       "line": 23
     }
   }

@@ -1020,13 +1020,23 @@ impl Breakpoint {
     }
 }
 
-/// Writes the initial contents of memory: every run of bytes the Program
-/// carries, and nothing where it only reserves room.
+/// Writes the initial contents of memory: the encoding of every instruction,
+/// every run of bytes the Program carries, and nothing where it only reserves
+/// room.
 ///
 /// `ds` reserves memory and writes nothing to it (`Directives/ds.htm`), so a
 /// [`MemoryContent::Reserved`] run leaves the fill the Interpreter starts with
-/// where it is.
+/// where it is, and so does the pad byte before an aligned item.
+///
+/// The instructions' bytes are in memory so that the host reads what a 68000
+/// would hold there. The program itself still runs the Program's
+/// instructions and may not load or store a byte of them
+/// ([`RuntimeError::InstructionAccess`]); running from memory is the decode
+/// cache's, which is still to come.
 fn prepare_memory(memory: &mut Memory, program: &Program) -> RuntimeResult<()> {
+    for instruction in program.instructions() {
+        memory.write_bytes(instruction.address, &instruction.bytes)?;
+    }
     for run in program.memory() {
         match &run.content {
             MemoryContent::Bytes { bytes } => memory.write_bytes(run.address, bytes)?,

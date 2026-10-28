@@ -51,8 +51,9 @@
 //! `move usp,an`, macros with conditional assembly, `memory` and the
 //! structured-control keywords are the whole of what is refused, each with the
 //! reason it carries in the instruction table or in [`layout`]'s own list.
-//! Real instruction sizes are the one decision the design record leaves open:
-//! an instruction is four bytes here.
+//! Every instruction is encoded as EASy68K encodes it and takes that
+//! encoding's bytes (ADR 0006), which was the one decision the design record
+//! left open.
 
 pub mod analyzer;
 pub mod ast;
@@ -65,6 +66,7 @@ pub mod names;
 pub mod parser;
 pub mod program;
 pub mod source;
+pub mod srecord;
 pub mod symbols;
 pub mod token;
 pub mod tokenizer;

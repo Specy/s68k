@@ -11,17 +11,17 @@ expression: fixture
       "text": "move.l $2000,d0"
     },
     {
-      "address": "$1004",
+      "address": "$1006",
       "line": 3,
       "text": "add.l $2004,d0"
     },
     {
-      "address": "$1008",
+      "address": "$100c",
       "line": 4,
       "text": "addi.l #$14,d0"
     },
     {
-      "address": "$100c",
+      "address": "$1012",
       "line": 5,
       "text": "move.l d0,$2008"
     }

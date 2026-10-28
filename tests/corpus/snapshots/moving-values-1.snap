@@ -11,32 +11,32 @@ expression: fixture
       "text": "moveq #$1e,d0"
     },
     {
-      "address": "$1004",
+      "address": "$1002",
       "line": 1,
       "text": "moveq #$c,d1"
     },
     {
-      "address": "$1008",
+      "address": "$1004",
       "line": 2,
       "text": "move.l d0,d2"
     },
     {
-      "address": "$100c",
+      "address": "$1006",
       "line": 3,
       "text": "add.l d1,d2"
     },
     {
-      "address": "$1010",
+      "address": "$1008",
       "line": 4,
       "text": "add.l d2,d2"
     },
     {
-      "address": "$1014",
+      "address": "$100a",
       "line": 6,
       "text": "move.l #$ffffff00,d3"
     },
     {
-      "address": "$1018",
+      "address": "$1010",
       "line": 7,
       "text": "move.b d2,d3"
     }

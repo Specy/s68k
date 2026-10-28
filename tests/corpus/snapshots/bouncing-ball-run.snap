@@ -28,5 +28,5 @@ expression: fixture
   "pc": "$10a0",
   "flags": "X:1 N:1 Z:0 V:0 C:1",
   "output": "",
-  "memory": "6b7f0055f38ca392"
+  "memory": "d81a9c0d8e600e46"
 }

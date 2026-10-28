@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/unknown_memory_kind.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "unknown_memory_kind",
+    "message": "`ram` is not a kind of memory range.",
+    "hint": "Write `rom`, `read`, `protected` or `invalid` before the first address, as in `memory rom $8000,$8FFF`",
+    "location": {
+      "file": "unknown_memory_kind.asm",
+      "line": 2,
+      "column": 11,
+      "endColumn": 14
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "unknown_memory_kind",
+    "message": "`memory` names the kind of range before its addresses.",
+    "hint": "Write `rom`, `read`, `protected` or `invalid` before the first address, as in `memory rom $8000,$8FFF`",
+    "location": {
+      "file": "unknown_memory_kind.asm",
+      "line": 3,
+      "column": 4,
+      "endColumn": 10
+    },
+    "related": []
+  }
+]

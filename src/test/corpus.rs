@@ -37,9 +37,9 @@ use crate::assembler::program::{MemoryContent, Program};
 use crate::assembler::source::Files;
 use crate::assembler::symbols::SymbolKind;
 use crate::instructions::{
-    BranchSize, Condition, FileExistence, Instruction, Interrupt, InterruptResult, KeyStateRequest,
-    KeyStateResult, Operand, RegisterOperand, ShiftDirection, Sign, Size, SoundOutcome,
-    TargetDirection,
+    AddressWidth, BranchSize, Condition, FileExistence, Instruction, Interrupt, InterruptResult,
+    KeyStateRequest, KeyStateResult, Operand, RegisterOperand, ShiftDirection, Sign, Size,
+    SoundOutcome, TargetDirection,
 };
 use crate::interpreter::{Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError};
 
@@ -219,6 +219,16 @@ fn size_suffix(size: Size) -> &'static str {
 }
 
 /// `d0`..`d7` and `a0`..`a7`; there is no `sp`, the stack pointer prints as `a7`.
+/// The size of a branch's displacement: `s` for a byte, `w` for a word and
+/// `l` for the 68020's long.
+fn branch_suffix(size: BranchSize) -> &'static str {
+    match size {
+        BranchSize::Short => "s",
+        BranchSize::Word => "w",
+        BranchSize::Long => "l",
+    }
+}
+
 fn register(register: &RegisterOperand) -> String {
     match register {
         RegisterOperand::Data(index) => format!("d{}", index),
@@ -284,9 +294,13 @@ fn print_operand(operand: &Operand) -> String {
             register(&index.register),
             size_suffix(index.size)
         ),
-        // The width is not printed until instructions have their real sizes
-        // (`tests/corpus/README.md`, "An address width is not printed").
-        Operand::Absolute { address, width: _ } => hex(*address),
+        // A word marks itself and a long is the plain form, as EASy68K's
+        // disassembly writes them (`tests/corpus/README.md`, "An address
+        // prints its width when it is a word").
+        Operand::Absolute { address, width } => match width {
+            AddressWidth::Word => format!("{}.w", hex(*address)),
+            AddressWidth::Long => hex(*address),
+        },
         // A PC-relative Operand prints the address it reaches, which is what
         // the Program holds (`tests/corpus/README.md`, "Operands").
         Operand::PcDisplacement { target } => format!("{}(pc)", hex(*target as usize)),
@@ -546,11 +560,14 @@ fn print_instruction(instruction: &Instruction) -> String {
             print_operand(source),
             register(destination)
         ),
-        // A branch prints no size until instructions have their real sizes
-        // (`tests/corpus/README.md`, "`text`, the canonical rendering").
-        Instruction::Bcc(address, cond, _) => {
-            format!("b{} {}", condition(cond), hex(*address as usize))
-        }
+        // A branch prints the size of its displacement, whichever it is
+        // (`tests/corpus/README.md`, "Size suffix").
+        Instruction::Bcc(address, cond, size) => format!(
+            "b{}.{} {}",
+            condition(cond),
+            branch_suffix(*size),
+            hex(*address as usize)
+        ),
         Instruction::Scc(destination, cond) => {
             format!("s{} {}", condition(cond), print_operand(destination))
         }
@@ -560,7 +577,9 @@ fn print_instruction(instruction: &Instruction) -> String {
             register(counter),
             hex(*address as usize)
         ),
-        Instruction::BRA(address, _) => format!("bra {}", hex(*address as usize)),
+        Instruction::BRA(address, size) => {
+            format!("bra.{} {}", branch_suffix(*size), hex(*address as usize))
+        }
         Instruction::LINK(frame, displacement) => {
             format!("link {},#${:x}", register(frame), displacement)
         }
@@ -628,7 +647,9 @@ fn print_instruction(instruction: &Instruction) -> String {
             format!("bchg {},{}", print_operand(bit), print_operand(destination))
         }
         Instruction::JMP(target) => format!("jmp {}", print_operand(target)),
-        Instruction::BSR(address, _) => format!("bsr {}", hex(*address as usize)),
+        Instruction::BSR(address, size) => {
+            format!("bsr.{} {}", branch_suffix(*size), hex(*address as usize))
+        }
         Instruction::TRAP(vector) => format!("trap #${:x}", vector),
         Instruction::RTS => "rts".to_string(),
         Instruction::NOP => "nop".to_string(),
@@ -1254,7 +1275,7 @@ here: dc.l 1
         "movem.w (a0),d3",
         "cmpm.b (a0)+,(a1)+",
         "exg d0,a1",
-        "pea $2000",
+        "pea $2000.w",
         "ext.w d0",
         "ext.l d0",
         "not.b d0",
@@ -1272,19 +1293,21 @@ here: dc.l 1
         "moveq #$7,d0",
         "link a6,#$4",
         "unlk a6",
-        "jmp $1000",
+        "jmp $1000.w",
         "nop",
         "movea.l a7,a5",
         "move.l -8(a6),d0",
         "move.l 0(a6),d0",
         "move.l 4(a6,d1.w),d0",
         "move.l 4(a6,a2.l),d0",
-        "dbf d7,$107c",
-        "dbcc d7,$107c",
-        "bcc $107c",
-        "bcs $107c",
-        "bra $107c",
-        "bsr $107c",
+        // Every branch prints the size of its displacement: back to `loop`,
+        // within a byte, each of these is short. A `DBcc` has a word only.
+        "dbf d7,$1060",
+        "dbcc d7,$1060",
+        "bcc.s $1060",
+        "bcs.s $1060",
+        "bra.s $1060",
+        "bsr.s $1060",
         "addq.w #$1,d0",
         "movea.w #$1,a0",
         "cmp.w #$1,d0",
@@ -1294,7 +1317,7 @@ here: dc.l 1
         "addq.w #$1,a0",
         "subq.w #$1,a0",
         "cmpa.w #$1,a0",
-        "jsr $1000",
+        "jsr $1000.w",
         "ori.b #$1,d0",
         "eori.l #$1,d0",
         "suba.l a1,a0",
@@ -1302,9 +1325,9 @@ here: dc.l 1
         "adda.l a1,a0",
         "rol.w #$1,d0",
         "ror.l #$1,d0",
-        "bvc $107c",
-        "bvs $107c",
-        "bmi $107c",
+        "bvc.s $1060",
+        "bvs.s $1060",
+        "bmi.s $1060",
         // The count of a quick form is not an operand: it is kept in eight
         // bits, where the immediate of a `move.l` written `#-1.l`, which is
         // not made a `moveq`, is a long. `addq`, `subq` and `trap` keep eight
@@ -1357,18 +1380,20 @@ here: dc.l 1
         "roxl.w #$1,(a0)",
         // Phase 3's last group. A PC-relative operand is written as the
         // address it reaches and printed as that address, which is what the
-        // Program keeps: `here` is `$1184`, forwards of the first lines and
+        // Program keeps: `here` is `$1122`, forwards of the first lines and
         // behind the last one. `(pc,d1.w)` writes no address, so its
         // displacement is zero and it reaches its own extension word, two
-        // bytes past the instruction at `$1178`.
-        "move.l $1184(pc),d0",
-        "lea $1184(pc),a0",
-        "move.l $1184(pc,d1.w),d1",
-        "move.l $117a(pc,d1.w),d2",
-        // A forced width is not printed, nor a chosen one.
-        "move.l $1000,d3",
+        // bytes past the instruction at `$1114`.
+        "move.l $1122(pc),d0",
+        "lea $1122(pc),a0",
+        "move.l $1122(pc,d1.w),d1",
+        "move.l $1116(pc,d1.w),d2",
+        // A word address is marked `.w`, whether it was forced or chosen —
+        // `pea $2000`, `jmp $1000` and `jsr $1000` above are numbers a word
+        // holds, which is a back reference — and a long is the plain form.
+        "move.l $1000.w,d3",
         "move.l $1000,d4",
-        "move.l $1184(pc),d5",
+        "move.l $1122(pc),d5",
     ];
     let fixture = dump("printer_rules", source);
     let texts: Vec<&str> = fixture
@@ -1416,7 +1441,12 @@ fn printer_rules_out_of_reach() {
     );
     assert_eq!(
         print_instruction(&Instruction::Bcc(0x1000, Condition::True, BranchSize::Word)),
-        "bt $1000"
+        "bt.w $1000"
+    );
+    // The 68020's long branch, which no 68000 source reaches.
+    assert_eq!(
+        print_instruction(&Instruction::BRA(0x1000, BranchSize::Long)),
+        "bra.l $1000"
     );
     assert_eq!(
         print_instruction(&Instruction::DBcc(
@@ -1473,8 +1503,8 @@ msg2    DC.B    'EASy68K Rules!',$d,$a,0
         .collect();
     assert_eq!(memory, vec![("$2000", 14), ("$200e", 17)]);
     // Section 0 starts at the default origin, which is where its `ORG` puts it
-    // anyway; the two instructions are four bytes each. `MOVE.L #1,D0` is the
-    // `moveq` EASy68K makes of it.
+    // anyway. `MOVE.L #1,D0` is the `moveq` EASy68K makes of it, two bytes
+    // like the `NOP` after it.
     let instructions: Vec<(&str, &str)> = fixture
         .instructions
         .iter()
@@ -1482,7 +1512,7 @@ msg2    DC.B    'EASy68K Rules!',$d,$a,0
         .collect();
     assert_eq!(
         instructions,
-        vec![("$1000", "moveq #$1,d0"), ("$1004", "nop")]
+        vec![("$1000", "moveq #$1,d0"), ("$1002", "nop")]
     );
     // The two Labels are Labels, with the addresses above.
     assert_eq!(fixture.labels["msg1"].address, "$2000");
@@ -1519,7 +1549,9 @@ num3    DS.L    1
     let fixture = dump("offset_example", source);
     // Three long words counting up from -12: -12, -8, -4. `ORG *` comes back to
     // the address the region shadowed, which is the default origin, and the
-    // five instructions are four bytes each from there.
+    // five instructions follow at their sizes: `link` and `movem` are four
+    // bytes, and each `move.l` an operation word, a long immediate and a
+    // displacement, eight.
     let instructions: Vec<(&str, &str)> = fixture
         .instructions
         .iter()
@@ -1531,8 +1563,8 @@ num3    DS.L    1
             ("$1000", "link a0,#$fffffff4"),
             ("$1004", "movem.l a0-a1,-(a7)"),
             ("$1008", "move.l #$11111111,-12(a0)"),
-            ("$100c", "move.l #$22222222,-8(a0)"),
-            ("$1010", "move.l #$33333333,-4(a0)"),
+            ("$1010", "move.l #$22222222,-8(a0)"),
+            ("$1018", "move.l #$33333333,-4(a0)"),
         ]
     );
     assert!(
@@ -1575,7 +1607,8 @@ first:
 START:
     nop
 ";
-    assert_eq!(dump("entry_uppercase", uppercase).entry, "$1004");
+    // A `nop` is two bytes.
+    assert_eq!(dump("entry_uppercase", uppercase).entry, "$1002");
     // The fallback name is s68k's own convention and not a word the program
     // wrote, so it is matched whatever its case: the lowercase `start:` that
     // five of the six `.x68` programs write is the entry point too.
@@ -1586,7 +1619,7 @@ first:
 start:
     nop
 ";
-    assert_eq!(dump("entry_lowercase", lowercase).entry, "$1004");
+    assert_eq!(dump("entry_lowercase", lowercase).entry, "$1002");
     // `end` beats both, and it is the source 1.4.2 could not even parse.
     let ended = "\
     ORG $1000
@@ -1598,7 +1631,7 @@ last:
     rts
     END last
 ";
-    assert_eq!(dump("entry_end", ended).entry, "$1008");
+    assert_eq!(dump("entry_end", ended).entry, "$1004");
 }
 
 /// The 30 asm-editor programs all run, and this is where they get to.

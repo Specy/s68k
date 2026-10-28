@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/short_branch_to_next_instruction.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "short_branch_to_next_instruction",
+    "message": "`bra.s` to the next instruction has a displacement of 0, which a 68000 reads as the mark of a word branch.",
+    "hint": "Write `bra.w`, or `bra` with no size, which takes a word here",
+    "location": {
+      "file": "short_branch_to_next_instruction.asm",
+      "line": 2,
+      "column": 10,
+      "endColumn": 14
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "short_branch_to_next_instruction",
+    "message": "`beq.s` to the next instruction has a displacement of 0, which a 68000 reads as the mark of a word branch.",
+    "hint": "Write `beq.w`, or `beq` with no size, which takes a word here",
+    "location": {
+      "file": "short_branch_to_next_instruction.asm",
+      "line": 4,
+      "column": 10,
+      "endColumn": 14
+    },
+    "related": []
+  }
+]

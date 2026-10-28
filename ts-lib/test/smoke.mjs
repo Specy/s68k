@@ -37,16 +37,61 @@ assert.deepEqual(assembly.diagnostics, [], 'the program should assemble with not
 assert.notEqual(assembly.program, undefined, 'a program with no errors comes with a program')
 assert.equal(assembly.program.getEntryPoint(), 0x1000, 'START is the entry point')
 assert.equal(assembly.program.getInstructionCount(), 6)
+// Each instruction takes the bytes of its encoding: MOVE.L #5 is a two-byte
+// MOVEQ and ADD.L #3 a two-byte ADDQ, as EASy68K assembles them, MOVE.W #-2
+// carries a word of immediate, and EXT.L and TRAP are one word each.
 assert.deepEqual(
     assembly.program.getInstructionAddresses(),
-    [0x1000, 0x1004, 0x1008, 0x100c, 0x1010, 0x1014],
+    [0x1000, 0x1002, 0x1004, 0x1008, 0x100a, 0x100e],
     'instruction addresses are exposed without copying full instructions'
 )
 assert.equal(assembly.program.getSymbols()['START'].value, 0x1000)
 assert.equal(assembly.program.getSymbols()['START'].kind, 'label')
 assert.equal(assembly.program.getSymbols()['START'].location.line, 3, 'START is on the fourth line')
 
+assert.deepEqual(assembly.program.getMemoryMap(), [], 'a program with no `memory` line has no map')
+const mapped = S68k.assemble(`
+    MEMORY ROM $8000,$8FFF
+    memory invalid $FF000000,$FF0000FF
+    NOP
+`)
+assert.deepEqual(mapped.diagnostics, [], 'the memory map assembles')
+assert.deepEqual(
+    mapped.program.getMemoryMap().map(({kind, start, end}) => ({kind, start, end})),
+    [
+        {kind: 'rom', start: 0x8000, end: 0x8fff},
+        {kind: 'invalid', start: 0, end: 0xff},
+    ],
+    'one range per kind, in 24 bits, in EASy68K\'s order'
+)
+assert.equal(mapped.program.getMemoryMap()[0].location.line, 1, 'with the line that declared it')
+// The S-record EASy68K's simulator loads: its header, the NOP, the two ranges and the entry point.
+assert.deepEqual(
+    mapped.program.toSRecord().split('\r\n'),
+    [
+        'S021000036384B50524F47202020323043524541544544204259204541535936384B6D',
+        'S10510004E712B',
+        'S01A0000202020202020524F4D203030383030302C30303846464659',
+        'S01A00002020494E56414C4944203030303030302C303030304646E6',
+        'S804001000EB',
+        '',
+    ],
+    'EASy68K\'s .S68 layout'
+)
+mapped.program.dispose()
+
 const interpreter = new Interpreter(assembly.program)
+// The code is in memory as the words a 68000 reads: MOVEQ #5,D1 and ADDQ.L #3,D1.
+assert.deepEqual(
+    Array.from(interpreter.readMemoryBytes(0x1000, 4)),
+    [0x72, 0x05, 0x56, 0x81],
+    'the host reads the encoding of the code'
+)
+assert.deepEqual(
+    interpreter.getInstructionAt(0x1000).bytes,
+    [0x72, 0x05],
+    'and each instruction carries its own bytes'
+)
 let steps = 0
 let status = InterpreterStatus.Running
 while (status !== InterpreterStatus.Terminated && steps < 1000) {
@@ -114,7 +159,7 @@ assert.deepEqual(pausingAssembly.diagnostics, [])
 const pausing = new Interpreter(pausingAssembly.program)
 assert.equal(pausing.run(), InterpreterStatus.Paused, 'SIMHALT pauses the run')
 assert.equal(pausing.hasTerminated(), false, 'a paused program has not terminated')
-assert.equal(pausing.getPc(), 0x1008, 'the PC points after SIMHALT')
+assert.equal(pausing.getPc(), 0x1006, 'the PC points after SIMHALT, past a MOVEQ and its four bytes')
 assert.equal(
     pausing.getCpuSnapshot().getRegisterValue(0, RegisterType.Data),
     7,
@@ -1080,7 +1125,7 @@ assert.throws(() => watcher.watchMemory(0xe00300, 0xe00100), (error) => error.ty
 watcher.watchMemory(0xe00100, 0xe00300)
 assert.equal(InterpreterStatus.WatchedWrite, 5, 'appended after Paused')
 assert.equal(watcher.run(), InterpreterStatus.WatchedWrite)
-assert.equal(watcher.getPc(), 0x1004, 'on the instruction after the store')
+assert.equal(watcher.getPc(), 0x1008, 'on the instruction after the store, eight bytes on')
 assert.deepEqual(watcher.takeWatchedWrites(), [{address: 0xe00110, size: 1, value: 0}])
 assert.equal(watcher.runWithBreakpoints([], undefined, {skipBreakpointAtPc: false}), InterpreterStatus.WatchedWrite)
 assert.equal(watcher.run(), InterpreterStatus.WatchedWrite)
@@ -1091,7 +1136,7 @@ assert.deepEqual(watcher.takeWatchedWrites(), [
 ], 'in order, until taken')
 watcher.undo()
 assert.deepEqual(watcher.takeWatchedWrites(), [], 'undo empties the log')
-assert.equal(watcher.getPc(), 0x1008)
+assert.equal(watcher.getPc(), 0x1010)
 watcher.writeMemoryBytes(0xe002ff, new Uint8Array([7, 8]))
 assert.deepEqual(watcher.takeWatchedWrites(), [{address: 0xe002ff, size: 1, value: 7}], 'a host write, the bytes in the range')
 watcher.unwatchMemory()

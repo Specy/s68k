@@ -661,7 +661,8 @@ data: dc.l 0
                 "MOVEM.W (A7)+,D3",
                 "LSL.W (A0)",
                 "LSL.L #8,D0",
-                "LEA $1038(PC),A0",
+                // Every instruction at its real size: `data` is `$102c`.
+                "LEA $102C(PC),A0",
                 // A branch back to a Label above it, within a byte.
                 "BRA.S $1000",
                 // `cmp #n,dn` is a `cmp` and `and #n,dn` an `and`, as EASy68K
@@ -672,6 +673,19 @@ data: dc.l 0
                 "RTS",
             ]
         );
+        // The Program's code is those instructions' bytes, one after the
+        // other, and reading them back prints the same lines.
+        let image = &program.image()[0];
+        let read: Vec<String> = disassemble_bytes(
+            &image.bytes[..0x2C],
+            image.address as u32,
+            Processor::M68000,
+            None,
+        )
+        .into_iter()
+        .map(|line| line.text)
+        .collect();
+        assert_eq!(read, printed);
     }
 
     #[test]

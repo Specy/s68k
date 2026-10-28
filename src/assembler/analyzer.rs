@@ -26,12 +26,25 @@
 //! 7. the values it can already work out: the count of a quick form, a shift
 //!    count, a bit number, a displacement, how far a PC-relative Operand has to
 //!    reach from its own extension word, the displacement of `link`, the width
-//!    an absolute address is forced to, an immediate against its size, and a
+//!    an absolute address is forced to, an immediate against its size, how far
+//!    a branch or a `DBcc` reaches in the displacement its size gives it, and a
 //!    bare number that is probably a missing `#`.
 //!
 //! What survives is lowered ([`lowering`]), which is where the encoding
 //! EASy68K would choose is chosen: the analyzer says whether a line is right,
 //! and never which of the 68000's encodings it becomes.
+//!
+//! # Planning
+//!
+//! The Layout's first pass has to know how many bytes an instruction takes
+//! before it can lay out the next line, and EASy68K decides that size from the
+//! same two facts it encodes the line from: whether each Symbol in an Operand
+//! is a back reference, and its value. So pass 1 runs the analyzer too, over a
+//! [`Context`] that is [`planning`](Context::planning): it judges nothing,
+//! raises nothing and lowers the line with whatever it knows, a Forward
+//! reference standing for a placeholder value. A Forward reference is never
+//! given a short form, whatever its value, so the placeholder changes no
+//! size, and the instruction pass 2 lowers is the size pass 1 measured.
 //!
 //! # Where it sits
 //!
@@ -49,7 +62,8 @@
 use super::ast::{self, Line, Operand, Operation, SizeSuffix};
 use super::diagnostics::{Diagnostic, DiagnosticKind};
 use super::expr;
-use super::instructions::encoded::{Instruction, Size, EXTENSION_WORD_OFFSET};
+use super::instructions::choice;
+use super::instructions::encoded::{BranchSize, Instruction, Size, EXTENSION_WORD_OFFSET};
 use super::instructions::lowering::{self, Values};
 use super::instructions::table::{
     self, Combination, Family, Form, Implementation, InstructionSpec, Modes,
@@ -126,6 +140,10 @@ pub struct Context<'a> {
     /// their bodies. An Operation named after one of them is an invocation and
     /// not an unknown word, and is answered with the feature it needs.
     pub macros: &'a [MacroDefinition],
+    /// Whether this is the Layout's first pass measuring the line rather than
+    /// the second judging it (the module's "Planning"): nothing is raised, and
+    /// a value that cannot be worked out yet is lowered as a placeholder.
+    pub planning: bool,
 }
 
 impl<'a> Context<'a> {
@@ -137,6 +155,7 @@ impl<'a> Context<'a> {
             current_address: DEFAULT_ORIGIN,
             origin: DEFAULT_ORIGIN,
             macros: &[],
+            planning: false,
         }
     }
 
@@ -153,9 +172,19 @@ impl<'a> Context<'a> {
     }
 }
 
+/// What a value that cannot be worked out yet is lowered as while planning: a
+/// Forward reference, or an Expression that holds one.
+///
+/// Any number would do, since a Forward reference is never given a short form
+/// and so its value decides no size; 0 is the one that reads as "nothing".
+const PLACEHOLDER: i64 = 0;
+
 impl Values for Context<'_> {
     fn value_of(&self, expression: &ast::Expr) -> Option<i64> {
-        self.evaluate(expression)
+        match self.evaluate(expression) {
+            None if self.planning => Some(PLACEHOLDER),
+            value => value,
+        }
     }
 
     fn is_back_reference(&self, expression: &ast::Expr) -> bool {
@@ -344,6 +373,7 @@ impl<'a> Analyzer<'a> {
             self.check_instruction_value(spec, operands);
         }
         self.check_link_displacement(spec, operands, &fits);
+        self.check_branch_distance(spec, operation, operands, &fits);
         self.check_immediate_sizes(spec, size, operands, &fits);
         self.suggest_immediates(form, operands, &fits);
 
@@ -929,6 +959,91 @@ impl<'a> Analyzer<'a> {
         );
     }
 
+    /// How far a `bra`, `bsr`, `Bcc` or `DBcc` reaches, against the
+    /// displacement its size gives it: EASy68K's "Branch instruction
+    /// displacement is out of range or invalid" (`branch` and `dbcc` in its
+    /// `BUILD.CPP`).
+    ///
+    /// The size is the one the lowering chooses ([`choice::branch_size`]): a
+    /// branch written `.s` or `.b` is short whatever its distance, and one with
+    /// no size is short only when its target is a back reference a byte
+    /// reaches, so an unsized branch can fail only as a word. A short branch
+    /// holds −128 to 127 and not 0, the byte that marks a word branch, so a
+    /// short branch to the next instruction has its own sentence. A word holds
+    /// −32768 to 32767, and so does the displacement of every `DBcc`. Both are
+    /// measured from the word after the operation word, which is where the
+    /// 68000's program counter is when it adds them.
+    fn check_branch_distance(
+        &mut self,
+        spec: &'static InstructionSpec,
+        operation: &Operation,
+        operands: &[Operand],
+        fits: &[bool],
+    ) {
+        let (position, decrements) = match spec.family() {
+            Some(Family::Bra | Family::Bsr | Family::Bcc(_)) => (0, false),
+            Some(Family::DBcc(_)) => (1, true),
+            _ => return,
+        };
+        if fits.get(position) != Some(&true) {
+            return;
+        }
+        let Some(Operand::Absolute { value, .. }) = operands.get(position) else {
+            return;
+        };
+        let Some(target) = self.context.evaluate(value) else {
+            return;
+        };
+        let displacement =
+            choice::branch_displacement(self.context.current_address as u32, target as u32);
+        let size = match decrements {
+            true => BranchSize::Word,
+            false => choice::branch_size(
+                operation.size,
+                self.context.is_back_reference(value),
+                displacement,
+            ),
+        };
+        let written = match operation.size {
+            Some(size) => format!("{}.{}", operation.lowercase_name(), size.letter()),
+            None => operation.lowercase_name(),
+        };
+        match size {
+            BranchSize::Short if displacement == 0 => self.raise(
+                DiagnosticKind::ShortBranchToNextInstruction {
+                    branch: written,
+                    mnemonic: operation.lowercase_name(),
+                },
+                value.span(),
+            ),
+            BranchSize::Short if !choice::fits_a_short_branch(displacement) => self.raise(
+                DiagnosticKind::ValueOutOfRange {
+                    subject: format!("the distance `{written}` reaches"),
+                    value: displacement,
+                    min: -128,
+                    max: 127,
+                    advice: Some(format!(
+                        "write `{name}` with no size, or `{name}.w`: a word branch reaches \
+                         32 KB either way",
+                        name = operation.lowercase_name()
+                    )),
+                },
+                value.span(),
+            ),
+            BranchSize::Word if !(-32768..=32767).contains(&displacement) => self.raise(
+                DiagnosticKind::ValueOutOfRange {
+                    subject: format!("the distance `{written}` reaches"),
+                    value: displacement,
+                    min: -32768,
+                    max: 32767,
+                    advice: Some(far_branch_advice(spec, &operation.lowercase_name())),
+                },
+                value.span(),
+            ),
+            _ => {}
+        }
+    }
+
     /// `trap #15` is the input and output trap and the only one s68k answers;
     /// every other vector assembles on a 68000 and would stop the program here.
     fn check_the_only_trap(&mut self, spec: &'static InstructionSpec, vector: i64, span: Span) {
@@ -1223,7 +1338,13 @@ impl<'a> Analyzer<'a> {
     // -- odds and ends -----------------------------------------------------
 
     /// Raise a Diagnostic about `span` of this line.
+    ///
+    /// While planning nothing is raised and nothing fails: the line is only
+    /// being measured, and pass 2 judges it.
     fn raise(&mut self, kind: DiagnosticKind, span: Span) {
+        if self.context.planning {
+            return;
+        }
         let diagnostic = Diagnostic::new(kind, self.location(span));
         if diagnostic.is_error() {
             self.failed = true;
@@ -1239,6 +1360,23 @@ impl<'a> Analyzer<'a> {
     /// The text a span covers, which is how a message quotes what was written.
     fn text_of(&self, span: Span) -> String {
         span.text(self.text).to_string()
+    }
+}
+
+/// What to write instead of a branch whose target is more than a word away,
+/// `mnemonic` as it was written: the jump that reaches anywhere in memory, for
+/// each kind of branch.
+fn far_branch_advice(spec: &'static InstructionSpec, mnemonic: &str) -> String {
+    match spec.family() {
+        Some(Family::Bsr) => "`jsr` reaches anywhere in memory".to_string(),
+        Some(Family::Bcc(_)) => "branch on the opposite condition over a `jmp`, which reaches \
+                                 anywhere in memory"
+            .to_string(),
+        Some(Family::DBcc(_)) => format!(
+            "`{mnemonic}` has no longer form: bring the loop within 32 KB, or count with `subq` \
+             and a branch over a `jmp`"
+        ),
+        _ => "`jmp` reaches anywhere in memory".to_string(),
     }
 }
 
@@ -1363,6 +1501,11 @@ mod tests {
     /// The codes one line raises.
     fn codes(text: &str) -> Vec<String> {
         analyze(text).0
+    }
+
+    /// The codes one line raises against a symbol table.
+    fn codes_with(text: &str, symbols: Symbols) -> Vec<String> {
+        analyze_with(text, symbols).0
     }
 
     /// A symbol table of name and value pairs.
@@ -1688,6 +1831,53 @@ mod tests {
                 "The distance a `d(PC,Xn)` operand reaches is -128 to 127, and `4094` is outside \
                  it. Write `far` on its own: an absolute address reaches anywhere in memory"
             ]
+        );
+    }
+
+    /// A branch reaches as far as the displacement its size gives it,
+    /// measured from the word after the operation word: the line is at
+    /// `$1000`, so that word is at `$1002`.
+    #[test]
+    fn a_branch_reaches_as_far_as_its_size() {
+        // Written `.s`, a byte: 127 forwards is the most.
+        assert!(analyze_with("    bra.s far", symbols([("far", 0x1081)])).0.is_empty());
+        assert_eq!(
+            messages_with("    bra.s far", symbols([("far", 0x1082)])),
+            [
+                "The distance `bra.s` reaches is -128 to 127, and `128` is outside it. Write \
+                 `bra` with no size, or `bra.w`: a word branch reaches 32 KB either way"
+            ]
+        );
+        assert_eq!(
+            codes_with("    bsr.b back", symbols([("back", 0x0F81)])),
+            ["value_out_of_range"],
+            "`.b` is `.s`, and -129 is one too far back"
+        );
+        // A displacement of 0 is the mark of a word branch.
+        assert_eq!(
+            codes_with("    beq.s next", symbols([("next", 0x1002)])),
+            ["short_branch_to_next_instruction"]
+        );
+        // With no size the branch takes a word wherever a byte cannot reach,
+        // and a word reaches 32767 bytes.
+        assert!(analyze_with("    bra far", symbols([("far", 0x9001)])).0.is_empty());
+        assert!(analyze_with("    bra next", symbols([("next", 0x1002)])).0.is_empty());
+        assert_eq!(
+            messages_with("    bsr far", symbols([("far", 0x9002)])),
+            [
+                "The distance `bsr` reaches is -32768 to 32767, and `32768` is outside it. \
+                 `jsr` reaches anywhere in memory"
+            ]
+        );
+        // `dbra` has a word and nothing else.
+        assert!(
+            analyze_with("    dbra d0,back", symbols([("back", 0x1002 - 0x8000)]))
+                .0
+                .is_empty()
+        );
+        assert_eq!(
+            codes_with("    dbra d0,back", symbols([("back", 0x1001 - 0x8000)])),
+            ["value_out_of_range"]
         );
     }
 

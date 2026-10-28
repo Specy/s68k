@@ -11,12 +11,12 @@ expression: fixture
       "text": "move.l #$e0b070,d1"
     },
     {
-      "address": "$1004",
+      "address": "$1006",
       "line": 9,
-      "text": "bsr $113c"
+      "text": "bsr.w $115a"
     },
     {
-      "address": "$1008",
+      "address": "$100a",
       "line": 10,
       "text": "moveq #$0,d1"
     },
@@ -26,7 +26,7 @@ expression: fixture
       "text": "moveq #$0,d2"
     },
     {
-      "address": "$1010",
+      "address": "$100e",
       "line": 12,
       "text": "move.l #$280,d3"
     },
@@ -36,12 +36,12 @@ expression: fixture
       "text": "move.l #$140,d4"
     },
     {
-      "address": "$1018",
+      "address": "$101a",
       "line": 14,
       "text": "move.b #$57,d0"
     },
     {
-      "address": "$101c",
+      "address": "$101e",
       "line": 15,
       "text": "trap #$f"
     },
@@ -51,12 +51,12 @@ expression: fixture
       "text": "move.l #$3c9648,d1"
     },
     {
-      "address": "$1024",
+      "address": "$1026",
       "line": 18,
-      "text": "bsr $113c"
+      "text": "bsr.w $115a"
     },
     {
-      "address": "$1028",
+      "address": "$102a",
       "line": 19,
       "text": "moveq #$0,d1"
     },
@@ -66,362 +66,362 @@ expression: fixture
       "text": "move.l #$140,d2"
     },
     {
-      "address": "$1030",
+      "address": "$1032",
       "line": 21,
       "text": "move.l #$280,d3"
     },
     {
-      "address": "$1034",
+      "address": "$1038",
       "line": 22,
       "text": "move.l #$1e0,d4"
     },
     {
-      "address": "$1038",
+      "address": "$103e",
       "line": 23,
       "text": "move.b #$57,d0"
     },
     {
-      "address": "$103c",
+      "address": "$1042",
       "line": 24,
       "text": "trap #$f"
     },
     {
-      "address": "$1040",
+      "address": "$1044",
       "line": 26,
       "text": "move.l #$d2ff,d1"
     },
     {
-      "address": "$1044",
+      "address": "$104a",
       "line": 27,
-      "text": "bsr $113c"
+      "text": "bsr.w $115a"
     },
     {
-      "address": "$1048",
+      "address": "$104e",
       "line": 28,
       "text": "move.l #$1f4,d1"
     },
     {
-      "address": "$104c",
+      "address": "$1054",
       "line": 29,
       "text": "moveq #$28,d2"
     },
     {
-      "address": "$1050",
+      "address": "$1056",
       "line": 30,
       "text": "move.l #$258,d3"
     },
     {
-      "address": "$1054",
+      "address": "$105c",
       "line": 31,
       "text": "move.l #$8c,d4"
     },
     {
-      "address": "$1058",
+      "address": "$1062",
       "line": 32,
       "text": "move.b #$58,d0"
     },
     {
-      "address": "$105c",
+      "address": "$1066",
       "line": 33,
       "text": "trap #$f"
     },
     {
-      "address": "$1060",
+      "address": "$1068",
       "line": 35,
       "text": "move.l #$4070c0,d1"
     },
     {
-      "address": "$1064",
+      "address": "$106e",
       "line": 36,
       "text": "move.b #$51,d0"
     },
     {
-      "address": "$1068",
+      "address": "$1072",
       "line": 37,
       "text": "trap #$f"
     },
     {
-      "address": "$106c",
+      "address": "$1074",
       "line": 38,
       "text": "move.l #$ffffff,d1"
     },
     {
-      "address": "$1070",
+      "address": "$107a",
       "line": 39,
       "text": "move.b #$50,d0"
     },
     {
-      "address": "$1074",
+      "address": "$107e",
       "line": 40,
       "text": "trap #$f"
     },
     {
-      "address": "$1078",
+      "address": "$1080",
       "line": 41,
       "text": "move.b #$3,d1"
     },
     {
-      "address": "$107c",
+      "address": "$1084",
       "line": 42,
       "text": "move.b #$5d,d0"
     },
     {
-      "address": "$1080",
+      "address": "$1088",
       "line": 43,
       "text": "trap #$f"
     },
     {
-      "address": "$1084",
+      "address": "$108a",
       "line": 44,
       "text": "move.l #$c8,d1"
     },
     {
-      "address": "$1088",
+      "address": "$1090",
       "line": 45,
       "text": "move.l #$c8,d2"
     },
     {
-      "address": "$108c",
+      "address": "$1096",
       "line": 46,
       "text": "move.l #$1b8,d3"
     },
     {
-      "address": "$1090",
+      "address": "$109c",
       "line": 47,
       "text": "move.l #$17c,d4"
     },
     {
-      "address": "$1094",
+      "address": "$10a2",
       "line": 48,
       "text": "move.b #$57,d0"
     },
     {
-      "address": "$1098",
+      "address": "$10a6",
       "line": 49,
       "text": "trap #$f"
     },
     {
-      "address": "$109c",
+      "address": "$10a8",
       "line": 51,
       "text": "move.l #$2020a0,d1"
     },
     {
-      "address": "$10a0",
+      "address": "$10ae",
       "line": 52,
-      "text": "bsr $113c"
+      "text": "bsr.w $115a"
     },
     {
-      "address": "$10a4",
+      "address": "$10b2",
       "line": 53,
       "text": "move.l #$b4,d1"
     },
     {
-      "address": "$10a8",
+      "address": "$10b8",
       "line": 54,
       "text": "move.l #$c8,d2"
     },
     {
-      "address": "$10ac",
+      "address": "$10be",
       "line": 55,
       "text": "move.b #$56,d0"
     },
     {
-      "address": "$10b0",
+      "address": "$10c2",
       "line": 56,
       "text": "trap #$f"
     },
     {
-      "address": "$10b4",
+      "address": "$10c4",
       "line": 57,
       "text": "move.l #$140,d1"
     },
     {
-      "address": "$10b8",
+      "address": "$10ca",
       "line": 58,
       "text": "moveq #$6e,d2"
     },
     {
-      "address": "$10bc",
+      "address": "$10cc",
       "line": 59,
       "text": "move.b #$55,d0"
     },
     {
-      "address": "$10c0",
+      "address": "$10d0",
       "line": 60,
       "text": "trap #$f"
     },
     {
-      "address": "$10c4",
+      "address": "$10d2",
       "line": 61,
       "text": "move.l #$1cc,d1"
     },
     {
-      "address": "$10c8",
+      "address": "$10d8",
       "line": 62,
       "text": "move.l #$c8,d2"
     },
     {
-      "address": "$10cc",
+      "address": "$10de",
       "line": 63,
       "text": "move.b #$55,d0"
     },
     {
-      "address": "$10d0",
+      "address": "$10e2",
       "line": 64,
       "text": "trap #$f"
     },
     {
-      "address": "$10d4",
+      "address": "$10e4",
       "line": 65,
       "text": "move.l #$b4,d1"
     },
     {
-      "address": "$10d8",
+      "address": "$10ea",
       "line": 66,
       "text": "move.l #$c8,d2"
     },
     {
-      "address": "$10dc",
+      "address": "$10f0",
       "line": 67,
       "text": "move.b #$55,d0"
     },
     {
-      "address": "$10e0",
+      "address": "$10f4",
       "line": 68,
       "text": "trap #$f"
     },
     {
-      "address": "$10e4",
+      "address": "$10f6",
       "line": 69,
       "text": "move.l #$140,d1"
     },
     {
-      "address": "$10e8",
+      "address": "$10fc",
       "line": 70,
       "text": "move.l #$aa,d2"
     },
     {
-      "address": "$10ec",
+      "address": "$1102",
       "line": 71,
       "text": "move.b #$59,d0"
     },
     {
-      "address": "$10f0",
+      "address": "$1106",
       "line": 72,
       "text": "trap #$f"
     },
     {
-      "address": "$10f4",
+      "address": "$1108",
       "line": 74,
       "text": "move.l #$204070,d1"
     },
     {
-      "address": "$10f8",
+      "address": "$110e",
       "line": 75,
-      "text": "bsr $113c"
+      "text": "bsr.w $115a"
     },
     {
-      "address": "$10fc",
+      "address": "$1112",
       "line": 76,
       "text": "move.l #$122,d1"
     },
     {
-      "address": "$1100",
+      "address": "$1118",
       "line": 77,
       "text": "move.l #$122,d2"
     },
     {
-      "address": "$1104",
+      "address": "$111e",
       "line": 78,
       "text": "move.l #$15e,d3"
     },
     {
-      "address": "$1108",
+      "address": "$1124",
       "line": 79,
       "text": "move.l #$17c,d4"
     },
     {
-      "address": "$110c",
+      "address": "$112a",
       "line": 80,
       "text": "move.b #$57,d0"
     },
     {
-      "address": "$1110",
+      "address": "$112e",
       "line": 81,
       "text": "trap #$f"
     },
     {
-      "address": "$1114",
+      "address": "$1130",
       "line": 83,
       "text": "move.l #$ffffff,d1"
     },
     {
-      "address": "$1118",
+      "address": "$1136",
       "line": 84,
       "text": "move.b #$50,d0"
     },
     {
-      "address": "$111c",
+      "address": "$113a",
       "line": 85,
       "text": "trap #$f"
     },
     {
-      "address": "$1120",
+      "address": "$113c",
       "line": 86,
       "text": "lea $3000,a1"
     },
     {
-      "address": "$1124",
+      "address": "$1142",
       "line": 87,
       "text": "move.l #$d2,d1"
     },
     {
-      "address": "$1128",
+      "address": "$1148",
       "line": 88,
       "text": "move.l #$1a4,d2"
     },
     {
-      "address": "$112c",
+      "address": "$114e",
       "line": 89,
       "text": "move.b #$5f,d0"
     },
     {
-      "address": "$1130",
+      "address": "$1152",
       "line": 90,
       "text": "trap #$f"
     },
     {
-      "address": "$1134",
+      "address": "$1154",
       "line": 92,
       "text": "move.b #$9,d0"
     },
     {
-      "address": "$1138",
+      "address": "$1158",
       "line": 93,
       "text": "trap #$f"
     },
     {
-      "address": "$113c",
+      "address": "$115a",
       "line": 97,
       "text": "move.b #$51,d0"
     },
     {
-      "address": "$1140",
+      "address": "$115e",
       "line": 98,
       "text": "trap #$f"
     },
     {
-      "address": "$1144",
+      "address": "$1160",
       "line": 99,
       "text": "move.b #$50,d0"
     },
     {
-      "address": "$1148",
+      "address": "$1164",
       "line": 100,
       "text": "trap #$f"
     },
     {
-      "address": "$114c",
+      "address": "$1166",
       "line": 101,
       "text": "rts"
     }
@@ -434,7 +434,7 @@ expression: fixture
   ],
   "labels": {
     "both_colours": {
-      "address": "$113c",
+      "address": "$115a",
       "line": 96
     },
     "label": {

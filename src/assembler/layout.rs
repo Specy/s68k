@@ -2,10 +2,26 @@
 //!
 //! EASy68K assembles in two passes and so does this. **Pass 1** walks the lines
 //! in order, follows the Directives that decide where things go, defines every
-//! Symbol and gives every line that produces bytes an address. **Pass 2** walks
-//! them again, now that every name has a value: it evaluates the Operands,
-//! runs the [analyzer](super::analyzer) over every Operation and lowers what
-//! survives into the encoded instructions and the bytes of memory.
+//! Symbol and gives every line that produces bytes an address and a size.
+//! **Pass 2** walks them again, now that every name has a value: it evaluates
+//! the Operands, runs the [analyzer](super::analyzer) over every Operation,
+//! lowers what survives and encodes each instruction at its address, into the
+//! bytes of memory beside those of the data Directives.
+//!
+//! # The size of an instruction
+//!
+//! Pass 1 cannot lay out a line before it knows how many bytes the line above
+//! takes, and an instruction's size depends on its encoding: a short branch is
+//! two bytes and a word one four, an absolute address is a word or a long. So
+//! pass 1 lowers every instruction too, quietly, against the Symbols defined so
+//! far (`Layout::measure`), and the encoder measures it. EASy68K's rules
+//! decide every such choice from two facts alone: whether each Symbol in the
+//! Operand is defined above the line, and its value
+//! ([`instructions::choice`](super::instructions::choice)). Pass 1 knows both
+//! for every Symbol above, and a Symbol below is never given a short form,
+//! whatever its value turns out to be. So the size pass 1 decides is the size
+//! pass 2 encodes, and there is no third pass and no relaxation, as in EASy68K
+//! (the asm-editor's `docs/research/easy68k-machine-behaviour.md` §13).
 //!
 //! The split is what the forward-reference rule is made of (CONTEXT.md,
 //! "Forward reference"): a value pass 1 needs — an `org` address, a `ds` or
@@ -16,7 +32,8 @@
 //!
 //! * The default origin is `$1000` and `org` may go anywhere, forwards or
 //!   backwards. An odd origin is a warning and rounds up.
-//! * An instruction is 4 bytes and starts on an even address.
+//! * An instruction takes the bytes of its encoding, 2 to 10, and starts on an
+//!   even address; `simhalt` is the four bytes `$FFFF $FFFF`.
 //! * `dc`, `ds` and `dcb` default to `.w`; a word or a long one starts on an
 //!   even address, a byte one wherever it is (`Directives/ds.htm`,
 //!   `Directives/dc.htm`). A `dc.w` after an odd `dc.b` is therefore padded,
@@ -31,13 +48,15 @@
 //!   an Operation says so.
 //! * `reg` names a `movem` register list, `fail` reports the rest of its line
 //!   as the program's own error, and `simhalt` is an executable item of four
-//!   bytes that ends the run.
+//!   bytes that pauses the run.
 //! * A Directive that gives a name to something needs a Label and `page` and
 //!   the conditional-assembly Directives take none (`label_rule_of`).
 //! * `section` picks one of sixteen location counters and `offset` opens a
 //!   region that moves an address and places nothing, both of them read back
 //!   through the one current address (`Directives/section.htm`,
 //!   `Directives/offset.htm`).
+//! * `memory` declares a range of EASy68K's memory map, one of each kind, into
+//!   the Program.
 
 use std::collections::HashSet;
 
@@ -52,7 +71,10 @@ use super::instructions::encoded::Instruction;
 use super::instructions::lowering;
 use super::instructions::table;
 use super::names;
-use super::program::{AssembledInstruction, MemoryContent, MemoryRun, Program};
+use super::program::{
+    AssembledInstruction, MemoryContent, MemoryRange, MemoryRangeKind, MemoryRun, Program,
+};
+use crate::machine::encode::{self, EncodeError};
 use super::source::{self, SourceFile, Span};
 use super::symbols::{self, SymbolKind, SymbolTable, SymbolValue};
 
@@ -63,12 +85,16 @@ use super::symbols::{self, SymbolKind, SymbolTable, SymbolValue};
 /// program that needs a bigger machine.
 pub const ADDRESS_SPACE: i64 = 0x0100_0000;
 
-/// How many bytes every instruction takes up.
-///
-/// The real sizes are a later decision (the design record, "Scope"); the
-/// Program stores a size per instruction so that the decision is this constant
-/// and not a rewrite.
-pub const INSTRUCTION_SIZE: usize = 4;
+/// How many bytes `simhalt` takes up: `$FFFF $FFFF`, which EASy68K's
+/// simulator reads as its halt (`Directives/simhalt.htm`).
+pub const SIMHALT_SIZE: usize = 4;
+
+/// The size pass 1 gives an instruction line it cannot lower: one with an error
+/// in its shape, which pass 2 reports and which keeps the Program from being
+/// built. Two bytes is the operation word, the least an instruction takes, so
+/// the lines after it are laid out where they would be if it were mended to
+/// its shortest form.
+const UNMEASURED_SIZE: usize = 2;
 
 /// How many location counters a program has, one for each `section`.
 ///
@@ -107,8 +133,9 @@ enum Item {
     /// Nothing at all: a blank line, a Comment, a Label on its own, `equ`, and
     /// every Directive that produces no bytes.
     Nothing,
-    /// An instruction, [`INSTRUCTION_SIZE`] bytes at the line's address.
-    Instruction,
+    /// An instruction, or `simhalt`, of this many bytes at the line's address:
+    /// the size pass 1 measured, which is the size pass 2 encodes.
+    Instruction(usize),
     /// `dc` or `dcb`: bytes, whose values pass 2 works out.
     Data(usize),
     /// `ds`: room reserved and not written.
@@ -190,6 +217,8 @@ struct Layout<'a> {
     instructions: Vec<AssembledInstruction>,
     memory: Vec<MemoryRun>,
     layout_items: Vec<u32>,
+    /// The ranges `memory` has declared so far, one of each kind at most.
+    memory_map: Vec<MemoryRange>,
 }
 
 impl<'a> Layout<'a> {
@@ -212,6 +241,7 @@ impl<'a> Layout<'a> {
             instructions: Vec::new(),
             memory: Vec::new(),
             layout_items: Vec::new(),
+            memory_map: Vec::new(),
         }
     }
 
@@ -254,7 +284,9 @@ impl<'a> Layout<'a> {
             std::mem::take(&mut self.memory),
             &self.symbols,
             entry,
-        ).with_layout_items(std::mem::take(&mut self.layout_items));
+        )
+        .with_layout_items(std::mem::take(&mut self.layout_items))
+        .with_memory_map(std::mem::take(&mut self.memory_map));
         let mut found = self.diagnostics;
         found.sort_by_key(|(at, diagnostic)| (*at, diagnostic.location.column));
         let diagnostics = found
@@ -310,13 +342,45 @@ impl<'a> Layout<'a> {
         self.nothing()
     }
 
-    /// An instruction: 4 bytes, on an even address.
+    /// An instruction: on an even address, and as many bytes as its encoding
+    /// takes ([`measure`](Layout::measure)).
     fn plan_instruction(&mut self, index: usize) -> LinePlan {
         self.align(2);
         self.define_label(index);
         let address = self.address();
-        self.place(index, INSTRUCTION_SIZE);
-        self.plan(address, Item::Instruction)
+        let size = self.measure(index, address);
+        self.place(index, size);
+        self.plan(address, Item::Instruction(size))
+    }
+
+    /// The size of the instruction on the `index`th line, laid out at
+    /// `address`, by EASy68K's rules: pass 1's half of "The size of an
+    /// instruction" in the module's documentation.
+    ///
+    /// The line is lowered as pass 2 will lower it, by the analyzer over a
+    /// planning [`Context`], which raises nothing and lowers a value it cannot
+    /// work out yet as a placeholder. Every Symbol defined so far is in the
+    /// table with its final value and counts as a back reference, which is
+    /// exactly the set pass 2 counts as one, so every choice that reads a
+    /// value is made on the same value; every other Symbol is a forward
+    /// reference, which no choice gives a short form. The encoder measures the
+    /// result without checking any range, since a range never changes a size.
+    ///
+    /// Whatever the analysis would have reported is dropped: pass 2 reports
+    /// it, once, with the values it has by then.
+    fn measure(&mut self, index: usize, address: i64) -> usize {
+        let plan = LinePlan {
+            address,
+            section: self.section,
+            scope: self.scope.clone(),
+            item: Item::Nothing,
+        };
+        let reported = self.diagnostics.len();
+        let instruction = self.lower(index, &plan, true);
+        self.diagnostics.truncate(reported);
+        instruction
+            .and_then(|instruction| encode::size(&instruction).ok())
+            .map_or(UNMEASURED_SIZE, |size| size as usize)
     }
 
     /// One Directive, in pass 1.
@@ -336,6 +400,7 @@ impl<'a> Layout<'a> {
             "section" => self.plan_section(index),
             "include" => self.plan_include(index),
             "incbin" => self.plan_incbin(index),
+            "memory" => self.plan_memory(index),
             // `opt`, `list`, `nolist` and `page` are display settings and are
             // accepted with nothing to say (the design record, "Directives").
             "opt" | "list" | "nolist" | "page" => {
@@ -632,13 +697,13 @@ impl<'a> Layout<'a> {
         self.nothing()
     }
 
-    /// `simhalt`: four bytes that end the run.
+    /// `simhalt`: four bytes that pause the run.
     ///
     /// EASy68K assembles it to the object code `$FFFFFFFF`, which its simulator
     /// reads as "halt" (`Directives/simhalt.htm`). Here it is an executable
-    /// item of the Program like an instruction — the same size, the same
-    /// alignment, and a Label on it names its address — and pass 2 lowers it to
-    /// [`Instruction::SIMHALT`].
+    /// item of the Program like an instruction — the alignment of one, and a
+    /// Label on it names its address — and pass 2 lowers it to
+    /// [`Instruction::SIMHALT`] and places those four bytes.
     ///
     /// Whatever follows it on the line is a **comment** and is not looked at,
     /// which is the help's own usage line, `LABEL SIMHALT comment`, and what
@@ -653,8 +718,111 @@ impl<'a> Layout<'a> {
         self.align(2);
         self.define_label(index);
         let address = self.address();
-        self.place(index, INSTRUCTION_SIZE);
-        self.plan(address, Item::Instruction)
+        self.place(index, SIMHALT_SIZE);
+        self.plan(address, Item::Instruction(SIMHALT_SIZE))
+    }
+
+    /// `memory kind start,end`: a range of EASy68K's memory map
+    /// (`MEMORY` in its `DIRECTIV.CPP`, and
+    /// `docs/research/easy68k-machine-behaviour.md` §9 in the asm-editor).
+    ///
+    /// The kind is one of `rom`, `read`, `protected` and `invalid`, in any
+    /// case, and the parser has kept it apart from the two addresses
+    /// (`docs/grammar.md` 2.6). Both addresses are values a forward reference
+    /// is refused in, as EASy68K refuses one, and both are masked to the 24
+    /// bits of the address bus, as EASy68K masks them, so `$FF001000` is
+    /// `$001000`. The range takes no size and no Label: EASy68K's "Label is not
+    /// allowed" is [`label_rule_of`]'s.
+    ///
+    /// EASy68K's map has one range of each kind, and a second `memory` of a
+    /// kind replaces the first there, silently. It replaces it here too, with
+    /// a warning that points at the one it replaced; so does a range whose
+    /// start is above its end, which EASy68K accepts and which covers no
+    /// address. Neither stops the Program from being built.
+    ///
+    /// What the ranges do to the running program is not this Directive's: the
+    /// Program carries them, and the Interpreter is what will enforce them.
+    fn plan_memory(&mut self, index: usize) -> LinePlan {
+        self.no_size(index, "memory");
+        // `check_label_rule` has said that `memory` takes no Label; it still
+        // names the address the line sits at, as every refused Label does.
+        self.define_label(index);
+        let keyword = self
+            .line(index)
+            .operation
+            .as_ref()
+            .and_then(|operation| operation.text.clone());
+        let kind = match keyword {
+            Some(word) => {
+                let kind = MemoryRangeKind::from_name(&word.text);
+                if kind.is_none() {
+                    self.raise(
+                        index,
+                        word.span,
+                        DiagnosticKind::UnknownMemoryKind {
+                            found: Some(word.text),
+                        },
+                    );
+                }
+                kind
+            }
+            None => {
+                let span = self.operation_name_span(index);
+                self.raise(index, span, DiagnosticKind::UnknownMemoryKind { found: None });
+                None
+            }
+        };
+        let operands = self.operands(index);
+        let [first, last] = operands.as_slice() else {
+            self.wrong_operand_count(index, "memory", operands.len(), vec![2]);
+            return self.nothing();
+        };
+        let start = self.value_now(index, "memory", first);
+        let end = self.value_now(index, "memory", last);
+        let (Some(kind), Some(start), Some(end)) = (kind, start, end) else {
+            return self.nothing();
+        };
+        let start = (start & 0x00FF_FFFF) as u32;
+        let end = (end & 0x00FF_FFFF) as u32;
+        let addresses = Span::new(first.span().start, last.span().end);
+        if start > end {
+            self.raise(
+                index,
+                addresses,
+                DiagnosticKind::EmptyMemoryRange {
+                    kind: kind.name().to_string(),
+                    start,
+                    end,
+                },
+            );
+        }
+        if let Some(earlier) = self.memory_map.iter().position(|range| range.kind == kind) {
+            let replaced = self.memory_map.remove(earlier);
+            let span = self
+                .line(index)
+                .operation
+                .as_ref()
+                .map(|operation| operation.span)
+                .unwrap_or(addresses);
+            let location = self.unit.location(index, span);
+            self.report(
+                index,
+                Diagnostic::new(
+                    DiagnosticKind::MemoryRangeReplaced {
+                        kind: kind.name().to_string(),
+                    },
+                    location,
+                )
+                .with_related(replaced.location, "the range it replaces"),
+            );
+        }
+        self.memory_map.push(MemoryRange {
+            kind,
+            start,
+            end,
+            location: self.unit.whole_line(index),
+        });
+        self.nothing()
     }
 
     /// `offset expr`: a temporary origin that produces no bytes
@@ -805,7 +973,7 @@ impl<'a> Layout<'a> {
             // `ds` is the Directive an offset table is made of: its counter has
             // moved and there is no memory here to reserve.
             Item::Reserved(_) => {}
-            Item::Instruction | Item::Data(_) => {
+            Item::Instruction(_) | Item::Data(_) => {
                 let item = self.offset_item_name(index);
                 let span = self.operation_name_span(index);
                 self.raise(
@@ -1023,7 +1191,7 @@ impl<'a> Layout<'a> {
         // Directive it has nothing to say about all reach it the same way.
         let instruction = self.analyze(index, &plan);
         let (length, kind) = match plan.item {
-            Item::Instruction => (INSTRUCTION_SIZE, 0),
+            Item::Instruction(size) => (size, 0),
             Item::Data(length) => (length, 1),
             Item::Reserved(length) => (length, 2),
             Item::Nothing => (0, 0),
@@ -1035,17 +1203,33 @@ impl<'a> Layout<'a> {
             self.layout_items.extend_from_slice(&[plan.address as u32, length as u32, kind, plan.section as u32, alignment]);
         }
         match plan.item {
-            Item::Instruction => {
-                if let Some(instruction) = instruction {
-                    self.instructions.push(AssembledInstruction {
-                        address: plan.address as usize,
-                        size: INSTRUCTION_SIZE,
-                        instruction,
-                        location: self.unit.whole_line(index),
-                        include_chain: self.unit.chain(index),
-                        source: self.text(index).to_string(),
-                    });
-                }
+            Item::Instruction(size) => {
+                let Some(instruction) = instruction else {
+                    return;
+                };
+                let bytes = match encode::encode_bytes(&instruction, plan.address as u32) {
+                    Ok(bytes) => bytes,
+                    Err(error) => return self.refuse_encoding(index, error),
+                };
+                // Pass 1 measured this line with the same rules and the same
+                // values (`measure`), so the two cannot differ; a difference
+                // would move every line below it, and is a bug here and not in
+                // the program.
+                debug_assert_eq!(
+                    bytes.len(),
+                    size,
+                    "pass 1 measured line {index} as {size} bytes and pass 2 encoded {}",
+                    bytes.len()
+                );
+                self.instructions.push(AssembledInstruction {
+                    address: plan.address as usize,
+                    size,
+                    bytes,
+                    instruction,
+                    location: self.unit.whole_line(index),
+                    include_chain: self.unit.chain(index),
+                    source: self.text(index).to_string(),
+                });
             }
             Item::Data(length) => {
                 let name = line
@@ -1077,6 +1261,13 @@ impl<'a> Layout<'a> {
     /// Expressions of its Operands so that an undefined name is one message and
     /// not a silently skipped check.
     fn analyze(&mut self, index: usize, plan: &LinePlan) -> Option<Instruction> {
+        self.lower(index, plan, false)
+    }
+
+    /// The analysis of a line, in pass 2 or, `planning`, in pass 1, where it
+    /// only measures the line ([`measure`](Layout::measure)) and the caller
+    /// drops whatever it reported.
+    fn lower(&mut self, index: usize, plan: &LinePlan, planning: bool) -> Option<Instruction> {
         let line = self.line(index);
         let operation = line.operation.as_ref()?;
         let name = operation.lowercase_name();
@@ -1088,7 +1279,9 @@ impl<'a> Layout<'a> {
             // `simhalt` is the one Directive that puts an executable item in
             // the Program, and pass 1 has already given it its four bytes.
             return match name.as_str() {
-                "simhalt" if plan.item == Item::Instruction => Some(Instruction::SIMHALT),
+                "simhalt" if matches!(plan.item, Item::Instruction(_)) => {
+                    Some(Instruction::SIMHALT)
+                }
                 _ => None,
             };
         }
@@ -1115,7 +1308,7 @@ impl<'a> Layout<'a> {
             _ => None,
         };
         let line: &Line = rewritten.as_ref().unwrap_or(line);
-        if let (Some(spec), false) = (spec, parser_reported_an_error) {
+        if let (Some(spec), false, false) = (spec, parser_reported_an_error, planning) {
             // The Operands of a line the parser failed on are whatever recovery
             // left behind, and a name out of one of them is not the mistake.
             for (position, operand) in operation.operands.iter().enumerate() {
@@ -1135,6 +1328,7 @@ impl<'a> Layout<'a> {
                 current_address: plan.address,
                 origin: self.origin.unwrap_or(DEFAULT_ORIGIN),
                 macros: self.unit.macros(),
+                planning,
             };
             // The analyzer builds Locations, so it is given the *line* of the
             // position and not the position itself.
@@ -1151,6 +1345,46 @@ impl<'a> Layout<'a> {
             self.report(index, diagnostic);
         }
         instruction
+    }
+
+    /// An instruction the analyzer let through and the encoder refused.
+    ///
+    /// It is a backstop and no line should reach it: the analyzer checks every
+    /// range an encoding has, the branch distances included, and refuses
+    /// every shape the 68000 has no encoding for. A line that does reach it is
+    /// still answered with a Diagnostic rather than left out of the Program in
+    /// silence: the field and the value for a range, as the analyzer would
+    /// have put it, and the encoder's own reason otherwise.
+    fn refuse_encoding(&mut self, index: usize, error: EncodeError) {
+        let span = self
+            .line(index)
+            .operation
+            .as_ref()
+            .map(|operation| operation.span)
+            .unwrap_or(Span::empty(0));
+        let kind = match error {
+            EncodeError::OutOfRange { field, value } => {
+                let (min, max) = field.range();
+                DiagnosticKind::ValueOutOfRange {
+                    subject: field.name().to_string(),
+                    value,
+                    min,
+                    max,
+                    advice: None,
+                }
+            }
+            EncodeError::NoEncoding { reason } => DiagnosticKind::UnimplementedOperation {
+                name: self
+                    .line(index)
+                    .operation
+                    .as_ref()
+                    .map(Operation::lowercase_name)
+                    .unwrap_or_default(),
+                reason: format!("the 68000 has no encoding for it: {reason}"),
+                alternative: None,
+            },
+        };
+        self.raise(index, span, kind);
     }
 
     /// Read a `reg` Symbol standing where `movem` wants a register list.
@@ -2126,9 +2360,10 @@ enum LabelRule {
 /// [`DirectiveNeedsALabel`](DiagnosticKind::DirectiveNeedsALabel) itself.
 ///
 /// **Forbidden** is EASy68K's own list and nothing beyond it: `page` ("No label
-/// is permitted", `Directives/page.htm`) and the conditional-assembly
-/// Directives ("IFxx and ENDC directives may not be labeled",
-/// `Directives/conditional.htm`). The `macro` Directive takes the Macro's name
+/// is permitted", `Directives/page.htm`), `memory` (its assembler's
+/// `LABEL_ERROR`, "Label is not allowed", in `DIRECTIV.CPP`) and the
+/// conditional-assembly Directives ("IFxx and ENDC directives may not be
+/// labeled", `Directives/conditional.htm`). The `macro` Directive takes the Macro's name
 /// in its label field and is not in the list; the structured-control keywords
 /// are not either, because the help says nothing about them and silence is
 /// answered by the lenient reading (ADR 0001).
@@ -2140,8 +2375,8 @@ enum LabelRule {
 fn label_rule_of(directive: &str) -> LabelRule {
     match directive {
         "equ" | "set" | "reg" => LabelRule::Required,
-        "page" | "ifeq" | "ifne" | "iflt" | "ifle" | "ifgt" | "ifge" | "ifc" | "ifnc" | "ifarg"
-        | "endc" => LabelRule::Forbidden,
+        "page" | "memory" | "ifeq" | "ifne" | "iflt" | "ifle" | "ifgt" | "ifge" | "ifc" | "ifnc"
+        | "ifarg" | "endc" => LabelRule::Forbidden,
         _ => LabelRule::Optional,
     }
 }
@@ -2198,19 +2433,15 @@ fn register_list_operand(mask: u16, span: Span) -> Operand {
 
 /// Why a Directive is not implemented, and what to write instead.
 ///
-/// The design record's "Directives" says which bucket each one is in: `memory`,
-/// the Macro and conditional-assembly Directives and the structured-control
-/// keywords are refused, and every other Directive is implemented — phase 2
+/// The design record's "Directives" says which bucket each one is in: the Macro
+/// and conditional-assembly Directives and the structured-control keywords are
+/// refused, and every other Directive is implemented — phase 2
 /// took the rest of them out of this list and phase 4 took `include` and
 /// `incbin`, so nothing here says "yet" any more. The Operation names that
 /// reach this are the ones [`names::is_directive`] knows and
 /// [`Layout::plan_directive`] does not.
 fn unimplemented_reason(name: &str) -> (&'static str, Option<&'static str>) {
     match name {
-        "memory" => (
-            "s68k has one memory of 16 MB and no access levels in it",
-            None,
-        ),
         // No "yet" in either of these two, and the reason is the design
         // record's own: macros with conditional assembly are "maybe a later
         // milestone" and no phase of this plan adds them, where `include` and
@@ -2299,11 +2530,56 @@ mod tests {
     }
 
     #[test]
-    fn a_program_starts_at_the_default_origin_and_steps_four_bytes() {
+    fn a_program_starts_at_the_default_origin_and_steps_by_each_size() {
+        // `nop` is its operation word, a long immediate adds two words, and
+        // `$8000` is past what a word holds, so it is an absolute long.
         assert_eq!(
-            addresses("    nop\n    nop\n    rts\n"),
-            vec![0x1000, 0x1004, 0x1008]
+            addresses("    nop\n    move.l #$12345678,d0\n    jmp $8000\n    rts\n"),
+            vec![0x1000, 0x1002, 0x1008, 0x100e]
         );
+    }
+
+    /// Pass 1 measures a line with what it knows: a name defined below it is
+    /// a forward reference and takes the long form whatever its value, so the
+    /// size it lays the line out at is the size pass 2 encodes.
+    #[test]
+    fn a_forward_reference_is_measured_at_its_long_form() {
+        let source = "\
+    move.l #fwd,d0
+    move.l #2/fwd,d1
+    jmp later
+    bra later
+    move.l #fwd,d2
+fwd equ 1
+later: rts
+    move.l #fwd,d3
+    bra later
+";
+        let (program, diagnostics) = assemble(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        // `move.l` keeps its long immediate rather than becoming a `moveq`,
+        // `jmp` takes a long address, and `bra` a word: six, six, six, four
+        // and six bytes. Below `fwd` and `later` the same lines are short.
+        assert_eq!(
+            program
+                .instructions()
+                .iter()
+                .map(|instruction| (instruction.address, instruction.size))
+                .collect::<Vec<_>>(),
+            [
+                (0x1000, 6),
+                (0x1006, 6),
+                (0x100c, 6),
+                (0x1012, 4),
+                (0x1016, 6),
+                (0x101c, 2),
+                (0x101e, 2),
+                (0x1020, 2),
+            ]
+        );
+        for instruction in program.instructions() {
+            assert_eq!(instruction.bytes.len(), instruction.size, "{}", instruction.source);
+        }
     }
 
     #[test]
@@ -2510,7 +2786,7 @@ mod tests {
     fn a_label_reads_the_address_of_the_line_it_is_on() {
         let program = assemble("start:\n    nop\ndone: rts\n").0;
         assert_eq!(program.symbols()["start"].value, 0x1000);
-        assert_eq!(program.symbols()["done"].value, 0x1004);
+        assert_eq!(program.symbols()["done"].value, 0x1002, "after a two-byte nop");
     }
 
     #[test]
@@ -2527,8 +2803,9 @@ second:
 ";
         let (program, diagnostics) = assemble(source);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert_eq!(program.symbols()["first:loop"].value, 0x1004);
-        assert_eq!(program.symbols()["second:loop"].value, 0x100c);
+        // A `nop` and a short `bra` are two bytes each.
+        assert_eq!(program.symbols()["first:loop"].value, 0x1002);
+        assert_eq!(program.symbols()["second:loop"].value, 0x1006);
         // Each `bra` reaches the `.loop` of its own scope.
         let targets: Vec<String> = program
             .instructions()
@@ -2538,20 +2815,21 @@ second:
                 _ => None,
             })
             .collect();
-        assert_eq!(targets, vec!["$1004", "$100c"]);
+        assert_eq!(targets, vec!["$1002", "$1006"]);
     }
 
     #[test]
     fn the_entry_point_is_end_then_start_then_the_first_instruction() {
+        // Every `nop` here is two bytes.
         assert_eq!(assemble("    nop\n    nop\n").0.entry(), 0x1000);
         assert_eq!(
             assemble("    nop\nSTART:\n    nop\n").0.entry(),
-            0x1004,
+            0x1002,
             "a label named START beats the first instruction"
         );
         assert_eq!(
             assemble("    nop\nstart:\n    nop\n").0.entry(),
-            0x1004,
+            0x1002,
             "and the fallback name is matched whatever its case, which is the one \
              place a name is read case insensitively"
         );
@@ -2559,7 +2837,7 @@ second:
             assemble("    nop\nStart:\n    nop\nSTART:\n    rts\n")
                 .0
                 .entry(),
-            0x1008,
+            0x1004,
             "an exact `START` still wins over one that differs in case"
         );
         assert_eq!(
@@ -2573,7 +2851,7 @@ second:
             assemble("    nop\nSTART:\n    nop\nlast:\n    rts\n    end last\n")
                 .0
                 .entry(),
-            0x1008,
+            0x1004,
             "and `end` beats both"
         );
     }
@@ -2595,7 +2873,7 @@ second:
     fn end_finds_a_label_that_differs_only_in_case_and_warns() {
         let source = "    nop\nstart:\n    nop\n    end START\n";
         assert_eq!(codes(source), vec!["entry_point_case_mismatch"]);
-        assert_eq!(assemble(source).0.entry(), 0x1004);
+        assert_eq!(assemble(source).0.entry(), 0x1002);
         let diagnostics = assemble(source).1;
         assert_eq!(
             diagnostics[0].message(),
@@ -2720,7 +2998,6 @@ second:
     #[test]
     fn the_directives_that_are_refused_name_themselves() {
         for source in [
-            "    memory $1000,$2000,ROM\n",
             "    macro foo\n    endm\n",
             "    ifeq 1\n    endc\n",
             "    if.l d0 <eq> #1 then.s\n",
@@ -2732,6 +3009,95 @@ second:
                 "`{source}` raised {codes:?}"
             );
         }
+    }
+
+    // -- `memory` (milestone C3 of the machine plan) ----------------------
+
+    /// The ranges of the Program's Memory map, as `(kind, start, end)`.
+    fn memory_map(source: &str) -> Vec<(&'static str, u32, u32)> {
+        assemble(source)
+            .0
+            .memory_map()
+            .iter()
+            .map(|range| (range.kind.name(), range.start, range.end))
+            .collect()
+    }
+
+    #[test]
+    fn memory_declares_a_range_of_each_kind_in_easy68ks_order() {
+        let source = "\
+LIMIT equ $9000
+    memory INVALID $FF000000,$FF0000FF
+    memory rom $8000,LIMIT-1
+    memory Protected 0,$3ff
+    memory read $A000,$AFFF   EASy68K's bare comment, after the addresses
+    nop
+";
+        assert_eq!(codes(source), ["bare_comment"]);
+        // Masked to the 24 bits of the bus, as EASy68K masks them, and put in
+        // the order EASy68K writes them out in, whatever order they came in.
+        assert_eq!(
+            memory_map(source),
+            [
+                ("rom", 0x8000, 0x8FFF),
+                ("read", 0xA000, 0xAFFF),
+                ("protected", 0, 0x3FF),
+                ("invalid", 0, 0xFF),
+            ]
+        );
+        let program = assemble(source).0;
+        assert_eq!(program.memory_map()[0].location.line, 2, "the line that declared it");
+        assert!(program.instructions().len() == 1 && program.memory().is_empty());
+        assert!(memory_map("    nop\n").is_empty(), "no `memory`, no map");
+    }
+
+    #[test]
+    fn a_second_range_of_a_kind_replaces_the_first() {
+        let source = "    memory rom $1000,$1FFF\n    memory ROM $8000,$8FFF\n";
+        let (program, diagnostics) = assemble(source);
+        assert_eq!(
+            diagnostics.iter().map(Diagnostic::code).collect::<Vec<_>>(),
+            ["memory_range_replaced"]
+        );
+        assert_eq!(diagnostics[0].related[0].0.line, 0, "it points at the one it replaces");
+        assert_eq!(
+            program
+                .memory_map()
+                .iter()
+                .map(|range| (range.start, range.end))
+                .collect::<Vec<_>>(),
+            [(0x8000, 0x8FFF)],
+            "the last one counts, as in EASy68K"
+        );
+    }
+
+    #[test]
+    fn a_range_that_ends_before_it_starts_warns_and_is_kept() {
+        let source = "    memory read $2000,$1000\n";
+        assert_eq!(codes(source), ["empty_memory_range"]);
+        assert_eq!(memory_map(source), [("read", 0x2000, 0x1000)]);
+        assert!(codes("    memory read $2000,$2000\n").is_empty(), "one byte is a range");
+    }
+
+    #[test]
+    fn memory_says_what_is_wrong_with_its_operands() {
+        assert_eq!(codes("    memory ram $1000,$1FFF\n"), ["unknown_memory_kind"]);
+        assert_eq!(codes("    memory $1000,$1FFF\n"), ["unknown_memory_kind"]);
+        assert_eq!(codes("    memory rom $1000\n"), ["wrong_operand_count"]);
+        assert_eq!(codes("    memory rom\n"), ["wrong_operand_count"]);
+        assert_eq!(
+            codes("    memory rom $1000,later\nlater: nop\n"),
+            ["forward_reference_not_allowed"]
+        );
+        assert_eq!(codes("    memory rom d0,$1FFF\n"), ["value_expected"]);
+        assert_eq!(codes("    memory.w rom $1000,$1FFF\n"), ["invalid_size"]);
+        assert_eq!(
+            codes("here memory rom $1000,$1FFF\n"),
+            ["label_not_allowed"],
+            "EASy68K's \"Label is not allowed\""
+        );
+        // A range that says what is wrong is not declared.
+        assert!(memory_map("    memory ram $1000,$1FFF\n").is_empty());
     }
 
     #[test]
@@ -2993,16 +3359,17 @@ halt simhalt
 ";
         let (program, diagnostics) = assemble(source);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert_eq!(addresses(source), vec![0x1000, 0x1004, 0x1008]);
+        // A two-byte `nop`, then the four bytes of `simhalt`.
+        assert_eq!(addresses(source), vec![0x1000, 0x1002, 0x1006]);
         assert_eq!(
             program.symbols()["halt"].value,
-            0x1004,
+            0x1002,
             "a label on `simhalt` names its address"
         );
-        assert!(matches!(
-            program.instructions()[1].instruction,
-            Instruction::SIMHALT
-        ));
+        let simhalt = &program.instructions()[1];
+        assert!(matches!(simhalt.instruction, Instruction::SIMHALT));
+        assert_eq!(simhalt.size, SIMHALT_SIZE);
+        assert_eq!(simhalt.bytes, [0xFF, 0xFF, 0xFF, 0xFF], "EASy68K's `$FFFF $FFFF`");
     }
 
     #[test]
@@ -3139,10 +3506,11 @@ msg2 dc.b 'Bye',0
         let (program, diagnostics) = assemble(source);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         // `msg1` is six bytes from `$2000`, so `msg2` goes to `$2006` when the
-        // program comes back to section 1, and the two `nop`s are in section 0.
+        // program comes back to section 1, and the two two-byte `nop`s are in
+        // section 0.
         assert_eq!(program.symbols()["msg1"].value, 0x2000);
         assert_eq!(program.symbols()["msg2"].value, 0x2006);
-        assert_eq!(addresses(source), vec![0x1000, 0x1004]);
+        assert_eq!(addresses(source), vec![0x1000, 0x1002]);
     }
 
     #[test]
@@ -3363,7 +3731,7 @@ done end start
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         assert_eq!(program.symbols()["field"].kind, SymbolKind::Constant);
         assert_eq!(program.symbols()["done"].kind, SymbolKind::Label);
-        assert_eq!(program.symbols()["done"].value, 0x1004);
+        assert_eq!(program.symbols()["done"].value, 0x1002, "after a two-byte nop");
     }
 
     #[test]
@@ -3473,7 +3841,9 @@ num3 ds.l 1
         let instruction = &program.instructions()[0];
         assert_eq!(instruction.location.line, 1);
         assert_eq!(instruction.source, "    move.l #1,d0");
-        assert_eq!(instruction.size, 4);
+        // EASy68K's `moveq #1,d0`, `$7001`.
+        assert_eq!(instruction.size, 2);
+        assert_eq!(instruction.bytes, [0x70, 0x01]);
         assert_eq!(
             program.instruction_at(0x1000).map(|i| i.address),
             Some(0x1000)

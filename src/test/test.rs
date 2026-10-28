@@ -311,7 +311,7 @@ second:
     end second
 ",
             );
-            assert_eq!(interpreter.get_pc(), 0x1004);
+            assert_eq!(interpreter.get_pc(), 0x1002, "after a two-byte nop");
         }
 
         #[test]
@@ -334,7 +334,7 @@ second:
             let mut interpreter = prepare("    org $1000\n    nop\n");
             assert!(!interpreter.has_reached_bottom());
             interpreter.step().expect("one instruction to run");
-            assert_eq!(interpreter.get_pc(), 0x1004, "the nop is 4 bytes wide");
+            assert_eq!(interpreter.get_pc(), 0x1002, "the nop is two bytes, `$4E71`");
             assert!(interpreter.has_reached_bottom());
             assert!(interpreter.has_terminated());
         }
@@ -360,9 +360,10 @@ second:
                 7,
                 "simhalt modifies no register"
             );
+            // A two-byte `moveq`, then the four bytes of the simhalt.
             assert_eq!(
                 interpreter.get_pc(),
-                0x1008,
+                0x1006,
                 "the program counter stops one past the simhalt"
             );
             assert_eq!(
@@ -456,7 +457,7 @@ second:
 ";
             for (status, interpreter) in both_limited_runs(code, 2) {
                 assert_eq!(status, Ok(InterpreterStatus::Paused));
-                assert_eq!(interpreter.get_pc(), 0x1008);
+                assert_eq!(interpreter.get_pc(), 0x1006, "past a moveq and the simhalt");
             }
         }
 
@@ -484,7 +485,7 @@ second:
 ";
             for (status, interpreter) in both_limited_runs(code, 2) {
                 assert_eq!(status, Err(RuntimeError::ExecutionLimit(2)));
-                assert_eq!(interpreter.get_pc(), 0x1008);
+                assert_eq!(interpreter.get_pc(), 0x1004, "past two two-byte nops");
             }
         }
 
@@ -504,12 +505,12 @@ second:
 
             interpreter.undo().expect("the resumed move");
             assert_eq!(*interpreter.get_status(), InterpreterStatus::Paused);
-            assert_eq!(interpreter.get_pc(), 0x1008);
+            assert_eq!(interpreter.get_pc(), 0x1006);
             assert_eq!(interpreter.get_cpu().get_register_values()[0], 7);
 
             interpreter.undo().expect("the simhalt");
             assert_eq!(*interpreter.get_status(), InterpreterStatus::Running);
-            assert_eq!(interpreter.get_pc(), 0x1004);
+            assert_eq!(interpreter.get_pc(), 0x1002);
         }
 
         #[test]
@@ -570,14 +571,15 @@ start:
         fn a_breakpoint_stops_the_run_on_the_line_it_names() {
             let mut interpreter = prepare(THREE_MOVES);
             let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 3)];
+            //each `move.l` of a byte is a two-byte `moveq`
             assert_eq!(
                 interpreter.get_breakpoint_addresses(&breakpoints),
-                [0x1004].into_iter().collect()
+                [0x1002].into_iter().collect()
             );
             interpreter
                 .run_with_breakpoints(&breakpoints, None, true)
                 .expect("to stop at the breakpoint");
-            assert_eq!(interpreter.get_pc(), 0x1004);
+            assert_eq!(interpreter.get_pc(), 0x1002);
             assert_eq!(
                 interpreter.get_register_value(
                     crate::instructions::RegisterOperand::Data(0),
@@ -600,7 +602,7 @@ start:
             interpreter
                 .run_with_breakpoints(&breakpoints, None, true)
                 .expect("to stop at the breakpoint");
-            assert_eq!(interpreter.get_pc(), 0x1004);
+            assert_eq!(interpreter.get_pc(), 0x1002);
 
             //the same breakpoint, told to stop at the pc rather than continue
             //from it: nothing runs, which is what a caller that arrived here
@@ -609,7 +611,7 @@ start:
                 .run_with_breakpoints(&breakpoints, None, false)
                 .expect("to stop before the instruction");
             assert_eq!(status, InterpreterStatus::Running);
-            assert_eq!(interpreter.get_pc(), 0x1004);
+            assert_eq!(interpreter.get_pc(), 0x1002);
             assert_eq!(
                 interpreter.get_cpu().get_register_values()[0],
                 1,
@@ -679,7 +681,7 @@ start:
                     .expect("the simhalt"),
                 InterpreterStatus::Paused
             );
-            assert_eq!(interpreter.get_pc(), 0x1008);
+            assert_eq!(interpreter.get_pc(), 0x1006);
 
             assert_eq!(
                 interpreter
@@ -687,7 +689,7 @@ start:
                     .expect("the breakpoint after the pause"),
                 InterpreterStatus::Running
             );
-            assert_eq!(interpreter.get_pc(), 0x1008);
+            assert_eq!(interpreter.get_pc(), 0x1006);
             assert_eq!(interpreter.get_cpu().get_register_values()[0], 1);
 
             assert_eq!(
@@ -784,7 +786,8 @@ routine:
             let stack = interpreter.get_pretty_call_stack();
             assert_eq!(stack.len(), 1);
             assert_eq!(stack[0].label_name, "routine");
-            assert_eq!(stack[0].label_address, 0x100c);
+            //a word `bsr` forwards, a four-byte `move.b` and a two-byte `trap`
+            assert_eq!(stack[0].label_address, 0x100a);
             let location = stack[0]
                 .label_location
                 .as_ref()
@@ -801,7 +804,7 @@ routine:
         fn undo_puts_the_call_stack_back() {
             let mut interpreter = with_history(A_CALL);
             interpreter.step().expect("the bsr to run");
-            assert_eq!(interpreter.get_pc(), 0x100c);
+            assert_eq!(interpreter.get_pc(), 0x100a);
             interpreter.step().expect("the rts to run");
             assert_eq!(interpreter.get_pc(), 0x1004);
             assert!(interpreter.get_pretty_call_stack().is_empty());
@@ -1177,9 +1180,11 @@ routine:
                 vec![1, 1, 1, 1, 1],
                 "`rtr` put the caller's flags back"
             );
+            //a `moveq`, a four-byte `move to ccr`, a word `bsr` and the four bytes
+            //of the `simhalt`
             assert_eq!(
                 interpreter.get_pc(),
-                0x1010,
+                0x100e,
                 "and returned to the `simhalt` after the `bsr`, which is one past it now"
             );
             assert_eq!(
@@ -1277,8 +1282,8 @@ routine:
             );
             assert_eq!(
                 interpreter.get_pc(),
-                interpreter.get_program().entry() + 4,
-                "the run stops one past the `illegal`"
+                interpreter.get_program().entry() + 2,
+                "the run stops one past the `illegal`, `$4AFC`"
             );
         }
     }
@@ -1885,9 +1890,9 @@ routine:
 
         #[test]
         fn a_pc_relative_read_reaches_the_address_the_source_wrote() {
-            // Five instructions from `$1000`, so `value` is at `$1014`; the
-            // first one is at `$1000` and its displacement is therefore
-            // `$1014 - $1002`, which is 18.
+            // Five instructions from `$1000`, three of four bytes and two of
+            // two, so `value` is at `$1010`; the first one is at `$1000` and its
+            // displacement is therefore `$1010 - $1002`, which is 14.
             let mut interpreter = prepare(
                 "    move.l value(pc),d0
     move.l (value,pc),d1
@@ -1904,7 +1909,7 @@ value: dc.l $12345678
                 0x12345678,
                 "`(value,pc)` is the same operand written the other way"
             );
-            assert_eq!(address(&interpreter, 0), 0x1014, "`lea` gives the address");
+            assert_eq!(address(&interpreter, 0), 0x1010, "`lea` gives the address");
             assert_eq!(data(&interpreter, 2), 0x12345678);
         }
 
@@ -1956,9 +1961,11 @@ table: dc.l $aaaaaaaa,$bbbbbbbb
             );
             // `(pc,d1.w)` writes no address at all, so its displacement is
             // zero and the operand is the extension word of its own line plus
-            // the register: `$1004 + 2 + 6` is the `dc.l` at `$100c`.
+            // the register: after the four-byte `move.w`, `$1004 + 2 + 4` is
+            // the `dc.l` at `$100a`, past the four bytes of the `move.l` and
+            // the two of the `nop`.
             let mut interpreter = prepare(
-                "    move.w #6,d1
+                "    move.w #4,d1
     move.l (pc,d1.w),d2
     nop
 table: dc.l $00c0ffee
@@ -2017,7 +2024,8 @@ greeting: dc.b 'hi',0
 ",
             );
             interpreter.run().expect("the four instructions");
-            assert_eq!(address(&interpreter, 1), 0x1010);
+            //a four-byte `pea` and three two-byte instructions
+            assert_eq!(address(&interpreter, 1), 0x100a);
             assert_eq!(data(&interpreter, 0) & 0xff, u32::from(b'h'));
         }
     }

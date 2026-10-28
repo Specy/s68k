@@ -16,7 +16,7 @@ expression: fixture
       "text": "lea $2000,a0"
     },
     {
-      "address": "$1008",
+      "address": "$100a",
       "line": 5,
       "text": "move.w d0,d1"
     },
@@ -26,42 +26,42 @@ expression: fixture
       "text": "move.w (a0),d2"
     },
     {
-      "address": "$1010",
+      "address": "$100e",
       "line": 8,
       "text": "move.w 2(a0),d3"
     },
     {
-      "address": "$1014",
+      "address": "$1012",
       "line": 9,
       "text": "cmp.w d2,d3"
     },
     {
-      "address": "$1018",
+      "address": "$1014",
       "line": 10,
-      "text": "bge $1024"
+      "text": "bge.w $101e"
     },
     {
-      "address": "$101c",
+      "address": "$1018",
       "line": 11,
       "text": "move.w d3,(a0)"
     },
     {
-      "address": "$1020",
+      "address": "$101a",
       "line": 12,
       "text": "move.w d2,2(a0)"
     },
     {
-      "address": "$1024",
+      "address": "$101e",
       "line": 14,
       "text": "addq.l #$2,a0"
     },
     {
-      "address": "$1028",
+      "address": "$1020",
       "line": 15,
       "text": "dbf d1,$100c"
     },
     {
-      "address": "$102c",
+      "address": "$1024",
       "line": 16,
       "text": "dbf d0,$1004"
     }
@@ -74,7 +74,7 @@ expression: fixture
   ],
   "labels": {
     "in_order": {
-      "address": "$1024",
+      "address": "$101e",
       "line": 13
     },
     "inner": {

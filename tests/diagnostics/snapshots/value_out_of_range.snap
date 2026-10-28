@@ -33,7 +33,7 @@ input_file: tests/diagnostics/value_out_of_range.asm
   {
     "severity": "error",
     "code": "value_out_of_range",
-    "message": "The distance a `d(PC)` operand reaches is -32768 to 32767, and `192502` is outside it.",
+    "message": "The distance a `d(PC)` operand reaches is -32768 to 32767, and `192504` is outside it.",
     "hint": "Write `far` on its own: an absolute address reaches anywhere in memory",
     "location": {
       "file": "value_out_of_range.asm",
@@ -66,6 +66,45 @@ input_file: tests/diagnostics/value_out_of_range.asm
       "line": 8,
       "column": 13,
       "endColumn": 19
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "value_out_of_range",
+    "message": "The distance `bra.s` reaches is -128 to 127, and `192492` is outside it.",
+    "hint": "Write `bra` with no size, or `bra.w`: a word branch reaches 32 KB either way",
+    "location": {
+      "file": "value_out_of_range.asm",
+      "line": 11,
+      "column": 10,
+      "endColumn": 13
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "value_out_of_range",
+    "message": "The distance `beq` reaches is -32768 to 32767, and `192490` is outside it.",
+    "hint": "Branch on the opposite condition over a `jmp`, which reaches anywhere in memory",
+    "location": {
+      "file": "value_out_of_range.asm",
+      "line": 12,
+      "column": 8,
+      "endColumn": 11
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "value_out_of_range",
+    "message": "The distance `dbra` reaches is -32768 to 32767, and `192486` is outside it.",
+    "hint": "`dbra` has no longer form: bring the loop within 32 KB, or count with `subq` and a branch over a `jmp`",
+    "location": {
+      "file": "value_out_of_range.asm",
+      "line": 13,
+      "column": 12,
+      "endColumn": 15
     },
     "related": []
   }

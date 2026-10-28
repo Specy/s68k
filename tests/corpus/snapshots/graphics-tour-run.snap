@@ -17,7 +17,7 @@ expression: fixture
   ],
   "a": [
     "$0",
-    "$1297",
+    "$126f",
     "$0",
     "$0",
     "$0",
@@ -25,8 +25,8 @@ expression: fixture
     "$0",
     "$1000000"
   ],
-  "pc": "$1270",
+  "pc": "$1248",
   "flags": "X:0 N:0 Z:0 V:0 C:0",
   "output": "pixel color $00BBGGRR = 0screen width:height = 41943520",
-  "memory": "356b97ded0af5a30"
+  "memory": "35683f03890b1339"
 }

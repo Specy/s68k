@@ -11,52 +11,52 @@ expression: fixture
       "text": "moveq #$25,d0"
     },
     {
-      "address": "$1004",
+      "address": "$1002",
       "line": 1,
       "text": "moveq #$40,d1"
     },
     {
-      "address": "$1008",
+      "address": "$1004",
       "line": 3,
       "text": "cmp.l d1,d0"
     },
     {
-      "address": "$100c",
+      "address": "$1006",
       "line": 4,
-      "text": "bge $1018"
+      "text": "bge.w $1010"
     },
     {
-      "address": "$1010",
+      "address": "$100a",
       "line": 5,
       "text": "move.l d1,d2"
     },
     {
-      "address": "$1014",
+      "address": "$100c",
       "line": 6,
-      "text": "bra $101c"
+      "text": "bra.w $1012"
     },
     {
-      "address": "$1018",
+      "address": "$1010",
       "line": 8,
       "text": "move.l d0,d2"
     },
     {
-      "address": "$101c",
+      "address": "$1012",
       "line": 11,
       "text": "move.l d0,d3"
     },
     {
-      "address": "$1020",
+      "address": "$1014",
       "line": 12,
       "text": "sub.l d1,d3"
     },
     {
-      "address": "$1024",
+      "address": "$1016",
       "line": 13,
-      "text": "bpl $102c"
+      "text": "bpl.w $101c"
     },
     {
-      "address": "$1028",
+      "address": "$101a",
       "line": 14,
       "text": "neg.l d3"
     }
@@ -64,15 +64,15 @@ expression: fixture
   "memory": [],
   "labels": {
     "a_is_bigger": {
-      "address": "$1018",
+      "address": "$1010",
       "line": 7
     },
     "done": {
-      "address": "$101c",
+      "address": "$1012",
       "line": 9
     },
     "positive": {
-      "address": "$102c",
+      "address": "$101c",
       "line": 15
     }
   }

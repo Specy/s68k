@@ -517,8 +517,17 @@ impl<'a> Parser<'a> {
                 (text, Vec::new(), span, comment)
             }
             None => {
+                let keyword = match names::takes_a_keyword(&name) {
+                    true => self.parse_keyword(),
+                    false => None,
+                };
                 let (operands, span, comment) = self.parse_operand_field();
-                (None, operands, span, comment)
+                let span = match (&keyword, span) {
+                    (Some(keyword), Some(span)) => Some(Span::new(keyword.span.start, span.end)),
+                    (Some(keyword), None) => Some(keyword.span),
+                    (None, span) => span,
+                };
+                (keyword, operands, span, comment)
             }
         };
 
@@ -537,6 +546,33 @@ impl<'a> Parser<'a> {
             span: Span::new(name_token.span.start, end),
         };
         (operation, comment)
+    }
+
+    /// `memory_kind` (2.6): the word `memory` names its kind of range with,
+    /// before the `operand_list` of its addresses, as EASy68K reads it (a run
+    /// of letters and digits, then whitespace; `MEMORY` in its `DIRECTIV.CPP`).
+    ///
+    /// The word is taken only when it is an identifier followed by whitespace,
+    /// a comment or the end of the line, so `memory $1000,$1FFF` leaves its
+    /// field whole and the Directive says the kind is missing. Whether the word
+    /// is one of the four kinds is the Directive's to say, not the parser's.
+    fn parse_keyword(&mut self) -> Option<TextOperandField> {
+        let mark = self.tokenizer.mark();
+        let word = self.next_field_token();
+        if word.kind == TokenKind::Identifier {
+            let after_word = self.tokenizer.mark();
+            let after = self.tokenizer.next_token();
+            self.tokenizer.rewind(after_word);
+            if after.is_whitespace() || after.is_end_of_line() || after.kind == TokenKind::Comment
+            {
+                return Some(TextOperandField {
+                    text: self.text_of(word).to_string(),
+                    span: word.span,
+                });
+            }
+        }
+        self.tokenizer.rewind(mark);
+        None
     }
 
     /// `text_operand_field` (2.5): the Operand field of a `text_operation`,
@@ -2462,6 +2498,30 @@ mod tests {
             assert_eq!(operation.text.unwrap().text, "io.x68");
         }
 
+        /// `memory_kind` (2.6): the word before `memory`'s addresses is kept
+        /// apart, and the addresses are an ordinary `operand_list`.
+        #[test]
+        fn memory_keeps_its_kind_apart_from_its_addresses() {
+            let operation_of =
+                |text: &str| parse(text).0.operation.expect("the line has an operation");
+            let operation = operation("    MEMORY Rom $8000,LIMIT-1   read only");
+            let kind = operation.text.expect("the kind");
+            assert_eq!(kind.text, "Rom");
+            assert_eq!(kind.span, Span::new(11, 14));
+            assert_eq!(shapes("    memory rom $8000,LIMIT-1"), ["32768", "(LIMIT - 1)"]);
+            assert_eq!(operation.operand_field_span, Some(Span::new(11, 28)));
+            // No word before the addresses: the field is the addresses alone,
+            // and the Directive says the kind is missing.
+            let operation = operation_of("    memory $8000,$8FFF");
+            assert!(operation.text.is_none());
+            assert_eq!(operation.operands.len(), 2);
+            // A word that runs into a comma is an operand, as anywhere else.
+            let operation = operation_of("    memory rom,$8000");
+            assert!(operation.text.is_none());
+            assert_eq!(operation.operands.len(), 2);
+            assert_eq!(operation_of("    memory rom").text.unwrap().text, "rom");
+        }
+
         #[test]
         fn file_specification_keeps_its_spaces_when_quoted() {
             assert_eq!(
@@ -2921,7 +2981,7 @@ mod tests {
             // "Later" is the phase order of the design record, not the
             // calendar: the analyzer, the Directives and the Layout all raise
             // Diagnostics of their own, and none of them is the parser's.
-            const LATER_PHASES: [&str; 40] = [
+            const LATER_PHASES: [&str; 44] = [
                 "unknown_mnemonic",
                 "mnemonic_used_as_label",
                 "wrong_operand_count",
@@ -2962,6 +3022,10 @@ mod tests {
                 "include_cycle",
                 "include_too_deep",
                 "end_in_an_included_file",
+                "short_branch_to_next_instruction",
+                "unknown_memory_kind",
+                "empty_memory_range",
+                "memory_range_replaced",
             ];
             let expected: Vec<&str> = ALL_CODES
                 .iter()

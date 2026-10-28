@@ -25,8 +25,8 @@ expression: fixture
     "$0",
     "$1000000"
   ],
-  "pc": "$1038",
+  "pc": "$1030",
   "flags": "X:0 N:0 Z:0 V:0 C:0",
   "output": "First number: \nSecond number: \nThe sum is 14",
-  "memory": "9098e93d18d4d952"
+  "memory": "ef9f80f7cac19887"
 }

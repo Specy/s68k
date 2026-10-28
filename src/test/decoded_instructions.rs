@@ -11,13 +11,17 @@ use crate::assembler::source::Location;
 use crate::assembler::symbols::SymbolTable;
 use crate::instructions::{Instruction, RegisterOperand};
 use crate::interpreter::{Interpreter, InterpreterStatus, RuntimeError, Termination};
+use crate::machine::encode;
 
-/// Runs a Program of `instruction` alone, at `$1000`.
+/// Runs a Program of `instruction` alone, at `$1000`, at the size and with the
+/// bytes of its encoding.
 fn run(instruction: Instruction) -> (Interpreter, RuntimeError) {
+    let bytes = encode::encode_bytes(&instruction, 0x1000).expect("every case encodes");
     let program = Program::new(
         vec![AssembledInstruction {
             address: 0x1000,
-            size: 4,
+            size: bytes.len(),
+            bytes,
             instruction,
             location: Location::new("main.x68", 0, 4, 7),
             include_chain: Vec::new(),
@@ -70,7 +74,7 @@ fn a_word_that_is_no_instruction_is_an_illegal_instruction() {
     assert_eq!(error, RuntimeError::IllegalInstruction);
     assert_eq!(
         interpreter.get_pc(),
-        0x1004,
-        "as `illegal` stops past itself"
+        0x1002,
+        "as `illegal` stops past itself, a word on"
     );
 }

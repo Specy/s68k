@@ -25,8 +25,8 @@ expression: fixture
     "$0",
     "$1000000"
   ],
-  "pc": "$11c4",
+  "pc": "$11b6",
   "flags": "X:0 N:0 Z:0 V:0 C:0",
   "output": "Game over. Score: 1",
-  "memory": "647602dc06188cae"
+  "memory": "cbbb200944d3e2bf"
 }

@@ -54,13 +54,13 @@ pub enum TextOperandKind {
 /// [`REFUSED_OPERATIONS`] and are Directive names here as well, so that an
 /// `endm` in column 1 is an Operation and not a Label (`docs/grammar.md` 2.6).
 pub const DIRECTIVES: &[&str] = &[
-    "dc", "dcb", "ds", "end", "equ", "fail", "incbin", "include", "list", "nolist", "offset",
-    "opt", "org", "page", "reg", "section", "set", "simhalt",
+    "dc", "dcb", "ds", "end", "equ", "fail", "incbin", "include", "list", "memory", "nolist",
+    "offset", "opt", "org", "page", "reg", "section", "set", "simhalt",
 ];
 
 /// The Operations s68k reads and refuses whole, `refused_operation` of
-/// `docs/grammar.md` 2.6: `memory`, the macro and conditional-assembly
-/// Directives, and the structured-control keywords.
+/// `docs/grammar.md` 2.6: the macro and conditional-assembly Directives, and
+/// the structured-control keywords.
 ///
 /// Their Operand field is a [`TextOperandKind::RawOperandField`] and is never
 /// tokenized. The words that appear only *inside* such a line — `then`, `do`,
@@ -68,7 +68,7 @@ pub const DIRECTIVES: &[&str] = &[
 /// reached the line is raw text.
 pub const REFUSED_OPERATIONS: &[&str] = &[
     // The design record's "refuse with a diagnostic that names the feature"
-    "memory", // Macros (`Directives/macro.htm`)
+    // Macros (`Directives/macro.htm`)
     "macro", "endm", "mexit", // Conditional assembly (`Directives/conditional.htm`)
     "ifeq", "ifne", "iflt", "ifle", "ifgt", "ifge", "ifc", "ifnc", "ifarg", "endc",
     // Structured control (`StrucControl/Introduction.htm`)
@@ -111,6 +111,13 @@ pub fn text_operation(name: &str) -> Option<TextOperandKind> {
         name if REFUSED_OPERATIONS.contains(&name) => Some(TextOperandKind::RawOperandField),
         _ => None,
     }
+}
+
+/// Whether the Operation `name` names a kind with a word before its
+/// `operand_list`, `memory_kind` of `docs/grammar.md` 2.6: `memory rom
+/// $8000,$8FFF`. Only `memory` does.
+pub fn takes_a_keyword(name: &str) -> bool {
+    name.eq_ignore_ascii_case("memory")
 }
 
 /// Whether `name` opens a Macro definition, the one construct that spans lines

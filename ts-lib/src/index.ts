@@ -21,6 +21,8 @@ import {
     KeyStateResult,
     LineSpan,
     Location,
+    MemoryRange,
+    MemoryRangeKind,
     MutationOperation,
     OpenedFile,
     ParsedComment,
@@ -208,6 +210,26 @@ export class Program {
     /** Every symbol of the program, by full name. */
     getSymbols(): Record<string, ProgramSymbol> {
         return this.getInfo().symbols
+    }
+
+    /**
+     * The memory map the program's `memory` lines declare: at most one range of
+     * each kind, in EASy68K's order, `rom`, `read`, `protected` and `invalid`.
+     * Empty when the program declares none.
+     */
+    getMemoryMap(): MemoryRange[] {
+        return this.assembly.wasm_get_memory_map() as MemoryRange[]
+    }
+
+    /**
+     * The program as the S-record file EASy68K's assembler writes, a `.S68`
+     * that EASy68K's simulator loads and runs: the `68KPROG` header, the code
+     * and data in S1, S2 or S3 records of up to 32 bytes, the memory map as
+     * EASy68K's extra S0 records, and the entry point in an S8 record. Each
+     * record ends with CR LF.
+     */
+    toSRecord(): string {
+        return this.assembly.wasm_to_srecord() as string
     }
 
     /** Give back the memory the program holds on the WebAssembly side. */
@@ -787,6 +809,8 @@ export {
     KeyStateResult,
     LineSpan,
     Location,
+    MemoryRange,
+    MemoryRangeKind,
     MutationOperation,
     OpenedFile,
     ParsedComment,

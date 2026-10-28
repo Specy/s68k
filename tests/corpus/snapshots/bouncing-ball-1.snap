@@ -21,7 +21,7 @@ expression: fixture
       "text": "trap #$f"
     },
     {
-      "address": "$100c",
+      "address": "$100a",
       "line": 10,
       "text": "move.l #$ffffff,d1"
     },
@@ -36,44 +36,44 @@ expression: fixture
       "text": "trap #$f"
     },
     {
-      "address": "$1018",
+      "address": "$1016",
       "line": 15,
       "text": "move.b #$b,d0"
     },
     {
-      "address": "$101c",
+      "address": "$101a",
       "line": 16,
       "text": "move.w #$ff00,d1"
     },
     {
-      "address": "$1020",
+      "address": "$101e",
       "line": 17,
       "text": "trap #$f"
     },
     {
-      "address": "$1024",
+      "address": "$1020",
       "line": 19,
       "text": "move.l #$d2ff,d1"
     },
     {
-      "address": "$1028",
+      "address": "$1026",
       "line": 20,
       "text": "move.b #$51,d0"
     },
     {
-      "address": "$102c",
+      "address": "$102a",
       "line": 21,
       "text": "trap #$f"
     },
     {
-      "address": "$1030",
+      "address": "$102c",
       "line": 22,
-      "text": "move.w $10e8,d1"
+      "text": "move.w $10e0,d1"
     },
     {
-      "address": "$1034",
+      "address": "$1032",
       "line": 23,
-      "text": "move.w $10ea,d2"
+      "text": "move.w $10e2,d2"
     },
     {
       "address": "$1038",
@@ -81,270 +81,270 @@ expression: fixture
       "text": "move.w d1,d3"
     },
     {
-      "address": "$103c",
+      "address": "$103a",
       "line": 25,
       "text": "addi.w #$28,d3"
     },
     {
-      "address": "$1040",
+      "address": "$103e",
       "line": 26,
       "text": "move.w d2,d4"
     },
     {
-      "address": "$1044",
+      "address": "$1040",
       "line": 27,
       "text": "addi.w #$28,d4"
     },
     {
-      "address": "$1048",
+      "address": "$1044",
       "line": 28,
       "text": "move.b #$58,d0"
     },
     {
-      "address": "$104c",
+      "address": "$1048",
       "line": 29,
       "text": "trap #$f"
     },
     {
-      "address": "$1050",
+      "address": "$104a",
       "line": 31,
       "text": "move.b #$8,d0"
     },
     {
-      "address": "$1054",
+      "address": "$104e",
       "line": 32,
       "text": "trap #$f"
     },
     {
-      "address": "$1058",
+      "address": "$1050",
       "line": 33,
       "text": "divu #$280,d1"
     },
     {
-      "address": "$105c",
+      "address": "$1054",
       "line": 34,
       "text": "swap d1"
     },
     {
-      "address": "$1060",
+      "address": "$1056",
       "line": 35,
       "text": "andi.l #$ffff,d1"
     },
     {
-      "address": "$1064",
+      "address": "$105c",
       "line": 36,
       "text": "move.l d1,d3"
     },
     {
-      "address": "$1068",
+      "address": "$105e",
       "line": 37,
       "text": "move.l #$808080,d1"
     },
     {
-      "address": "$106c",
+      "address": "$1064",
       "line": 38,
       "text": "move.b #$51,d0"
     },
     {
-      "address": "$1070",
+      "address": "$1068",
       "line": 39,
       "text": "trap #$f"
     },
     {
-      "address": "$1074",
+      "address": "$106a",
       "line": 40,
       "text": "moveq #$0,d1"
     },
     {
-      "address": "$1078",
+      "address": "$106c",
       "line": 41,
       "text": "moveq #$0,d2"
     },
     {
-      "address": "$107c",
+      "address": "$106e",
       "line": 42,
       "text": "moveq #$8,d4"
     },
     {
-      "address": "$1080",
+      "address": "$1070",
       "line": 43,
       "text": "move.b #$57,d0"
     },
     {
-      "address": "$1084",
+      "address": "$1074",
       "line": 44,
       "text": "trap #$f"
     },
     {
-      "address": "$1088",
+      "address": "$1076",
       "line": 46,
       "text": "move.b #$5e,d0"
     },
     {
-      "address": "$108c",
+      "address": "$107a",
       "line": 47,
       "text": "trap #$f"
     },
     {
-      "address": "$1090",
+      "address": "$107c",
       "line": 49,
       "text": "move.b #$17,d0"
     },
     {
-      "address": "$1094",
+      "address": "$1080",
       "line": 50,
       "text": "moveq #$2,d1"
     },
     {
-      "address": "$1098",
+      "address": "$1082",
       "line": 51,
       "text": "trap #$f"
     },
     {
-      "address": "$109c",
+      "address": "$1084",
       "line": 53,
-      "text": "move.w $10e8,d5"
+      "text": "move.w $10e0,d5"
     },
     {
-      "address": "$10a0",
+      "address": "$108a",
       "line": 54,
-      "text": "add.w $10ec,d5"
+      "text": "add.w $10e4,d5"
     },
     {
-      "address": "$10a4",
+      "address": "$1090",
       "line": 55,
       "text": "cmp.w #$0,d5"
     },
     {
-      "address": "$10a8",
+      "address": "$1094",
       "line": 56,
-      "text": "blt $10bc"
+      "text": "blt.w $10aa"
     },
     {
-      "address": "$10ac",
+      "address": "$1098",
       "line": 57,
       "text": "cmp.w #$258,d5"
     },
     {
-      "address": "$10b0",
+      "address": "$109c",
       "line": 58,
-      "text": "bgt $10bc"
+      "text": "bgt.w $10aa"
     },
     {
-      "address": "$10b4",
+      "address": "$10a0",
       "line": 59,
-      "text": "move.w d5,$10e8"
+      "text": "move.w d5,$10e0"
     },
     {
-      "address": "$10b8",
+      "address": "$10a6",
       "line": 60,
-      "text": "bra $10c0"
+      "text": "bra.w $10b0"
+    },
+    {
+      "address": "$10aa",
+      "line": 62,
+      "text": "neg.w $10e4"
+    },
+    {
+      "address": "$10b0",
+      "line": 64,
+      "text": "move.w $10e2,d5"
+    },
+    {
+      "address": "$10b6",
+      "line": 65,
+      "text": "add.w $10e6,d5"
     },
     {
       "address": "$10bc",
-      "line": 62,
-      "text": "neg.w $10ec"
-    },
-    {
-      "address": "$10c0",
-      "line": 64,
-      "text": "move.w $10ea,d5"
-    },
-    {
-      "address": "$10c4",
-      "line": 65,
-      "text": "add.w $10ee,d5"
-    },
-    {
-      "address": "$10c8",
       "line": 66,
       "text": "cmp.w #$0,d5"
     },
     {
-      "address": "$10cc",
+      "address": "$10c0",
       "line": 67,
-      "text": "blt $10e0"
+      "text": "blt.w $10d6"
     },
     {
-      "address": "$10d0",
+      "address": "$10c4",
       "line": 68,
       "text": "cmp.w #$1b8,d5"
     },
     {
-      "address": "$10d4",
+      "address": "$10c8",
       "line": 69,
-      "text": "bgt $10e0"
+      "text": "bgt.w $10d6"
     },
     {
-      "address": "$10d8",
+      "address": "$10cc",
       "line": 70,
-      "text": "move.w d5,$10ea"
+      "text": "move.w d5,$10e2"
+    },
+    {
+      "address": "$10d2",
+      "line": 71,
+      "text": "bra.w $1016"
+    },
+    {
+      "address": "$10d6",
+      "line": 73,
+      "text": "neg.w $10e6"
     },
     {
       "address": "$10dc",
-      "line": 71,
-      "text": "bra $1018"
-    },
-    {
-      "address": "$10e0",
-      "line": 73,
-      "text": "neg.w $10ee"
-    },
-    {
-      "address": "$10e4",
       "line": 74,
-      "text": "bra $1018"
+      "text": "bra.w $1016"
     }
   ],
   "memory": [
     {
-      "address": "$10e8",
+      "address": "$10e0",
       "bytes": "0064"
     },
     {
-      "address": "$10ea",
+      "address": "$10e2",
       "bytes": "003c"
     },
     {
-      "address": "$10ec",
+      "address": "$10e4",
       "bytes": "0005"
     },
     {
-      "address": "$10ee",
+      "address": "$10e6",
       "bytes": "0003"
     }
   ],
   "labels": {
     "ballx": {
-      "address": "$10e8",
+      "address": "$10e0",
       "line": 76
     },
     "bally": {
-      "address": "$10ea",
+      "address": "$10e2",
       "line": 77
     },
     "flipx": {
-      "address": "$10bc",
+      "address": "$10aa",
       "line": 61
     },
     "flipy": {
-      "address": "$10e0",
+      "address": "$10d6",
       "line": 72
     },
     "frame": {
-      "address": "$1018",
+      "address": "$1016",
       "line": 14
     },
     "movey": {
-      "address": "$10c0",
+      "address": "$10b0",
       "line": 63
     },
     "stepx": {
-      "address": "$10ec",
+      "address": "$10e4",
       "line": 78
     },
     "stepy": {
-      "address": "$10ee",
+      "address": "$10e6",
       "line": 79
     }
   }

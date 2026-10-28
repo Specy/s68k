@@ -8,15 +8,15 @@ expression: fixture
     {
       "address": "$1000",
       "line": 0,
-      "text": "lea $1014,a0"
+      "text": "lea $1012,a0"
     },
     {
-      "address": "$1004",
+      "address": "$1006",
       "line": 1,
       "text": "move.w #$5,d1"
     },
     {
-      "address": "$1008",
+      "address": "$100a",
       "line": 2,
       "text": "clr.l d0"
     },
@@ -26,14 +26,14 @@ expression: fixture
       "text": "add.w (a0)+,d0"
     },
     {
-      "address": "$1010",
+      "address": "$100e",
       "line": 5,
       "text": "dbf d1,$100c"
     }
   ],
   "memory": [
     {
-      "address": "$1014",
+      "address": "$1012",
       "bytes": "00040008000f00100017002a"
     }
   ],
@@ -43,7 +43,7 @@ expression: fixture
       "line": 3
     },
     "numbers": {
-      "address": "$1014",
+      "address": "$1012",
       "line": 8
     }
   }

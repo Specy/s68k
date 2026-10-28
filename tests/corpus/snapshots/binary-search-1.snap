@@ -11,7 +11,7 @@ expression: fixture
       "text": "lea $2000,a0"
     },
     {
-      "address": "$1004",
+      "address": "$1006",
       "line": 3,
       "text": "moveq #$5b,d0"
     },
@@ -21,102 +21,102 @@ expression: fixture
       "text": "clr.l d1"
     },
     {
-      "address": "$100c",
+      "address": "$100a",
       "line": 5,
       "text": "moveq #$b,d2"
     },
     {
-      "address": "$1010",
+      "address": "$100c",
       "line": 6,
       "text": "moveq #$ff,d3"
     },
     {
-      "address": "$1014",
+      "address": "$100e",
       "line": 8,
       "text": "cmp.l d2,d1"
     },
     {
-      "address": "$1018",
+      "address": "$1010",
       "line": 9,
-      "text": "bgt $105c"
+      "text": "bgt.w $103a"
     },
     {
-      "address": "$101c",
+      "address": "$1014",
       "line": 10,
       "text": "move.l d1,d4"
     },
     {
-      "address": "$1020",
+      "address": "$1016",
       "line": 11,
       "text": "add.l d2,d4"
     },
     {
-      "address": "$1024",
+      "address": "$1018",
       "line": 12,
       "text": "lsr.l #$1,d4"
     },
     {
-      "address": "$1028",
+      "address": "$101a",
       "line": 13,
       "text": "move.l d4,d5"
     },
     {
-      "address": "$102c",
+      "address": "$101c",
       "line": 14,
       "text": "add.l d5,d5"
     },
     {
-      "address": "$1030",
+      "address": "$101e",
       "line": 15,
       "text": "move.w 0(a0,d5.w),d6"
     },
     {
-      "address": "$1034",
+      "address": "$1022",
       "line": 16,
       "text": "cmp.w d0,d6"
     },
     {
-      "address": "$1038",
+      "address": "$1024",
       "line": 17,
-      "text": "beq $1058"
+      "text": "beq.w $1038"
     },
     {
-      "address": "$103c",
+      "address": "$1028",
       "line": 18,
-      "text": "bgt $104c"
+      "text": "bgt.w $1032"
     },
     {
-      "address": "$1040",
+      "address": "$102c",
       "line": 19,
       "text": "move.l d4,d1"
     },
     {
-      "address": "$1044",
+      "address": "$102e",
       "line": 20,
       "text": "addq.l #$1,d1"
     },
     {
-      "address": "$1048",
+      "address": "$1030",
       "line": 21,
-      "text": "bra $1014"
+      "text": "bra.s $100e"
     },
     {
-      "address": "$104c",
+      "address": "$1032",
       "line": 23,
       "text": "move.l d4,d2"
     },
     {
-      "address": "$1050",
+      "address": "$1034",
       "line": 24,
       "text": "subq.l #$1,d2"
     },
     {
-      "address": "$1054",
+      "address": "$1036",
       "line": 25,
-      "text": "bra $1014"
+      "text": "bra.s $100e"
     },
     {
-      "address": "$1058",
+      "address": "$1038",
       "line": 27,
       "text": "move.l d4,d3"
     }
@@ -129,7 +129,7 @@ expression: fixture
   ],
   "labels": {
     "found": {
-      "address": "$1058",
+      "address": "$1038",
       "line": 26
     },
     "numbers": {
@@ -137,15 +137,15 @@ expression: fixture
       "line": 31
     },
     "search": {
-      "address": "$1014",
+      "address": "$100e",
       "line": 7
     },
     "search_done": {
-      "address": "$105c",
+      "address": "$103a",
       "line": 28
     },
     "too_big": {
-      "address": "$104c",
+      "address": "$1032",
       "line": 22
     }
   }

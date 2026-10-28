@@ -648,6 +648,40 @@ pub enum DiagnosticKind {
         /// The Entry file, which is where `end` belongs.
         entry: String,
     },
+    /// A short branch to the instruction right after it, whose displacement
+    /// is 0: the byte a 68000 reads as the mark of a word branch, so the next
+    /// word would be taken for the displacement. EASy68K's "Branch instruction
+    /// displacement is out of range or invalid" (`branch` in its `BUILD.CPP`).
+    ShortBranchToNextInstruction {
+        /// The branch as it was written, its size included: `bra.s`.
+        branch: String,
+        /// The Mnemonic alone: `bra`.
+        mnemonic: String,
+    },
+    /// A `memory` line whose first word is not one of the four kinds of range
+    /// EASy68K's memory map has, or that names none (`MEMORY` in its
+    /// `DIRECTIV.CPP`).
+    UnknownMemoryKind {
+        /// The word that was written, `None` when the line starts with an
+        /// address.
+        found: Option<String>,
+    },
+    /// A `memory` range whose start is above its end, which EASy68K accepts and
+    /// which covers no address there.
+    EmptyMemoryRange {
+        /// The kind of range, as the line names it: `rom`.
+        kind: String,
+        /// Its start, in the 24 bits the map keeps.
+        start: u32,
+        /// Its end.
+        end: u32,
+    },
+    /// A second `memory` range of a kind, which replaces the first: EASy68K's
+    /// memory map holds one range of each kind, and so does the Program's.
+    MemoryRangeReplaced {
+        /// The kind of range: `rom`.
+        kind: String,
+    },
 }
 
 /// Every code this module can produce, in the order the variants are declared.
@@ -724,6 +758,10 @@ pub const ALL_CODES: &[&str] = &[
     "include_cycle",
     "include_too_deep",
     "end_in_an_included_file",
+    "short_branch_to_next_instruction",
+    "unknown_memory_kind",
+    "empty_memory_range",
+    "memory_range_replaced",
 ];
 
 impl DiagnosticKind {
@@ -803,6 +841,12 @@ impl DiagnosticKind {
             DiagnosticKind::IncludeCycle { .. } => "include_cycle",
             DiagnosticKind::IncludeTooDeep { .. } => "include_too_deep",
             DiagnosticKind::EndInAnIncludedFile { .. } => "end_in_an_included_file",
+            DiagnosticKind::ShortBranchToNextInstruction { .. } => {
+                "short_branch_to_next_instruction"
+            }
+            DiagnosticKind::UnknownMemoryKind { .. } => "unknown_memory_kind",
+            DiagnosticKind::EmptyMemoryRange { .. } => "empty_memory_range",
+            DiagnosticKind::MemoryRangeReplaced { .. } => "memory_range_replaced",
         }
     }
 
@@ -821,7 +865,9 @@ impl DiagnosticKind {
             | DiagnosticKind::OddOrigin { .. }
             | DiagnosticKind::CodeAfterEnd
             | DiagnosticKind::EntryPointCase { .. }
-            | DiagnosticKind::EndWithoutAnAddress => Severity::Warning,
+            | DiagnosticKind::EndWithoutAnAddress
+            | DiagnosticKind::EmptyMemoryRange { .. }
+            | DiagnosticKind::MemoryRangeReplaced { .. } => Severity::Warning,
             DiagnosticKind::BareComment
             | DiagnosticKind::SpaceBeforeComma
             | DiagnosticKind::DoubleQuotedString
@@ -1088,6 +1134,22 @@ impl DiagnosticKind {
             DiagnosticKind::EndInAnIncludedFile { entry } => {
                 format!("`end` belongs in the entry file, `{entry}`.")
             }
+            DiagnosticKind::ShortBranchToNextInstruction { branch, .. } => format!(
+                "`{branch}` to the next instruction has a displacement of 0, which a 68000 reads \
+                 as the mark of a word branch."
+            ),
+            DiagnosticKind::UnknownMemoryKind { found } => match found {
+                Some(found) => format!("`{found}` is not a kind of memory range."),
+                None => "`memory` names the kind of range before its addresses.".to_string(),
+            },
+            DiagnosticKind::EmptyMemoryRange { kind, start, end } => format!(
+                "This `memory {kind}` range starts at ${start:X}, after its end at ${end:X}, so \
+                 it covers no address."
+            ),
+            DiagnosticKind::MemoryRangeReplaced { kind } => format!(
+                "This `memory {kind}` replaces the one above it: a program has one range of \
+                 each kind."
+            ),
         }
     }
 
@@ -1394,6 +1456,20 @@ impl DiagnosticKind {
                  the entry file's own `end`"
                     .to_string(),
             ),
+            DiagnosticKind::ShortBranchToNextInstruction { mnemonic, .. } => Some(format!(
+                "Write `{mnemonic}.w`, or `{mnemonic}` with no size, which takes a word here"
+            )),
+            DiagnosticKind::UnknownMemoryKind { .. } => Some(
+                "Write `rom`, `read`, `protected` or `invalid` before the first address, as in \
+                 `memory rom $8000,$8FFF`"
+                    .to_string(),
+            ),
+            DiagnosticKind::EmptyMemoryRange { kind, start, end } => Some(format!(
+                "Write the lower address first, `memory {kind} ${end:X},${start:X}`"
+            )),
+            DiagnosticKind::MemoryRangeReplaced { kind } => Some(format!(
+                "Keep one `memory {kind}` line; EASy68K also keeps only the last one"
+            )),
             DiagnosticKind::WrongOperandCount {
                 mnemonic,
                 at_least: true,
@@ -2025,6 +2101,33 @@ mod tests {
                 },
                 "end_in_an_included_file",
             ),
+            (
+                DiagnosticKind::ShortBranchToNextInstruction {
+                    branch: "bra.s".to_string(),
+                    mnemonic: "bra".to_string(),
+                },
+                "short_branch_to_next_instruction",
+            ),
+            (
+                DiagnosticKind::UnknownMemoryKind {
+                    found: Some("ram".to_string()),
+                },
+                "unknown_memory_kind",
+            ),
+            (
+                DiagnosticKind::EmptyMemoryRange {
+                    kind: "rom".to_string(),
+                    start: 0x2000,
+                    end: 0x1000,
+                },
+                "empty_memory_range",
+            ),
+            (
+                DiagnosticKind::MemoryRangeReplaced {
+                    kind: "rom".to_string(),
+                },
+                "memory_range_replaced",
+            ),
         ]
     }
 
@@ -2090,7 +2193,9 @@ mod tests {
                 | "odd_origin"
                 | "code_after_end"
                 | "entry_point_case_mismatch"
-                | "end_without_an_address" => Severity::Warning,
+                | "end_without_an_address"
+                | "empty_memory_range"
+                | "memory_range_replaced" => Severity::Warning,
                 "bare_comment"
                 | "space_before_comma"
                 | "double_quoted_string"

@@ -115,11 +115,23 @@ The whole front end: it reads the source Files from the Entry file, resolves Sym
 _Avoid_: compiler, semantic checker, pre-interpreter, lexer (each was one stage of the old pipeline)
 
 **Program**:
-What the Assembler produces when no Diagnostic is an error: the instructions with their addresses and sizes, the initial contents of memory, the Symbols and the Entry point, ready for the Interpreter.
+What the Assembler produces when no Diagnostic is an error: the instructions with their addresses, sizes and encodings, the initial contents of memory, the Symbols and the Entry point, ready for the Interpreter.
 _Avoid_: compiled program, Compiler (the old type name), binary
 
 **Layout**:
-The assignment of an address to every line that produces bytes or an instruction, following `org`, alignment and sections. Two lines laid out over the same address are an error.
+The assignment of an address to every line that produces bytes or an instruction, following `org`, alignment and sections. An instruction takes the bytes of the encoding EASy68K's assembler chooses for it, decided once in the first pass from Back references, so the second pass encodes it at the size it was laid out at. Two lines laid out over the same address are an error.
+
+**Memory map**:
+The ranges a Program's `memory` lines declare, EASy68K's: ROM, where a write is ignored; read only, where a write is a bus error; protected, where any access from user mode is one; and invalid, where any access is one. One range of each kind at most, both ends in the 24 bits of the address bus and both inside it. The Program carries the map, and the Interpreter is what will enforce it; the debugger is not the program, so a Poke and the host's reads will pass it.
+_Avoid_: memory regions (that is the asm-editor's word for the parts of the memory view), protection
+
+**Image**:
+Everything a Program writes into memory: each instruction's encoding, `simhalt`'s `$FFFF $FFFF` among them, and the bytes of `dc`, `dcb` and `incbin`. A pad byte before an aligned item and the room `ds` reserves are not part of it, so they keep the fill memory starts with.
+_Avoid_: binary, object code (that is EASy68K's word for the S-record file)
+
+**S-record**:
+A Program written as the `.S68` file EASy68K's assembler writes and its simulator loads: a header, the Image in records of up to 32 bytes, the Memory map and the Entry point, each record a line of hexadecimal with its own checksum. It is written and not read back.
+_Avoid_: object file, hex file, binary
 
 **Interpreter**:
 What runs a Program: registers, memory, the step, run, undo and interrupt operations. It never reads source; it reaches the source only through each instruction's Location.

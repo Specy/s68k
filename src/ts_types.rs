@@ -432,8 +432,13 @@ export type InstructionLine = {
     instruction: any //TODO add instruction types
     /** The address it is laid out at, always even. */
     address: number
-    /** How many bytes it takes up. */
+    /** How many bytes it takes up: the length of its encoding, 2 to 10. */
     size: number
+    /**
+     * Its encoding, the words a 68000 reads, as the bytes they are in memory,
+     * high byte first. `simhalt` is `$FF $FF $FF $FF`.
+     */
+    bytes: number[]
     /** The source line it was written on. */
     location: Location
     /**
@@ -457,7 +462,8 @@ export type Breakpoint = {
 }
 "#;
 
-/// [`ProgramSymbol`](crate::assembler::program::ProgramSymbol) and
+/// [`ProgramSymbol`](crate::assembler::program::ProgramSymbol),
+/// [`MemoryRange`](crate::assembler::program::MemoryRange) and
 /// [`ProgramInfo`](crate::ProgramInfo): what a built program says about itself.
 #[wasm_bindgen(typescript_custom_section)]
 pub const IProgramSymbol: &'static str = r#"
@@ -471,6 +477,24 @@ export type ProgramSymbol = {
     kind: "label" | "constant" | "variable" | "register_list",
     /** An address for a label, the mask for a register list. */
     value: number,
+    location: Location
+}
+
+/**
+ * What EASy68K's simulator does with an access inside a range of the memory
+ * map: `rom` ignores a write, `read` refuses one, `protected` refuses any access
+ * from user mode and `invalid` refuses any access.
+ */
+export type MemoryRangeKind = "rom" | "read" | "protected" | "invalid"
+
+/** One range of the memory map, as a `memory kind start,end` line declares it. */
+export type MemoryRange = {
+    kind: MemoryRangeKind,
+    /** Its first address, in the 24 bits of the address bus. */
+    start: number,
+    /** Its last address, which is in the range; below `start`, the range is empty. */
+    end: number,
+    /** The `memory` line that declared it. */
     location: Location
 }
 

@@ -11,12 +11,12 @@ expression: fixture
       "text": "lea $2000,a1"
     },
     {
-      "address": "$1004",
+      "address": "$1006",
       "line": 1,
       "text": "move.b #$d,d0"
     },
     {
-      "address": "$1008",
+      "address": "$100a",
       "line": 2,
       "text": "trap #$f"
     },
@@ -26,7 +26,7 @@ expression: fixture
       "text": "lea $200e,a1"
     },
     {
-      "address": "$1010",
+      "address": "$1012",
       "line": 5,
       "text": "moveq #$2a,d1"
     },
@@ -41,12 +41,12 @@ expression: fixture
       "text": "trap #$f"
     },
     {
-      "address": "$101c",
+      "address": "$101a",
       "line": 9,
       "text": "move.b #$9,d0"
     },
     {
-      "address": "$1020",
+      "address": "$101e",
       "line": 10,
       "text": "trap #$f"
     }

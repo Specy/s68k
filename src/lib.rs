@@ -27,6 +27,8 @@
 //! | `assembly.wasm_get_diagnostics()` | [`WasmAssembly::wasm_get_diagnostics`] |
 //! | `assembly.wasm_get_program_info()` | [`WasmAssembly::wasm_get_program_info`] |
 //! | `assembly.wasm_get_instruction_addresses()` | [`WasmAssembly::wasm_get_instruction_addresses`] |
+//! | `assembly.wasm_get_memory_map()` | [`WasmAssembly::wasm_get_memory_map`] |
+//! | `assembly.wasm_to_srecord()` | [`WasmAssembly::wasm_to_srecord`] |
 //! | `new Interpreter(assembly, options)` | [`Interpreter::wasm_new`] |
 //! | `wasm_parse_line(text)` | [`wasm_parse_line`] |
 //! | `wasm_get_instruction_table()` | [`wasm_get_instruction_table`] |
@@ -178,6 +180,25 @@ impl WasmAssembly {
     /// still read individually through the Interpreter.
     pub fn wasm_get_layout_items(&self) -> Vec<u32> {
         self.program.as_ref().map(|program| program.layout_items().to_vec()).unwrap_or_default()
+    }
+
+    /// The Memory map the `memory` lines declared, as plain objects
+    /// (`{ kind, start, end, location }`, the
+    /// [`MemoryRange`](assembler::program::MemoryRange)), in EASy68K's order,
+    /// or `null` when the source did not build a Program.
+    pub fn wasm_get_memory_map(&self) -> Result<JsValue, JsValue> {
+        set_panic_hook();
+        match &self.program {
+            Some(program) => to_plain_js(&program.memory_map()),
+            None => Ok(JsValue::NULL),
+        }
+    }
+
+    /// The Program as the S-record file EASy68K's assembler writes, `.S68`
+    /// ([`Program::to_srecord`]), or `undefined` when the source did not build
+    /// one.
+    pub fn wasm_to_srecord(&self) -> Option<String> {
+        self.program.as_ref().map(Program::to_srecord)
     }
 
     pub fn wasm_get_instruction_addresses(&self) -> Result<JsValue, JsValue> {
@@ -700,7 +721,7 @@ mod api_tests {
         let program = assembly.program().expect("a program");
         let info = serde_json::to_value(ProgramInfo::of(program)).expect("info serialises");
         assert_eq!(info["entryPoint"], 0x1000);
-        assert_eq!(info["endAddress"], 0x1004);
+        assert_eq!(info["endAddress"], 0x1002, "after a two-byte nop");
         assert_eq!(info["instructionCount"], 1);
         assert_eq!(info["symbols"]["start"]["value"], 0x1000);
         assert_eq!(info["symbols"]["start"]["kind"], "label");
@@ -709,6 +730,23 @@ mod api_tests {
             info["symbols"]["start"]["location"]["endColumn"], 5,
             "a Location is camelCase wherever it appears"
         );
+    }
+
+    #[test]
+    fn the_memory_map_crosses_as_its_kind_and_two_addresses() {
+        let assembly = assembler::assemble_source(
+            "    memory invalid $F00000,$FFFFFF\n    memory ROM $8000,$8FFF\n    nop\n",
+        );
+        assert!(assembly.diagnostics.is_empty(), "{:?}", assembly.diagnostics);
+        let assembly = WasmAssembly::new(assembly);
+        let program = assembly.program().expect("a program");
+        let map = serde_json::to_value(program.memory_map()).expect("the map serialises");
+        assert_eq!(map[0]["kind"], "rom", "in EASy68K's order, ROM first");
+        assert_eq!(map[0]["start"], 0x8000);
+        assert_eq!(map[0]["end"], 0x8FFF);
+        assert_eq!(map[0]["location"]["line"], 1);
+        assert_eq!(map[1]["kind"], "invalid");
+        assert_eq!(map[1]["end"], 0xFFFFFF);
     }
 
     #[test]

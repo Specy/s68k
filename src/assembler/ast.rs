@@ -720,7 +720,8 @@ pub struct TextOperandField {
 /// The name is not classified here — the parser hands it to the analyzer, which
 /// owns the one instruction table (ADR 0003). A `text_operation` fills
 /// [`text`](Operation::text) and leaves [`operands`](Operation::operands)
-/// empty; every other Operation does the reverse.
+/// empty; every other Operation does the reverse, but for `memory`, which
+/// fills both: the word naming its kind of range, and its addresses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Operation {
     /// The Mnemonic or Directive name, as it was written. Case insensitive
@@ -734,7 +735,8 @@ pub struct Operation {
     pub size_span: Option<Span>,
     /// The Operands, in the order they were written.
     pub operands: Vec<Operand>,
-    /// The raw Operand field of a `text_operation`, when this is one.
+    /// The raw Operand field of a `text_operation`, when this is one; or the
+    /// `memory_kind` word of a `memory` line (`docs/grammar.md` 2.6).
     pub text: Option<TextOperandField>,
     /// Where the whole Operand field was written, `None` when there is none.
     pub operand_field_span: Option<Span>,

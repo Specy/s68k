@@ -740,10 +740,11 @@ EASy68K's own errors and its own lists:
 | Rule | Directives | EASy68K |
 | --- | --- | --- |
 | Required | `equ`, `set`, `reg`, and `section` with no number | "Label required with this directive" |
-| Forbidden | `page`, and `ifeq`, `ifne`, `iflt`, `ifle`, `ifgt`, `ifge`, `ifc`, `ifnc`, `ifarg`, `endc` | "Label is not allowed" |
+| Forbidden | `page`, `memory`, and `ifeq`, `ifne`, `iflt`, `ifle`, `ifgt`, `ifge`, `ifc`, `ifnc`, `ifarg`, `endc` | "Label is not allowed" |
 | Accepted | every other Directive; the Label names the address the line sits at | — |
 
-`page` is "No label is permitted" (`Directives/page.htm`) and the conditional
+`page` is "No label is permitted" (`Directives/page.htm`), `memory` raises
+`LABEL_ERROR` in EASy68K's assembler (`DIRECTIV.CPP`), and the conditional
 ones are "IFxx and ENDC directives may not be labeled"
 (`Directives/conditional.htm`); the help says nothing about `macro` — whose
 label field holds the Macro's name and which is therefore not in the list — nor
@@ -774,6 +775,8 @@ list_directive    = [ label_field ] ( "list" | "nolist" ) ;
 page_directive    = "page" ;
 offset_directive  = [ label_field ] "offset" whitespace expression ;
 section_directive = [ label_field ] "section" [ whitespace expression ] ;
+memory_directive  = "memory" whitespace memory_kind whitespace expression "," expression ;
+memory_kind       = identifier ;
 
 file_specification = quoted_file_name | bare_file_name ;
 quoted_file_name   = ? a single- or double-quoted name, recognised in the raw
@@ -788,7 +791,7 @@ raw_operand_field  = ? the same text as message_text, under the name it carries
                        on a refused Operation ? ;
 
 text_operation     = "fail" | "include" | "incbin" | refused_operation ;
-refused_operation  = "memory" | "macro" | "endm" | "mexit"
+refused_operation  = "macro" | "endm" | "mexit"
                    | "ifeq" | "ifne" | "iflt" | "ifle" | "ifgt" | "ifge"
                    | "ifc" | "ifnc" | "ifarg" | "endc"
                    | "if" | "else" | "endi" | "while" | "endw"
@@ -808,6 +811,18 @@ structured-control names are the help's own lists
 only appear *inside* such a line — `then`, `do`, `to`, `downto`, `by` — are not
 in the set, because the line they sit on is raw text by the time they are
 reached.
+
+`memory_kind` is the one word of an Operand field that is neither text nor an
+Operand, and the parser keeps it apart because it decides how the rest is read:
+`memory rom $8000,$8FFF` is the kind, whitespace, then an ordinary
+`operand_list` of the two addresses, so its whitespace would otherwise end the
+field at `rom` (2.5, rule 4). It is taken only when it is an identifier followed
+by whitespace, a comment or the end of the line, as EASy68K reads a run of
+letters and digits and then skips spaces (`MEMORY` in `DIRECTIV.CPP`); whether
+it is `rom`, `read`, `protected` or `invalid`, in any case, is the Directive's
+to say (`unknown_memory_kind`). The addresses are values that decide nothing of
+the Layout, but EASy68K refuses a forward reference in them all the same, and
+so does s68k (`forward_reference_not_allowed`); both are masked to 24 bits.
 
 Notes the shapes do not carry:
 
@@ -1327,6 +1342,7 @@ decides. The map, so that a rule can be found from its name:
 | the label field of every rule above | `the_directives_that_give_a_name_to_something_need_a_label`, `the_directives_that_take_no_label_say_so`, `every_other_directive_takes_a_label_or_no_label` |
 | `section_directive` | `a_program_starts_in_section_zero_at_the_default_origin`, `a_label_on_a_section_names_the_address_it_goes_on_from`, `section_switches_between_sixteen_location_counters`, `org_inside_a_section_moves_that_sections_counter`, `a_section_that_is_used_for_the_first_time_starts_at_zero`, `two_sections_over_one_address_are_still_an_overlap`, `a_section_number_may_be_a_symbol_and_may_not_be_a_forward_reference`, `a_section_number_outside_the_sixteen_says_so`, `section_with_no_number_names_the_section_in_force`, `section_with_no_number_needs_a_label`, and `the_section_example_of_the_help` in `src/test/corpus.rs` |
 | `offset_directive` | `offset_moves_an_address_and_places_nothing`, `a_name_defined_in_an_offset_region_is_a_constant`, `org_star_restores_the_address_the_offset_region_shadowed`, `an_org_with_an_address_ends_an_offset_region_too`, `a_section_ends_an_offset_region_as_an_org_does`, `end_closes_an_offset_region`, `a_line_that_would_produce_bytes_in_an_offset_region_says_so`, `an_offset_region_opens_whatever_its_expression_says`, `a_negative_offset_is_the_stack_frame_of_the_help`, `a_word_in_an_offset_region_aligns_up_from_a_negative_offset`, and `the_offset_stack_frame_example_of_the_help` in `src/test/corpus.rs` |
+| `memory_directive`, `memory_kind` | `memory_declares_a_range_of_each_kind_in_easy68ks_order`, `a_second_range_of_a_kind_replaces_the_first`, `a_range_that_ends_before_it_starts_warns_and_is_kept`, `memory_says_what_is_wrong_with_its_operands`, and `memory_keeps_its_kind_apart_from_its_addresses` in `src/assembler/parser.rs` |
 | `include_directive`, `incbin_directive` | `src/test/include.rs` whole, and `the_included_lines_are_assembled_where_the_include_line_is`, `there_is_one_symbol_namespace_and_it_reaches_both_ways`, `local_label_scopes_run_across_the_boundary`, `a_label_on_an_include_line_names_the_first_included_byte`, `end_belongs_in_the_entry_file`, `incbin_is_a_dc_b_of_the_whole_file` in particular; the resolution, the cycle and the two backstops are in `src/assembler/include.rs` |
 | `macro_definition` | `macro_definition_is_skipped_whole`, `macro_definition_ends_on_an_operation_named_endm`, `unterminated_macro_definition_is_reported_against_the_macro_line` (in `src/assembler/parser.rs`), and `a_macro_invocation_names_the_macro_and_not_a_label` |
 | every one of them, on the shapes they share | `a_directive_given_an_addressing_mode_says_a_value_was_expected`, `a_directive_with_the_wrong_number_of_operands_says_so`, `a_directive_that_carries_no_size_says_so`, `a_forward_reference_is_refused_where_the_value_decides_the_layout` |

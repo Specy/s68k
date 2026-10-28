@@ -136,9 +136,9 @@ fn the_included_lines_are_assembled_where_the_include_line_is() {
         instructions(&files),
         vec![
             "$1000 main.m68k:0",
-            "$1004 lib.m68k:0",
-            "$1008 lib.m68k:1",
-            "$100c main.m68k:2",
+            "$1002 lib.m68k:0",
+            "$1004 lib.m68k:1",
+            "$1006 main.m68k:2",
         ],
         "the included lines take the addresses they would have had if they had \
          been written where the `include` line is"
@@ -175,7 +175,9 @@ fn there_is_one_symbol_namespace_and_it_reaches_both_ways() {
         ),
     ]);
     assert_eq!(symbol(&files, "size"), 12);
-    assert_eq!(symbol(&files, "routine"), 0x1008);
+    // Both names are below the lines that use them, so the `bsr` is a word
+    // branch, four bytes, and the `move.l` keeps its long immediate, six.
+    assert_eq!(symbol(&files, "routine"), 0x100a);
     assert_eq!(symbol(&files, "start"), 0x1000);
     assert!(codes(&files).is_empty(), "{:?}", codes(&files));
 }
@@ -469,7 +471,7 @@ fn the_two_copies_of_a_file_differ_only_in_their_chain() {
         copies,
         vec![
             (0x1000, "lib.m68k".to_string(), 0),
-            (0x1004, "lib.m68k".to_string(), 1)
+            (0x1002, "lib.m68k".to_string(), 1)
         ],
         "one Location, two include lines: the chain is what tells the two \
          copies apart"
@@ -488,9 +490,10 @@ fn a_breakpoint_stops_in_an_included_file() {
     ]);
     let mut interpreter = Interpreter::new(program(&files), None);
     let breakpoints = [Breakpoint::new("lib.m68k", 1)];
+    // Each `move.l` is a two-byte `moveq`.
     assert_eq!(
         interpreter.get_breakpoint_addresses(&breakpoints),
-        [0x1008].into_iter().collect(),
+        [0x1004].into_iter().collect(),
         "a breakpoint is a (file, line) and the included file is a file"
     );
     let status = interpreter
@@ -501,7 +504,7 @@ fn a_breakpoint_stops_in_an_included_file() {
         InterpreterStatus::Running,
         "stopped, not terminated"
     );
-    assert_eq!(interpreter.get_pc(), 0x1008);
+    assert_eq!(interpreter.get_pc(), 0x1004);
     assert_eq!(
         interpreter
             .get_current_location()
@@ -528,7 +531,7 @@ fn a_file_included_twice_stops_at_both_copies() {
     addresses.sort();
     assert_eq!(
         addresses,
-        vec![0x1000, 0x1004],
+        vec![0x1000, 0x1002],
         "one line of one file, laid out twice, is two places to stop"
     );
 }

@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/empty_memory_range.asm
+---
+[
+  {
+    "severity": "warning",
+    "code": "empty_memory_range",
+    "message": "This `memory read` range starts at $9000, after its end at $8000, so it covers no address.",
+    "hint": "Write the lower address first, `memory read $8000,$9000`",
+    "location": {
+      "file": "empty_memory_range.asm",
+      "line": 2,
+      "column": 16,
+      "endColumn": 27
+    },
+    "related": []
+  }
+]

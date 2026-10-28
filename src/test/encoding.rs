@@ -205,7 +205,18 @@ fn refusals(line: &Line) -> BTreeSet<&'static str> {
     {
         codes.insert("both_operands_in_memory");
     }
+    // A short branch to the Label just below it reaches the next instruction,
+    // a displacement of 0, which marks a word branch.
+    let short = matches!(
+        line.written,
+        Some(SizeSuffix::Short | SizeSuffix::Byte)
+    );
     match (line.spec.family(), modes.as_slice()) {
+        (Some(Family::Bra | Family::Bsr | Family::Bcc(_)), _)
+            if short && line.operands[0].text == "{f}" =>
+        {
+            codes.insert("short_branch_to_next_instruction");
+        }
         (Some(Family::AddSub { .. }), [Modes::AN, destination]) if in_memory(destination) => {
             codes.insert("invalid_addressing_mode");
         }
@@ -399,6 +410,15 @@ fn every_form_of_the_table_encodes_and_decodes_back() {
             "`{}`",
             text.trim()
         );
+        // What the Program holds is that encoding, at the size pass 1 laid the
+        // line out at.
+        assert_eq!(
+            assembled.bytes,
+            encode_bytes(&instruction, address).unwrap(),
+            "`{}`",
+            text.trim()
+        );
+        assert_eq!(assembled.size, words.len() * 2, "`{}`", text.trim());
         let decoded = decode_words(&words, address, processor_for(words[0])).unwrap();
         assert_eq!(
             decoded.instruction,
@@ -945,8 +965,9 @@ two equ 2
         register: RegisterOperand::Data(1),
         size: Size::Word,
     };
-    // Every instruction is four bytes, from `$1000`: `start` is `$1000`,
-    // `here` `$102c` and `later` `$1070`.
+    // Every instruction takes its real size, from `$1000`: `start` is `$1000`,
+    // `here` `$1030` after six words and five longs of immediates, and `later`
+    // `$1074`.
     assert_eq!(
         instructions,
         [
@@ -966,20 +987,20 @@ two equ 2
             Instruction::MOVEQ(0x80, RegisterOperand::Data(1)),
             Instruction::MOVE(Operand::Immediate(128), d(1), Size::Long),
             // A Label on the line itself is above it.
-            Instruction::BRA(0x102c, BranchSize::Short),
+            Instruction::BRA(0x1030, BranchSize::Short),
             Instruction::BRA(0x1000, BranchSize::Short),
-            Instruction::BRA(0x1070, BranchSize::Word),
-            Instruction::BRA(0x1070, BranchSize::Short),
+            Instruction::BRA(0x1074, BranchSize::Word),
+            Instruction::BRA(0x1074, BranchSize::Short),
             Instruction::BRA(0x1000, BranchSize::Word),
             Instruction::BSR(0x1000, BranchSize::Short),
             Instruction::JMP(address(0x1000, AddressWidth::Word)),
-            Instruction::JMP(address(0x1070, AddressWidth::Long)),
+            Instruction::JMP(address(0x1074, AddressWidth::Long)),
             Instruction::JMP(address(0x7ffe, AddressWidth::Word)),
             Instruction::JMP(address(0x8000, AddressWidth::Long)),
             // Read in 32 bits, as EASy68K reads it, `$FFFF8000` is -32768.
             Instruction::JMP(address(0xffff_8000, AddressWidth::Word)),
             Instruction::JMP(address(0x1000, AddressWidth::Long)),
-            Instruction::JMP(address(0x1070, AddressWidth::Word)),
+            Instruction::JMP(address(0x1074, AddressWidth::Word)),
             // `(pc,d1.w)` reaches its own extension word, which a mask or a
             // static bit number puts four bytes past the instruction.
             Instruction::MOVEM {
@@ -987,26 +1008,39 @@ two equ 2
                 size: Size::Word,
                 registers_mask: 1,
                 target: Operand::PcIndex {
-                    target: 0x1064,
+                    target: 0x1066,
                     index
                 },
             },
             Instruction::BTST(
                 Operand::Immediate(1),
                 Operand::PcIndex {
-                    target: 0x1068,
+                    target: 0x106c,
                     index
                 }
             ),
             Instruction::BTST(
                 d(1),
                 Operand::PcIndex {
-                    target: 0x106a,
+                    target: 0x1070,
                     index
                 }
             ),
             Instruction::EXG(RegisterOperand::Data(0), RegisterOperand::Address(1)),
             Instruction::NOP,
+        ]
+    );
+    let addresses: Vec<usize> = program
+        .instructions()
+        .iter()
+        .map(|instruction| instruction.address)
+        .collect();
+    assert_eq!(
+        addresses,
+        [
+            0x1000, 0x1002, 0x1008, 0x100e, 0x1010, 0x1016, 0x1018, 0x101e, 0x1022, 0x1028,
+            0x102a, 0x1030, 0x1032, 0x1034, 0x1038, 0x103a, 0x103e, 0x1040, 0x1044, 0x104a,
+            0x104e, 0x1054, 0x1058, 0x105e, 0x1062, 0x1068, 0x106e, 0x1072, 0x1074,
         ]
     );
     // Each of them encodes where it is and decodes back.

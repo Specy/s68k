@@ -1,6 +1,6 @@
 # s68k
 
-s68k is an M68K assembler and interpreter written in Rust. The assembler reports useful errors and warnings to help with learning assembly. The emulator runs the assembled program (not in memory) and implements useful debugging features to step, undo, add breakpoints through the program
+s68k is an M68K assembler and interpreter written in Rust. The assembler reports useful errors and warnings to help with learning assembly, and encodes each instruction as EASy68K does, into memory. The emulator runs the assembled program and implements useful debugging features to step, undo, add breakpoints through the program
 
 The library compiles to WebAssembly for use from JavaScript and Node.js. It is
 [available on npm](https://www.npmjs.com/package/@specy/s68k).
@@ -15,8 +15,9 @@ It is part of a family of JavaScript assembly interpreters and simulators:
 
 ## Purpose
 s68k is a teaching tool for M68K assembly. Its diagnostics explain invalid
-syntax, addressing modes, and directives. It is not intended to produce
-instruction binaries for real 68000 systems.
+syntax, addressing modes, and directives. It writes a program out as the
+S-record file EASy68K's assembler writes, which EASy68K's simulator loads, but
+it is not intended to produce binaries for real 68000 systems.
 
 ## Architecture
 
@@ -24,17 +25,17 @@ The library has three parts:
 
 - **Assembler** (`src/assembler/`): reads the source files of a project, starting from the entry file, and returns diagnostics and, when there are no errors, a program. It contains a tokenizer, a parser, a symbol table, an expression evaluator, the layout pass, the instruction table, and the analyzer. Assembly reports all of the diagnostics it finds.
 
-- **Program**: the assembler's output, a program containing assembled instructions with their addresses, sizes, and source locations; the initial memory; the symbols; and the entry point.
+- **Program**: the assembler's output, a program containing assembled instructions with their addresses, sizes, encodings, and source locations; the initial memory; the symbols; and the entry point.
 
 - **Interpreter** (`src/interpreter.rs`): runs a program using registers, memory, and the status register. It supports stepping, running to the end, undo history, breakpoints, a call stack, and a watched range of memory whose every store ends the run, for a device mapped into memory.
 
 - **Machine** (`src/machine/`): the 68000's encoding. A decoder reads the words of an instruction for a 68000, a 68010 or a 68020, an encoder writes them, and a disassembler prints an instruction in EASy68K's syntax.
 
-The assembler chooses each instruction's 68000 encoding as EASy68K does (below), and the encoder can write it, but the interpreter does not load encoded instructions into memory yet, so instructions cannot be modified at runtime. Every instruction occupies four bytes regardless of its size on a real 68000.
+The assembler chooses each instruction's 68000 encoding as EASy68K does (below) and writes it into the program's memory at its real size, so every address is the one a 68000 and EASy68K's listing give. The interpreter still runs the instructions the assembler built rather than decoding those bytes, so a program may not load or store a byte of its own code yet, and cannot modify itself (below, "Known limitations").
 
 ## Future work
 
-- Real instruction sizes and programs loaded in memory
+- Running from memory, through a cache of decoded instructions the assembler fills, so that a program can change its own code
 - Macros and conditional assembly
 
 
@@ -60,7 +61,20 @@ Where the 68000 has several encodings of a line, s68k picks the one EASy68K pick
 - An unsized branch is short when its target is above it and its displacement fits a byte and is not 0, which marks a word branch, and a word otherwise; `.s` and `.b` force a short one, and `.w` and `.l` a word one. An unsized absolute address is `.w` when it is above the line and a word holds it, and `.l` otherwise. "Above" counts a label on the line itself, and a number is always above.
 - An immediate is kept at the size the instruction reads it at, so `move.w #-1,d0` holds `$FFFF`, and `exg a0,d0` is `exg d0,a0`.
 
+There are two passes and nothing in between, as in EASy68K: the first pass decides each instruction's size by these rules, and a name defined below the line is always given the long form, whatever its value, so the second pass encodes every instruction at the size it was laid out at. An instruction takes the bytes of its encoding, two to ten, and starts on an even address. A branch whose displacement does not fit is an error, as in EASy68K: a short one out of -128 to 127 or to the very next instruction (a displacement of 0 is the mark of a word branch), and a word one or a `dbcc` out of -32768 to 32767. A PC-relative displacement is measured from its own extension word, which is two bytes past the instruction, and four for `movem` and `btst #n`.
+
 Three lines EASy68K refuses are refused here too, since the 68000 has no encoding for them: an address register added into memory (`add.l a0,(a1)`), a bit number written as an immediate on an immediate (`btst #1,#5`, where `btst d1,#5` is the instruction), and a `link` displacement outside -32768 to 32767.
+
+## The S-record
+
+`Program::to_srecord()`, `program.toSRecord()` in TypeScript, writes the program as the `.S68` file EASy68K's assembler writes, which EASy68K's simulator loads and runs (`src/assembler/srecord.rs`, after EASy68K's `OBJECT.CPP`):
+
+1. the header `S0` record, `68KPROG   20CREATED BY EASY68K`, which is what tells EASy68K's loader the file is its own;
+2. the code and the data, every byte the program writes and nothing else, in `S1` records when a record's first address fits 16 bits and `S2` when it fits 24, up to 32 bytes each;
+3. one more `S0` record for each range of the memory map, as EASy68K writes them, `      ROM 008000,008FFF`;
+4. the `S8` record of the entry point.
+
+Each record ends with CR LF, as EASy68K writes them on Windows. EASy68K breaks its data records where the next item it assembles would not fit, and these break every 32 bytes; both load the same bytes at the same addresses.
 
 ## Supported directives
 | Directive | What it does |
@@ -74,16 +88,19 @@ Three lines EASy68K refuses are refused here too, since the 68000 has no encodin
 | `end` | ends the program and, with an operand, sets the entry point |
 | `reg` | names a `movem` register list, `AllRegs reg d0-d7/a0-a6`, for `movem.l AllRegs,-(sp)` |
 | `fail` | reports the rest of the line as an error of the program's own; the assembly carries on |
-| `simhalt` | pauses the run; the next `run` or `step` resumes at the following instruction |
+| `simhalt` | assembles to `$FFFF $FFFF`, EASy68K's halt, and pauses the run there; the next `run` or `step` resumes at the following instruction |
 | `section` | switches between the sixteen location counters, 0 to 15, each going on from where it was left |
 | `offset` | opens a region that produces no bytes, where `ds` names the fields of a structure by their offsets; `org *` ends it |
 | `include` | assembles another file of the project here, as if its lines had been pasted at this line |
 | `incbin` | puts another file's bytes in memory here, as a `dc.b` of the whole file would |
+| `memory` | declares a range of EASy68K's memory map, `memory rom $8000,$8FFF`: `rom`, `read`, `protected` or `invalid`, each kind once; the program carries it, and the interpreter does not enforce it yet |
 | `opt`, `list`, `nolist`, `page` | accepted and ignored: they are about the listing file, which there is none of |
 
 Without `end`, the entry point is a label named `START`, and failing that the first instruction.
 
-`equ`, `set` and `reg` need a label, and so does a `section` with no number, which it sets to the number of the section in force; `page` and the conditional directives take none. A `reg` list has to be defined above the `movem` that reads it, and it may not appear in an expression. 
+`memory` reads its addresses as EASy68K does: no forward reference, and each masked to the 24 bits of the address bus, so `$FF001000` is `$001000`. EASy68K's map has one range of each kind, so a second `memory rom` replaces the first, with a warning, and a range that ends before it starts, which covers nothing, is a warning too.
+
+`equ`, `set` and `reg` need a label, and so does a `section` with no number, which it sets to the number of the section in force; `page`, `memory` and the conditional directives take none. A `reg` list has to be defined above the `movem` that reads it, and it may not appear in an expression. 
 
 ## Projects of several files
 
@@ -178,9 +195,9 @@ Where s68k departs from EASy68K, on purpose:
 - On Windows EASy68K cannot delete a file that is open, and reports 2; whether a file that is open can be deleted is the host's file system's to say.
 
 ## Known limitations
-1. Every instruction is four bytes wide whatever it encodes to on a real 68000, so an address computed from instruction sizes will not match the hardware. It is also why a PC-relative operand is resolved while the program is assembled: there is no extension word in memory to read the displacement from, so the assembler stores the address the operand reaches and the interpreter reads it from there.
+1. The program's code is in memory, where the host reads it, but the interpreter runs the instructions the assembler built rather than the bytes there, so the program is refused a load or a store that touches its code and cannot modify itself. Running from memory is the next step, and so is what `$FFFF $FFFF` does where the program placed nothing: a program that runs off its end into erased memory will end there, rather than end because its program counter passed the last instruction as it does now.
 2. The program runs as supervisor, always. The status register is a 16-bit register whose low byte is the condition codes and whose high byte is trace, supervisor and the interrupt mask, readable (`getSr()`, and the `SR:` line of the command line) and of no effect at all. It starts at `$2700`, so `andi #$00,sr` "puts the CPU in user mode" and changes nothing that runs. `move usp,an` and `move an,usp` are refused for the same reason: there is one stack pointer, `a7`.
-4. `chk`, `trapv` and `illegal` raise their exception by ending the run, and so does every other runtime error: an address error, a division by zero, a `trap #15` task that cannot be done. There are no exception vectors, no supervisor stack frame and no `rte`, so a program cannot handle one. The runtime error names the cause, and is the program's termination.
+3. `chk`, `trapv` and `illegal` raise their exception by ending the run, and so does every other runtime error: an address error, a division by zero, a `trap #15` task that cannot be done. There are no exception vectors, no supervisor stack frame and no `rte`, so a program cannot handle one. The runtime error names the cause, and is the program's termination.
 
 ## Running the command-line interpreter
 

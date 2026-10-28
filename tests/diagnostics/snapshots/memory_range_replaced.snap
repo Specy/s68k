@@ -1,0 +1,30 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/memory_range_replaced.asm
+---
+[
+  {
+    "severity": "warning",
+    "code": "memory_range_replaced",
+    "message": "This `memory rom` replaces the one above it: a program has one range of each kind.",
+    "hint": "Keep one `memory rom` line; EASy68K also keeps only the last one",
+    "location": {
+      "file": "memory_range_replaced.asm",
+      "line": 4,
+      "column": 4,
+      "endColumn": 26
+    },
+    "related": [
+      {
+        "location": {
+          "file": "memory_range_replaced.asm",
+          "line": 2,
+          "column": 0,
+          "endColumn": 26
+        },
+        "message": "the range it replaces"
+      }
+    ]
+  }
+]

@@ -52,8 +52,8 @@ if (program) {
 }
 ```
 
-`simhalt` makes an interpreter return `InterpreterStatus.Paused` without
-terminating it. Calling `step()`, `run()`, `runWithLimit()` or
+`simhalt`, assembled as EASy68K's `$FFFF $FFFF`, makes an interpreter return
+`InterpreterStatus.Paused` without terminating it. Calling `step()`, `run()`, `runWithLimit()` or
 `runWithBreakpoints()` again resumes at the following instruction.
 
 A diagnostic is a plain object, and only an `error` stops the program from being
@@ -323,7 +323,7 @@ Where this departs from EASy68K:
 ```ts
 interpreter.runWithBreakpoints([{file: 'lib/io.x68', line: 12}])
 interpreter.getCurrentLocation()      // {file, line, column, endColumn} | null
-interpreter.getNextInstruction()      // {address, size, location, includeChain, source} | null
+interpreter.getNextInstruction()      // {address, size, bytes, location, includeChain, source} | null
 interpreter.getCallStack()            // one frame per subroutine entered
 interpreter.canUndo() && interpreter.undo()
 ```
@@ -334,6 +334,18 @@ twice stops at both copies. Undo needs a history, which `new Interpreter(program
 default (`{keep_history: true, history_size: 100}`). A program that has not run yet has nothing
 to undo: `canUndo()` is false until the first step, and undoing every step leaves the program
 counter at the Entry point.
+
+`program.getMemoryMap()` returns the ranges the program's `memory` lines
+declare, at most one of each kind, in EASy68K's order: `[{kind: 'rom', start:
+0x8000, end: 0x8fff, location}]`, `kind` being `'rom'`, `'read'`, `'protected'`
+or `'invalid'` and both addresses in 24 bits, `end` included. The interpreter
+does not enforce them yet.
+
+`program.toSRecord()` returns the program as the `.S68` file EASy68K's
+assembler writes, which EASy68K's simulator loads and runs: the `68KPROG`
+header, the code and data in `S1`/`S2` records of up to 32 bytes, the memory map
+as EASy68K's extra `S0` records and the entry point in an `S8` record, each
+record ending with CR LF.
 
 `program.getInstructionAddresses()` returns the assembled instruction addresses
 in ascending order. It is intended for whole-build editor annotations: use
@@ -533,7 +545,7 @@ A `switch` over `Interrupt`, `InterruptResult`, `RuntimeError` or
 | `S68k.lex`, `S68k.lexOne`, `LexedLine`, `ParsedLine` | `S68k.parseLine(text)` |
 | `getCurrentLineIndex(): number` | `getCurrentLocation(): Location \| null` |
 | `runWithBreakpoints(Uint32Array)` (line indexes) | `runWithBreakpoints([{file, line}])` |
-| `getInstructionAt(address)` → an instruction with a parsed line | → `{address, size, location, includeChain, source}` |
+| `getInstructionAt(address)` → an instruction with a parsed line | → `{address, size, bytes, location, includeChain, source}` |
 | `stepGetStatus()` | `step()`, which answers the status (`stepGetStatus` still works) |
 
 Diagnostics are reported where 1.4.2 was silent, and a few programs that
@@ -555,18 +567,17 @@ text.
 
 ## Supported directives
 `org`, `equ`, `set`, `dc`, `dcb`, `ds`, `end`, `reg`, `fail`, `simhalt`,
-`section`, `offset`, `include` and `incbin`, and `opt`, `list`, `nolist` and
-`page`, which are accepted and ignored. Without `end`, the entry point is a
+`section`, `offset`, `include`, `incbin` and `memory`, and `opt`, `list`,
+`nolist` and `page`, which are accepted and ignored. Without `end`, the entry point is a
 label named `START`, and failing that the first instruction.
 
-`memory`, the macro and conditional-assembly directives and EASy68K's structured
-control are recognised and refused with a diagnostic naming the feature.
+The macro and conditional-assembly directives and EASy68K's structured control
+are recognised and refused with a diagnostic naming the feature.
 
 ## Known limitations
 1. Characters are one byte, read and written as Windows-1252, as in EASy68K; a source character with no byte of its own is an assembly error.
-2. Every instruction is four bytes wide whatever it encodes to on a real 68000, so an address computed from instruction sizes will not match the hardware.
-3. The program runs as supervisor, always.
-4. The program cannot read or write its own instructions, which are not in memory, so it cannot modify itself.
+2. The program runs as supervisor, always.
+3. Each instruction is in memory as its 68000 encoding, at its real size, and `readMemoryBytes` reads it; the program itself cannot read or write those bytes yet, so it cannot modify itself.
 
 # How to build
 The interpreter was made for WASM in mind, to build it you need [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) installed.

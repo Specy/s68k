@@ -233,9 +233,9 @@ pub enum SizeRule {
     ByteOrLong,
     /// `.b`, `.s`, `.w` and `.l` on a branch, which is a displacement width and
     /// not an operand size: the size of the branch the lowering stores
-    /// ([`choice::branch_size`](super::choice::branch_size)). It is not range
-    /// checked yet, because instructions are a fixed four bytes here and the
-    /// distance a branch reaches is only known at their real sizes. `.b` is
+    /// ([`choice::branch_size`](super::choice::branch_size)), whose distance the
+    /// analyzer checks against it at the addresses the Layout gave the
+    /// instructions, their real sizes. `.b` is
     /// `.s`: EASy68K "will accept .B or .S to force 1-byte offsets and .W or
     /// .L to force 2-byte offsets" (`Reference/68ks9b.htm`), so a program that
     /// writes `bra.b` assembles here as it does there.

@@ -3,16 +3,28 @@
 //! A Program exists only when no Diagnostic of the assembly is an error
 //! (CONTEXT.md, "Program"). It holds four things and nothing else:
 //!
-//! * the **instructions**, each with its address, the number of bytes it takes
-//!   up, the [`Location`] it came from and the Source line as it was written;
+//! * the **instructions**, each with its address, its encoding and the number
+//!   of bytes it takes up, the [`Location`] it came from and the Source line as
+//!   it was written;
 //! * the initial **memory**, one run per Directive that puts bytes there or
 //!   reserves room for them;
 //! * the **Symbols**, by full name, with their kind and their definition;
-//! * the **Entry point**, the address the program starts running at.
+//! * the **Entry point**, the address the program starts running at;
+//! * the **Memory map**, the ranges its `memory` lines declare.
 //!
 //! It never holds source: an instruction reaches its line through its
 //! [`Location`], which is what makes a per-File breakpoint and a per-File
 //! current line possible (the design record, "Files, `include`, `incbin`").
+//!
+//! # The image
+//!
+//! What the Program puts in memory is its **image**: the bytes of every
+//! instruction, as the 68000 reads them, and the bytes of every `dc`, `dcb` and
+//! `incbin`. An instruction keeps its bytes beside the [`Instruction`] they
+//! encode, so the code stays distinguishable from the data although both are
+//! in memory, and [`Program::image`] puts the two together in address order.
+//! A pad byte before an aligned item and the room `ds` reserves are not part
+//! of it: neither is written, as in EASy68K.
 //!
 //! # Looking an instruction up
 //!
@@ -39,12 +51,15 @@ use super::symbols::{SymbolKind, SymbolTable, SymbolValue};
 pub struct AssembledInstruction {
     /// The address it is laid out at, always even.
     pub address: usize,
-    /// How many bytes it takes up. Every instruction is 4 bytes in this
-    /// version (`tests/corpus/README.md`); the field is here so that real
-    /// sizes are a change to the Assembler and not to everything that walks a
-    /// Program.
+    /// How many bytes it takes up: the length of its encoding, 2 to 10 bytes
+    /// on a 68000, which the Layout's first pass decided by EASy68K's rules
+    /// before the line was encoded.
     pub size: usize,
-    /// The instruction itself.
+    /// Its encoding, the words a 68000 reads, as the bytes they are in memory:
+    /// the operation word's high byte first. `simhalt` is `$FFFF $FFFF`.
+    pub bytes: Vec<u8>,
+    /// The instruction itself, as it was lowered: what the encoding decodes
+    /// to, and what the Interpreter runs.
     pub instruction: Instruction,
     /// The Source line it was written on.
     pub location: Location,
@@ -115,6 +130,76 @@ impl MemoryRun {
     }
 }
 
+/// The kind of a range of the [Memory map](MemoryRange): what EASy68K's
+/// simulator does with an access inside it (`docs/research/easy68k-machine-behaviour.md`
+/// §9 in the asm-editor).
+///
+/// The order is EASy68K's, the order its assembler writes the ranges out in
+/// and its hardware window lists them in, and so the order a Program keeps
+/// them in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryRangeKind {
+    /// `rom`: a write is ignored.
+    Rom,
+    /// `read`: read only, a write is a bus error.
+    Read,
+    /// `protected`: any access from user mode is a bus error.
+    Protected,
+    /// `invalid`: any access is a bus error.
+    Invalid,
+}
+
+impl MemoryRangeKind {
+    /// The four, in EASy68K's order.
+    pub const ALL: [MemoryRangeKind; 4] = [
+        MemoryRangeKind::Rom,
+        MemoryRangeKind::Read,
+        MemoryRangeKind::Protected,
+        MemoryRangeKind::Invalid,
+    ];
+
+    /// The word a `memory` line names the kind with, in lower case.
+    pub fn name(self) -> &'static str {
+        match self {
+            MemoryRangeKind::Rom => "rom",
+            MemoryRangeKind::Read => "read",
+            MemoryRangeKind::Protected => "protected",
+            MemoryRangeKind::Invalid => "invalid",
+        }
+    }
+
+    /// The kind a word names, in any case, as EASy68K compares it (`strcmpi`).
+    pub fn from_name(word: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| word.eq_ignore_ascii_case(kind.name()))
+    }
+}
+
+/// One range of the **Memory map**, as `memory kind start,end` declares it.
+///
+/// Both ends are in the 24 bits of the 68000's address bus, as EASy68K masks
+/// them, and both are inside the range: EASy68K tests a write with
+/// `loc + bytes - 1 >= start && loc <= end`. A start above the end covers no
+/// address. A Program holds at most one range of each kind, which is all
+/// EASy68K's memory map has room for.
+///
+/// What an access inside it does is the Interpreter's to enforce, which it does
+/// not do yet; the Program carries the ranges so that they travel with the
+/// source and reach the S-record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MemoryRange {
+    /// What kind of range it is.
+    pub kind: MemoryRangeKind,
+    /// Its first address.
+    pub start: u32,
+    /// Its last address, which is in it.
+    pub end: u32,
+    /// The `memory` line that declared it.
+    pub location: Location,
+}
+
 /// One Symbol of a built Program: what it stands for and where it was defined.
 ///
 /// It is the flattened [`Symbol`](super::symbols::Symbol) of the symbol table:
@@ -142,6 +227,7 @@ pub struct Program {
     memory: Vec<MemoryRun>,
     symbols: BTreeMap<String, ProgramSymbol>,
     entry: usize,
+    memory_map: Vec<MemoryRange>,
 }
 
 impl Program {
@@ -182,7 +268,22 @@ impl Program {
             memory,
             symbols,
             entry,
+            memory_map: Vec::new(),
         }
+    }
+
+    /// The Program with the ranges its `memory` lines declared, at most one of
+    /// each kind, put in EASy68K's order.
+    pub fn with_memory_map(mut self, mut ranges: Vec<MemoryRange>) -> Self {
+        ranges.sort_by_key(|range| range.kind);
+        self.memory_map = ranges;
+        self
+    }
+
+    /// The Memory map: the ranges the `memory` lines declared, in EASy68K's
+    /// order, ROM, read only, protected and invalid, each kind at most once.
+    pub fn memory_map(&self) -> &[MemoryRange] {
+        &self.memory_map
     }
 
     pub fn with_layout_items(mut self, items: Vec<u32>) -> Self { self.layout_items = items; self }
@@ -256,6 +357,57 @@ impl Program {
     pub fn is_empty(&self) -> bool {
         self.instructions.is_empty()
     }
+
+    /// The Program as the S-record file EASy68K's assembler writes, `.S68`:
+    /// the header, the [image](Program::image), the Memory map and the Entry
+    /// point ([`srecord`](super::srecord)). EASy68K's simulator loads it.
+    pub fn to_srecord(&self) -> String {
+        super::srecord::write(self)
+    }
+
+    /// Everything the Program writes into memory, code and data, in address
+    /// order: one run for each stretch of consecutive bytes.
+    ///
+    /// The instructions' encodings and the bytes of `dc`, `dcb` and `incbin`
+    /// are merged where one ends at the address the next starts at, so a
+    /// program's code is one run however many instructions it has. A pad byte
+    /// and the room `ds` reserves are not written, so they end a run.
+    pub fn image(&self) -> Vec<ImageRun> {
+        let mut pieces: Vec<(usize, &[u8])> = self
+            .instructions
+            .iter()
+            .map(|instruction| (instruction.address, instruction.bytes.as_slice()))
+            .chain(
+                self.memory
+                    .iter()
+                    .filter_map(|run| run.bytes().map(|bytes| (run.address, bytes))),
+            )
+            .filter(|(_, bytes)| !bytes.is_empty())
+            .collect();
+        pieces.sort_by_key(|(address, _)| *address);
+        let mut runs: Vec<ImageRun> = Vec::new();
+        for (address, bytes) in pieces {
+            match runs.last_mut() {
+                Some(run) if run.address + run.bytes.len() == address => {
+                    run.bytes.extend_from_slice(bytes)
+                }
+                _ => runs.push(ImageRun {
+                    address,
+                    bytes: bytes.to_vec(),
+                }),
+            }
+        }
+        runs
+    }
+}
+
+/// One stretch of consecutive bytes of a Program's [image](Program::image).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImageRun {
+    /// The address of its first byte.
+    pub address: usize,
+    /// The bytes, in the order they sit in memory.
+    pub bytes: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -270,7 +422,8 @@ mod tests {
     fn instruction(address: usize, line: usize) -> AssembledInstruction {
         AssembledInstruction {
             address,
-            size: 4,
+            size: 2,
+            bytes: vec![0x4E, 0x71],
             instruction: Instruction::NOP,
             location: location(line),
             include_chain: Vec::new(),
@@ -308,7 +461,7 @@ mod tests {
         );
         assert_eq!(
             program.end_address(),
-            0x2004,
+            0x2002,
             "the program ends after the last instruction, not on it"
         );
         assert_eq!(program.entry(), 0x1000);
@@ -317,24 +470,24 @@ mod tests {
     #[test]
     fn the_calling_instruction_is_found_by_the_address_it_returns_to() {
         let program = Program::new(
-            vec![instruction(0x1000, 3), instruction(0x1004, 4)],
+            vec![instruction(0x1000, 3), instruction(0x1002, 4)],
             Vec::new(),
             &SymbolTable::new(),
             0x1000,
         );
         assert_eq!(
             program
-                .instruction_ending_at(0x1004)
+                .instruction_ending_at(0x1002)
                 .map(|instruction| instruction.address),
             Some(0x1000),
-            "a return to $1004 comes back from the instruction at $1000"
+            "a return to $1002 comes back from the nop at $1000"
         );
         assert_eq!(
-            program.instruction_ending_at(0x1008).map(|i| i.address),
-            Some(0x1004)
+            program.instruction_ending_at(0x1004).map(|i| i.address),
+            Some(0x1002)
         );
         assert!(
-            program.instruction_ending_at(0x1002).is_none(),
+            program.instruction_ending_at(0x1001).is_none(),
             "no instruction ends in the middle of another"
         );
         assert!(program.instruction_ending_at(0x1000).is_none());
@@ -360,6 +513,46 @@ mod tests {
         assert_eq!(reserved.len(), 8);
         assert_eq!(reserved.bytes(), None, "`ds` writes nothing");
         assert!(!reserved.is_empty());
+    }
+
+    #[test]
+    fn the_image_merges_code_and_data_that_touch_and_leaves_the_rest_unwritten() {
+        let data = |address: usize, content: MemoryContent| MemoryRun {
+            address,
+            content,
+            location: location(9),
+        };
+        let program = Program::new(
+            vec![instruction(0x1002, 4), instruction(0x1000, 3)],
+            vec![
+                data(0x1004, MemoryContent::Bytes { bytes: vec![1, 2, 3] }),
+                // The pad byte at $1007 is not written, so the word after it
+                // starts a run of its own.
+                data(0x1008, MemoryContent::Bytes { bytes: vec![4, 5] }),
+                data(0x100A, MemoryContent::Reserved { length: 6 }),
+                data(0x1010, MemoryContent::Bytes { bytes: vec![] }),
+                data(0x2000, MemoryContent::Bytes { bytes: vec![6] }),
+            ],
+            &SymbolTable::new(),
+            0x1000,
+        );
+        assert_eq!(
+            program.image(),
+            vec![
+                ImageRun {
+                    address: 0x1000,
+                    bytes: vec![0x4E, 0x71, 0x4E, 0x71, 1, 2, 3],
+                },
+                ImageRun {
+                    address: 0x1008,
+                    bytes: vec![4, 5],
+                },
+                ImageRun {
+                    address: 0x2000,
+                    bytes: vec![6],
+                },
+            ]
+        );
     }
 
     #[test]

@@ -213,19 +213,25 @@ sized instructions are `move`, `movea`, `movem`, `add`, `adda`, `addi`, `addq`,
 `and`, `andi`, `or`, `ori`, `eor`, `eori`, `not`, `neg`, `negx`, `clr`, `tst`,
 `ext`/`extb`, `asl`/`asr`, `lsl`/`lsr`, `rol`/`ror`, `roxl`/`roxr` and `movep`.
 The unsized ones carry no suffix at all: `moveq`, `divs`, `divu`, `muls`,
-`mulu`, `swap`, `exg`, `lea`, `pea`, `link`, `unlk`, `jmp`, `jsr`, `bsr`, `bra`,
-every `Bcc`, `DBcc` and `Scc`, `btst`, `bset`, `bclr`, `bchg`, `trap`, `rts`,
-`nop`, `simhalt`, `tas`, `chk`, `rtr`, `trapv`, `illegal`, `abcd`, `sbcd`,
-`nbcd` and every instruction that names a half of the status register (below).
-Branches are among them because the version these fixtures were taken from
-stores no branch size, and the three decimal instructions because a byte is the
-only size they have, the way `tas` has only a byte. Since milestone C1 of the
-machine plan a branch carries the size of its displacement, and since milestone
-C2 the Assembler chooses it as EASy68K does. It is still not printed: a size
-chosen while every instruction is four bytes is chosen at addresses the program
-will not have once its instructions take their real sizes, and printing it now
-would move these lines twice (below, "What milestone C2 of the machine plan
-changed").
+`mulu`, `swap`, `exg`, `lea`, `pea`, `link`, `unlk`, `jmp`, `jsr`, every `DBcc`
+and `Scc`, `btst`, `bset`, `bclr`, `bchg`, `trap`, `rts`, `nop`, `simhalt`,
+`tas`, `chk`, `rtr`, `trapv`, `illegal`, `abcd`, `sbcd`, `nbcd` and every
+instruction that names a half of the status register (below). The three decimal
+instructions are among them because a byte is the only size they have, the way
+`tas` has only a byte, and a `DBcc` because a word is the only displacement it
+has.
+
+**A branch prints the size of its displacement**, whichever it is: `bra`, `bsr`
+and every `Bcc` end in `.s` for a byte and `.w` for a word, and `.l` for the
+68020's long, which no 68000 source reaches: `bra.s $1000`, `bne.w $1050`. It is
+the size the Assembler chose, by EASy68K's rule (CONTEXT.md, "Back
+reference"): short when the target is above the line and a byte reaches it, a
+word otherwise, so every branch forwards is `.w`. It is printed whether or not
+the source wrote one, as an instruction's size is, because it is half of what
+the branch is: `bra.s` and `bra.w` are two encodings of two and four bytes, and
+the addresses after one depend on which. Milestone C1 of the machine plan gave a
+branch its size and C2 chose it; it is printed since C3, when the instructions
+took their real sizes (below, "What milestone C3 of the machine plan changed").
 
 **Registers.** `d0` to `d7` and `a0` to `a7`. The stack pointer is `a7`; `sp`
 never appears, so `move.l sp,a5` prints as `movea.l a7,a5`.
@@ -268,14 +274,20 @@ bit number comes first. `(pc,d1.w)`, which writes no address at all, is a
 displacement of zero, so it reaches its own extension word and prints as that
 address: at `$1000`, `$1002(pc,d1.w)`, and `$1004(pc,d1.w)` in a `movem`.
 
-**An address width is not printed.** The Program carries the width an address
-is encoded at, and since milestone C2 the Assembler chooses it as EASy68K does:
+**An address prints its width when it is a word.** The Program carries the
+width an address is encoded at, and the Assembler chooses it as EASy68K does:
 `.w` or `.l` as written, else a word for an address above the line that a word
-holds, and a long otherwise. It is not printed, for the reason a branch's size
-is not, so `move.l $1000.w,d0` and `move.l $1000.l,d0` both print as
-`move.l $1000,d0`. The `.w` form is range checked while it is assembled
-(EASy68K's "Absolute short addressing must be in the range -32768 through
-32767").
+holds, and a long otherwise. A word is printed `.w` after the address, and a
+long is the plain form, which is how EASy68K's own disassembly marks them and
+how the crate's disassembler prints them (`$8000.W`): `move.l $1000.w,d0` and
+`move.l $1000.l,d0` print as `move.l $1000.w,d0` and `move.l $1000,d0`, and so
+does a `pea $2000` that wrote no width, since a number is a back reference and a
+word holds it: `pea $2000.w`. The address printed is the one the 68000 reaches,
+a word's sign extension included, so a word written `$ffff8000` prints as
+`$ffff8000.w`. The `.w` form is range checked while it is assembled (EASy68K's
+"Absolute short addressing must be in the range -32768 through 32767"). A branch
+target and a `DBcc`'s are not addresses in this sense, as they are encoded as a
+displacement, and print bare.
 
 **Immediates** print as the unsigned value the Assembler stored, in hex, and it
 is the width the Assembler stored it at that decides how many digits come out.
@@ -319,12 +331,12 @@ and, for a line A word, a line F word and a word that is no instruction, the
 
 **`simhalt`** prints as `simhalt` and nothing else. It is a Directive and not a
 68000 instruction, and it is in `instructions` because it is an executable item
-of the Program: four bytes at its own address, which end the run
-(`Directives/simhalt.htm`, and phase 2 of the design record).
+of the Program: the four bytes `$FFFF $FFFF` at its own address, which pause the
+run (`Directives/simhalt.htm`, and phase 2 of the design record).
 
 **Branch and jump targets** print as absolute addresses, `$` and hex, because a
 Label is resolved to its address before the instruction is stored: `bra done`
-prints as `bra $1050`.
+prints as `bra.w $1050` when `done` is below it.
 
 **Condition codes** print as the canonical Mnemonic suffix and nothing else:
 `t`, `f`, `hi`, `ls`, `cc`, `cs`, `ne`, `eq`, `vc`, `vs`, `pl`, `mi`, `ge`,
@@ -1009,6 +1021,80 @@ In `tests/diagnostics/`, **no kind is new and two cases grew**:
 `value_out_of_range.asm` the third, so that each new sentence has a snapshot to
 be read in, and each snapshot gained exactly those entries.
 
+### What milestone C3 of the machine plan changed in these fixtures, and why
+
+On 2026-10-28, milestone C3 of the asm-editor's
+`docs/design/m68k-machine-plan.md` gave every instruction its real size: the
+bytes of the encoding EASy68K's assembler chooses for it, two to ten, decided in
+the Layout's first pass by EASy68K's back-reference rule and encoded at that
+size in the second (ADR 0006, and `docs/research/easy68k-machine-behaviour.md`
+§13 there). `simhalt` is the four bytes `$FFFF $FFFF`. Those bytes are in
+memory now, beside the data.
+
+**All 30 `editor/` assembly fixtures moved.** Every change is an address, or
+text that holds one, or a branch's size, which is now printed ("Size suffix"
+above):
+
+| What moved | Count | Why |
+| --- | --- | --- |
+| The `address` of an instruction | 1,453 of 1,576 | each instruction before it now takes its own size rather than four bytes; the 123 that did not move are the first after an `org`, or sit after instructions that happen to add up to four bytes each |
+| A branch's `text` gains `.s` or `.w` | 191: 20 `.s`, 171 `.w` | the size is printed; the 20 short ones are every branch back to a Label within a byte, and every branch forwards is a word |
+| An address in an operand | 140 lines: `move.w`, `lea`, `clr.w`, `dbf` and others | the Label it names moved |
+| The `address` of a Label | 182 of 231 | the line it is on moved |
+| The `address` of a `memory` run | 47 of 6,605 | data laid out after the code, with no `org` of its own, follows it |
+| The `bytes` of a `memory` run | 1 | the `dc.l` jump table of `jump-table-1` holds the four addresses of its routines, which moved: `$1020,$102c,$1038,$1044` are `$1016,$101e,$1026,$102e` |
+
+No `line`, Label name, Entry point or byte of data that is not an address
+moved, and no instruction became another: the text of every changed line is the
+old one with its addresses mapped through the moved Labels, and a branch suffix.
+Every one of the 191 branches was read against the rule, and each is `.s`
+exactly when its target is at or above it and its displacement is −128 to 127
+and not 0. No corpus program uses an absolute address that is both above the
+line and below `$8000`, so none prints `.w`; `printer_rules` holds four that do.
+
+**All 30 `-run.snap` moved, and only where an address moved.** Every program
+ends with the same `status` and `steps`, the same eight data registers, the same
+`flags` and the same `output`, which is the evidence that the instructions at
+their real sizes run as the four-byte ones did.
+
+* **`memory`** moved in all 30: the code is in memory now, as its encoding, where
+  `$ff` was, and the data that follows code moved with it.
+* **`pc`** moved in 28: it stops where the program stopped, which is an
+  instruction or one past the last one, and every one maps to the same place at
+  the new addresses, the end of a two-byte `trap` and a six-byte `move.l` to a
+  label below included. `bouncing-ball` and `multiply-and-divide-1` stop where
+  they stopped, on the same line and one past the same last instruction, because
+  the instructions above those places happen to add up to the same bytes.
+* **Nine address registers** moved, in eight programs: an `a0` or an `a1` that
+  points at a string or a table placed after the code, or into one. Each moved by
+  the distance its Label moved.
+
+**Printer rules.** `printer_rules` in `src/test/corpus.rs` moved by 18 lines:
+the seven branches print `.s` and moved to `$1060`, the `dbf` and `dbcc` with
+them; `pea $2000`, `jmp $1000` and `jsr $1000` print `.w`, because a number a
+word holds is a back reference; `move.l $1000.w,d3` keeps its `.w`; and the five
+PC-relative targets moved to `$1122` and `$1116`. `printer_rules_out_of_reach` prints
+`bt.w` and the 68020's `bra.l`. `the_section_example_of_the_help` and
+`the_offset_stack_frame_example_of_the_help` assert the hand-worked addresses at
+the real sizes: a two-byte `moveq` and `nop`, and a `link`, a `movem` and three
+eight-byte `move.l`s.
+
+In `tests/diagnostics/`, **four kinds are new and one case grew.**
+`short_branch_to_next_instruction` is EASy68K's "Branch instruction
+displacement is out of range or invalid" for a `.s` branch to the instruction
+right after it, whose displacement of 0 a 68000 reads as the mark of a word
+branch. The `memory` Directive is no longer refused but read into the
+Program's Memory map, and its three are about what a `memory` line says:
+`unknown_memory_kind`, an error, for a kind that is not `rom`, `read`,
+`protected` or `invalid`, or none; `empty_memory_range` and
+`memory_range_replaced`, warnings, for a range that ends before it starts and
+for a second range of a kind, which replaces the first as it does in EASy68K.
+No corpus program writes `memory`, so no fixture moved for it. `value_out_of_range.asm` gained a `bra.s`, a `beq` and a `dbra` that
+cannot reach `far`, EASy68K's same error for a displacement out of range, and
+the distance its `move.l far(pc),d0` reaches moved from 192502 to 192504,
+because the lines above it are their real sizes. The three `-errors.snap` did
+not move: no Diagnostic of theirs holds an address.
+
 ## Execution fixtures
 
 The fixtures above stop where the Assembler stops. Beside each one is the
@@ -1139,8 +1225,9 @@ order and not a picture of a terminal.
   digits. One number that changes when any byte of memory does, without putting
   16 MB in the fixture. When it changes and nothing else has, the diff says a
   program wrote different bytes and gives no more; that is the price of the
-  short form, and the assembly fixture beside it holds the initial bytes in
-  full.
+  short form, and the assembly fixture beside it holds the initial bytes of the
+  data in full, and those of the code as the instructions they encode. Since
+  milestone C3 the code is in memory and in the hash.
 
 ### Two things about an execution fixture worth knowing before changing one
 

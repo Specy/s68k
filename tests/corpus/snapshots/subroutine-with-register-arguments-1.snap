@@ -11,72 +11,72 @@ expression: fixture
       "text": "moveq #$54,d0"
     },
     {
-      "address": "$1004",
+      "address": "$1002",
       "line": 1,
       "text": "moveq #$24,d1"
     },
     {
-      "address": "$1008",
+      "address": "$1004",
       "line": 2,
-      "text": "bsr $1014"
+      "text": "bsr.w $100e"
     },
     {
-      "address": "$100c",
+      "address": "$1008",
       "line": 3,
       "text": "move.l d0,d2"
     },
     {
-      "address": "$1010",
+      "address": "$100a",
       "line": 4,
-      "text": "bra $103c"
+      "text": "bra.w $1028"
     },
     {
-      "address": "$1014",
+      "address": "$100e",
       "line": 9,
       "text": "tst.l d1"
     },
     {
-      "address": "$1018",
+      "address": "$1010",
       "line": 10,
-      "text": "beq $1038"
+      "text": "beq.w $1026"
     },
     {
-      "address": "$101c",
+      "address": "$1014",
       "line": 11,
       "text": "move.l d0,d3"
     },
     {
-      "address": "$1020",
+      "address": "$1016",
       "line": 12,
       "text": "divu d1,d3"
     },
     {
-      "address": "$1024",
+      "address": "$1018",
       "line": 13,
       "text": "swap d3"
     },
     {
-      "address": "$1028",
+      "address": "$101a",
       "line": 14,
       "text": "andi.l #$ffff,d3"
     },
     {
-      "address": "$102c",
+      "address": "$1020",
       "line": 15,
       "text": "move.l d1,d0"
     },
     {
-      "address": "$1030",
+      "address": "$1022",
       "line": 16,
       "text": "move.l d3,d1"
     },
     {
-      "address": "$1034",
+      "address": "$1024",
       "line": 17,
-      "text": "bra $1014"
+      "text": "bra.s $100e"
     },
     {
-      "address": "$1038",
+      "address": "$1026",
       "line": 19,
       "text": "rts"
     }
@@ -84,15 +84,15 @@ expression: fixture
   "memory": [],
   "labels": {
     "end": {
-      "address": "$103c",
+      "address": "$1028",
       "line": 21
     },
     "gcd": {
-      "address": "$1014",
+      "address": "$100e",
       "line": 8
     },
     "gcd_done": {
-      "address": "$1038",
+      "address": "$1026",
       "line": 18
     }
   }

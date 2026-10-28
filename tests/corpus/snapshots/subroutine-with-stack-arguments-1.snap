@@ -11,29 +11,29 @@ expression: fixture
       "text": "move.l #$4,-(a7)"
     },
     {
-      "address": "$1004",
+      "address": "$1006",
       "line": 1,
       "text": "move.l #$3,-(a7)"
     },
     {
-      "address": "$1008",
+      "address": "$100c",
       "line": 2,
-      "text": "bsr $1018"
+      "text": "bsr.w $1018"
     },
     {
-      "address": "$100c",
+      "address": "$1010",
       "line": 3,
       "text": "addq.l #$8,a7"
     },
     {
-      "address": "$1010",
+      "address": "$1012",
       "line": 4,
       "text": "move.l d0,d7"
     },
     {
       "address": "$1014",
       "line": 5,
-      "text": "bra $1050"
+      "text": "bra.w $1042"
     },
     {
       "address": "$1018",
@@ -48,7 +48,7 @@ expression: fixture
     {
       "address": "$1020",
       "line": 11,
-      "text": "bsr $103c"
+      "text": "bsr.w $1038"
     },
     {
       "address": "$1024",
@@ -63,7 +63,7 @@ expression: fixture
     {
       "address": "$102c",
       "line": 14,
-      "text": "bsr $103c"
+      "text": "bsr.w $1038"
     },
     {
       "address": "$1030",
@@ -76,32 +76,32 @@ expression: fixture
       "text": "unlk a6"
     },
     {
-      "address": "$1038",
+      "address": "$1036",
       "line": 17,
       "text": "rts"
     },
     {
-      "address": "$103c",
+      "address": "$1038",
       "line": 21,
       "text": "move.l d1,-(a7)"
     },
     {
-      "address": "$1040",
+      "address": "$103a",
       "line": 22,
       "text": "move.l d0,d1"
     },
     {
-      "address": "$1044",
+      "address": "$103c",
       "line": 23,
       "text": "mulu d1,d0"
     },
     {
-      "address": "$1048",
+      "address": "$103e",
       "line": 24,
       "text": "move.l (a7)+,d1"
     },
     {
-      "address": "$104c",
+      "address": "$1040",
       "line": 25,
       "text": "rts"
     }
@@ -109,11 +109,11 @@ expression: fixture
   "memory": [],
   "labels": {
     "end": {
-      "address": "$1050",
+      "address": "$1042",
       "line": 27
     },
     "square": {
-      "address": "$103c",
+      "address": "$1038",
       "line": 20
     },
     "sum_of_squares": {

@@ -173,8 +173,9 @@ sub:
     assert_eq!(interpreter.run().unwrap(), InterpreterStatus::WatchedWrite);
     assert_eq!(
         interpreter.take_watched_writes(),
-        vec![write(0xE00108, 4, 0x100C)],
-        "the return address bsr pushes"
+        vec![write(0xE00108, 4, 0x100E)],
+        "the return address bsr pushes: `lea` with a long address is six bytes, \
+         `pea` with a word one four, and the `bsr` to a label below it a word branch"
     );
 }
 
@@ -324,7 +325,7 @@ fn the_run_ends_after_the_storing_instruction_which_counts_as_executed() {
     assert!(!interpreter.is_executing());
     assert_eq!(interpreter.get_last_step_id(), 2);
     let step = interpreter.get_last_steps(1)[0].clone();
-    assert_eq!(step.get_pc(), 0x1004);
+    assert_eq!(step.get_pc(), 0x1002, "after a two-byte `moveq`");
     assert!(matches!(
         step.get_mutations().as_slice(),
         [MutationOperation::WriteMemory {
@@ -385,7 +386,9 @@ fn a_breakpoint_on_the_next_instruction_is_reported_by_the_next_call() {
         InterpreterStatus::WatchedWrite,
         "the watched write first"
     );
-    assert_eq!(interpreter.get_pc(), 0x1004);
+    // The store is eight bytes: its operation word, a word for the byte
+    // immediate and a long address.
+    assert_eq!(interpreter.get_pc(), 0x1008);
     interpreter.take_watched_writes();
     assert_eq!(
         interpreter
@@ -394,7 +397,7 @@ fn a_breakpoint_on_the_next_instruction_is_reported_by_the_next_call() {
         InterpreterStatus::Running,
         "then the breakpoint, before its instruction runs"
     );
-    assert_eq!(interpreter.get_pc(), 0x1004);
+    assert_eq!(interpreter.get_pc(), 0x1008);
     assert_eq!(data(&interpreter, 0), 0);
     assert_eq!(
         interpreter
@@ -590,7 +593,7 @@ fn undoing_the_step_after_a_watched_write_goes_back_to_the_stop() {
     assert_eq!(interpreter.step().unwrap(), InterpreterStatus::Running);
     interpreter.undo().unwrap();
     assert_eq!(*interpreter.get_status(), InterpreterStatus::WatchedWrite);
-    assert_eq!(interpreter.get_pc(), 0x1004);
+    assert_eq!(interpreter.get_pc(), 0x1008, "after the eight-byte store");
     assert!(interpreter.take_watched_writes().is_empty());
     assert_eq!(interpreter.run().unwrap(), InterpreterStatus::Terminated);
     assert_eq!(data(&interpreter, 0), 7);

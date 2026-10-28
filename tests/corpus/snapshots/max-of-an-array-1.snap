@@ -11,7 +11,7 @@ expression: fixture
       "text": "lea $2000,a0"
     },
     {
-      "address": "$1004",
+      "address": "$1006",
       "line": 3,
       "text": "move.w (a0)+,d0"
     },
@@ -21,49 +21,49 @@ expression: fixture
       "text": "clr.w d3"
     },
     {
-      "address": "$100c",
+      "address": "$100a",
       "line": 5,
       "text": "clr.w d4"
     },
     {
-      "address": "$1010",
+      "address": "$100c",
       "line": 6,
       "text": "move.w #$6,d1"
     },
     {
-      "address": "$1014",
+      "address": "$1010",
       "line": 8,
       "text": "addq.w #$1,d4"
     },
     {
-      "address": "$1018",
+      "address": "$1012",
       "line": 9,
       "text": "move.w (a0)+,d2"
     },
     {
-      "address": "$101c",
+      "address": "$1014",
       "line": 10,
       "text": "cmp.w d0,d2"
     },
     {
-      "address": "$1020",
+      "address": "$1016",
       "line": 11,
-      "text": "ble $102c"
+      "text": "ble.w $101e"
     },
     {
-      "address": "$1024",
+      "address": "$101a",
       "line": 12,
       "text": "move.w d2,d0"
     },
     {
-      "address": "$1028",
+      "address": "$101c",
       "line": 13,
       "text": "move.w d4,d3"
     },
     {
-      "address": "$102c",
+      "address": "$101e",
       "line": 15,
-      "text": "dbf d1,$1014"
+      "text": "dbf d1,$1010"
     }
   ],
   "memory": [
@@ -74,11 +74,11 @@ expression: fixture
   ],
   "labels": {
     "loop": {
-      "address": "$1014",
+      "address": "$1010",
       "line": 7
     },
     "not_bigger": {
-      "address": "$102c",
+      "address": "$101e",
       "line": 14
     },
     "numbers": {
