@@ -896,7 +896,9 @@ export type ExecutionStepInternal = {
     new_sr: number,
     location?: Location,
     /** The code write the instruction made; absent when it made none. */
-    wroteCode?: CodeWrite
+    wroteCode?: CodeWrite,
+    /** What the step ran, from its words as they were then; absent on a poke. */
+    ran?: DisassembledLine
 }
 
 

@@ -162,3 +162,60 @@ fn an_interpreter_without_history_never_has_anything_to_undo() {
     interpreter.step().unwrap();
     assert!(!interpreter.can_undo());
 }
+
+/// Each step keeps the words of the instruction it ran, so it says what ran
+/// after a later write has changed them in memory, which is what the History
+/// labels it with (batch 1 review, the History's "Ran …"). A Poke ran
+/// nothing.
+#[test]
+fn a_step_says_what_it_ran_after_its_code_has_changed() {
+    let assembly = crate::assembler::assemble_source(
+        "    org $1000
+start:
+    add.l #5,d1
+    move.w #$4e71,start
+    bra start
+",
+    );
+    let program = assembly.program.expect("the program assembles");
+    let mut interpreter = Interpreter::new(
+        program,
+        Some(InterpreterOptions {
+            keep_history: true,
+            history_size: 10,
+        }),
+    );
+    for _ in 0..4 {
+        interpreter.step().unwrap();
+    }
+    interpreter.begin_poke().unwrap();
+    interpreter.set_register_value(RegisterOperand::Data(2), 7, Size::Long);
+    interpreter.end_poke().unwrap();
+    let steps = interpreter.get_last_steps(5);
+    assert_eq!(steps.len(), 5);
+    assert_eq!(steps[0].get_kind(), ExecutionStepKind::Poke);
+    assert!(interpreter.ran_by(steps[0]).is_none(), "a Poke ran nothing");
+    assert_eq!(steps[0].get_ran(), crate::debugger::Ran::Nothing);
+    // The nop the store wrote ran from memory, decoded as the program ran.
+    assert!(matches!(
+        steps[1].get_ran(),
+        crate::debugger::Ran::Decoded { len: 2, .. }
+    ));
+    assert_eq!(interpreter.ran_by(steps[1]).unwrap().text, "NOP");
+    let store = interpreter.ran_by(steps[3]).expect("the store ran");
+    assert_eq!(store.text, "MOVE.W #$4E71,start.W");
+    assert_eq!(store.address, 0x1002);
+    assert!(matches!(steps[4].get_ran(), crate::debugger::Ran::Assembled(0)));
+    let first = interpreter.ran_by(steps[4]).expect("the addq ran");
+    assert_eq!(first.text, "ADDQ.L #5,D1");
+    assert_eq!(first.bytes, [0x5a, 0x81]);
+    assert_eq!((first.address, first.size), (0x1000, 2));
+    // Memory says otherwise now: the store wrote a nop over it.
+    assert_eq!(interpreter.disassemble_at(0x1000).text, "NOP");
+    // Undo takes the steps back, words and all.
+    for _ in 0..3 {
+        interpreter.undo().unwrap();
+    }
+    let undone = interpreter.undo().unwrap();
+    assert_eq!(interpreter.ran_by(&undone).unwrap().text, "MOVE.W #$4E71,start.W");
+}

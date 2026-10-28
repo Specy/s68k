@@ -150,7 +150,8 @@ pub enum Operand {
     PcIndex {
         /// The address `d8(PC)` reaches, which the index register is added
         /// to when the instruction runs. `(pc,d1.w)` writes no displacement,
-        /// so its target is the extension word itself.
+        /// and its target is the instruction's first word, as EASy68K
+        /// assembles it.
         target: u32,
         /// The index register and the width it is read at.
         index: IndexRegister,
@@ -208,10 +209,8 @@ pub enum BranchSize {
 /// [`lowering::extension_word_offset`](super::lowering::extension_word_offset)
 /// says per instruction. A PC-relative [`Operand`] keeps the address it
 /// reaches, so the encoder ([`crate::machine::encode`]) finds the word as it
-/// writes it, and only the Assembler reads the number: to check that the
-/// distance fits its field (`Analyzer::check_pc_distance`) and to give
-/// `(pc,d1.w)`, which writes no displacement, the address of its extension
-/// word.
+/// writes it, and only the Assembler reads the number, to check that the
+/// distance fits its field (`Analyzer::check_pc_distance`).
 pub const EXTENSION_WORD_OFFSET: i32 = 2;
 
 /*

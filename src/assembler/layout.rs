@@ -68,7 +68,7 @@ use super::analyzer::{Analyzer, Context, ProcessorLine, DEFAULT_ORIGIN};
 use super::ast::{
     Expr, Line, Operand, Operation, Register, RegisterKind, RegisterListItem, SizeSuffix,
 };
-use super::diagnostics::{Diagnostic, DiagnosticKind};
+use super::diagnostics::{Diagnostic, DiagnosticKind, SuggestedFix};
 use super::expr::{self, Site};
 use super::include::{self, Expansion, Resolved};
 use super::instructions::encoded::Instruction;
@@ -796,7 +796,11 @@ impl<'a> Layout<'a> {
         else {
             return;
         };
-        for (word, span) in option_words(&field.text, field.span.start) {
+        let words = option_words(&field.text, field.span.start);
+        //a line that holds this option alone, and no Label, can be deleted whole when it comes
+        //too late
+        let alone = words.len() == 1 && self.line(index).label.is_none();
+        for (word, span) in words {
             let lowered = word.to_ascii_lowercase();
             match lowered.split_once('=') {
                 Some((name, value)) if name.trim_end() == "p" => {
@@ -805,7 +809,7 @@ impl<'a> Layout<'a> {
                         value_start + (value.len() - value.trim_start().len()),
                         span.end,
                     );
-                    self.choose_processor(index, word, span, value.trim(), value_span);
+                    self.choose_processor(index, word, span, value.trim(), value_span, alone);
                 }
                 None if lowered == "p" => self.raise(
                     index,
@@ -815,7 +819,7 @@ impl<'a> Layout<'a> {
                     },
                 ),
                 None if lowered == "bit" => {
-                    if self.chosen_too_late(index, word, span) {
+                    if self.chosen_too_late(index, word, span, alone) {
                         continue;
                     }
                     self.bit_fields = true;
@@ -832,7 +836,8 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// `opt p=…`: `value` is what follows the `=`, at `value_span`.
+    /// `opt p=…`: `value` is what follows the `=`, at `value_span`, and
+    /// `alone` says that the option is the whole of its line.
     fn choose_processor(
         &mut self,
         index: usize,
@@ -840,6 +845,7 @@ impl<'a> Layout<'a> {
         span: Span,
         value: &str,
         value_span: Span,
+        alone: bool,
     ) {
         let Some(processor) = Processor::ALL
             .into_iter()
@@ -853,7 +859,7 @@ impl<'a> Layout<'a> {
             self.raise(index, span, DiagnosticKind::UnknownProcessor { found });
             return;
         };
-        if self.chosen_too_late(index, word, span) {
+        if self.chosen_too_late(index, word, span, alone) {
             return;
         }
         match &self.processor {
@@ -878,18 +884,31 @@ impl<'a> Layout<'a> {
     /// Whether an option of the dialect comes after the first instruction, in
     /// which case it says so and chooses nothing: the lines above it have been
     /// judged and measured for the processor already in force.
-    fn chosen_too_late(&mut self, index: usize, word: &str, span: Span) -> bool {
+    ///
+    /// A line that holds the option `alone` carries the fix that deletes it,
+    /// which changes nothing the Program does, as the line chooses nothing.
+    /// It is what is left to do once the fix of a refused instruction has
+    /// added the option at the top of the program, which is where the hint
+    /// says it goes; a fix cannot move a line, as it is one edit.
+    fn chosen_too_late(&mut self, index: usize, word: &str, span: Span, alone: bool) -> bool {
         let Some(first) = self.first_instruction else {
             return false;
         };
         let location = self.unit.location(index, span);
-        let diagnostic = Diagnostic::new(
+        let mut diagnostic = Diagnostic::new(
             DiagnosticKind::ProcessorChosenAfterCode {
                 option: word.to_string(),
             },
             location,
         )
         .with_related(self.unit.whole_line(first), "the first instruction");
+        if alone {
+            diagnostic = diagnostic.with_fix(SuggestedFix {
+                title: format!("Delete `opt {word}`"),
+                location: self.unit.whole_line(index),
+                text: String::new(),
+            });
+        }
         self.report(index, diagnostic);
         true
     }
@@ -3443,6 +3462,57 @@ LIMIT equ $9000
             fix(&files),
             (Location::new("cpu.m68k", 0, 10, 15), "68020".to_string())
         );
+    }
+
+    /// An `opt p=` after the first instruction chooses nothing, and the fix
+    /// of a refused instruction adds one at the top: the late line then
+    /// offers its own deletion, so that the two fixes leave a Program that
+    /// assembles (batch 1 review, finding 8).
+    #[test]
+    fn a_late_processor_line_offers_to_delete_itself() {
+        let mut files = Files::new();
+        files.insert_text(
+            "main.m68k",
+            "    include 'code.m68k'\n    opt p=68020\n    extb.l d0\n",
+        );
+        files.insert_text("code.m68k", "    nop\n");
+        let apply = |files: &mut Files, code: &str| {
+            let (_, diagnostics) = assemble_project(files, "main.m68k");
+            let fix = diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.code() == code)
+                .and_then(|diagnostic| diagnostic.fixes.first())
+                .unwrap_or_else(|| panic!("{code} with a fix in {diagnostics:?}"))
+                .clone();
+            let Some(source::FileContent::Text(text)) = files.get(&fix.location.file).cloned() else {
+                panic!("a text File");
+            };
+            let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+            let line = &mut lines[fix.location.line];
+            let start: usize = line
+                .char_indices()
+                .nth(fix.location.column)
+                .map_or(line.len(), |(at, _)| at);
+            let end: usize = line
+                .char_indices()
+                .nth(fix.location.end_column)
+                .map_or(line.len(), |(at, _)| at);
+            line.replace_range(start..end, &fix.text);
+            files.insert_text(&fix.location.file, lines.join("\n") + "\n");
+        };
+        apply(&mut files, "needs_a_later_processor");
+        apply(&mut files, "processor_chosen_after_code");
+        let (program, diagnostics) = assemble_project(&files, "main.m68k");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.processor(), Processor::M68020);
+
+        // A line with another option on it, or a Label, is not deleted whole.
+        let (_, diagnostics) = assemble("    nop\n    opt p=68020,cre\n");
+        let late = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code() == "processor_chosen_after_code")
+            .expect("the late option");
+        assert!(late.fixes.is_empty());
     }
 
     // -- `reg`, `fail` and `simhalt` (phase 2) -----------------------------

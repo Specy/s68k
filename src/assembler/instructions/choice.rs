@@ -42,10 +42,10 @@ pub fn branch_displacement(address: u32, target: u32) -> i64 {
 ///   does in EASy68K, and a long one on the 68020, which has one (ADR 0011).
 ///   Whether a forced short displacement fits is the caller's question; it is
 ///   still short.
-/// * Unsized, a branch is short when its target is a back reference, the
-///   displacement fits a byte and it is not zero, which is the encoding of a
-///   word branch. Otherwise it is a word, so a branch forward is always a
-///   word, on every processor.
+/// * Unsized, a branch is short when its target is a back reference and a
+///   short branch can encode the displacement ([`fits_a_short_branch`]).
+///   Otherwise it is a word, so a branch forward is always a word, on every
+///   processor.
 pub fn branch_size(
     written: Option<SizeSuffix>,
     back_reference: bool,
@@ -56,15 +56,27 @@ pub fn branch_size(
         Some(SizeSuffix::Short | SizeSuffix::Byte) => BranchSize::Short,
         Some(SizeSuffix::Long) if processor.has(Processor::M68020) => BranchSize::Long,
         Some(SizeSuffix::Word | SizeSuffix::Long) => BranchSize::Word,
-        None if back_reference && fits_a_short_branch(displacement) => BranchSize::Short,
+        None if back_reference && fits_a_short_branch(displacement, processor) => {
+            BranchSize::Short
+        }
         None => BranchSize::Word,
     }
 }
 
-/// Whether a short branch can encode `displacement`: a byte, and not 0, which
-/// is the byte that marks a word branch.
-pub fn fits_a_short_branch(displacement: i64) -> bool {
-    (-128..=127).contains(&displacement) && displacement != 0
+/// Whether a short branch can encode `displacement` on `processor`: a byte,
+/// and not 0, which is the byte that marks a word branch, nor, on the 68020,
+/// −1, the byte `$FF` that marks a long one there.
+pub fn fits_a_short_branch(displacement: i64, processor: Processor) -> bool {
+    (-128..=127).contains(&displacement)
+        && displacement != 0
+        && !(displacement == -1 && marks_a_long_branch(processor))
+}
+
+/// Whether `processor` reads the short displacement `$FF` as the mark of a
+/// 32-bit one that follows: the 68020 does, and the 68000 and the 68010 have
+/// no long branch and read it as −1.
+pub fn marks_a_long_branch(processor: Processor) -> bool {
+    processor.has(Processor::M68020)
 }
 
 /// The width of an absolute address, by EASy68K's rule (`opParse` in its
@@ -142,6 +154,12 @@ mod tests {
             assert_eq!(size(true, 128), BranchSize::Word);
             // The byte `$00` is the mark of a word branch.
             assert_eq!(size(true, 0), BranchSize::Word);
+            // And `$FF` that of a long one on the 68020.
+            let minus_one = match processor {
+                Processor::M68020 => BranchSize::Word,
+                _ => BranchSize::Short,
+            };
+            assert_eq!(size(true, -1), minus_one, "{processor:?}");
             // A forward reference is a word, however close it turns out to be,
             // and however far: the 68020 has a long branch only for `.l`.
             assert_eq!(size(false, 4), BranchSize::Word);

@@ -1,0 +1,20 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/short_branch_marks_a_long_branch.asm
+---
+[
+  {
+    "severity": "error",
+    "code": "short_branch_marks_a_long_branch",
+    "message": "`bra.s` reaches one byte past itself, a displacement of -1, which a 68020 reads as the mark of a long branch.",
+    "hint": "Write `bra.w`, or `bra` with no size, which takes a word here",
+    "location": {
+      "file": "short_branch_marks_a_long_branch.asm",
+      "line": 5,
+      "column": 10,
+      "endColumn": 13
+    },
+    "related": []
+  }
+]

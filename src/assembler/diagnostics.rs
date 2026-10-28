@@ -645,6 +645,27 @@ pub enum DiagnosticKind {
         /// The Mnemonic alone: `bra`.
         mnemonic: String,
     },
+    /// A short branch written `.s` or `.b` in a Program for the 68020 that
+    /// reaches one byte past itself, a displacement of −1: the byte `$FF`,
+    /// which the 68020 reads as the mark of a long branch, so the next two
+    /// words would be taken for its displacement.
+    ShortBranchMarksALongBranch {
+        /// The branch as it was written, its size included: `bra.s`.
+        branch: String,
+        /// The Mnemonic alone: `bra`.
+        mnemonic: String,
+    },
+    /// A static bit number past the width of the destination, which EASy68K
+    /// encodes as its low byte and the 68000 takes modulo the width: `btst
+    /// #9,(a0)` tests bit 1 of the byte. A warning: it assembles.
+    BitNumberWraps {
+        /// The number as written.
+        number: i64,
+        /// The bits of the destination: 32 in a data register, 8 in memory.
+        width: u8,
+        /// The bit it reaches.
+        bit: u8,
+    },
     /// A `memory` line whose first word is not one of the four kinds of range
     /// EASy68K's memory map has, or that names none (`MEMORY` in its
     /// `DIRECTIV.CPP`).
@@ -824,6 +845,8 @@ pub const ALL_CODES: &[&str] = &[
     "unknown_option",
     "needs_a_later_processor",
     "unimplemented_in_dialect",
+    "short_branch_marks_a_long_branch",
+    "bit_number_wraps",
 ];
 
 impl DiagnosticKind {
@@ -914,6 +937,10 @@ impl DiagnosticKind {
             DiagnosticKind::UnknownOption { .. } => "unknown_option",
             DiagnosticKind::NeedsALaterProcessor { .. } => "needs_a_later_processor",
             DiagnosticKind::UnimplementedInDialect { .. } => "unimplemented_in_dialect",
+            DiagnosticKind::ShortBranchMarksALongBranch { .. } => {
+                "short_branch_marks_a_long_branch"
+            }
+            DiagnosticKind::BitNumberWraps { .. } => "bit_number_wraps",
         }
     }
 
@@ -935,7 +962,8 @@ impl DiagnosticKind {
             | DiagnosticKind::EndWithoutAnAddress
             | DiagnosticKind::EmptyMemoryRange { .. }
             | DiagnosticKind::MemoryRangeReplaced { .. }
-            | DiagnosticKind::UnknownOption { .. } => Severity::Warning,
+            | DiagnosticKind::UnknownOption { .. }
+            | DiagnosticKind::BitNumberWraps { .. } => Severity::Warning,
             DiagnosticKind::BareComment
             | DiagnosticKind::SpaceBeforeComma
             | DiagnosticKind::DoubleQuotedString
@@ -1200,6 +1228,18 @@ impl DiagnosticKind {
             DiagnosticKind::ShortBranchToNextInstruction { branch, .. } => format!(
                 "`{branch}` to the next instruction has a displacement of 0, which a 68000 reads \
                  as the mark of a word branch."
+            ),
+            DiagnosticKind::BitNumberWraps { number, width, bit } => format!(
+                "Bit {number} is bit {bit}: {} has {width} bits, and the 68000 takes the bit \
+                 number modulo {width}.",
+                match width {
+                    32 => "a data register",
+                    _ => "a byte in memory",
+                }
+            ),
+            DiagnosticKind::ShortBranchMarksALongBranch { branch, .. } => format!(
+                "`{branch}` reaches one byte past itself, a displacement of -1, which a 68020 \
+                 reads as the mark of a long branch."
             ),
             DiagnosticKind::UnknownMemoryKind { found } => match found {
                 Some(found) => format!("`{found}` is not a kind of memory range."),
@@ -1566,7 +1606,11 @@ impl DiagnosticKind {
                  the entry file's own `end`"
                     .to_string(),
             ),
-            DiagnosticKind::ShortBranchToNextInstruction { mnemonic, .. } => Some(format!(
+            DiagnosticKind::BitNumberWraps { bit, .. } => Some(format!(
+                "Write `#{bit}` if bit {bit} is the one meant; bits are numbered from 0"
+            )),
+            DiagnosticKind::ShortBranchToNextInstruction { mnemonic, .. }
+            | DiagnosticKind::ShortBranchMarksALongBranch { mnemonic, .. } => Some(format!(
                 "Write `{mnemonic}.w`, or `{mnemonic}` with no size, which takes a word here"
             )),
             DiagnosticKind::UnknownMemoryKind { .. } => Some(
@@ -2359,6 +2403,21 @@ mod tests {
                 },
                 "unimplemented_in_dialect",
             ),
+            (
+                DiagnosticKind::ShortBranchMarksALongBranch {
+                    branch: "bra.s".to_string(),
+                    mnemonic: "bra".to_string(),
+                },
+                "short_branch_marks_a_long_branch",
+            ),
+            (
+                DiagnosticKind::BitNumberWraps {
+                    number: 9,
+                    width: 8,
+                    bit: 1,
+                },
+                "bit_number_wraps",
+            ),
         ]
     }
 
@@ -2427,7 +2486,8 @@ mod tests {
                 | "end_without_an_address"
                 | "empty_memory_range"
                 | "memory_range_replaced"
-                | "unknown_option" => Severity::Warning,
+                | "unknown_option"
+                | "bit_number_wraps" => Severity::Warning,
                 "bare_comment"
                 | "space_before_comma"
                 | "double_quoted_string"

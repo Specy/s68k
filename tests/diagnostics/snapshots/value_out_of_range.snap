@@ -18,10 +18,10 @@ input_file: tests/diagnostics/value_out_of_range.asm
     "related": []
   },
   {
-    "severity": "error",
-    "code": "value_out_of_range",
-    "message": "The bit number is 0 to 31, and `40` is outside it.",
-    "hint": "A data register has 32 bits, numbered from 0; a byte in memory has 8",
+    "severity": "warning",
+    "code": "bit_number_wraps",
+    "message": "Bit 40 is bit 8: a data register has 32 bits, and the 68000 takes the bit number modulo 32.",
+    "hint": "Write `#8` if bit 8 is the one meant; bits are numbered from 0",
     "location": {
       "file": "value_out_of_range.asm",
       "line": 2,

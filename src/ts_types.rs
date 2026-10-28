@@ -393,8 +393,8 @@ export type Termination =
  * is `$FFFF $FFFF`, none of whose bytes the program placed. Memory starts as
  * `$FF`, so this is where a program that does not end itself ends, one past
  * its last instruction when nothing follows it. `$FFFF $FFFF` inside the
- * program's own bytes is a `simhalt` and pauses instead. A program with no
- * instruction ends at its entry point before it starts.
+ * program's own bytes is a `simhalt` and pauses instead. A program that placed
+ * nothing at its entry point, an empty one, ends there before it starts.
  */
 { type: "EndOfProgram", value: { address: number } } |
 /** The host answered an interrupt with `Terminate`. */
@@ -837,7 +837,14 @@ export type ExecutionStep = {
      */
     location?: Location,
     /** The code write the instruction made, the first instruction it overwrote; absent when it made none. */
-    wroteCode?: CodeWrite
+    wroteCode?: CodeWrite,
+    /**
+     * What the step ran, as `disassembleAt` prints a line: the instruction's
+     * address, size, bytes and text, from its words as they were when it ran,
+     * so a later write into code leaves it right. Absent on a poke, and on a
+     * step that ran nothing, an instruction fetched from an odd address.
+     */
+    ran?: DisassembledLine
 }
 "#;
 #[wasm_bindgen(typescript_custom_section)]

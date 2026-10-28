@@ -2098,7 +2098,10 @@ cargo doc --no-deps` is clean. The `ts-lib` chain was run — `wasm-pack build`,
 - **`movep` has exactly two Forms and no more**, `[Dn, d(An)]` and `[d(An), Dn]`
   (`Reference/68ks4g.htm`: "ADDRESS METHODS: x(An)"), so `movep.w d0,(a1)` is
   refused — and, because that is the mistake with a name, `suggestion_for`
-  answers it with "write the displacement, `0(a1)`".
+  answers it with "write the displacement, `0(a1)`". *Superseded after the
+  machine's batch 1 review:* EASy68K takes `(An)` as `0(An)` (`movepfl` in
+  `INSTTABL.CPP`), so the memory Operand of both Forms is `d(An)` or `(An)`,
+  and the suggestion is gone.
 - **The other five rows are the reference read straight off**: `tas <ea>` is
   data alterable and a byte; `chk <ea>,Dn` is a data mode and a word; `rtr`,
   `trapv` and `illegal` take no Operand and no size. `move usp,an` and

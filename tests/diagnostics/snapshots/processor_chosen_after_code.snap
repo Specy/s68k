@@ -25,6 +25,18 @@ input_file: tests/diagnostics/processor_chosen_after_code.asm
         },
         "message": "the first instruction"
       }
+    ],
+    "fixes": [
+      {
+        "title": "Delete `opt p=68020`",
+        "location": {
+          "file": "processor_chosen_after_code.asm",
+          "line": 5,
+          "column": 0,
+          "endColumn": 15
+        },
+        "text": ""
+      }
     ]
   },
   {
@@ -47,6 +59,18 @@ input_file: tests/diagnostics/processor_chosen_after_code.asm
           "endColumn": 7
         },
         "message": "the first instruction"
+      }
+    ],
+    "fixes": [
+      {
+        "title": "Delete `opt bit`",
+        "location": {
+          "file": "processor_chosen_after_code.asm",
+          "line": 6,
+          "column": 0,
+          "endColumn": 11
+        },
+        "text": ""
       }
     ]
   }

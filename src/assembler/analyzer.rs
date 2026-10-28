@@ -444,6 +444,7 @@ impl<'a> Analyzer<'a> {
         }
         if fits.first() != Some(&false) {
             self.check_instruction_value(spec, operands);
+            self.check_bit_number(spec, operands);
         }
         self.check_link_displacement(spec, operands, &fits);
         self.check_branch_distance(spec, operation, operands, &fits);
@@ -720,12 +721,6 @@ impl<'a> Analyzer<'a> {
                     .to_string(),
             );
         }
-        if spec.mnemonic == "movep" && found == Modes::INDIRECT {
-            // `movep` reaches memory through a displacement and nothing else
-            // (`Reference/68ks4g.htm`); the displacement of `(a1)` is 0 and
-            // writing it is the whole fix.
-            return Some("write the displacement, `0(a1)`".to_string());
-        }
         None
     }
 
@@ -939,8 +934,8 @@ impl<'a> Analyzer<'a> {
     // -- the values --------------------------------------------------------
 
     /// The field the instruction encodes the first Operand in, when it has one
-    /// of its own: the count of a quick form, a shift count, a bit number, the
-    /// vector of `trap`.
+    /// of its own: the count of a quick form, a shift count, the vector of
+    /// `trap`.
     fn check_instruction_value(&mut self, spec: &'static InstructionSpec, operands: &[Operand]) {
         let Some(rule) = spec.value_rule else { return };
         let Some(Operand::Immediate { value, span, .. }) = operands.first() else {
@@ -949,10 +944,7 @@ impl<'a> Analyzer<'a> {
         let Some(number) = self.context.evaluate(value) else {
             return;
         };
-        let max = match (rule.max_in_memory, operands.get(1).and_then(Modes::of)) {
-            (Some(max_in_memory), Some(mode)) if Modes::MEMORY.contains(mode) => max_in_memory,
-            _ => rule.max,
-        };
+        let max = rule.max;
         if number < rule.min || number > max {
             self.raise(
                 DiagnosticKind::ValueOutOfRange {
@@ -965,6 +957,39 @@ impl<'a> Analyzer<'a> {
                 *span,
             );
         }
+    }
+
+    /// A static bit number past the destination's width: EASy68K encodes the
+    /// low byte of any number (`staticBit` in its `BUILD.CPP`), and the 68000
+    /// takes it modulo 32 in a data register and modulo 8 in a byte of
+    /// memory, so `btst #9,(a0)` tests bit 1. It assembles as it does there,
+    /// with a warning that names the bit it reaches, as it is almost always a
+    /// mistake.
+    fn check_bit_number(&mut self, spec: &'static InstructionSpec, operands: &[Operand]) {
+        if !matches!(spec.family(), Some(Family::Bit(_))) {
+            return;
+        }
+        let Some(Operand::Immediate { value, span, .. }) = operands.first() else {
+            return;
+        };
+        let Some(number) = self.context.evaluate(value) else {
+            return;
+        };
+        let width = match operands.get(1).and_then(Modes::of) {
+            Some(Modes::DN) => 32,
+            _ => 8,
+        };
+        if (0..width).contains(&number) {
+            return;
+        }
+        self.raise(
+            DiagnosticKind::BitNumberWraps {
+                number,
+                width: width as u8,
+                bit: (number as u8 % width as u8),
+            },
+            *span,
+        );
     }
 
     /// The displacement of `link`, which the 68000 encodes in a word and sign
@@ -1017,7 +1042,9 @@ impl<'a> Analyzer<'a> {
     /// short branch to the next instruction has its own sentence. A word holds
     /// −32768 to 32767, and so does the displacement of every `DBcc`. Both are
     /// measured from the word after the operation word, which is where the
-    /// 68000's program counter is when it adds them.
+    /// 68000's program counter is when it adds them. On the 68020 a short
+    /// branch does not hold −1 either, the byte `$FF` that marks a long branch
+    /// there, and has a sentence of its own too.
     fn check_branch_distance(
         &mut self,
         spec: &'static InstructionSpec,
@@ -1062,20 +1089,35 @@ impl<'a> Analyzer<'a> {
                 },
                 value.span(),
             ),
-            BranchSize::Short if !choice::fits_a_short_branch(displacement) => self.raise(
-                DiagnosticKind::ValueOutOfRange {
-                    subject: format!("the distance `{written}` reaches"),
-                    value: displacement,
-                    min: -128,
-                    max: 127,
-                    advice: Some(format!(
-                        "write `{name}` with no size, or `{name}.w`: a word branch reaches \
-                         32 KB either way",
-                        name = operation.lowercase_name()
-                    )),
-                },
-                value.span(),
-            ),
+            BranchSize::Short
+                if displacement == -1 && choice::marks_a_long_branch(self.context.processor) =>
+            {
+                self.raise(
+                    DiagnosticKind::ShortBranchMarksALongBranch {
+                        branch: written,
+                        mnemonic: operation.lowercase_name(),
+                    },
+                    value.span(),
+                )
+            }
+            BranchSize::Short
+                if !choice::fits_a_short_branch(displacement, self.context.processor) =>
+            {
+                self.raise(
+                    DiagnosticKind::ValueOutOfRange {
+                        subject: format!("the distance `{written}` reaches"),
+                        value: displacement,
+                        min: -128,
+                        max: 127,
+                        advice: Some(format!(
+                            "write `{name}` with no size, or `{name}.w`: a word branch reaches \
+                             32 KB either way",
+                            name = operation.lowercase_name()
+                        )),
+                    },
+                    value.span(),
+                )
+            }
             BranchSize::Word if !(-32768..=32767).contains(&displacement) => self.raise(
                 DiagnosticKind::ValueOutOfRange {
                     subject: format!("the distance `{written}` reaches"),
@@ -1197,16 +1239,20 @@ impl<'a> Analyzer<'a> {
     /// An address forced to `.w` against the sixteen bits an absolute short
     /// reference holds, which is EASy68K's own range: "Absolute short
     /// addressing must be in the range -32768 through 32767" (`errors.htm`).
+    /// The address is read in 32 bits, as EASy68K reads it and as an address
+    /// is everywhere else, so `$FFFF8000.w` is −32768 and fits, which is the
+    /// address the word `$8000` sign extends to.
     ///
     /// EASy68K warns that forcing the width *disables* this check and encodes
-    /// the low word sign extended, so its `$8000.w` reads `$ff8000`. s68k has
-    /// no encoding and reads the address as written, so an address the field
-    /// cannot name would quietly mean a different place here: refusing it is
-    /// the deviation ADR 0001 records.
+    /// the low word sign extended, so its `$8000.w` reads `$ff8000`. The
+    /// Program keeps the address as written, so an address the field cannot
+    /// name would quietly mean a different place: refusing it is the
+    /// deviation ADR 0001 records.
     fn check_short_address(&mut self, value: &ast::Expr) {
         let Some(address) = self.context.evaluate(value) else {
             return;
         };
+        let address = address as u32 as i32 as i64;
         if (-32768..=32767).contains(&address) {
             return;
         }
@@ -1287,6 +1333,9 @@ impl<'a> Analyzer<'a> {
                 continue;
             }
             let size = match (spec.family(), index) {
+                // a static bit number is any number, of which the low byte is
+                // encoded ([`Self::check_bit_number`])
+                (Some(Family::Bit(_)), 0) => continue,
                 (Some(Family::Bit(_)), 1) => Size::Byte,
                 _ => match size {
                     Some(size) => size,
@@ -2170,17 +2219,19 @@ mod tests {
         );
     }
 
-    /// `movep` reaches memory through a displacement and nothing else, and the
-    /// mistake that has a name is writing `(a1)` for `0(a1)`.
+    /// `movep` reaches memory through a displacement, and through `(a1)`,
+    /// which EASy68K takes as `0(a1)`; nothing else.
     #[test]
     fn movep_takes_a_displacement_and_says_so() {
         assert_eq!(codes("    movep.w d0,4(a1)"), Vec::<String>::new());
         assert_eq!(codes("    movep.l 4(a1),d0"), Vec::<String>::new());
+        assert_eq!(codes("    movep.w d0,(a1)"), Vec::<String>::new());
+        assert_eq!(codes("    movep.l (a1),d0"), Vec::<String>::new());
         assert_eq!(
-            messages("    movep.w d0,(a1)"),
+            messages("    movep.w d0,(a1)+"),
             [
-                "The second operand of `movep` cannot be an indirect operand. The operand \
-                 should be d(An). Write the displacement, `0(a1)`"
+                "The second operand of `movep` cannot be a postincrement operand. The operand \
+                 should be (An) or d(An)"
             ]
         );
         assert_eq!(
@@ -2556,13 +2607,18 @@ mod tests {
         assert!(codes("    moveq #255,d0").is_empty(), "`$ff` is `-1`");
         assert!(codes("    moveq #-128,d0").is_empty());
         assert_eq!(codes("    asl.l #9,d0"), ["value_out_of_range"]);
-        assert_eq!(codes("    btst #32,d0"), ["value_out_of_range"]);
+        // A static bit number past the width assembles, as in EASy68K, and is
+        // warned of: the 68000 takes it modulo the width.
+        assert_eq!(codes("    btst #32,d0"), ["bit_number_wraps"]);
         assert_eq!(
-            codes("    btst #8,(a0)"),
-            ["value_out_of_range"],
-            "a byte in memory has eight bits"
+            messages("    btst #9,(a0)"),
+            [
+                "Bit 9 is bit 1: a byte in memory has 8 bits, and the 68000 takes the bit \
+                 number modulo 8. Write `#1` if bit 1 is the one meant; bits are numbered from 0"
+            ],
         );
         assert!(codes("    btst #7,(a0)").is_empty());
+        assert!(codes("    btst #31,d0").is_empty());
     }
 
     #[test]

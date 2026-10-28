@@ -68,8 +68,8 @@ pub trait Values {
     /// The address the instruction being lowered is laid out at.
     ///
     /// A PC-relative Operand needs it, because `(pc,d1.w)`, which writes no
-    /// address, names its own extension word, and so does a branch, whose
-    /// size depends on how far it reaches.
+    /// address, names the instruction's first word, and so does a branch,
+    /// whose size depends on how far it reaches.
     fn instruction_address(&self) -> i64;
 
     /// The processor the Program is written for, which decides what a branch
@@ -125,9 +125,11 @@ pub struct Site {
 /// The encoded form of one parsed Operand, or `None` when a value in it cannot
 /// be worked out.
 ///
-/// `extension_word` is the address of the instruction's extension word that a
-/// PC-relative Operand's displacement would sit in ([`extension_word_offset`]
-/// past the instruction), which `(pc,d1.w)` reaches since it writes no address.
+/// `(pc,d1.w)`, which writes no address, reaches the instruction's first
+/// word, as EASy68K assembles it: its `opParse` gives `(PC,Xi)` the current
+/// address as its displacement (`OPPARSE.CPP`, "CK 3-8-2018"), so the
+/// displacement it encodes is −2, or −4 for `movem` and `btst #n`, whose mask
+/// or bit number comes first ([`extension_word_offset`]).
 ///
 /// A register list becomes its mask as an [`Operand::Immediate`], which is how
 /// 1.4.2 carried one and what [`Family::Movem`]'s lowering reads back. A
@@ -137,11 +139,7 @@ pub struct Site {
 /// An absolute address gets its width here, by EASy68K's rule
 /// ([`choice::address_width`]): forced by `.w` or `.l`, else a word for a back
 /// reference a word holds, and a long otherwise.
-pub fn lower_operand(
-    operand: &ast::Operand,
-    values: &dyn Values,
-    extension_word: i64,
-) -> Option<Lowered> {
+pub fn lower_operand(operand: &ast::Operand, values: &dyn Values) -> Option<Lowered> {
     let mut back_reference = true;
     let mut long = false;
     let lowered = match operand {
@@ -214,10 +212,11 @@ pub fn lower_operand(
                     back_reference = values.is_back_reference(displacement);
                     values.value_of(displacement)? as u32
                 }
-                // `(pc,d1.w)` writes no address at all: the displacement is
-                // zero, as it is in `(a0,d1.w)` (`docs/grammar.md` 2.5), so it
-                // reaches its own extension word.
-                None => extension_word as u32,
+                // `(pc,d1.w)` writes no address at all, and reaches the
+                // instruction's first word, as in EASy68K (`docs/grammar.md`
+                // 2.5). EASy68K also throws away the displacement of
+                // `(d,pc,d1.w)` there, which is a bug and not followed.
+                None => values.instruction_address() as u32,
             },
             index: lower_index_register(index),
         },
@@ -236,8 +235,8 @@ pub fn lower_operand(
 /// static bit number, whose number does. Those two are 4.
 ///
 /// The 68000 adds the displacement to the address of the word that holds it,
-/// so this is what a PC-relative distance is measured from, both when the
-/// analyzer checks it and when `(pc,d1.w)` is given the address it reaches.
+/// so this is what a PC-relative distance is measured from when the analyzer
+/// checks it.
 /// No other instruction puts a word before a PC-relative Operand's: a
 /// PC-relative Operand is read and never written, so it is the first Operand
 /// everywhere else, or follows a register.
@@ -252,13 +251,19 @@ pub fn extension_word_offset(family: Family, operands: &[ast::Operand]) -> i64 {
 /// past the instruction being lowered ([`extension_word_offset`]), to the
 /// address it names: the displacement the 68000 encodes, which the analyzer
 /// holds to the width of its field.
+///
+/// It is read in 32 bits, as the 68000 adds it and as EASy68K subtracts it,
+/// so an address below 0 is the one its two's complement names:
+/// `$FFFF9004(pc)` at `$1000` reaches back 32,766 bytes, round the bottom of
+/// the address space.
 pub fn pc_relative_offset(
     values: &dyn Values,
     address: &ast::Expr,
     extension_offset: i64,
 ) -> Option<i64> {
-    let target = values.value_of(address)?;
-    Some(target - (values.instruction_address() + extension_offset))
+    let target = values.value_of(address)? as u32;
+    let extension_word = (values.instruction_address() + extension_offset) as u32;
+    Some(target.wrapping_sub(extension_word) as i32 as i64)
 }
 
 /// The index register of an indexed Operand. No size written means `.w`, the
@@ -330,13 +335,12 @@ pub fn lower_operation(
     values: &dyn Values,
 ) -> Option<Instruction> {
     let address = values.instruction_address();
-    let extension_word = address + extension_word_offset(family, operands);
-    if let Some(instruction) = lower_status_register(family, operands, values, extension_word) {
+    if let Some(instruction) = lower_status_register(family, operands, values) {
         return Some(instruction);
     }
     let lowered: Vec<Lowered> = operands
         .iter()
-        .map(|operand| lower_operand(operand, values, extension_word))
+        .map(|operand| lower_operand(operand, values))
         .collect::<Option<Vec<_>>>()?;
     let site = Site {
         written,
@@ -360,7 +364,6 @@ fn lower_status_register(
     family: Family,
     operands: &[ast::Operand],
     values: &dyn Values,
-    extension_word: i64,
 ) -> Option<Instruction> {
     let [first, second] = operands else {
         return None;
@@ -396,7 +399,7 @@ fn lower_status_register(
     }
     use ast::SpecialRegister::{Ccr, Sr};
     let lowered =
-        |operand| lower_operand(operand, values, extension_word).map(|lowered| lowered.operand);
+        |operand| lower_operand(operand, values).map(|lowered| lowered.operand);
     match (
         family,
         half_of_the_status_register(first),
@@ -575,8 +578,13 @@ pub fn lower(
         Family::Shift(kind, way) => lower_shift(kind, way, size?, operands),
         Family::Bit(operation) => {
             // An immediate destination is the dynamic form's, `btst d0,#5`,
-            // and is read as a byte.
-            let (bit, destination) = (operand(0)?, at_size(operand(1)?, Size::Byte));
+            // and is read as a byte. A static bit number is its low byte, as
+            // EASy68K encodes it (`staticBit` in its `BUILD.CPP`).
+            let bit = match operand(0)? {
+                Operand::Immediate(number) => Operand::Immediate(number & 0xFF),
+                other => other,
+            };
+            let destination = at_size(operand(1)?, Size::Byte);
             Some(match operation {
                 BitOperation::Test => Instruction::BTST(bit, destination),
                 BitOperation::Set => Instruction::BSET(bit, destination),
@@ -603,9 +611,18 @@ pub fn lower(
 /// `movep`, in whichever direction the data register stands.
 ///
 /// The other Operand is a displacement one — the only Addressing mode `movep`
-/// takes (`Reference/68ks4g.htm`) — and the analyzer has already said so, which
-/// is why nothing here diagnoses a target that is not one.
+/// has (`Reference/68ks4g.htm`) — or `(An)`, which is encoded as `0(An)`, as
+/// EASy68K encodes it (`movep` in its `BUILD.CPP`). The analyzer has already
+/// refused anything else, which is why nothing here diagnoses it.
 fn lower_movep(size: Size, first: Operand, second: Operand) -> Option<Instruction> {
+    let displaced = |operand| match operand {
+        Operand::Indirect(base) => Operand::IndirectDisplacement {
+            offset: 0,
+            base: RegisterOperand::Address(base),
+        },
+        other => other,
+    };
+    let (first, second) = (displaced(first), displaced(second));
     let (register, target, direction) = match (first, second) {
         (Operand::Register(register @ RegisterOperand::Data(_)), target) => {
             (register, target, TargetDirection::ToMemory)
@@ -1117,7 +1134,7 @@ mod tests {
             base: address_register(6),
             span: span(),
         };
-        match lower_operand(&displacement, &Constant(-8), 0x1002).map(|l| l.operand) {
+        match lower_operand(&displacement, &Constant(-8)).map(|l| l.operand) {
             Some(Operand::IndirectDisplacement { offset, .. }) => assert_eq!(offset, -8),
             other => panic!("expected a displacement, got {other:?}"),
         }
@@ -1131,7 +1148,7 @@ mod tests {
             },
             span: span(),
         };
-        match lower_operand(&index, &Constant(-1), 0x1002).map(|l| l.operand) {
+        match lower_operand(&index, &Constant(-1)).map(|l| l.operand) {
             Some(Operand::IndirectIndex { offset, index, .. }) => {
                 assert_eq!(offset, -1);
                 assert_eq!(index.size, Size::Word, "no size written means `.w`");
@@ -1154,11 +1171,11 @@ mod tests {
             displacement: expression.clone(),
             span: span(),
         };
-        match lower_operand(&displacement, &Constant(0x1010), 0x1002).map(|l| l.operand) {
+        match lower_operand(&displacement, &Constant(0x1010)).map(|l| l.operand) {
             Some(Operand::PcDisplacement { target }) => assert_eq!(target, 0x1010),
             other => panic!("expected a PC-relative operand, got {other:?}"),
         }
-        match lower_operand(&displacement, &Constant(0x0ff2), 0x1002).map(|l| l.operand) {
+        match lower_operand(&displacement, &Constant(0x0ff2)).map(|l| l.operand) {
             Some(Operand::PcDisplacement { target }) => assert_eq!(target, 0x0ff2),
             other => panic!("expected a PC-relative operand, got {other:?}"),
         }
@@ -1171,16 +1188,15 @@ mod tests {
             },
             span: span(),
         };
-        match lower_operand(&index, &Constant(0x1004), 0x1002).map(|l| l.operand) {
+        match lower_operand(&index, &Constant(0x1004)).map(|l| l.operand) {
             Some(Operand::PcIndex { target, index }) => {
                 assert_eq!(target, 0x1004);
                 assert_eq!(index.size, Size::Word, "no size written means `.w`");
             }
             other => panic!("expected a PC-relative indexed operand, got {other:?}"),
         }
-        // `(pc,d1.w)` writes no address: its displacement is zero, so it
-        // reaches its own extension word, two bytes past the instruction at
-        // `$1000`, and the index is the whole of it.
+        // `(pc,d1.w)` writes no address: as in EASy68K, it reaches the
+        // instruction's first word, `$1000`, and the index is added to that.
         let bare = ast::Operand::PcIndex {
             displacement: None,
             index: ast::IndexRegister {
@@ -1190,14 +1206,14 @@ mod tests {
             },
             span: span(),
         };
-        match lower_operand(&bare, &Constant(0), 0x1002).map(|l| l.operand) {
+        match lower_operand(&bare, &Constant(0)).map(|l| l.operand) {
             Some(Operand::PcIndex { target, index }) => {
-                assert_eq!(target, 0x1002);
+                assert_eq!(target, 0x1000);
                 assert_eq!(index.size, Size::Long);
             }
             other => panic!("expected a PC-relative indexed operand, got {other:?}"),
         }
-        // The distance the analyzer checks is still measured from that word.
+        // The distance the analyzer checks is measured from the extension word.
         let address = ast::Expr::Number {
             value: 0,
             base: crate::assembler::token::NumberBase::Decimal,
@@ -1210,5 +1226,12 @@ mod tests {
         );
         // `movem` and `btst #n` put a word before it, so theirs is two further.
         assert_eq!(pc_relative_offset(&Constant(0x1010), &address, 4), Some(12));
+        // In 32 bits, an address below the bottom of memory is reached by
+        // wrapping round it, and so is one past the top.
+        assert_eq!(
+            pc_relative_offset(&Constant(0xffff_9004), &address, 2),
+            Some(-32766)
+        );
+        assert_eq!(pc_relative_offset(&Constant(-0x6ffc), &address, 2), Some(-32766));
     }
 }

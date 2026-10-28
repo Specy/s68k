@@ -1236,6 +1236,14 @@ assert.equal(modifier.getCurrentLocation().line, 5, 'the changed line keeps its 
 assert.equal(modifier.step(), InterpreterStatus.Running)
 assert.equal(modifier.getRegisterValue({type: 'Data', value: 0}), 5, 'the new bytes ran')
 assert.equal(modifier.getUndoHistory(1)[0].wroteCode, undefined, 'a step that wrote no code')
+assert.deepEqual(
+    modifier.getUndoHistory(2).map((step) => step.ran),
+    [
+        {address: nextLine, size: 2, bytes: [0x70, 0x05], text: 'MOVEQ #5,D0'},
+        {address: 0x1000, size: 8, bytes: [0x33, 0xfc, 0x70, 0x05, 0x00, 0x00, 0x10, 0x08], text: 'MOVE.W #$7005,NEXT'},
+    ],
+    'each step says what it ran, from the words it ran'
+)
 modifier.undo()
 modifier.undo()
 assert.equal(modifier.getCodeWrite(), null, 'undo takes the code write back')

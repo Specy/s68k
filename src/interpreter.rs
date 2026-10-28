@@ -50,7 +50,7 @@ use crate::{c_runtime, charset};
 use crate::{
     debugger::{
         Debugger, ExecutionStep, ExecutionStepKind, MutationOperation, PokeJournal, PokeTarget,
-        PokeWrite,
+        PokeWrite, Ran, MAX_INSTRUCTION_BYTES,
     },
     instructions::{
         AddressWidth, Bytes, Condition, FileDialogMode, FileExistence, IndexRegister,
@@ -211,6 +211,28 @@ impl Memory {
     /// The decode cache.
     pub fn cache(&self) -> &DecodeCache {
         &self.cache
+    }
+
+    /// What a step keeps of the instruction of `size` bytes it runs at `pc`,
+    /// an address of the 24 bits of the bus, decoded from memory as the
+    /// program ran: its bytes, wrapping round the bus as an instruction's
+    /// words do. `size` is 0 for an instruction fetched from an odd address,
+    /// which ran nothing.
+    #[cold]
+    #[inline(never)]
+    fn ran_at(&self, pc: usize, size: usize) -> Ran {
+        if size == 0 {
+            return Ran::Nothing;
+        }
+        let mut bytes = [0; MAX_INSTRUCTION_BYTES];
+        let len = size.min(MAX_INSTRUCTION_BYTES);
+        for (offset, byte) in bytes[..len].iter_mut().enumerate() {
+            *byte = self.data[(pc + offset) & ADDRESS_MASK];
+        }
+        Ran::Decoded {
+            bytes,
+            len: len as u8,
+        }
     }
 
     /// The word at `address`, wrapping round the 24 bits of the bus, as an
@@ -917,7 +939,8 @@ pub enum Termination {
     /// is one the Program placed (ADR 0009). Memory starts as `$FF`, so this is
     /// where a program that does not end itself ends, one past its last
     /// instruction when nothing follows it. `address` is the Entry point of a
-    /// Program with no instruction, which ends before it starts.
+    /// Program that placed nothing there, an empty one, which ends before it
+    /// starts.
     EndOfProgram {
         /// Where the program counter was, in the 24 bits of the bus.
         address: usize,
@@ -1393,9 +1416,11 @@ impl Interpreter {
     /// Memory is the 16 MB of the address space, filled as [`Memory::new`]
     /// leaves it and then written with the Program's initial contents, and the
     /// decode cache is filled with the Program's instructions; the stack
-    /// pointer starts at the top of memory. A Program with no instruction in
-    /// it, or whose Entry point is on `$FFFF $FFFF` the Program did not place,
-    /// has [ended](Termination::EndOfProgram) before it starts.
+    /// pointer starts at the top of memory. A Program whose Entry point is on
+    /// `$FFFF $FFFF` the Program did not place has
+    /// [ended](Termination::EndOfProgram) before it starts, which is where an
+    /// empty one is. A Program with no instruction line runs what it placed
+    /// at its Entry point, `dc.w` words included, as EASy68K runs them.
     pub fn new(program: Program, options: Option<InterpreterOptions>) -> Self {
         let start = program.entry();
         let mut memory = Memory::new();
@@ -1405,9 +1430,8 @@ impl Interpreter {
             panic!("Error preparing memory: {:?}", e);
         }
         memory.load_code(program.instructions());
-        let empty = program.is_empty();
         let mut interpreter = Self::with_memory(program, memory, options);
-        if empty || interpreter.ends_at_pc() {
+        if interpreter.ends_at_pc() {
             interpreter.terminate(Termination::EndOfProgram {
                 address: start & ADDRESS_MASK,
             });
@@ -1779,7 +1803,13 @@ impl Interpreter {
                     .instruction_at(pc & ADDRESS_MASK)
                     .map(|instruction| &instruction.location),
             };
-            self.debugger.set_location(location);
+            //with the words that run, which a later write into code does not change in the step:
+            //the Program's own instruction's, or, decoded as the program ran, memory's
+            let ran = match slot.program_index() {
+                Some(index) => Ran::Assembled(index as u32),
+                None => self.memory.ran_at(pc & ADDRESS_MASK, slot.size()),
+            };
+            self.debugger.set_instruction(location, ran);
         }
         self.increment_pc(slot.size());
         self.executing = true;
@@ -2793,21 +2823,58 @@ impl Interpreter {
     /// Program's processor and printed in EASy68K's syntax with the Program's
     /// Labels: what runs there, whatever the Program laid out. Bytes that are
     /// no instruction, or an instruction of a later processor, print as
-    /// `DC.W`. It reads memory and leaves the decode cache alone.
+    /// `DC.W`, and so does an instruction no line writes, a `movem` of no
+    /// register. It reads memory and leaves the decode cache alone.
     pub fn disassemble_at(&self, address: usize) -> disassemble::Line {
         let address = address & ADDRESS_MASK;
         let decoded = self.memory.decode_at(address, self.program.processor());
         let labels = self.debugger.get_labels();
         let names = |address: u32| labels.get(&(address as usize)).map(|label| label.name.clone());
-        let bytes = (0..decoded.size as usize)
+        let bytes: Vec<u8> = (0..decoded.size as usize)
             .map(|offset| self.memory.data[(address + offset) & ADDRESS_MASK])
             .collect();
         disassemble::Line {
             address: address as u32,
             size: decoded.size,
+            text: disassemble::disassemble_words(&decoded.instruction, &bytes, Some(&names)),
             bytes,
-            text: disassemble::disassemble(&decoded.instruction, Some(&names)),
         }
+    }
+
+    /// What `step` ran: the instruction its words decode to at its address,
+    /// for the Program's processor and with the Program's Labels, as
+    /// [`disassemble_at`](Interpreter::disassemble_at) prints one, or `None`
+    /// for a Poke and for a step that ran nothing, an instruction fetched from
+    /// an odd address. The words are the step's own, kept when it ran, so a
+    /// later write into code leaves it saying what really ran.
+    pub fn ran_by(&self, step: &ExecutionStep) -> Option<disassemble::Line> {
+        let bytes = match &step.get_ran() {
+            Ran::Nothing => return None,
+            Ran::Assembled(index) => self.program.instructions().get(*index as usize)?.bytes.clone(),
+            Ran::Decoded { bytes, len } => bytes[..*len as usize].to_vec(),
+        };
+        let bytes = bytes.as_slice();
+        let address = step.get_pc() & ADDRESS_MASK;
+        let labels = self.debugger.get_labels();
+        let names = |address: u32| labels.get(&(address as usize)).map(|label| label.name.clone());
+        let mut lines = disassemble::disassemble_bytes(
+            bytes,
+            address as u32,
+            self.program.processor(),
+            Some(&names),
+        );
+        //the words are one instruction's, so they are one line
+        (lines.len() == 1).then(|| lines.remove(0))
+    }
+
+    /// A step for the host: the step itself, with what it ran as `ran`
+    /// ([`ran_by`](Interpreter::ran_by)), absent when it ran nothing.
+    fn step_to_js(&self, step: &ExecutionStep) -> JsValue {
+        let value = js(step);
+        if let Some(line) = self.ran_by(step) {
+            let _ = js_sys::Reflect::set(&value, &JsValue::from_str("ran"), &js(&line));
+        }
+        value
     }
 
     /// The [code write](CodeWrite) of the instruction that has just run, or of
@@ -5360,7 +5427,11 @@ impl Interpreter {
     /// The newest `count` steps, newest first: the instructions that have run
     /// and the Pokes made between them, each saying which it is in its `kind`.
     pub fn wasm_get_undo_history(&self, count: usize) -> JsValue {
-        js(&self.get_last_steps(count))
+        self.get_last_steps(count)
+            .into_iter()
+            .map(|step| self.step_to_js(step))
+            .collect::<js_sys::Array>()
+            .into()
     }
 
     pub fn wasm_get_last_step_id(&self) -> f64 {
@@ -5421,7 +5492,9 @@ impl Interpreter {
         self.set_ssp(value)
     }
     pub fn wasm_undo(&mut self) -> Result<JsValue, JsValue> {
-        self.undo().map(|step| js(&step)).map_err(|e| js(&e))
+        self.undo()
+            .map(|step| self.step_to_js(&step))
+            .map_err(|e| js(&e))
     }
     /// Opens a Poke, which is `beginPoke()`. It throws when one is already
     /// open and when an instruction is executing.
@@ -5454,7 +5527,7 @@ impl Interpreter {
     }
     pub fn wasm_get_last_step(&self) -> JsValue {
         match self.debugger.get_last_step() {
-            Some(step) => js(step),
+            Some(step) => self.step_to_js(step),
             None => JsValue::NULL,
         }
     }

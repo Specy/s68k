@@ -270,9 +270,9 @@ The displacement a 68000 encodes is measured from the instruction's extension
 word, which is the encoder's business and not the fixture's; the Assembler
 checks that the distance fits its field, measured from that word: the address of
 the instruction plus two, or plus four for `movem` and `btst #n`, whose mask or
-bit number comes first. `(pc,d1.w)`, which writes no address at all, is a
-displacement of zero, so it reaches its own extension word and prints as that
-address: at `$1000`, `$1002(pc,d1.w)`, and `$1004(pc,d1.w)` in a `movem`.
+bit number comes first. `(pc,d1.w)`, which writes no address at all, reaches
+the instruction's first word, as EASy68K assembles it, and prints as that
+address: at `$1000`, `$1000(pc,d1.w)`, in a `movem` too.
 
 **An address prints its width when it is a word.** The Program carries the
 width an address is encoded at, and the Assembler chooses it as EASy68K does:
@@ -1005,8 +1005,9 @@ fixture, and are here so that the next one to move is recognised:
   `suba` of a known 1 to 8 are `addq` and `subq`.
 * **`exg an,dn`** is stored as `exg dn,an`, the one encoding of the pair.
 * **A PC-relative distance** is measured from the operand's own extension
-  word, which for `movem` and `btst #n` is the instruction's address plus four;
-  so is the address `(pc,d1.w)` reaches in either.
+  word, which for `movem` and `btst #n` is the instruction's address plus four.
+  The address `(pc,d1.w)` reaches is the instruction's own, as in EASy68K
+  (changed after the batch 1 review, which no fixture shows).
 * **Three lines are refused**, each because the 68000 has no encoding for it and
   EASy68K refuses it as well: an address register added into memory,
   `add.l a0,(a1)`, which is `invalid_addressing_mode` on the first operand; a

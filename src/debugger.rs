@@ -22,6 +22,7 @@ use crate::{
     assembler::{program::ProgramSymbol, source::Location, symbols::SymbolKind},
     instructions::{InputSettings, RegisterOperand, Size},
     interpreter::{CodeWrite, Flags, InterpreterStatus, StackPointers},
+    machine::decode::MAX_68000_SIZE,
 };
 
 /// One thing a step changed, with the value it replaced beside the value it
@@ -340,11 +341,48 @@ pub struct ExecutionStep {
     /// the bytes.
     #[serde(rename = "wroteCode")]
     wrote_code: Option<CodeWrite>,
+    /// The words of the instruction the step ran, as memory held them when it
+    /// was fetched, which is what the decode cache ran: a later write into
+    /// code does not change them. The Interpreter turns them into the step's
+    /// `ran` line for the host
+    /// ([`Interpreter::ran_by`](crate::interpreter::Interpreter::ran_by)),
+    /// which is why they are not serialised here.
+    #[serde(skip)]
+    ran: Ran,
     /// The Interpreter state before the step. This is internal history state:
     /// undo needs it to put a resumed instruction back behind the pause it
     /// crossed, but it is not part of the public ExecutionStep shape.
     #[serde(skip)]
     old_interpreter_status: InterpreterStatus,
+}
+
+/// The most bytes an instruction the Interpreter decodes takes up, which is
+/// what a step keeps of the one it ran.
+pub const MAX_INSTRUCTION_BYTES: usize = MAX_68000_SIZE as usize;
+
+/// The words of the instruction a step ran ([`ExecutionStep::get_ran`]),
+/// recorded without allocating anything, and for the Program's own
+/// instructions without reading memory: the step is on the path of every
+/// instruction that runs with a history.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Ran {
+    /// Nothing ran: a Poke, or an instruction fetched from an odd address.
+    #[default]
+    Nothing,
+    /// The Program's instruction of this index, in the order of
+    /// [`Program::instructions`](crate::assembler::program::Program::instructions),
+    /// whose bytes memory held: the decode cache runs one only until a write
+    /// changes them.
+    Assembled(u32),
+    /// Words decoded from memory as the program ran, the first `len` of
+    /// `bytes`: code the program reached in its data, or code a write had
+    /// changed.
+    Decoded {
+        /// The words, from the instruction's address on.
+        bytes: [u8; MAX_INSTRUCTION_BYTES],
+        /// How many of `bytes` are the instruction's.
+        len: u8,
+    },
 }
 
 impl ExecutionStep {
@@ -368,6 +406,7 @@ impl ExecutionStep {
             new_sr: sr,
             location: StepLocation::default(),
             wrote_code: None,
+            ran: Ran::default(),
             old_interpreter_status: interpreter_status,
         }
     }
@@ -393,6 +432,7 @@ impl ExecutionStep {
         self.new_sr = sr;
         self.location.present = false;
         self.wrote_code = None;
+        self.ran = Ran::Nothing;
         self.old_interpreter_status = interpreter_status;
     }
     pub fn add_mutation(&mut self, mutation: MutationOperation) {
@@ -443,6 +483,11 @@ impl ExecutionStep {
     /// The code write the instruction made, if it made one.
     pub fn get_code_write(&self) -> Option<CodeWrite> {
         self.wrote_code
+    }
+    /// The words of the instruction this step ran, as they were when it ran:
+    /// [`Ran::Nothing`] for a Poke and for a step that ran nothing.
+    pub fn get_ran(&self) -> Ran {
+        self.ran
     }
 }
 
@@ -695,11 +740,18 @@ impl Debugger {
             step.wrote_code = Some(write);
         }
     }
-    /// Records where the instruction of the step being executed was written.
-    pub fn set_location(&mut self, location: Option<&Location>) {
+    /// Records where the instruction of the step being executed was written,
+    /// and the words it runs.
+    #[inline(always)]
+    pub fn set_instruction(&mut self, location: Option<&Location>, ran: Ran) {
         let Some(step) = self.newest_mut() else {
             return;
         };
+        step.ran = ran;
+        Self::write_location(step, location);
+    }
+    #[inline(always)]
+    fn write_location(step: &mut ExecutionStep, location: Option<&Location>) {
         match location {
             Some(location) => {
                 copy_location(&mut step.location.location, location);

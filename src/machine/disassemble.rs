@@ -23,8 +23,10 @@
 //!   are decimal; `MOVEQ`'s is signed, `MOVEQ #-1,D0`. Displacements are signed
 //!   decimal: `-8(A6)`, `4(A0,D1.W)`, `LINK A6,#-4`.
 //! * An immediate prints at the size of its instruction: `MOVE.B #$FF,D0`.
-//! * An absolute short address prints its word with `.W`: `$8000.W` is the
-//!   address `$FFFF8000`. A long one prints the address alone, `$E00010`.
+//! * An absolute short address prints the address its word sign extends to,
+//!   with `.W`: the word `$8000` is `$FFFF8000.W`, which reassembles to it,
+//!   and `$1000` is `$1000.W`. A long one prints the address alone,
+//!   `$E00010`.
 //! * A branch target, a PC-relative operand and an absolute address print as
 //!   the name the [`Symbols`] give them, when they give one: `BRA.S loop`,
 //!   `LEA table(PC),A0`, `JSR print.W`; as a number otherwise.
@@ -35,6 +37,9 @@
 //!   written.
 //! * A line A word, a line F word and a word that is no instruction print as
 //!   `DC.W $A000`; EASy68K's halt as `SIMHALT`.
+//! * A `MOVEM` of no register runs, and no line writes it, as a register list
+//!   is never empty: it prints as the `DC.W` of its words,
+//!   `DC.W $4890,$0000`, which [`disassemble_words`] reads from memory.
 
 use crate::instructions::{
     AddressWidth, BranchSize, Condition, Instruction, Operand, RegisterOperand, ShiftDirection,
@@ -59,8 +64,35 @@ impl<F: Fn(u32) -> Option<String>> Symbols for F {
 
 /// One instruction, as EASy68K writes it, with the names `symbols` gives the
 /// addresses in it.
+///
+/// An instruction no line writes prints as the `DC.W` of its words, which
+/// this has to make: it encodes it at address 0, so the words are the ones
+/// memory holds but for the displacement of a PC-relative operand. What reads
+/// memory has the words, and prints through [`disassemble_words`].
 pub fn disassemble(instruction: &Instruction, symbols: Option<&dyn Symbols>) -> String {
-    Printer { symbols }.instruction(instruction)
+    Printer { symbols }.instruction(instruction, None)
+}
+
+/// One instruction decoded from `bytes`, its words, as EASy68K writes it,
+/// with the names `symbols` gives the addresses in it: what
+/// [`disassemble`] prints, and for an instruction no line writes, the
+/// `DC.W` of those words.
+pub fn disassemble_words(
+    instruction: &Instruction,
+    bytes: &[u8],
+    symbols: Option<&dyn Symbols>,
+) -> String {
+    Printer { symbols }.instruction(instruction, Some(bytes))
+}
+
+/// `DC.W` and the words of `bytes`, which are an even number of them:
+/// `DC.W $4890,$0000`.
+fn words(bytes: &[u8]) -> String {
+    let words: Vec<String> = bytes
+        .chunks_exact(2)
+        .map(|word| format!("${:02X}{:02X}", word[0], word[1]))
+        .collect();
+    format!("DC.W {}", words.join(","))
 }
 
 /// One instruction of a run of memory, as [`disassemble_bytes`] reads it, and
@@ -110,7 +142,10 @@ pub fn disassemble_bytes(
         let (size, text) = match (decoded, word_at(offset)) {
             (Ok(decoded), _) => (
                 decoded.size as usize,
-                printer.instruction(&decoded.instruction),
+                printer.instruction(
+                    &decoded.instruction,
+                    Some(&bytes[offset..offset + decoded.size as usize]),
+                ),
             ),
             (Err(_), Some(word)) => (2, format!("DC.W ${word:04X}")),
             (Err(_), None) => (1, format!("DC.B ${:02X}", bytes[offset])),
@@ -166,7 +201,7 @@ impl Printer<'_> {
                 let address = *address as u32;
                 match self.symbols.and_then(|symbols| symbols.name_of(address)) {
                     Some(label) => format!("{label}.W"),
-                    None => format!("${:X}.W", address as u16),
+                    None => format!("${:X}.W", address as u16 as i16 as u32),
                 }
             }
             Operand::Absolute {
@@ -293,9 +328,18 @@ impl Printer<'_> {
         }
     }
 
-    /// The instruction.
-    fn instruction(&self, instruction: &Instruction) -> String {
+    /// The instruction, whose words are `bytes` when the caller has them.
+    fn instruction(&self, instruction: &Instruction, bytes: Option<&[u8]>) -> String {
         use Instruction as I;
+        if !is_written(instruction) {
+            return match bytes {
+                Some(bytes) => words(bytes),
+                None => match super::encode::encode_bytes(instruction, 0) {
+                    Ok(bytes) => words(&bytes),
+                    Err(_) => "DC.W".to_string(),
+                },
+            };
+        }
         match instruction {
             I::MOVE(source, destination, size) => self.two("MOVE", *size, source, destination),
             I::MOVEA(source, register, size) => {
@@ -467,6 +511,19 @@ impl Printer<'_> {
     }
 }
 
+/// Whether a line can write `instruction`: all but a `MOVEM` of no register,
+/// which the 68000 runs, transferring nothing, and EASy68K cannot assemble,
+/// as its register list is never empty.
+fn is_written(instruction: &Instruction) -> bool {
+    !matches!(
+        instruction,
+        Instruction::MOVEM {
+            registers_mask: 0,
+            ..
+        }
+    )
+}
+
 /// The bits an immediate of `size` keeps.
 fn mask(size: Size) -> u32 {
     match size {
@@ -618,6 +675,26 @@ mod tests {
             disassemble_bytes(&ccr, 0, Processor::M68010, None)[0].text,
             "MOVE CCR,D0"
         );
+        // A `movem` of no register is no line anybody can write, and prints as
+        // its words (review finding 9).
+        let empty = disassemble_bytes(
+            &[0x48, 0x90, 0x00, 0x00, 0x4C, 0xFA, 0x00, 0x00, 0x00, 0x10],
+            0x1000,
+            Processor::M68000,
+            None,
+        );
+        assert_eq!(
+            empty
+                .iter()
+                .map(|line| (line.address, line.size, line.text.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (0x1000, 4, "DC.W $4890,$0000"),
+                (0x1004, 6, "DC.W $4CFA,$0000,$0010"),
+            ]
+        );
+        let decoded = super::super::decode::decode_words(&[0x4890, 0x0000], 0x1000, Processor::M68000).unwrap();
+        assert_eq!(disassemble(&decoded.instruction, None), "DC.W $4890,$0000");
     }
 
     /// The Assembler's instructions print the way the decoder's do, its

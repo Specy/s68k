@@ -642,3 +642,31 @@ fn the_cache_has_a_page_for_every_4_kb_of_code() {
     let interpreter = without_history(&code);
     assert_eq!(interpreter.get_memory().cache().pages_in_use(), 2);
 }
+
+/// A Program with no instruction line runs what it placed at its Entry point,
+/// as EASy68K runs the words of an S-record from its start address; an empty
+/// one, whose Entry point is on memory it never placed, ends before it starts
+/// (batch 1 review, unverified items).
+#[test]
+fn a_program_of_data_words_runs_from_its_entry_point() {
+    let mut words = interpreter(
+        "    org $1000
+start:
+    dc.w $7005
+    dc.w $4e71
+    end start
+",
+    );
+    assert!(!words.has_terminated(), "it has words to run");
+    words.run().unwrap();
+    assert_eq!(words.get_register_value(RegisterOperand::Data(0), Size::Long), 5);
+    assert_eq!(
+        words.get_termination(),
+        Some(&Termination::EndOfProgram { address: 0x1004 })
+    );
+    let empty = interpreter("* Nothing but a comment.\n");
+    assert_eq!(
+        empty.get_termination(),
+        Some(&Termination::EndOfProgram { address: 0x1000 })
+    );
+}

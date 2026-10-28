@@ -644,7 +644,11 @@ A lone register is `data_register_direct` or `address_register_direct`;
 Both spellings of every displaced mode are EASy68K's own: `x(An)` and `(x,An)`,
 `x(An,Xn.s)` and `(x,An,Xn.s)`, `x(PC)` and `(x,PC)`, `x(PC,Xn.s)` and
 `(x,PC,Xn.s)` (`Reference/68ks1e.htm`, `Directives/offset.htm`). The
-displacement-free `(An,Xn.s)` is accepted as a displacement of zero. An
+displacement-free `(An,Xn.s)` is accepted as a displacement of zero. The
+displacement-free `(PC,Xn.s)` reaches the instruction's first word, as EASy68K
+assembles it (`OPPARSE.CPP` gives it the current address): `lea (pc,d0.w),a0`
+is `41FB 00FE`, and `movem` and `btst #n`, whose mask or bit number comes before
+the extension word, encode −4. An
 `index_register` with no `size_suffix` is `.w`, which is the 68000's default and
 what the fixture printer writes out.
 

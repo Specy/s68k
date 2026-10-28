@@ -394,37 +394,33 @@ const fn privileged_form(operands: &'static [Modes], sizes: SizeRule) -> Form {
     }
 }
 
-/// The range an instruction's own count, vector or bit number has to be in.
+/// The range an instruction's own count or vector has to be in.
 ///
 /// This is not the range check against an operand size — that one follows from
 /// the size and is the analyzer's `immediate_out_of_range`. This is the field
 /// the instruction itself encodes: `addq` adds 1 to 8 and nothing else,
-/// `trap` has sixteen vectors, a shift shifts 1 to 8 places, and a bit number
-/// reaches as far as the destination is wide.
+/// `trap` has sixteen vectors, and a shift shifts 1 to 8 places. A static bit
+/// number has none: EASy68K encodes any, and the 68000 takes it modulo the
+/// destination's width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValueRule {
     /// How a message names the value: "the count of `addq`".
     pub subject: &'static str,
     /// The lowest value the field holds.
     pub min: i64,
-    /// The highest value it holds when the destination is a register.
+    /// The highest value it holds.
     pub max: i64,
-    /// The highest value it holds when the destination is in memory, which is
-    /// only ever a bit number: a byte in memory has eight bits and a data
-    /// register has thirty-two.
-    pub max_in_memory: Option<i64>,
     /// What to do about it, used as the Diagnostic's hint word for word, when
     /// there is something short to say.
     pub hint: Option<&'static str>,
 }
 
-/// A value rule that does not depend on where the destination is.
+/// A value rule.
 const fn value(subject: &'static str, min: i64, max: i64, hint: Option<&'static str>) -> ValueRule {
     ValueRule {
         subject,
         min,
         max,
-        max_in_memory: None,
         hint,
     }
 }
@@ -840,15 +836,6 @@ const BIT_WRITE_FORM: &[Form] = &[form(
     &[Modes::COUNT, Modes::DATA_ALTERABLE],
     SizeRule::ByteOrLong,
 )];
-/// How far a bit number reaches: as far as the destination is wide, which is
-/// thirty-two bits in a data register and eight in a byte of memory.
-const BIT_NUMBER: ValueRule = ValueRule {
-    subject: "the bit number",
-    min: 0,
-    max: 31,
-    max_in_memory: Some(7),
-    hint: Some("a data register has 32 bits, numbered from 0; a byte in memory has 8"),
-};
 
 /// The five Forms of `move`: the general one first, so that a `move` that fits
 /// none is judged against it, then the four that name a half of the status
@@ -913,12 +900,16 @@ const DECIMAL_PAIR_FORMS: &[Form] = &[
     ),
 ];
 /// The two Forms of `movep`, one a direction: a data register and a
-/// displacement Operand, which is the only Addressing mode it takes
-/// (`Reference/68ks4g.htm`).
+/// displacement Operand, which is the only Addressing mode it has
+/// (`Reference/68ks4g.htm`), or `(An)`, which EASy68K takes as a displacement
+/// of 0 (`movepfl` in its `INSTTABL.CPP`, `movep` in its `BUILD.CPP`).
 const MOVEP_FORMS: &[Form] = &[
-    form(&[Modes::DN, Modes::DISPLACEMENT], SizeRule::WordOrLong),
-    form(&[Modes::DISPLACEMENT, Modes::DN], SizeRule::WordOrLong),
+    form(&[Modes::DN, MOVEP_MEMORY], SizeRule::WordOrLong),
+    form(&[MOVEP_MEMORY, Modes::DN], SizeRule::WordOrLong),
 ];
+
+/// The memory Operand of `movep`: `d(An)`, and `(An)` as `0(An)`.
+const MOVEP_MEMORY: Modes = Modes::DISPLACEMENT.union(Modes::INDIRECT);
 
 /// A `Bcc` row.
 const fn branch(mnemonic: &'static str, condition: Condition) -> InstructionSpec {
@@ -950,13 +941,16 @@ const fn shift(mnemonic: &'static str, kind: ShiftKind, way: ShiftWay) -> Instru
     )
 }
 
-/// A bit instruction row.
+/// A bit instruction row. A static bit number has no value rule: EASy68K
+/// encodes its low byte whatever it is (`staticBit` in its `BUILD.CPP`), and
+/// the 68000 takes it modulo the destination's width, which the analyzer
+/// warns of (`bit_number_wraps`).
 const fn bit(
     mnemonic: &'static str,
     operation: BitOperation,
     forms: &'static [Form],
 ) -> InstructionSpec {
-    implemented_with_value(mnemonic, Family::Bit(operation), forms, BIT_NUMBER)
+    implemented(mnemonic, Family::Bit(operation), forms)
 }
 
 /// Every Mnemonic s68k reads, implemented or not.

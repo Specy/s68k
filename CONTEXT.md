@@ -138,7 +138,7 @@ What runs a Program: registers, memory, the step, run, undo and interrupt operat
 _Avoid_: emulator (that is the asm-editor's object around it), simulator, CPU
 
 **Execution step**:
-One entry of the Interpreter's history: an instruction that ran, or a Poke. It carries an id of its own, the mutations undo replays, the program counter and the status register before it, the Code write an instruction made, and says which of the two kinds it is.
+One entry of the Interpreter's history: an instruction that ran, or a Poke. It carries an id of its own, the mutations undo replays, the program counter and the status register before it, the Code write an instruction made, the words of the instruction it ran as they were then, so that it says what ran after a write has changed them, and says which of the two kinds it is.
 _Avoid_: history entry, undo record
 
 **Mutation**:

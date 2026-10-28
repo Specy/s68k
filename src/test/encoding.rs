@@ -1047,28 +1047,28 @@ two equ 2
             Instruction::JMP(address(0xffff_8000, AddressWidth::Word)),
             Instruction::JMP(address(0x1000, AddressWidth::Long)),
             Instruction::JMP(address(0x1074, AddressWidth::Word)),
-            // `(pc,d1.w)` reaches its own extension word, which a mask or a
-            // static bit number puts four bytes past the instruction.
+            // `(pc,d1.w)` reaches the instruction's first word, as in
+            // EASy68K, whatever comes before its extension word.
             Instruction::MOVEM {
                 direction: TargetDirection::FromMemory,
                 size: Size::Word,
                 registers_mask: 1,
                 target: Operand::PcIndex {
-                    target: 0x1066,
+                    target: 0x1062,
                     index
                 },
             },
             Instruction::BTST(
                 Operand::Immediate(1),
                 Operand::PcIndex {
-                    target: 0x106c,
+                    target: 0x1068,
                     index
                 }
             ),
             Instruction::BTST(
                 d(1),
                 Operand::PcIndex {
-                    target: 0x1070,
+                    target: 0x106e,
                     index
                 }
             ),
@@ -1096,4 +1096,194 @@ two equ 2
         let decoded = decode_words(&words, address, Processor::M68000).unwrap();
         assert_eq!(decoded.instruction, assembled.instruction);
     }
+    // The bare `(pc,d1.w)` encodes EASy68K's displacement: -4 past a mask or a
+    // static bit number, -2 past the operation word alone.
+    let bytes_at = |address: usize| {
+        program
+            .instructions()
+            .iter()
+            .find(|instruction| instruction.address == address)
+            .map(|instruction| instruction.bytes.clone())
+            .unwrap()
+    };
+    assert_eq!(bytes_at(0x1062), [0x4c, 0xbb, 0x00, 0x01, 0x10, 0xfc]);
+    assert_eq!(bytes_at(0x1068), [0x08, 0x3b, 0x00, 0x01, 0x10, 0xfc]);
+    assert_eq!(bytes_at(0x106e), [0x03, 0x3b, 0x10, 0xfe]);
+}
+
+/// `lea (pc,d0.w),a0` is `41FB 00FE` in EASy68K, so a `jmp (pc,d0.w)` jump
+/// table indexes from the `jmp` itself (review finding 2).
+#[test]
+fn a_bare_pc_index_reaches_the_instructions_first_word() {
+    let assembly = crate::assembler::assemble_source(
+        "    org $2000
+    lea (pc,d0.w),a0
+    jmp (pc,d1.l)
+",
+    );
+    let program = assembly.program.expect("the program assembles");
+    let bytes: Vec<Vec<u8>> = program
+        .instructions()
+        .iter()
+        .map(|instruction| instruction.bytes.clone())
+        .collect();
+    assert_eq!(bytes, [vec![0x41, 0xfb, 0x00, 0xfe], vec![0x4e, 0xfb, 0x18, 0xfe]]);
+}
+
+/// Absolute short addresses and PC-relative distances are read in 32 bits, as
+/// EASy68K reads them, and a short address in the upper half prints as the
+/// address its word sign extends to, which assembles back to the same word
+/// (review finding 4).
+#[test]
+fn short_addresses_and_pc_distances_are_32_bit_numbers() {
+    let assembly = crate::assembler::assemble_source(
+        "    org $1000
+    lea $FFFF9004(pc),a0
+    move.w d0,$FFFF8000.w
+    move.w d0,$FFFF8000
+    move.w d0,-2.w
+",
+    );
+    assert!(
+        assembly.diagnostics.is_empty(),
+        "{:?}",
+        assembly.diagnostics
+    );
+    let program = assembly.program.expect("the program assembles");
+    let bytes: Vec<Vec<u8>> = program
+        .instructions()
+        .iter()
+        .map(|instruction| instruction.bytes.clone())
+        .collect();
+    assert_eq!(
+        bytes,
+        [
+            // From the extension word at $1002, $FFFF9004 is 32,766 bytes
+            // back, round the bottom of the address space.
+            vec![0x41, 0xfa, 0x80, 0x02],
+            vec![0x31, 0xc0, 0x80, 0x00],
+            vec![0x31, 0xc0, 0x80, 0x00],
+            vec![0x31, 0xc0, 0xff, 0xfe],
+        ]
+    );
+    // `$8000.w` is still refused: the word holds -32768 to 32767.
+    let refused = crate::assembler::assemble_source("    move.w d0,$8000.w\n");
+    assert_eq!(
+        refused
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code())
+            .collect::<Vec<_>>(),
+        ["value_out_of_range"]
+    );
+    // The disassembly of each reassembles to the same bytes.
+    for instruction in program.instructions().iter() {
+        let line = &crate::machine::disassemble::disassemble_bytes(
+            &instruction.bytes,
+            instruction.address as u32,
+            Processor::M68000,
+            None,
+        )[0];
+        let again = crate::assembler::assemble_source(&format!(
+            "    org ${:x}\n    {}\n",
+            instruction.address, line.text
+        ));
+        let again = again
+            .program
+            .unwrap_or_else(|| panic!("{} reassembles", line.text));
+        assert_eq!(again.instructions()[0].bytes, instruction.bytes, "{}", line.text);
+    }
+    assert_eq!(
+        crate::machine::disassemble::disassemble_bytes(&[0x31, 0xc0, 0x80, 0x00], 0, Processor::M68000, None)[0].text,
+        "MOVE.W D0,$FFFF8000.W"
+    );
+}
+
+/// `movep` takes `(An)` as `0(An)`, as EASy68K encodes it (review finding 5).
+#[test]
+fn movep_takes_an_indirect_operand_as_a_displacement_of_zero() {
+    let assembly = crate::assembler::assemble_source(
+        "    movep.w d1,(a2)
+    movep.l (a3),d4
+    movep.w d1,0(a2)
+",
+    );
+    assert!(assembly.diagnostics.is_empty(), "{:?}", assembly.diagnostics);
+    let program = assembly.program.expect("the program assembles");
+    let bytes: Vec<Vec<u8>> = program
+        .instructions()
+        .iter()
+        .map(|instruction| instruction.bytes.clone())
+        .collect();
+    assert_eq!(
+        bytes,
+        [
+            vec![0x03, 0x8a, 0x00, 0x00],
+            vec![0x09, 0x4b, 0x00, 0x00],
+            vec![0x03, 0x8a, 0x00, 0x00],
+        ]
+    );
+    assert_eq!(
+        program.instructions()[0].instruction,
+        program.instructions()[2].instruction
+    );
+}
+
+/// On the 68020 the short displacement `$FF` marks a long branch, so a branch
+/// to −1 is a word there, and short on the 68000 (review finding 6).
+#[test]
+fn a_branch_to_minus_one_is_short_only_where_ff_is_no_mark() {
+    let bytes = |source: &str| -> Vec<Vec<u8>> {
+        let assembly = crate::assembler::assemble_source(source);
+        assert!(assembly.diagnostics.is_empty(), "{:?}", assembly.diagnostics);
+        assembly
+            .program
+            .expect("the program assembles")
+            .instructions()
+            .iter()
+            .map(|instruction| instruction.bytes.clone())
+            .collect()
+    };
+    assert_eq!(bytes("    bra *+1\n"), [vec![0x60, 0xff]]);
+    assert_eq!(bytes("    bra.s *+1\n"), [vec![0x60, 0xff]]);
+    assert_eq!(
+        bytes("    opt p=68020\n    bra *+1\n"),
+        [vec![0x60, 0x00, 0xff, 0xff]]
+    );
+    let refused = crate::assembler::assemble_source("    opt p=68020\n    beq.s *+1\n");
+    assert_eq!(
+        refused
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code())
+            .collect::<Vec<_>>(),
+        ["short_branch_marks_a_long_branch"]
+    );
+}
+
+/// A static bit number past the destination's width is encoded as its low
+/// byte, as EASy68K encodes it, and a warning says which bit the 68000 reaches.
+#[test]
+fn a_static_bit_number_is_its_low_byte() {
+    let assembly = crate::assembler::assemble_source(
+        "    btst #9,(a0)
+    bset #300,d0
+",
+    );
+    let codes: Vec<&str> = assembly
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code())
+        .collect();
+    assert_eq!(codes, ["bit_number_wraps", "bit_number_wraps"]);
+    let program = assembly.program.expect("a warning leaves a program");
+    let bytes: Vec<Vec<u8>> = program
+        .instructions()
+        .iter()
+        .map(|instruction| instruction.bytes.clone())
+        .collect();
+    assert_eq!(
+        bytes,
+        [vec![0x08, 0x10, 0x00, 0x09], vec![0x08, 0xc0, 0x00, 0x2c]]
+    );
 }

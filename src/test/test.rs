@@ -1983,13 +1983,13 @@ table: dc.l $aaaaaaaa,$bbbbbbbb
                 0xbbbbbbbb,
                 "`table` plus the four in `d1` is the second long"
             );
-            // `(pc,d1.w)` writes no address at all, so its displacement is
-            // zero and the operand is the extension word of its own line plus
-            // the register: after the four-byte `move.w`, `$1004 + 2 + 4` is
-            // the `dc.l` at `$100a`, past the four bytes of the `move.l` and
-            // the two of the `nop`.
+            // `(pc,d1.w)` writes no address at all, and the operand is the
+            // first word of its own line plus the register, as in EASy68K:
+            // after the four-byte `move.w`, `$1004 + 6` is the `dc.l` at
+            // `$100a`, past the four bytes of the `move.l` and the two of the
+            // `nop`.
             let mut interpreter = prepare(
-                "    move.w #4,d1
+                "    move.w #6,d1
     move.l (pc,d1.w),d2
     nop
 table: dc.l $00c0ffee

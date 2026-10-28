@@ -1247,7 +1247,7 @@ pub(crate) mod tests {
         case(
             "move.w (8,a0,d1.w),(-0x8000).w",
             &[0x31F0, 0x1008, 0x8000],
-            "MOVE.W 8(A0,D1.W),$8000.W",
+            "MOVE.W 8(A0,D1.W),$FFFF8000.W",
         ),
         case(
             "move.b (-1,a2,a3.l),d4",

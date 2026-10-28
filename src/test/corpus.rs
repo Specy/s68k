@@ -1383,13 +1383,12 @@ here: dc.l 1
         // Phase 3's last group. A PC-relative operand is written as the
         // address it reaches and printed as that address, which is what the
         // Program keeps: `here` is `$1122`, forwards of the first lines and
-        // behind the last one. `(pc,d1.w)` writes no address, so its
-        // displacement is zero and it reaches its own extension word, two
-        // bytes past the instruction at `$1114`.
+        // behind the last one. `(pc,d1.w)` writes no address, and it reaches
+        // the first word of its instruction at `$1114`, as in EASy68K.
         "move.l $1122(pc),d0",
         "lea $1122(pc),a0",
         "move.l $1122(pc,d1.w),d1",
-        "move.l $1116(pc,d1.w),d2",
+        "move.l $1114(pc,d1.w),d2",
         // A word address is marked `.w`, whether it was forced or chosen —
         // `pea $2000`, `jmp $1000` and `jsr $1000` above are numbers a word
         // holds, which is a back reference — and a long is the plain form.
