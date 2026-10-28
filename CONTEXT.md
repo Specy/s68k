@@ -104,6 +104,10 @@ _Avoid_: start address, start label (the label is only a convention)
 **Forward reference**:
 A use of a Symbol above its definition. Allowed in instruction operands and `dc` data; refused where the value decides the layout of the program.
 
+**Back reference**:
+An Expression every Symbol of which is defined above it by Position, or on its own line, as EASy68K defines a line's Label before it reads the Operands: EASy68K's `backRef`. A number, a character literal and `*` are always one. It is what EASy68K's choices of encoding read beside the value — a short branch, an absolute address in a word, `moveq`, `addq` and `subq` — so a Forward reference is always given the long form, and both passes choose the same size.
+_Avoid_: backward branch (that is where a branch goes, not when its target is defined)
+
 ### Assembly
 
 **Assembler**:
@@ -179,3 +183,7 @@ The part of a Diagnostic or Runtime error that gives the learner a safe next act
 
 **EASy68K**:
 The assembler and simulator whose dialect s68k follows. Where s68k is more lenient than EASy68K it stays so; where it is stricter, that is a deliberate deviation and is recorded as a decision.
+
+**Processor dialect**:
+The processor a Program is written for and its words are decoded for: the 68000, EASy68K's processor and the default, or the 68010 or the 68020, each of which adds instructions, addressing modes and behaviour to the one before it. Every row of the decoder names the first processor that has it, and so will every form of the instruction table; on an earlier processor its words are an illegal instruction: `move ccr,<ea>` is the 68010's and `extb.l` the 68020's. A Program will choose its dialect in its source with `opt p=68010` or `opt p=68020`.
+_Avoid_: CPU type, architecture, target (that is the asm-editor's word for a language and its machine)

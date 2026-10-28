@@ -8,12 +8,12 @@ expression: fixture
     {
       "address": "$1000",
       "line": 0,
-      "text": "move.l #$1e,d0"
+      "text": "moveq #$1e,d0"
     },
     {
       "address": "$1004",
       "line": 1,
-      "text": "move.l #$c,d1"
+      "text": "moveq #$c,d1"
     },
     {
       "address": "$1008",

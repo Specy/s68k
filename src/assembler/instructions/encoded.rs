@@ -102,7 +102,10 @@ pub struct IndexRegister {
 /// (`tests/corpus/README.md`, "Branch and jump targets").
 #[derive(Debug, Clone, Serialize, Copy, PartialEq, Eq)]
 pub enum Operand {
-    /// `#5`, stored in 32 bits whatever size the instruction carries.
+    /// `#5`, kept at the size the instruction reads it at, zero extended:
+    /// `move.b #-1,d0` holds `$FF`, `move.w #-1,d0` `$FFFF`. A `movem`
+    /// register list is one too, as its mask, until it is lowered into the
+    /// [`Instruction::MOVEM`] that reads it.
     Immediate(u32),
     /// `d3`, `a6`.
     Register(RegisterOperand),
@@ -129,43 +132,86 @@ pub enum Operand {
         index: IndexRegister,
     },
 
-    /// `label(pc)`, as the displacement the Assembler worked out.
+    /// `label(pc)`, as the address it reaches.
     ///
-    /// The source writes an address and the Assembler stores the distance from
-    /// it to the extension word of this instruction, which is
-    /// [`EXTENSION_WORD_OFFSET`] bytes past the instruction's own address: the
-    /// Interpreter adds the two back together and reaches the address that was
-    /// written. The Program holds no encoded words, so this displacement is the
-    /// only thing that says where the operand was measured from.
+    /// The 68000 encodes a displacement from the extension word that holds it,
+    /// and the source writes the address it wants; this keeps the address. The
+    /// displacement depends on where that extension word sits — two bytes
+    /// past the instruction for most of them, four for `movem` and
+    /// `btst #n,d(pc)`, whose mask or bit number comes first — and that is
+    /// the business of whatever reads or writes the words, which knows the
+    /// instruction's address ([`crate::machine::decode`]). The Interpreter uses
+    /// the address as it is, wherever the instruction has been placed.
     PcDisplacement {
-        /// The displacement, sign extended from the sixteen bits the 68000
-        /// encodes it in.
-        offset: i32,
+        /// The address the operand names.
+        target: u32,
     },
-    /// `label(pc,d1.w)`.
+    /// `label(pc,d1.w)`, as the address the displacement reaches.
     PcIndex {
-        /// The displacement, sign extended from the eight bits the 68000
-        /// encodes it in.
-        offset: i32,
+        /// The address `d8(PC)` reaches, which the index register is added
+        /// to when the instruction runs. `(pc,d1.w)` writes no displacement,
+        /// so its target is the extension word itself.
+        target: u32,
         /// The index register and the width it is read at.
         index: IndexRegister,
     },
 
     /// `$2000`, and a Label, which is its address by the time it gets here.
-    Absolute(usize),
+    Absolute {
+        /// The address. An absolute short one is the address its word means,
+        /// sign extended: `$8000.w` is `$FFFF8000`.
+        address: usize,
+        /// Whether the address is encoded in a word or a long.
+        width: AddressWidth,
+    },
 }
 
-/// How far the extension word of an instruction sits from the instruction's
-/// own address, which is what a PC-relative Operand is measured from.
+/// How wide an absolute address is encoded: the 68000's absolute short and
+/// absolute long modes, `(xxx).W` and `(xxx).L`.
+///
+/// Both name an address of 32 bits; the short one holds 16 of them and is
+/// sign extended, so it reaches `$0000` to `$7FFF` and `$FFFF8000` to
+/// `$FFFFFFFF` (`Reference/68ks1e.htm`, "Forcing Absolute Short Addressing").
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum AddressWidth {
+    /// `label.w`: one extension word.
+    Word,
+    /// `label.l`: two extension words.
+    Long,
+}
+
+/// How a `Bcc`, `bra` or `bsr` encodes its displacement.
+///
+/// The three are distinct encodings of the same branch: the short one keeps
+/// its displacement in the operation word, so it is two bytes; the word one
+/// writes `$00` there and adds a word; the long one, which only the 68020 has,
+/// writes `$FF` and adds a long. On a 68000 and a 68010 that `$FF` is a short
+/// displacement of −1 (`docs/research/m68k-cpu-variants.md` §2.1 in the
+/// asm-editor).
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum BranchSize {
+    /// `.s`, also written `.b`: a displacement of −128 to 127, never 0.
+    Short,
+    /// `.w`: a displacement of −32768 to 32767.
+    Word,
+    /// `.l`, the 68020's: a displacement of 32 bits.
+    Long,
+}
+
+/// How far the extension word of a PC-relative Operand usually sits from the
+/// instruction's own address: the word after the operation word.
 ///
 /// On a 68000 the displacement of `d16(PC)` is added to the address of the
-/// extension word that holds it, which is the word after the operation word:
-/// two bytes past the instruction. s68k stores no encoded words and every
-/// instruction is four bytes ([`INSTRUCTION_SIZE`](crate::assembler::layout::INSTRUCTION_SIZE)),
-/// so the same two bytes are all that is needed to make the pair round-trip:
-/// the Assembler works out `label - (address + 2)` and the Interpreter reads
-/// back `address + 2 + displacement`. Both sides read this constant, which is
-/// what keeps them the same arithmetic.
+/// extension word that holds it. That is this word for every instruction but
+/// `movem` and `btst #n,d(pc)`, whose mask or bit number comes first and
+/// puts it two bytes further, which
+/// [`lowering::extension_word_offset`](super::lowering::extension_word_offset)
+/// says per instruction. A PC-relative [`Operand`] keeps the address it
+/// reaches, so the encoder ([`crate::machine::encode`]) finds the word as it
+/// writes it, and only the Assembler reads the number: to check that the
+/// distance fits its field (`Analyzer::check_pc_distance`) and to give
+/// `(pc,d1.w)`, which writes no displacement, the address of its extension
+/// word.
 pub const EXTENSION_WORD_OFFSET: i32 = 2;
 
 /*
@@ -241,6 +287,64 @@ impl FromStr for Condition {
     }
 }
 
+impl Condition {
+    /// Every condition in the order of its four-bit code, which is the order
+    /// of the variants: `t` is `%0000` and `le` is `%1111`.
+    pub const ALL: [Condition; 16] = [
+        Condition::True,
+        Condition::False,
+        Condition::High,
+        Condition::LowOrSame,
+        Condition::CarryClear,
+        Condition::CarrySet,
+        Condition::NotEqual,
+        Condition::Equal,
+        Condition::OverflowClear,
+        Condition::OverflowSet,
+        Condition::Plus,
+        Condition::Minus,
+        Condition::GreaterThanOrEqual,
+        Condition::LessThan,
+        Condition::GreaterThan,
+        Condition::LessThanOrEqual,
+    ];
+
+    /// The condition a four-bit code names, bits 11–8 of a `Bcc`, `DBcc` or
+    /// `Scc`; only the low four bits of `code` are read.
+    pub fn from_code(code: u16) -> Condition {
+        Condition::ALL[(code & 0xF) as usize]
+    }
+
+    /// The four-bit code of the condition, the inverse of
+    /// [`from_code`](Condition::from_code).
+    pub fn code(self) -> u16 {
+        self as u16
+    }
+
+    /// The canonical suffix, lowercase: `t`, `f`, `hi`, … `le`. The aliases
+    /// `hs` and `lo` are `cc` and `cs`.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Condition::True => "t",
+            Condition::False => "f",
+            Condition::High => "hi",
+            Condition::LowOrSame => "ls",
+            Condition::CarryClear => "cc",
+            Condition::CarrySet => "cs",
+            Condition::NotEqual => "ne",
+            Condition::Equal => "eq",
+            Condition::OverflowClear => "vc",
+            Condition::OverflowSet => "vs",
+            Condition::Plus => "pl",
+            Condition::Minus => "mi",
+            Condition::GreaterThanOrEqual => "ge",
+            Condition::LessThan => "lt",
+            Condition::GreaterThan => "gt",
+            Condition::LessThanOrEqual => "le",
+        }
+    }
+}
+
 /// Which way a shift or rotate moves its bits.
 #[derive(Copy, Clone, Debug, Serialize, PartialEq, Eq)]
 pub enum ShiftDirection {
@@ -259,13 +363,42 @@ pub enum Sign {
     Unsigned,
 }
 
-/// One assembled instruction, ready to run.
+/// One instruction, ready to run: what the Assembler stores and what the
+/// decoder ([`crate::machine::decode`]) reads back from words.
 ///
-/// The Mnemonic a student wrote and the variant here are not one to one: the
-/// Assembler normalises as it stores (`tests/corpus/README.md`,
-/// "Normalisations stay visible"), so `add #1,d0` is [`Instruction::ADDI`] and
-/// `move.l d0,a0` is [`Instruction::MOVEA`]. [`super::lowering`] is where that
-/// happens and [`super::table::Family`] is what decides it.
+/// **One value per encoding.** Every 68000 encoding has a value of its own, so
+/// that the encoder and the decoder are inverses over this enum. Where the
+/// 68000 has two encodings of one operation, they are told apart by variant or
+/// by Operand: [`ADDQ`](Instruction::ADDQ), [`ADDI`](Instruction::ADDI) and
+/// [`ADD`](Instruction::ADD) with an [`Operand::Immediate`] source are the
+/// three encodings of `add #1,d0`; [`MOVEQ`](Instruction::MOVEQ) and a long
+/// [`MOVE`](Instruction::MOVE) of an immediate are two of `move.l #1,d0`;
+/// [`CMP`](Instruction::CMP) and [`CMPI`](Instruction::CMPI), and
+/// [`AND`](Instruction::AND)/[`OR`](Instruction::OR) and their immediate
+/// forms, likewise. A shift by one in memory and a register shift by `#1` are
+/// told apart by their target: the memory form shifts a place in memory and
+/// the register forms a data register. A branch carries its [`BranchSize`]
+/// and an absolute address its [`AddressWidth`].
+///
+/// What is kept is what the 68000 reads. The bits it ignores are not: bits
+/// 10–8 of a brief index word, and the high byte of the word that holds a byte
+/// immediate, an `andi`/`ori`/`eori` to `ccr` or a static bit number. An
+/// immediate is kept as the value at the size it is read at, zero extended
+/// (`$FF` for `move.b #-1,d0`), and the displacement of `link` sign extended.
+/// So `encode(decode(words)) == words` holds for every sequence whose ignored
+/// bits are clear. Assemblers do not all clear them — GNU `as` writes
+/// `move.b #-1,d0` as `$103C $FFFF` — and such words decode to the same value
+/// as their clear form.
+///
+/// **The Assembler's choices.** The Mnemonic a student wrote and the variant
+/// here are not one to one: the Assembler chooses the encoding EASy68K
+/// chooses (`tests/corpus/README.md`, "Normalisations stay visible"), so
+/// `add #1,d0` is [`Instruction::ADDQ`], `add #100,d0`
+/// [`Instruction::ADDI`], `cmp #5,d0` [`Instruction::CMP`] and `move.l d0,a0`
+/// [`Instruction::MOVEA`]. It chooses a branch's [`BranchSize`] and an
+/// address's [`AddressWidth`] by EASy68K's back-reference rule as well.
+/// [`super::lowering`] is where that happens and [`super::choice`] holds the
+/// rules; [`crate::machine::encode`] writes the words.
 #[derive(Clone, Debug, Serialize, Copy, PartialEq, Eq)]
 pub enum Instruction {
     /// `adda.<size> <ea>,An`
@@ -350,20 +483,24 @@ pub enum Instruction {
     /// (`Reference/68ks8f.htm`).
     NBCD(Operand),
     /// `ext.w`, `ext.l` and `extb.l`: the register, the width read and the
-    /// width written.
+    /// width written. `extb.l`, a byte read and a long written, is the 68020's,
+    /// and the decoder reads it only for a 68020.
     EXT(RegisterOperand, Size, Size),
     /// `tst.<size> <ea>`
     TST(Operand, Size),
     /// `cmp.<size> <ea>,Dn`
     CMP(Operand, RegisterOperand, Size),
-    /// `Bcc <address>`
-    Bcc(u32, Condition),
+    /// `Bcc <address>`: the address it branches to, the condition and the
+    /// size of its displacement. The decoder never makes `t` or `f` here,
+    /// because those two codes are [`BRA`](Instruction::BRA) and
+    /// [`BSR`](Instruction::BSR).
+    Bcc(u32, Condition, BranchSize),
     /// `Scc <ea>`
     Scc(Operand, Condition),
     /// `DBcc Dn,<address>`
     DBcc(RegisterOperand, u32, Condition),
-    /// `bra <address>`
-    BRA(u32), //could use offset instead of address
+    /// `bra <address>`, with the size of its displacement.
+    BRA(u32, BranchSize),
     /// `link An,#n`
     LINK(RegisterOperand, u32),
     /// `unlk An`
@@ -398,10 +535,35 @@ pub enum Instruction {
     BCHG(Operand, Operand),
     /// `jmp <ea>`
     JMP(Operand),
-    /// `bsr <address>`
-    BSR(u32),
+    /// `bsr <address>`, with the size of its displacement.
+    BSR(u32, BranchSize),
     /// `trap #0-15`; only `#15`, the I/O trap, is simulated.
     TRAP(u8),
+    /// `rte`: pop the status register and the program counter an exception
+    /// pushed. Privileged. Not run yet: there are no exceptions to return
+    /// from.
+    RTE,
+    /// `stop #n`: load the status register and wait for an interrupt.
+    /// Privileged. Not run yet.
+    STOP(u16),
+    /// `reset`: assert the reset line to the devices. Privileged. Not run yet.
+    RESET,
+    /// `move usp,An` and `move An,usp`: the user stack pointer, which only
+    /// supervisor mode can reach. Privileged. Not run yet.
+    MOVEUSP {
+        /// `true` for `move An,usp`, `false` for `move usp,An`.
+        to_usp: bool,
+        /// The address register on the other side.
+        register: RegisterOperand,
+    },
+    /// A word of the form `$Axxx`, the line 1010 emulator: it raises an
+    /// exception of its own (vector 10), so that software can give it a
+    /// meaning. The whole word is kept. Not run yet.
+    LINEA(u16),
+    /// A word of the form `$Fxxx` other than SIMHALT's `$FFFF $FFFF`, the line
+    /// 1111 emulator (vector 11), where the 68020 finds its coprocessors. The
+    /// whole word is kept. Not run yet.
+    LINEF(u16),
     /// `movep.<size>`, a byte-interleaved transfer between a data register and
     /// every second byte of memory (`Reference/68ks4g.htm`).
     MOVEP {
@@ -420,7 +582,8 @@ pub enum Instruction {
     ///
     /// The 68000 has no such instruction — it is the 68010's — and s68k
     /// assembles it because the design record asks for `move` "to and from SR
-    /// and CCR" (the implementation notes, phase 3).
+    /// and CCR" (the implementation notes, phase 3). The decoder reads its
+    /// words only for a 68010 or later; on a 68000 they are illegal.
     MOVEfromCCR(Operand),
     /// `move <ea>,sr`: a word sets the whole status register.
     MOVEtoSR(Operand),
@@ -446,8 +609,14 @@ pub enum Instruction {
     CHK(Operand, RegisterOperand),
     /// `trapv`: end the run when the overflow flag is set.
     TRAPV,
-    /// `illegal`: end the run, always.
+    /// `illegal`, `$4AFC`: end the run, always.
     ILLEGAL,
+    /// A word that is the first word of no instruction of the processor it was
+    /// decoded for. The 68000 treats it as [`ILLEGAL`](Instruction::ILLEGAL)
+    /// (an illegal instruction exception, vector 4), and so does s68k; the word
+    /// is kept so that it can be shown, as `dc.w`, and written back. The
+    /// Assembler never makes one.
+    IllegalWord(u16),
     /// `rts`
     RTS,
     /// `nop`

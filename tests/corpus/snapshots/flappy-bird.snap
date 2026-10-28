@@ -58,7 +58,7 @@ expression: fixture
     {
       "address": "$1028",
       "line": 22,
-      "text": "cmpi.w #$1,d0"
+      "text": "cmp.w #$1,d0"
     },
     {
       "address": "$102c",
@@ -68,7 +68,7 @@ expression: fixture
     {
       "address": "$1030",
       "line": 24,
-      "text": "cmpi.w #$2,d0"
+      "text": "cmp.w #$2,d0"
     },
     {
       "address": "$1034",
@@ -113,7 +113,7 @@ expression: fixture
     {
       "address": "$1054",
       "line": 35,
-      "text": "move.w #$ffffffb0,$185e"
+      "text": "move.w #$ffb0,$185e"
     },
     {
       "address": "$1058",
@@ -133,7 +133,7 @@ expression: fixture
     {
       "address": "$1064",
       "line": 42,
-      "text": "move.w #$ffffffb0,$185e"
+      "text": "move.w #$ffb0,$185e"
     },
     {
       "address": "$1068",
@@ -153,7 +153,7 @@ expression: fixture
     {
       "address": "$1074",
       "line": 47,
-      "text": "cmpi.w #$96,d0"
+      "text": "cmp.w #$96,d0"
     },
     {
       "address": "$1078",
@@ -263,7 +263,7 @@ expression: fixture
     {
       "address": "$10cc",
       "line": 76,
-      "text": "cmpi.w #$96,d0"
+      "text": "cmp.w #$96,d0"
     },
     {
       "address": "$10d0",
@@ -303,7 +303,7 @@ expression: fixture
     {
       "address": "$10ec",
       "line": 86,
-      "text": "cmpi.w #$17e,d0"
+      "text": "cmp.w #$17e,d0"
     },
     {
       "address": "$10f0",
@@ -723,7 +723,7 @@ expression: fixture
     {
       "address": "$123c",
       "line": 211,
-      "text": "cmpi.w #$ffffffba,d1"
+      "text": "cmp.w #$ffba,d1"
     },
     {
       "address": "$1240",
@@ -778,7 +778,7 @@ expression: fixture
     {
       "address": "$1268",
       "line": 224,
-      "text": "cmpi.w #$96,d2"
+      "text": "cmp.w #$96,d2"
     },
     {
       "address": "$126c",
@@ -833,7 +833,7 @@ expression: fixture
     {
       "address": "$1294",
       "line": 241,
-      "text": "cmpi.w #$1a0,d2"
+      "text": "cmp.w #$1a0,d2"
     },
     {
       "address": "$1298",
@@ -878,7 +878,7 @@ expression: fixture
     {
       "address": "$12b8",
       "line": 253,
-      "text": "cmpi.w #$be,d4"
+      "text": "cmp.w #$be,d4"
     },
     {
       "address": "$12bc",
@@ -888,7 +888,7 @@ expression: fixture
     {
       "address": "$12c0",
       "line": 255,
-      "text": "cmpi.w #$9c,d5"
+      "text": "cmp.w #$9c,d5"
     },
     {
       "address": "$12c4",
@@ -1063,7 +1063,7 @@ expression: fixture
     {
       "address": "$134c",
       "line": 302,
-      "text": "cmpi.w #$ffffff74,d5"
+      "text": "cmp.w #$ff74,d5"
     },
     {
       "address": "$1350",
@@ -1103,7 +1103,7 @@ expression: fixture
     {
       "address": "$136c",
       "line": 312,
-      "text": "cmpi.w #$ffffff74,d5"
+      "text": "cmp.w #$ff74,d5"
     },
     {
       "address": "$1370",
@@ -1243,7 +1243,7 @@ expression: fixture
     {
       "address": "$13dc",
       "line": 346,
-      "text": "addi.w #$6,d2"
+      "text": "addq.w #$6,d2"
     },
     {
       "address": "$13e0",
@@ -1833,7 +1833,7 @@ expression: fixture
     {
       "address": "$15b4",
       "line": 492,
-      "text": "cmpi.w #$2,d0"
+      "text": "cmp.w #$2,d0"
     },
     {
       "address": "$15b8",
@@ -1848,7 +1848,7 @@ expression: fixture
     {
       "address": "$15c0",
       "line": 495,
-      "text": "cmpi.w #$c,d6"
+      "text": "cmp.w #$c,d6"
     },
     {
       "address": "$15c4",
@@ -1963,7 +1963,7 @@ expression: fixture
     {
       "address": "$161c",
       "line": 522,
-      "text": "addi.w #$7,d2"
+      "text": "addq.w #$7,d2"
     },
     {
       "address": "$1620",
@@ -2033,7 +2033,7 @@ expression: fixture
     {
       "address": "$1654",
       "line": 537,
-      "text": "addi.w #$7,d4"
+      "text": "addq.w #$7,d4"
     },
     {
       "address": "$1658",
@@ -2113,7 +2113,7 @@ expression: fixture
     {
       "address": "$1694",
       "line": 557,
-      "text": "cmpi.w #$0,d0"
+      "text": "cmp.w #$0,d0"
     },
     {
       "address": "$1698",
@@ -2223,7 +2223,7 @@ expression: fixture
     {
       "address": "$16ec",
       "line": 582,
-      "text": "cmpi.w #$2,d0"
+      "text": "cmp.w #$2,d0"
     },
     {
       "address": "$16f0",

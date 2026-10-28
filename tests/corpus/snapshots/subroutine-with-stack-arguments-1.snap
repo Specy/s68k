@@ -23,7 +23,7 @@ expression: fixture
     {
       "address": "$100c",
       "line": 3,
-      "text": "addi.l #$8,a7"
+      "text": "addq.l #$8,a7"
     },
     {
       "address": "$1010",

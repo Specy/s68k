@@ -3,52 +3,147 @@
 //!
 //! This is the last step of the front end: the analyzer has already said that
 //! the Operation is well formed, so nothing here diagnoses anything. It
-//! evaluates the Expressions through [`Values`], normalises the Mnemonic the
-//! way `tests/corpus/README.md` ("Normalisations stay visible") describes —
-//! `add #1,d0` becomes an `addi`, `move.l d0,a0` a `movea`, `cmp (a0)+,(a1)+` a
-//! `cmpm` — and builds the [`Instruction`] the Interpreter runs.
+//! evaluates the Expressions through [`Values`], picks the 68000 encoding the
+//! line assembles as, and builds the [`Instruction`] the Interpreter runs and
+//! the encoder ([`crate::machine::encode`]) writes as words.
+//!
+//! # Which encoding
+//!
+//! EASy68K's, always (the asm-editor's `docs/design/m68k-machine.md`, decision
+//! 5, and `docs/research/easy68k-machine-behaviour.md` §13 and §15). Where an
+//! instruction has several, EASy68K tries its forms in order and the first that
+//! fits wins, so that order is written here family by family:
+//!
+//! * `cmp #n,dn` is `cmp <ea>,dn`, and `cmp #n,<memory>` is `cmpi`;
+//! * `and #n,dn` and `or #n,dn` are `and <ea>,dn` and `or <ea>,dn`, and into
+//!   memory they are `andi` and `ori`; `eor #n` is `eori`;
+//! * `add #n,an` and `sub #n,an` are `adda` and `suba`, and into anything else
+//!   `addi` and `subi`;
+//! * `move` into an address register is `movea`, `cmp` into one `cmpa`, and
+//!   two postincrements `cmpm`.
+//!
+//! Then the optimisations, which EASy68K always makes and which `#n.l` turns
+//! off ([`super::choice`]): `move.l #n,dn` of −128 to 127 is `moveq`, and an
+//! `add`, `addi`, `adda`, `sub`, `subi` or `suba` of 1 to 8 is `addq` or
+//! `subq`. Each needs the immediate to be a back reference, and so do a short
+//! branch and a short absolute address, which is why an Operand is lowered
+//! with that fact beside it ([`Lowered`]).
+//!
+//! An immediate is stored at the size the instruction reads it at, zero
+//! extended, and `exg an,dn` as `exg dn,an`: one value per encoding, so that
+//! decoding the words gives back the Instruction that was encoded
+//! ([`Instruction`], "One value per encoding").
 //!
 //! [`lower`] has one arm per [`Family`] and no catch-all, so a Family that
 //! gains a variant does not compile until it is given an encoding.
 
 use crate::assembler::ast::{self, SizeSuffix};
 
+use super::choice;
 use super::encoded::{
-    IndexRegister, Instruction, Operand, RegisterOperand, ShiftDirection, Size, TargetDirection,
-    EXTENSION_WORD_OFFSET,
+    BranchSize, IndexRegister, Instruction, Operand, RegisterOperand, ShiftDirection, Size,
+    TargetDirection, EXTENSION_WORD_OFFSET,
 };
 use super::table::{BitOperation, Family, ImmediateKind, LogicalKind, ShiftKind, ShiftWay};
 
 /// What the lowering needs to know that the tree does not hold: the value of
-/// every Expression in it.
+/// every Expression in it, whether it is a back reference, and where the
+/// instruction sits.
 ///
-/// The analyzer implements it (`analyzer::Context`), and so will the evaluator
-/// of `src/assembler/expr.rs` when it arrives. `None` means the value cannot be
-/// known — an undefined Symbol, a division by zero — in which case the
-/// Diagnostic has already been raised and nothing is lowered.
+/// The analyzer implements it (`analyzer::Context`). `None` from
+/// [`value_of`](Values::value_of) means the value cannot be known — an
+/// undefined Symbol, a division by zero — in which case the Diagnostic has
+/// already been raised and nothing is lowered.
 pub trait Values {
     /// The value of one Expression, in 64 bits.
     fn value_of(&self, expression: &ast::Expr) -> Option<i64>;
 
+    /// Whether every Symbol in the Expression is defined above the line, or on
+    /// it: EASy68K's back reference, which is what a short branch, a short
+    /// address and the quick forms need ([`super::choice`]). An Expression of
+    /// numbers alone is one.
+    fn is_back_reference(&self, expression: &ast::Expr) -> bool;
+
     /// The address the instruction being lowered is laid out at.
     ///
-    /// Only a PC-relative Operand needs it, and it needs it because the source
-    /// writes an address there and the encoded Operand holds a displacement
-    /// from this instruction ([`EXTENSION_WORD_OFFSET`]). Everything else is
-    /// lowered without knowing where it sits.
+    /// A PC-relative Operand needs it, because `(pc,d1.w)`, which writes no
+    /// address, names its own extension word, and so does a branch, whose
+    /// size depends on how far it reaches.
     fn instruction_address(&self) -> i64;
+}
+
+/// One Operand lowered, with the two facts about how it was written that
+/// EASy68K's choices of encoding read ([`super::choice`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lowered {
+    /// The Operand itself.
+    pub operand: Operand,
+    /// Whether every Symbol in its Expression is defined above the line, which
+    /// is always so for an Operand that has no Expression, and for one of
+    /// numbers alone.
+    pub back_reference: bool,
+    /// Whether it is an immediate written `#n.l`, which keeps the long form of
+    /// `move.l`, `add` and `sub`.
+    pub long: bool,
+}
+
+impl Lowered {
+    /// An Operand written with numbers alone and no `#n.l`, which is what a
+    /// hand-built line is: every choice is then made by its value.
+    pub fn known(operand: Operand) -> Self {
+        Self {
+            operand,
+            back_reference: true,
+            long: false,
+        }
+    }
+}
+
+/// What the lowering reads from the line beyond its Operands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Site {
+    /// The size suffix the Operation was written with, `None` when it has
+    /// none: what tells `move.l #1,d0`, which is a `moveq`, from `move #1,d0`,
+    /// which is a word, and a branch written `.s` from one whose size is
+    /// chosen.
+    pub written: Option<SizeSuffix>,
+    /// The address the instruction is laid out at, which is what a branch's
+    /// displacement is measured from.
+    pub address: u32,
 }
 
 /// The encoded form of one parsed Operand, or `None` when a value in it cannot
 /// be worked out.
 ///
+/// `extension_word` is the address of the instruction's extension word that a
+/// PC-relative Operand's displacement would sit in ([`extension_word_offset`]
+/// past the instruction), which `(pc,d1.w)` reaches since it writes no address.
+///
 /// A register list becomes its mask as an [`Operand::Immediate`], which is how
 /// 1.4.2 carried one and what [`Family::Movem`]'s lowering reads back. A
 /// special register has no encoded form at all: `sr` and `ccr` are part of the
 /// [`Instruction`] that names them and `usp` is not assembled.
-pub fn lower_operand(operand: &ast::Operand, values: &dyn Values) -> Option<Operand> {
-    Some(match operand {
-        ast::Operand::Immediate { value, .. } => Operand::Immediate(values.value_of(value)? as u32),
+///
+/// An absolute address gets its width here, by EASy68K's rule
+/// ([`choice::address_width`]): forced by `.w` or `.l`, else a word for a back
+/// reference a word holds, and a long otherwise.
+pub fn lower_operand(
+    operand: &ast::Operand,
+    values: &dyn Values,
+    extension_word: i64,
+) -> Option<Lowered> {
+    let mut back_reference = true;
+    let mut long = false;
+    let lowered = match operand {
+        ast::Operand::Immediate {
+            value,
+            long: written_long,
+            ..
+        } => {
+            back_reference = values.is_back_reference(value);
+            long = *written_long;
+            Operand::Immediate(values.value_of(value)? as u32)
+        }
         ast::Operand::DataRegisterDirect { register, .. } => {
             Operand::Register(RegisterOperand::Data(register.number))
         }
@@ -80,45 +175,80 @@ pub fn lower_operand(operand: &ast::Operand, values: &dyn Values) -> Option<Oper
         // An address is 32 bits wide, so a negative value is the address its
         // two's complement names and never a 64-bit number: `as u32` first,
         // which is what 1.4.2 stored as well.
-        ast::Operand::Absolute { value, .. } => {
-            Operand::Absolute(values.value_of(value)? as u32 as usize)
+        ast::Operand::Absolute { value, size, .. } => {
+            back_reference = values.is_back_reference(value);
+            let address = values.value_of(value)? as u32;
+            Operand::Absolute {
+                address: address as usize,
+                width: choice::address_width(*size, back_reference, address),
+            }
         }
         ast::Operand::RegisterList { items, .. } => Operand::Immediate(register_mask(items) as u32),
-        // A PC-relative Operand is written as the address it reaches and stored
-        // as the distance from this instruction's extension word to it, which
-        // is the whole of what makes the two sides agree: the analyzer has
-        // already refused a distance the field cannot hold, so the truncation
-        // here only ever throws away bits a reported line would have had.
-        ast::Operand::PcDisplacement { displacement, .. } => Operand::PcDisplacement {
-            offset: pc_relative_offset(values, displacement)? as i16 as i32,
-        },
+        // A PC-relative Operand is written as the address it reaches and
+        // stored as that address. The analyzer has already refused one whose
+        // distance from the extension word does not fit its field
+        // ([`pc_relative_offset`]).
+        ast::Operand::PcDisplacement { displacement, .. } => {
+            back_reference = values.is_back_reference(displacement);
+            Operand::PcDisplacement {
+                target: values.value_of(displacement)? as u32,
+            }
+        }
         ast::Operand::PcIndex {
             displacement,
             index,
             ..
         } => Operand::PcIndex {
-            offset: match displacement {
-                Some(displacement) => pc_relative_offset(values, displacement)? as i8 as i32,
-                // `(pc,d1.w)` writes no address at all, so there is none to
-                // measure from: the displacement is zero, as it is in
-                // `(a0,d1.w)` (`docs/grammar.md` 2.5).
-                None => 0,
+            target: match displacement {
+                Some(displacement) => {
+                    back_reference = values.is_back_reference(displacement);
+                    values.value_of(displacement)? as u32
+                }
+                // `(pc,d1.w)` writes no address at all: the displacement is
+                // zero, as it is in `(a0,d1.w)` (`docs/grammar.md` 2.5), so it
+                // reaches its own extension word.
+                None => extension_word as u32,
             },
             index: lower_index_register(index),
         },
         ast::Operand::SpecialRegister { .. } => return None,
+    };
+    Some(Lowered {
+        operand: lowered,
+        back_reference,
+        long,
     })
 }
 
-/// The distance from the extension word of the instruction being lowered to
-/// the address a PC-relative Operand names.
+/// How far past an instruction the extension word of its PC-relative Operand
+/// sits: [`EXTENSION_WORD_OFFSET`], the word after the operation word, but for
+/// `movem`, whose register mask comes first, and a bit instruction with a
+/// static bit number, whose number does. Those two are 4.
 ///
-/// This is the one half of the round trip the Assembler owns; the other is the
-/// Interpreter adding [`EXTENSION_WORD_OFFSET`] and this number back together
-/// (`src/interpreter.rs`).
-pub fn pc_relative_offset(values: &dyn Values, address: &ast::Expr) -> Option<i64> {
+/// The 68000 adds the displacement to the address of the word that holds it,
+/// so this is what a PC-relative distance is measured from, both when the
+/// analyzer checks it and when `(pc,d1.w)` is given the address it reaches.
+/// No other instruction puts a word before a PC-relative Operand's: a
+/// PC-relative Operand is read and never written, so it is the first Operand
+/// everywhere else, or follows a register.
+pub fn extension_word_offset(family: Family, operands: &[ast::Operand]) -> i64 {
+    match (family, operands.first()) {
+        (Family::Movem, _) | (Family::Bit(_), Some(ast::Operand::Immediate { .. })) => 4,
+        _ => EXTENSION_WORD_OFFSET as i64,
+    }
+}
+
+/// The distance from a PC-relative Operand's extension word, `extension_offset`
+/// past the instruction being lowered ([`extension_word_offset`]), to the
+/// address it names: the displacement the 68000 encodes, which the analyzer
+/// holds to the width of its field.
+pub fn pc_relative_offset(
+    values: &dyn Values,
+    address: &ast::Expr,
+    extension_offset: i64,
+) -> Option<i64> {
     let target = values.value_of(address)?;
-    Some(target - (values.instruction_address() + EXTENSION_WORD_OFFSET as i64))
+    Some(target - (values.instruction_address() + extension_offset))
 }
 
 /// The index register of an indexed Operand. No size written means `.w`, the
@@ -176,24 +306,33 @@ pub fn lower_size(size: Option<SizeSuffix>, default: Option<Size>) -> Option<Siz
 /// The [`Instruction`] one checked Operation encodes to.
 ///
 /// This is what the analyzer calls once it has nothing left to say about the
-/// line. It answers the shapes that name a half of the status register first —
-/// `sr` and `ccr` are Operands the encoded [`Operand`] has no form for, so they
-/// are read from the tree rather than lowered — and everything else by
-/// evaluating each Operand and handing the result to [`lower`].
+/// line. `written` is the size suffix the Operation was written with and `size`
+/// the size it works at, already defaulted by [`lower_size`]. It answers the
+/// shapes that name a half of the status register first — `sr` and `ccr` are
+/// Operands the encoded [`Operand`] has no form for, so they are read from the
+/// tree rather than lowered — and everything else by lowering each Operand and
+/// handing the result to [`lower`].
 pub fn lower_operation(
     family: Family,
+    written: Option<SizeSuffix>,
     size: Option<Size>,
     operands: &[ast::Operand],
     values: &dyn Values,
 ) -> Option<Instruction> {
-    if let Some(instruction) = lower_status_register(family, operands, values) {
+    let address = values.instruction_address();
+    let extension_word = address + extension_word_offset(family, operands);
+    if let Some(instruction) = lower_status_register(family, operands, values, extension_word) {
         return Some(instruction);
     }
-    let lowered: Vec<Operand> = operands
+    let lowered: Vec<Lowered> = operands
         .iter()
-        .map(|operand| lower_operand(operand, values))
+        .map(|operand| lower_operand(operand, values, extension_word))
         .collect::<Option<Vec<_>>>()?;
-    lower(family, size, &lowered)
+    let site = Site {
+        written,
+        address: address as u32,
+    };
+    lower(family, size, &lowered, &site)
 }
 
 /// The Operations that read or write `sr` or `ccr`, or `None` when this is not
@@ -209,28 +348,27 @@ fn lower_status_register(
     family: Family,
     operands: &[ast::Operand],
     values: &dyn Values,
+    extension_word: i64,
 ) -> Option<Instruction> {
     let [first, second] = operands else {
         return None;
     };
     use ast::SpecialRegister::{Ccr, Sr};
+    let lowered =
+        |operand| lower_operand(operand, values, extension_word).map(|lowered| lowered.operand);
     match (
         family,
         half_of_the_status_register(first),
         half_of_the_status_register(second),
     ) {
         (Family::Move, None, Some(Ccr)) => {
-            Some(Instruction::MOVEtoCCR(lower_operand(first, values)?))
+            Some(Instruction::MOVEtoCCR(at_size(lowered(first)?, Size::Word)))
         }
         (Family::Move, None, Some(Sr)) => {
-            Some(Instruction::MOVEtoSR(lower_operand(first, values)?))
+            Some(Instruction::MOVEtoSR(at_size(lowered(first)?, Size::Word)))
         }
-        (Family::Move, Some(Ccr), None) => {
-            Some(Instruction::MOVEfromCCR(lower_operand(second, values)?))
-        }
-        (Family::Move, Some(Sr), None) => {
-            Some(Instruction::MOVEfromSR(lower_operand(second, values)?))
-        }
+        (Family::Move, Some(Ccr), None) => Some(Instruction::MOVEfromCCR(lowered(second)?)),
+        (Family::Move, Some(Sr), None) => Some(Instruction::MOVEfromSR(lowered(second)?)),
         (Family::Immediate(kind), None, Some(destination)) => {
             let ast::Operand::Immediate { value, .. } = first else {
                 return None;
@@ -271,26 +409,33 @@ fn half_of_the_status_register(operand: &ast::Operand) -> Option<ast::SpecialReg
 ///
 /// `size` is the size the instruction works at, already defaulted by
 /// [`lower_size`]; it is `None` exactly for the unsized families. `operands`
-/// are the Operands of the matched Form, already lowered.
+/// are the Operands of the matched Form, already lowered, and `site` is what
+/// the Operation wrote and where it is.
 ///
 /// `None` means the shape is not one this Family encodes, which the analyzer
 /// has already reported: lowering never raises a Diagnostic of its own.
-pub fn lower(family: Family, size: Option<Size>, operands: &[Operand]) -> Option<Instruction> {
+pub fn lower(
+    family: Family,
+    size: Option<Size>,
+    operands: &[Lowered],
+    site: &Site,
+) -> Option<Instruction> {
+    let operand = |index: usize| operands.get(index).map(|lowered| lowered.operand);
     match family {
-        Family::Move => lower_move(size?, operands),
+        Family::Move => lower_move(size?, operands, site),
         Family::Movea => Some(Instruction::MOVEA(
-            *operands.first()?,
-            register(operands.get(1))?,
+            at_size(operand(0)?, size?),
+            register(operand(1))?,
             size?,
         )),
-        Family::Movem => lower_movem(size?, operands),
+        Family::Movem => lower_movem(size?, operand(0)?, operand(1)?),
         Family::Moveq => Some(Instruction::MOVEQ(
-            immediate(operands.first())? as u8,
-            register(operands.get(1))?,
+            immediate(operand(0))? as u8,
+            register(operand(1))?,
         )),
         Family::AddSub { subtract } => lower_add_sub(subtract, size?, operands),
         Family::AddSubExtended { subtract } => {
-            let (source, destination) = (*operands.first()?, *operands.get(1)?);
+            let (source, destination) = (operand(0)?, operand(1)?);
             Some(match subtract {
                 false => Instruction::ADDX(source, destination, size?),
                 true => Instruction::SUBX(source, destination, size?),
@@ -300,62 +445,48 @@ pub fn lower(family: Family, size: Option<Size>, operands: &[Operand]) -> Option
             // No size reaches the encoded instruction: `abcd` and `sbcd` work
             // on one byte and the table gives them no other size, so the
             // Instruction carries none (`Reference/68ks8e.htm`).
-            let (source, destination) = (*operands.first()?, *operands.get(1)?);
+            let (source, destination) = (operand(0)?, operand(1)?);
             Some(match subtract {
                 false => Instruction::ABCD(source, destination),
                 true => Instruction::SBCD(source, destination),
             })
         }
         Family::AddSubAddress { subtract } => {
-            let (source, destination) = (*operands.first()?, register(operands.get(1))?);
-            Some(match subtract {
-                false => Instruction::ADDA(source, destination, size?),
-                true => Instruction::SUBA(source, destination, size?),
-            })
+            let (source, destination) = (operands.first()?, register(operand(1))?);
+            Some(into_address_register(subtract, size?, source, destination))
         }
         Family::AddSubQuick { subtract } => {
-            let (count, destination) = (immediate(operands.first())? as u8, *operands.get(1)?);
+            let (count, destination) = (immediate(operand(0))? as u8, operand(1)?);
             Some(match subtract {
                 false => Instruction::ADDQ(count, destination, size?),
                 true => Instruction::SUBQ(count, destination, size?),
             })
         }
         Family::Immediate(kind) => lower_immediate(kind, size?, operands),
-        Family::Cmp => lower_cmp(size?, operands),
+        Family::Cmp => lower_cmp(size?, operand(0)?, operand(1)?),
         Family::Cmpa => Some(Instruction::CMPA(
-            *operands.first()?,
-            register(operands.get(1))?,
+            at_size(operand(0)?, size?),
+            register(operand(1))?,
             size?,
         )),
-        Family::Cmpm => Some(Instruction::CMPM(
-            *operands.first()?,
-            *operands.get(1)?,
-            size?,
-        )),
-        Family::Logical(kind) => {
-            let (source, destination) = (*operands.first()?, *operands.get(1)?);
-            Some(match kind {
-                LogicalKind::And => Instruction::AND(source, destination, size?),
-                LogicalKind::Or => Instruction::OR(source, destination, size?),
-                LogicalKind::Eor => Instruction::EOR(source, destination, size?),
-            })
-        }
+        Family::Cmpm => Some(Instruction::CMPM(operand(0)?, operand(1)?, size?)),
+        Family::Logical(kind) => lower_logical(kind, size?, operand(0)?, operand(1)?),
         Family::Divide(sign) => Some(Instruction::DIVx(
-            *operands.first()?,
-            register(operands.get(1))?,
+            at_size(operand(0)?, Size::Word),
+            register(operand(1))?,
             sign,
         )),
         Family::Multiply(sign) => Some(Instruction::MULx(
-            *operands.first()?,
-            register(operands.get(1))?,
+            at_size(operand(0)?, Size::Word),
+            register(operand(1))?,
             sign,
         )),
-        Family::Clr => Some(Instruction::CLR(*operands.first()?, size?)),
-        Family::Neg => Some(Instruction::NEG(*operands.first()?, size?)),
-        Family::NegExtended => Some(Instruction::NEGX(*operands.first()?, size?)),
-        Family::NegDecimal => Some(Instruction::NBCD(*operands.first()?)),
-        Family::Not => Some(Instruction::NOT(*operands.first()?, size?)),
-        Family::Tst => Some(Instruction::TST(*operands.first()?, size?)),
+        Family::Clr => Some(Instruction::CLR(operand(0)?, size?)),
+        Family::Neg => Some(Instruction::NEG(operand(0)?, size?)),
+        Family::NegExtended => Some(Instruction::NEGX(operand(0)?, size?)),
+        Family::NegDecimal => Some(Instruction::NBCD(operand(0)?)),
+        Family::Not => Some(Instruction::NOT(operand(0)?, size?)),
+        Family::Tst => Some(Instruction::TST(operand(0)?, size?)),
         Family::Ext => {
             // `ext.w` reads a byte and writes a word; `ext.l` reads a word and
             // writes a long.
@@ -364,42 +495,47 @@ pub fn lower(family: Family, size: Option<Size>, operands: &[Operand]) -> Option
                 Size::Long => (Size::Word, Size::Long),
                 Size::Byte => return None,
             };
-            Some(Instruction::EXT(register(operands.first())?, read, written))
+            Some(Instruction::EXT(register(operand(0))?, read, written))
         }
         Family::ExtByteToLong => Some(Instruction::EXT(
-            register(operands.first())?,
+            register(operand(0))?,
             Size::Byte,
             Size::Long,
         )),
-        Family::Swap => Some(Instruction::SWAP(register(operands.first())?)),
-        Family::Exg => Some(Instruction::EXG(
-            register(operands.first())?,
-            register(operands.get(1))?,
-        )),
-        Family::Lea => Some(Instruction::LEA(
-            *operands.first()?,
-            register(operands.get(1))?,
-        )),
-        Family::Pea => Some(Instruction::PEA(*operands.first()?)),
+        Family::Swap => Some(Instruction::SWAP(register(operand(0))?)),
+        Family::Exg => Some(lower_exg(register(operand(0))?, register(operand(1))?)),
+        Family::Lea => Some(Instruction::LEA(operand(0)?, register(operand(1))?)),
+        Family::Pea => Some(Instruction::PEA(operand(0)?)),
         Family::Link => Some(Instruction::LINK(
-            register(operands.first())?,
-            immediate(operands.get(1))?,
+            register(operand(0))?,
+            immediate(operand(1))?,
         )),
-        Family::Unlk => Some(Instruction::UNLK(register(operands.first())?)),
-        Family::Jmp => Some(Instruction::JMP(*operands.first()?)),
-        Family::Jsr => Some(Instruction::JSR(*operands.first()?)),
-        Family::Bra => Some(Instruction::BRA(address(operands.first())?)),
-        Family::Bsr => Some(Instruction::BSR(address(operands.first())?)),
-        Family::Bcc(condition) => Some(Instruction::Bcc(address(operands.first())?, condition)),
-        Family::Scc(condition) => Some(Instruction::Scc(*operands.first()?, condition)),
+        Family::Unlk => Some(Instruction::UNLK(register(operand(0))?)),
+        Family::Jmp => Some(Instruction::JMP(operand(0)?)),
+        Family::Jsr => Some(Instruction::JSR(operand(0)?)),
+        Family::Bra => {
+            let (target, size) = branch(operands.first()?, site)?;
+            Some(Instruction::BRA(target, size))
+        }
+        Family::Bsr => {
+            let (target, size) = branch(operands.first()?, site)?;
+            Some(Instruction::BSR(target, size))
+        }
+        Family::Bcc(condition) => {
+            let (target, size) = branch(operands.first()?, site)?;
+            Some(Instruction::Bcc(target, condition, size))
+        }
+        Family::Scc(condition) => Some(Instruction::Scc(operand(0)?, condition)),
         Family::DBcc(condition) => Some(Instruction::DBcc(
-            register(operands.first())?,
-            address(operands.get(1))?,
+            register(operand(0))?,
+            address(operand(1))?,
             condition,
         )),
         Family::Shift(kind, way) => lower_shift(kind, way, size?, operands),
         Family::Bit(operation) => {
-            let (bit, destination) = (*operands.first()?, *operands.get(1)?);
+            // An immediate destination is the dynamic form's, `btst d0,#5`,
+            // and is read as a byte.
+            let (bit, destination) = (operand(0)?, at_size(operand(1)?, Size::Byte));
             Some(match operation {
                 BitOperation::Test => Instruction::BTST(bit, destination),
                 BitOperation::Set => Instruction::BSET(bit, destination),
@@ -407,15 +543,15 @@ pub fn lower(family: Family, size: Option<Size>, operands: &[Operand]) -> Option
                 BitOperation::Change => Instruction::BCHG(bit, destination),
             })
         }
-        Family::Trap => Some(Instruction::TRAP(immediate(operands.first())? as u8)),
+        Family::Trap => Some(Instruction::TRAP(immediate(operand(0))? as u8)),
         Family::Rts => Some(Instruction::RTS),
         Family::Nop => Some(Instruction::NOP),
-        Family::Movep => lower_movep(size?, operands),
-        Family::Tas => Some(Instruction::TAS(*operands.first()?)),
+        Family::Movep => lower_movep(size?, operand(0)?, operand(1)?),
+        Family::Tas => Some(Instruction::TAS(operand(0)?)),
         Family::Rtr => Some(Instruction::RTR),
         Family::Chk => Some(Instruction::CHK(
-            *operands.first()?,
-            register(operands.get(1))?,
+            at_size(operand(0)?, Size::Word),
+            register(operand(1))?,
         )),
         Family::Trapv => Some(Instruction::TRAPV),
         Family::Illegal => Some(Instruction::ILLEGAL),
@@ -427,8 +563,7 @@ pub fn lower(family: Family, size: Option<Size>, operands: &[Operand]) -> Option
 /// The other Operand is a displacement one — the only Addressing mode `movep`
 /// takes (`Reference/68ks4g.htm`) — and the analyzer has already said so, which
 /// is why nothing here diagnoses a target that is not one.
-fn lower_movep(size: Size, operands: &[Operand]) -> Option<Instruction> {
-    let (first, second) = (*operands.first()?, *operands.get(1)?);
+fn lower_movep(size: Size, first: Operand, second: Operand) -> Option<Instruction> {
     let (register, target, direction) = match (first, second) {
         (Operand::Register(register @ RegisterOperand::Data(_)), target) => {
             (register, target, TargetDirection::ToMemory)
@@ -446,67 +581,183 @@ fn lower_movep(size: Size, operands: &[Operand]) -> Option<Instruction> {
     })
 }
 
-/// `move`, which is a `movea` when the destination is an address register.
-fn lower_move(size: Size, operands: &[Operand]) -> Option<Instruction> {
-    let (source, destination) = (*operands.first()?, *operands.get(1)?);
-    Some(match destination {
+/// `move`: a `movea` into an address register, a `moveq` when EASy68K makes
+/// one ([`choice::moveq_value`]), and a `move` otherwise.
+fn lower_move(size: Size, operands: &[Lowered], site: &Site) -> Option<Instruction> {
+    let (source, destination) = (operands.first()?, operands.get(1)?);
+    Some(match destination.operand {
         Operand::Register(register @ RegisterOperand::Address(_)) => {
-            Instruction::MOVEA(source, register, size)
+            Instruction::MOVEA(at_size(source.operand, size), register, size)
         }
-        _ => Instruction::MOVE(source, destination, size),
+        Operand::Register(register @ RegisterOperand::Data(_)) => match (source.operand, size) {
+            (Operand::Immediate(value), Size::Long) => {
+                match choice::moveq_value(site.written, source.back_reference, source.long, value) {
+                    Some(value) => Instruction::MOVEQ(value, register),
+                    None => Instruction::MOVE(source.operand, destination.operand, size),
+                }
+            }
+            _ => Instruction::MOVE(at_size(source.operand, size), destination.operand, size),
+        },
+        _ => Instruction::MOVE(at_size(source.operand, size), destination.operand, size),
     })
 }
 
-/// `add` and `sub`, which are `addi`/`subi` on an immediate source and
-/// `adda`/`suba` into an address register — in that order, which is why
-/// `add #1,a0` is an `addi` (`tests/corpus/README.md`, "will change").
-fn lower_add_sub(subtract: bool, size: Size, operands: &[Operand]) -> Option<Instruction> {
-    let (source, destination) = (*operands.first()?, *operands.get(1)?);
-    Some(match (source, destination) {
-        (Operand::Immediate(value), _) => match subtract {
-            false => Instruction::ADDI(value, destination, size),
-            true => Instruction::SUBI(value, destination, size),
+/// The count of the `addq` or `subq` an immediate Operand makes, when EASy68K
+/// makes one ([`choice::quick_count`]).
+fn quick(operand: &Lowered) -> Option<u8> {
+    match operand.operand {
+        Operand::Immediate(value) => {
+            choice::quick_count(operand.back_reference, operand.long, value)
+        }
+        _ => None,
+    }
+}
+
+/// `add` and `sub`, in EASy68K's order of forms (`addfl` in its
+/// `INSTTABL.CPP`): into an address register an `adda`/`suba`; an immediate
+/// into anything else an `addi`/`subi`; then `<ea>,dn` and `dn,<ea>`. Each
+/// immediate one is an `addq`/`subq` when the quick form applies.
+///
+/// An address register into memory has no encoding, and the analyzer has
+/// refused it.
+fn lower_add_sub(subtract: bool, size: Size, operands: &[Lowered]) -> Option<Instruction> {
+    let (source, destination) = (operands.first()?, operands.get(1)?);
+    Some(match (source.operand, destination.operand) {
+        (_, Operand::Register(register @ RegisterOperand::Address(_))) => {
+            into_address_register(subtract, size, source, register)
+        }
+        (Operand::Immediate(value), destination) => match (quick(source), subtract) {
+            (Some(count), false) => Instruction::ADDQ(count, destination, size),
+            (Some(count), true) => Instruction::SUBQ(count, destination, size),
+            (None, false) => Instruction::ADDI(at_size_value(value, size), destination, size),
+            (None, true) => Instruction::SUBI(at_size_value(value, size), destination, size),
         },
-        (_, Operand::Register(register @ RegisterOperand::Address(_))) => match subtract {
-            false => Instruction::ADDA(source, register, size),
-            true => Instruction::SUBA(source, register, size),
-        },
-        _ => match subtract {
+        (source, destination @ Operand::Register(RegisterOperand::Data(_)))
+        | (source @ Operand::Register(RegisterOperand::Data(_)), destination) => match subtract {
             false => Instruction::ADD(source, destination, size),
             true => Instruction::SUB(source, destination, size),
         },
+        _ => return None,
     })
 }
 
-/// The six instructions that take an immediate and write it somewhere.
-fn lower_immediate(kind: ImmediateKind, size: Size, operands: &[Operand]) -> Option<Instruction> {
-    let (value, destination) = (immediate(operands.first())?, *operands.get(1)?);
-    Some(match kind {
-        ImmediateKind::Add => Instruction::ADDI(value, destination, size),
-        ImmediateKind::Sub => Instruction::SUBI(value, destination, size),
-        ImmediateKind::And => Instruction::ANDI(value, destination, size),
-        ImmediateKind::Or => Instruction::ORI(value, destination, size),
-        ImmediateKind::Eor => Instruction::EORI(value, destination, size),
-        ImmediateKind::Cmp => Instruction::CMPI(value, destination, size),
+/// `adda` or `suba`, which is an `addq` or a `subq` of 1 to 8: EASy68K makes
+/// the quick form of every add or subtract of an immediate into an address
+/// register (`arithReg` in its `BUILD.CPP`).
+fn into_address_register(
+    subtract: bool,
+    size: Size,
+    source: &Lowered,
+    destination: RegisterOperand,
+) -> Instruction {
+    let into = Operand::Register(destination);
+    match (quick(source), subtract) {
+        (Some(count), false) => Instruction::ADDQ(count, into, size),
+        (Some(count), true) => Instruction::SUBQ(count, into, size),
+        (None, false) => Instruction::ADDA(at_size(source.operand, size), destination, size),
+        (None, true) => Instruction::SUBA(at_size(source.operand, size), destination, size),
+    }
+}
+
+/// The six instructions that take an immediate and write it somewhere, of
+/// which `addi` and `subi` are `addq` and `subq` when the quick form applies:
+/// EASy68K converts the written-out forms too.
+fn lower_immediate(kind: ImmediateKind, size: Size, operands: &[Lowered]) -> Option<Instruction> {
+    let source = operands.first()?;
+    let (value, destination) = (
+        at_size_value(immediate(Some(source.operand))?, size),
+        operands.get(1)?.operand,
+    );
+    Some(match (kind, quick(source)) {
+        (ImmediateKind::Add, Some(count)) => Instruction::ADDQ(count, destination, size),
+        (ImmediateKind::Sub, Some(count)) => Instruction::SUBQ(count, destination, size),
+        (ImmediateKind::Add, None) => Instruction::ADDI(value, destination, size),
+        (ImmediateKind::Sub, None) => Instruction::SUBI(value, destination, size),
+        (ImmediateKind::And, _) => Instruction::ANDI(value, destination, size),
+        (ImmediateKind::Or, _) => Instruction::ORI(value, destination, size),
+        (ImmediateKind::Eor, _) => Instruction::EORI(value, destination, size),
+        (ImmediateKind::Cmp, _) => Instruction::CMPI(value, destination, size),
     })
 }
 
-/// `cmp`, which is a `cmpa` into an address register, a `cmpi` from an
-/// immediate and a `cmpm` between two postincrements. The `cmpa` rule is first,
-/// so `cmp #1,a0` is a `cmpa` where `add #1,a0` is an `addi`
-/// (`tests/corpus/README.md`, "will change").
-fn lower_cmp(size: Size, operands: &[Operand]) -> Option<Instruction> {
-    let (source, destination) = (*operands.first()?, *operands.get(1)?);
+/// `cmp`, in EASy68K's order of forms (`cmpfl`): into a data register a `cmp`,
+/// an immediate included; into an address register a `cmpa`; an immediate
+/// into memory a `cmpi`; two postincrements a `cmpm`.
+fn lower_cmp(size: Size, source: Operand, destination: Operand) -> Option<Instruction> {
     Some(match (source, destination) {
-        (_, Operand::Register(register @ RegisterOperand::Address(_))) => {
-            Instruction::CMPA(source, register, size)
+        (_, Operand::Register(register @ RegisterOperand::Data(_))) => {
+            Instruction::CMP(at_size(source, size), register, size)
         }
-        (Operand::Immediate(value), _) => Instruction::CMPI(value, destination, size),
+        (_, Operand::Register(register @ RegisterOperand::Address(_))) => {
+            Instruction::CMPA(at_size(source, size), register, size)
+        }
+        (Operand::Immediate(value), _) => {
+            Instruction::CMPI(at_size_value(value, size), destination, size)
+        }
         (Operand::PostIndirect(_), Operand::PostIndirect(_)) => {
             Instruction::CMPM(source, destination, size)
         }
-        _ => Instruction::CMP(source, register(operands.get(1))?, size),
+        _ => return None,
     })
+}
+
+/// `and`, `or` and `eor`, in EASy68K's order of forms (`andfl`, `orfl`,
+/// `eorfl`): into a data register `and <ea>,dn`, an immediate included; an
+/// immediate into memory `andi`; a data register into memory `and dn,<ea>`.
+/// `eor` has no `<ea>,dn` form, so an immediate is `eori` wherever it goes.
+fn lower_logical(
+    kind: LogicalKind,
+    size: Size,
+    source: Operand,
+    destination: Operand,
+) -> Option<Instruction> {
+    let into_a_data_register = matches!(destination, Operand::Register(RegisterOperand::Data(_)));
+    Some(match (kind, source) {
+        (LogicalKind::And, _) if into_a_data_register => {
+            Instruction::AND(at_size(source, size), destination, size)
+        }
+        (LogicalKind::Or, _) if into_a_data_register => {
+            Instruction::OR(at_size(source, size), destination, size)
+        }
+        (LogicalKind::And, Operand::Immediate(value)) => {
+            Instruction::ANDI(at_size_value(value, size), destination, size)
+        }
+        (LogicalKind::Or, Operand::Immediate(value)) => {
+            Instruction::ORI(at_size_value(value, size), destination, size)
+        }
+        (LogicalKind::Eor, Operand::Immediate(value)) => {
+            Instruction::EORI(at_size_value(value, size), destination, size)
+        }
+        (_, Operand::Register(RegisterOperand::Data(_))) => match kind {
+            LogicalKind::And => Instruction::AND(source, destination, size),
+            LogicalKind::Or => Instruction::OR(source, destination, size),
+            LogicalKind::Eor => Instruction::EOR(source, destination, size),
+        },
+        _ => return None,
+    })
+}
+
+/// `exg`, with the data register first when it swaps one with an address
+/// register: the 68000 has one encoding of the pair, with the data register in
+/// bits 11–9, so `exg a1,d0` and `exg d0,a1` are the same instruction
+/// (`exg` in EASy68K's `BUILD.CPP`).
+fn lower_exg(first: RegisterOperand, second: RegisterOperand) -> Instruction {
+    match (first, second) {
+        (RegisterOperand::Address(_), RegisterOperand::Data(_)) => Instruction::EXG(second, first),
+        _ => Instruction::EXG(first, second),
+    }
+}
+
+/// The target of a `bra`, `bsr` or `Bcc` and the size of its displacement,
+/// chosen by EASy68K's rule ([`choice::branch_size`]) from the size the
+/// Operation was written with and how far the target is.
+fn branch(target: &Lowered, site: &Site) -> Option<(u32, BranchSize)> {
+    let address = address(Some(target.operand))?;
+    let displacement = choice::branch_displacement(site.address, address);
+    Some((
+        address,
+        choice::branch_size(site.written, target.back_reference, displacement),
+    ))
 }
 
 /// `movem`, in whichever direction the register list stands.
@@ -514,8 +765,7 @@ fn lower_cmp(size: Size, operands: &[Operand]) -> Option<Instruction> {
 /// The mask of a list that goes into a predecrement is stored reversed, because
 /// that is the order the 68000 writes the registers in; the fixture printer
 /// undoes it (`tests/corpus/README.md`, "`movem` register lists").
-fn lower_movem(size: Size, operands: &[Operand]) -> Option<Instruction> {
-    let (first, second) = (*operands.first()?, *operands.get(1)?);
+fn lower_movem(size: Size, first: Operand, second: Operand) -> Option<Instruction> {
     let (mut mask, target, direction) = match (first, second) {
         (Operand::Immediate(mask), target) => (mask as u16, target, TargetDirection::ToMemory),
         (Operand::Register(register), target) => {
@@ -546,11 +796,11 @@ fn lower_shift(
     kind: ShiftKind,
     way: ShiftWay,
     size: Size,
-    operands: &[Operand],
+    operands: &[Lowered],
 ) -> Option<Instruction> {
     let (count, target) = match operands {
-        [count, target] => (*count, *target),
-        [target] => (Operand::Immediate(1), *target),
+        [count, target] => (count.operand, target.operand),
+        [target] => (Operand::Immediate(1), target.operand),
         _ => return None,
     };
     let direction = match way {
@@ -565,27 +815,47 @@ fn lower_shift(
     })
 }
 
+/// An Operand as the instruction reads it at `size`: an immediate keeps the
+/// bits of that size and no others, zero extended, which is what the 68000
+/// reads from its extension words (`$FF` for `move.b #-1,d0`). Every other
+/// Operand is what it is.
+fn at_size(operand: Operand, size: Size) -> Operand {
+    match operand {
+        Operand::Immediate(value) => Operand::Immediate(at_size_value(value, size)),
+        other => other,
+    }
+}
+
+/// The bits of `value` an immediate of `size` holds.
+fn at_size_value(value: u32, size: Size) -> u32 {
+    match size {
+        Size::Byte => value & 0xFF,
+        Size::Word => value & 0xFFFF,
+        Size::Long => value,
+    }
+}
+
 /// The register an Operand is, when it is one.
-fn register(operand: Option<&Operand>) -> Option<RegisterOperand> {
+fn register(operand: Option<Operand>) -> Option<RegisterOperand> {
     match operand? {
-        Operand::Register(register) => Some(*register),
+        Operand::Register(register) => Some(register),
         _ => None,
     }
 }
 
 /// The value an immediate Operand carries, when it is one.
-fn immediate(operand: Option<&Operand>) -> Option<u32> {
+fn immediate(operand: Option<Operand>) -> Option<u32> {
     match operand? {
-        Operand::Immediate(value) => Some(*value),
+        Operand::Immediate(value) => Some(value),
         _ => None,
     }
 }
 
 /// The address an absolute Operand names, when it is one. Branch and jump
 /// targets are resolved to addresses before they get here.
-fn address(operand: Option<&Operand>) -> Option<u32> {
+fn address(operand: Option<Operand>) -> Option<u32> {
     match operand? {
-        Operand::Absolute(address) => Some(*address as u32),
+        Operand::Absolute { address, .. } => Some(address as u32),
         _ => None,
     }
 }
@@ -598,6 +868,16 @@ mod tests {
 
     fn span() -> Span {
         Span::new(0, 2)
+    }
+
+    /// `lower` over Operands written with numbers alone, unsized, at `$1000`.
+    fn lowered(family: Family, size: Option<Size>, operands: &[Operand]) -> Option<Instruction> {
+        let operands: Vec<Lowered> = operands.iter().copied().map(Lowered::known).collect();
+        let site = Site {
+            written: None,
+            address: 0x1000,
+        };
+        lower(family, size, &operands, &site)
     }
 
     fn data(number: u8) -> Register {
@@ -649,38 +929,53 @@ mod tests {
             Operand::Register(RegisterOperand::Address(1)),
         ];
         assert!(matches!(
-            lower(Family::Move, Some(Size::Long), &operands),
+            lowered(Family::Move, Some(Size::Long), &operands),
             Some(Instruction::MOVEA(..))
         ));
     }
 
     #[test]
-    fn add_normalises_the_way_the_printer_records() {
+    fn add_and_cmp_choose_the_forms_easy68k_chooses() {
         let immediate_into_address = [
             Operand::Immediate(1),
             Operand::Register(RegisterOperand::Address(0)),
         ];
         assert!(
             matches!(
-                lower(
+                lowered(
                     Family::AddSub { subtract: false },
                     Some(Size::Word),
                     &immediate_into_address
                 ),
-                Some(Instruction::ADDI(..))
+                Some(Instruction::ADDQ(1, _, Size::Word))
             ),
-            "`add #1,a0` is an addi"
+            "`add #1,a0` is an addq"
+        );
+        let large_into_address = [
+            Operand::Immediate(100),
+            Operand::Register(RegisterOperand::Address(0)),
+        ];
+        assert!(
+            matches!(
+                lowered(
+                    Family::AddSub { subtract: false },
+                    Some(Size::Word),
+                    &large_into_address
+                ),
+                Some(Instruction::ADDA(Operand::Immediate(100), _, Size::Word))
+            ),
+            "`add #100,a0` is an adda"
         );
         assert!(
             matches!(
-                lower(Family::Cmp, Some(Size::Word), &immediate_into_address),
+                lowered(Family::Cmp, Some(Size::Word), &immediate_into_address),
                 Some(Instruction::CMPA(..))
             ),
             "`cmp #1,a0` is a cmpa"
         );
         let postincrements = [Operand::PostIndirect(0), Operand::PostIndirect(1)];
         assert!(matches!(
-            lower(Family::Cmp, Some(Size::Word), &postincrements),
+            lowered(Family::Cmp, Some(Size::Word), &postincrements),
             Some(Instruction::CMPM(..))
         ));
         let register_into_address = [
@@ -688,7 +983,7 @@ mod tests {
             Operand::Register(RegisterOperand::Address(0)),
         ];
         assert!(matches!(
-            lower(
+            lowered(
                 Family::AddSub { subtract: true },
                 Some(Size::Long),
                 &register_into_address
@@ -700,7 +995,7 @@ mod tests {
     #[test]
     fn a_one_operand_shift_shifts_by_one() {
         let operands = [Operand::Indirect(0)];
-        match lower(
+        match lowered(
             Family::Shift(ShiftKind::Arithmetic, ShiftWay::Right),
             Some(Size::Word),
             &operands,
@@ -714,11 +1009,11 @@ mod tests {
     #[test]
     fn ext_reads_the_half_of_what_it_writes() {
         let operands = [Operand::Register(RegisterOperand::Data(0))];
-        match lower(Family::Ext, Some(Size::Long), &operands) {
+        match lowered(Family::Ext, Some(Size::Long), &operands) {
             Some(Instruction::EXT(_, Size::Word, Size::Long)) => {}
             other => panic!("expected `ext.l` to read a word, got {other:?}"),
         }
-        match lower(Family::ExtByteToLong, Some(Size::Long), &operands) {
+        match lowered(Family::ExtByteToLong, Some(Size::Long), &operands) {
             Some(Instruction::EXT(_, Size::Byte, Size::Long)) => {}
             other => panic!("expected `extb.l` to read a byte, got {other:?}"),
         }
@@ -727,7 +1022,7 @@ mod tests {
     #[test]
     fn a_movem_into_a_predecrement_stores_its_mask_reversed() {
         let operands = [Operand::Immediate(0b111), Operand::PreIndirect(7)];
-        match lower(Family::Movem, Some(Size::Long), &operands) {
+        match lowered(Family::Movem, Some(Size::Long), &operands) {
             Some(Instruction::MOVEM {
                 registers_mask,
                 direction: TargetDirection::ToMemory,
@@ -736,7 +1031,7 @@ mod tests {
             other => panic!("expected a movem to memory, got {other:?}"),
         }
         let back = [Operand::PostIndirect(7), Operand::Immediate(0b111)];
-        match lower(Family::Movem, Some(Size::Long), &back) {
+        match lowered(Family::Movem, Some(Size::Long), &back) {
             Some(Instruction::MOVEM {
                 registers_mask,
                 direction: TargetDirection::FromMemory,
@@ -753,6 +1048,9 @@ mod tests {
     impl Values for Constant {
         fn value_of(&self, _: &ast::Expr) -> Option<i64> {
             Some(self.0)
+        }
+        fn is_back_reference(&self, _: &ast::Expr) -> bool {
+            true
         }
         fn instruction_address(&self) -> i64 {
             0x1000
@@ -771,7 +1069,7 @@ mod tests {
             base: address_register(6),
             span: span(),
         };
-        match lower_operand(&displacement, &Constant(-8)) {
+        match lower_operand(&displacement, &Constant(-8), 0x1002).map(|l| l.operand) {
             Some(Operand::IndirectDisplacement { offset, .. }) => assert_eq!(offset, -8),
             other => panic!("expected a displacement, got {other:?}"),
         }
@@ -785,7 +1083,7 @@ mod tests {
             },
             span: span(),
         };
-        match lower_operand(&index, &Constant(-1)) {
+        match lower_operand(&index, &Constant(-1), 0x1002).map(|l| l.operand) {
             Some(Operand::IndirectIndex { offset, index, .. }) => {
                 assert_eq!(offset, -1);
                 assert_eq!(index.size, Size::Word, "no size written means `.w`");
@@ -795,25 +1093,25 @@ mod tests {
     }
 
     #[test]
-    fn a_pc_relative_operand_is_stored_as_the_distance_to_what_it_names() {
+    fn a_pc_relative_operand_is_stored_as_the_address_it_names() {
         let expression = ast::Expr::Number {
             value: 0,
             base: crate::assembler::token::NumberBase::Decimal,
             span: span(),
         };
-        // The instruction sits at `$1000`, so its extension word is at `$1002`
-        // and an operand naming `$1010` is stored as 14.
+        // The source writes the address, and the address is what is kept,
+        // forwards and backwards alike: where the extension word sits is the
+        // encoder's business.
         let displacement = ast::Operand::PcDisplacement {
             displacement: expression.clone(),
             span: span(),
         };
-        match lower_operand(&displacement, &Constant(0x1010)) {
-            Some(Operand::PcDisplacement { offset }) => assert_eq!(offset, 14),
+        match lower_operand(&displacement, &Constant(0x1010), 0x1002).map(|l| l.operand) {
+            Some(Operand::PcDisplacement { target }) => assert_eq!(target, 0x1010),
             other => panic!("expected a PC-relative operand, got {other:?}"),
         }
-        // An address behind the instruction is a negative displacement.
-        match lower_operand(&displacement, &Constant(0x0ff2)) {
-            Some(Operand::PcDisplacement { offset }) => assert_eq!(offset, -16),
+        match lower_operand(&displacement, &Constant(0x0ff2), 0x1002).map(|l| l.operand) {
+            Some(Operand::PcDisplacement { target }) => assert_eq!(target, 0x0ff2),
             other => panic!("expected a PC-relative operand, got {other:?}"),
         }
         let index = ast::Operand::PcIndex {
@@ -825,15 +1123,16 @@ mod tests {
             },
             span: span(),
         };
-        match lower_operand(&index, &Constant(0x1004)) {
-            Some(Operand::PcIndex { offset, index }) => {
-                assert_eq!(offset, 2);
+        match lower_operand(&index, &Constant(0x1004), 0x1002).map(|l| l.operand) {
+            Some(Operand::PcIndex { target, index }) => {
+                assert_eq!(target, 0x1004);
                 assert_eq!(index.size, Size::Word, "no size written means `.w`");
             }
             other => panic!("expected a PC-relative indexed operand, got {other:?}"),
         }
-        // `(pc,d1.w)` writes no address, so there is nothing to measure from:
-        // the displacement is zero and the index is the whole of it.
+        // `(pc,d1.w)` writes no address: its displacement is zero, so it
+        // reaches its own extension word, two bytes past the instruction at
+        // `$1000`, and the index is the whole of it.
         let bare = ast::Operand::PcIndex {
             displacement: None,
             index: ast::IndexRegister {
@@ -843,12 +1142,25 @@ mod tests {
             },
             span: span(),
         };
-        match lower_operand(&bare, &Constant(0)) {
-            Some(Operand::PcIndex { offset, index }) => {
-                assert_eq!(offset, 0);
+        match lower_operand(&bare, &Constant(0), 0x1002).map(|l| l.operand) {
+            Some(Operand::PcIndex { target, index }) => {
+                assert_eq!(target, 0x1002);
                 assert_eq!(index.size, Size::Long);
             }
             other => panic!("expected a PC-relative indexed operand, got {other:?}"),
         }
+        // The distance the analyzer checks is still measured from that word.
+        let address = ast::Expr::Number {
+            value: 0,
+            base: crate::assembler::token::NumberBase::Decimal,
+            span: span(),
+        };
+        assert_eq!(pc_relative_offset(&Constant(0x1010), &address, 2), Some(14));
+        assert_eq!(
+            pc_relative_offset(&Constant(0x0ff2), &address, 2),
+            Some(-16)
+        );
+        // `movem` and `btst #n` put a word before it, so theirs is two further.
+        assert_eq!(pc_relative_offset(&Constant(0x1010), &address, 4), Some(12));
     }
 }

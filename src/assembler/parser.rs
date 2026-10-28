@@ -892,7 +892,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `immediate = "#" expression` (2.5).
+    /// `immediate = "#" expression [ ".l" ]` (2.5).
     fn parse_immediate(&mut self, hash: Token) -> Option<Operand> {
         self.bump();
         let value = match self.parse_expression() {
@@ -909,19 +909,30 @@ impl<'a> Parser<'a> {
             }
         };
         let mut end = value.span().end;
+        let mut long = false;
         if let Some(suffix) = self.take_size_suffix(value.span()) {
             end = suffix.span.end;
-            if suffix.size.is_some() {
-                self.malformed(
-                    OperandShape::Immediate,
-                    "an immediate carries no size: the size goes on the operation, as in `move.w #5,d0`",
-                    None,
-                );
-                return None;
+            match suffix.size {
+                // EASy68K's one suffix on an immediate, which keeps the long
+                // form of `move.l`, `add` and `sub` (`#n.L` in its
+                // `OPPARSE.CPP`); any other is a syntax error there.
+                Some(SizeSuffix::Long) => long = true,
+                Some(_) => {
+                    self.malformed(
+                        OperandShape::Immediate,
+                        "an immediate carries no size: the size goes on the operation, as in \
+                         `move.w #5,d0`, and `#5.l` only keeps `move.l #5,d0` from becoming \
+                         a `moveq`",
+                        None,
+                    );
+                    return None;
+                }
+                None => {}
             }
         }
         Some(Operand::Immediate {
             value,
+            long,
             span: Span::new(hash.span.start, end),
         })
     }
@@ -2354,6 +2365,21 @@ mod tests {
             assert_eq!(shapes("    move.l #'A',d0"), ["#'A'", "d0"]);
         }
 
+        /// `#n.l`, EASy68K's way of keeping the long form, is the one suffix
+        /// an immediate takes; the size the value is encoded at is still the
+        /// instruction's.
+        #[test]
+        fn an_immediate_may_be_written_long() {
+            let long = |text: &str| match &operation(text).operands[0] {
+                Operand::Immediate { long, .. } => *long,
+                other => panic!("{text:?} is {other:?}"),
+            };
+            assert!(long("    move.l #5.l,d0"));
+            assert!(long("    add.w #-1.L,d0"));
+            assert!(!long("    move.l #5,d0"));
+            assert_eq!(shapes("    move.l #5.l,d0"), ["#5", "d0"]);
+        }
+
         #[test]
         fn register_direct_reads_both_banks() {
             assert_eq!(shapes("    move.l d3,a6"), ["d3", "a6"]);
@@ -2975,7 +3001,7 @@ mod tests {
                 ),
                 (
                     "    move.l #5.w,d0",
-                    "This looks like an immediate operand, `#5`, but an immediate carries no size: the size goes on the operation, as in `move.w #5,d0`.",
+                    "This looks like an immediate operand, `#5`, but an immediate carries no size: the size goes on the operation, as in `move.w #5,d0`, and `#5.l` only keeps `move.l #5,d0` from becoming a `moveq`.",
                 ),
             ];
             for (text, message) in cases {

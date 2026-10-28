@@ -28,7 +28,7 @@ expression: fixture
     {
       "address": "$1010",
       "line": 5,
-      "text": "move.l #$2a,d1"
+      "text": "moveq #$2a,d1"
     },
     {
       "address": "$1014",

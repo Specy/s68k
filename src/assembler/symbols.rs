@@ -399,6 +399,15 @@ impl super::analyzer::SymbolValues for SymbolsInScope<'_> {
             _ => None,
         }
     }
+
+    /// By Position: the Symbol's first definition is at or above the line the
+    /// look-up is made on. A Variable counts from its first `set`, which is
+    /// also where it starts to have a value.
+    fn is_defined_above(&self, name: &str) -> bool {
+        self.table
+            .resolve(name, self.scope)
+            .is_some_and(|symbol| symbol.defined_at <= self.at)
+    }
 }
 
 #[cfg(test)]

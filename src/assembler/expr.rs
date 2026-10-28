@@ -262,6 +262,22 @@ pub fn value(expression: &Expr, symbols: &dyn Symbols, current_address: i64) -> 
     evaluate(expression, symbols, current_address, &mut Vec::new())
 }
 
+/// Whether `test` holds of every Symbol named in `expression`; `true` for an
+/// Expression that names none.
+///
+/// It is how a **back reference** is told from a forward one
+/// ([`instructions::choice`](super::instructions::choice)): an Expression is
+/// one when every name in it is defined above the line, and a number, a
+/// character literal and `*` are never defined below anything.
+pub fn every_symbol(expression: &Expr, test: &dyn Fn(&str) -> bool) -> bool {
+    match expression {
+        Expr::Symbol { name, .. } => test(name),
+        Expr::Unary { operand, .. } => every_symbol(operand, test),
+        Expr::Binary { left, right, .. } => every_symbol(left, test) && every_symbol(right, test),
+        Expr::Number { .. } | Expr::CharacterLiteral { .. } | Expr::CurrentAddress { .. } => true,
+    }
+}
+
 /// A shift on the low 32 bits, the width EASy68K computes in.
 ///
 /// The count is read as an unsigned 32-bit number, so a count of 32 or more —

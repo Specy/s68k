@@ -13,12 +13,12 @@ expression: fixture
     {
       "address": "$1004",
       "line": 4,
-      "text": "move.l #$2,d0"
+      "text": "moveq #$2,d0"
     },
     {
       "address": "$1008",
       "line": 5,
-      "text": "move.l #$1,d1"
+      "text": "moveq #$1,d1"
     },
     {
       "address": "$100c",
@@ -83,7 +83,7 @@ expression: fixture
     {
       "address": "$103c",
       "line": 20,
-      "text": "addi.l #$8,a1"
+      "text": "addq.l #$8,a1"
     },
     {
       "address": "$1040",

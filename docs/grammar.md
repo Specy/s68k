@@ -608,7 +608,7 @@ operand = immediate
         | pc_index
         | absolute ;
 
-immediate               = "#" expression ;
+immediate               = "#" expression [ ".l" ] ;
 data_register_direct    = data_register ;
 address_register_direct = address_register ;
 indirect                = "(" address_register ")" ;
@@ -640,6 +640,14 @@ Both spellings of every displaced mode are EASy68K's own: `x(An)` and `(x,An)`,
 displacement-free `(An,Xn.s)` is accepted as a displacement of zero. An
 `index_register` with no `size_suffix` is `.w`, which is the 68000's default and
 what the fixture printer writes out.
+
+An `immediate` takes one suffix, `.l`, and no other: `#5.l` is EASy68K's way
+of keeping the long form of an instruction, so `move.l #5.l,d0` stays a
+`move.l` and `add.l #1.l,d0` an `addi.l` where the Assembler would otherwise
+choose `moveq` and `addq` (`#n.L` in EASy68K's `OPPARSE.CPP`, and the
+asm-editor's `docs/research/easy68k-machine-behaviour.md` §13). The value is
+encoded at the instruction's size either way. `#5.w`, `#5.b` and `#5.s` are
+`malformed_operand`, as they are a syntax error in EASy68K.
 
 `absolute` covers the bare Expression (`move.l $1000,d0`, `bra done`), the
 parenthesised Expression EASy68K also accepts (`move.l ($1000),d0`), and the

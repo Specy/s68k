@@ -5,5 +5,7 @@
 * instruction, and an address forced to a width that cannot name it.
     move.l far(pc),d0
     move.l $18000.w,d1
+* A displacement `link` encodes in a word.
+    link a6,#-70000
     org $30000
 far: dc.l 1

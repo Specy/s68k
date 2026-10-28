@@ -232,12 +232,13 @@ pub enum SizeRule {
     /// (the help's "DATA LENGTH: Byte, longword").
     ByteOrLong,
     /// `.b`, `.s`, `.w` and `.l` on a branch, which is a displacement width and
-    /// not an operand size. It is accepted and not range checked, because
-    /// instructions are a fixed four bytes here (the design record,
-    /// "Instructions"). `.b` is `.s`: EASy68K "will accept .B or .S to force
-    /// 1-byte offsets and .W or .L to force 2-byte offsets"
-    /// (`Reference/68ks9b.htm`), so a program that writes `bra.b` assembles
-    /// here as it does there.
+    /// not an operand size: the size of the branch the lowering stores
+    /// ([`choice::branch_size`](super::choice::branch_size)). It is not range
+    /// checked yet, because instructions are a fixed four bytes here and the
+    /// distance a branch reaches is only known at their real sizes. `.b` is
+    /// `.s`: EASy68K "will accept .B or .S to force 1-byte offsets and .W or
+    /// .L to force 2-byte offsets" (`Reference/68ks9b.htm`), so a program that
+    /// writes `bra.b` assembles here as it does there.
     Branch,
 }
 
@@ -423,8 +424,10 @@ pub enum Family {
     Movem,
     /// `moveq`.
     Moveq,
-    /// `add` and `sub`, which become `addi`/`subi` on an immediate source and
-    /// `adda`/`suba` into an address register. The flag says which of the two.
+    /// `add` and `sub`, which become `adda`/`suba` into an address register
+    /// and `addi`/`subi` from an immediate into anything else, and
+    /// `addq`/`subq` when the immediate is 1 to 8. The flag says which of the
+    /// two.
     AddSub {
         /// `true` for `sub`, `false` for `add`.
         subtract: bool,
@@ -451,14 +454,17 @@ pub enum Family {
     },
     /// `addi`, `subi`, `andi`, `ori`, `eori` and `cmpi`, one variant each.
     Immediate(ImmediateKind),
-    /// `cmp`, which becomes `cmpa` into an address register, `cmpi` on an
-    /// immediate source and `cmpm` between two postincrements.
+    /// `cmp`, which becomes `cmpa` into an address register, `cmpi` from an
+    /// immediate into memory and `cmpm` between two postincrements; an
+    /// immediate compared with a data register stays a `cmp`.
     Cmp,
     /// `cmpa`, written out.
     Cmpa,
     /// `cmpm`, written out.
     Cmpm,
-    /// `and`, `or` and `eor`.
+    /// `and`, `or` and `eor`, which become `andi`, `ori` and `eori` from an
+    /// immediate into anything but a data register, and `eor` from an
+    /// immediate into anything at all.
     Logical(LogicalKind),
     /// `divs` and `divu`.
     Divide(Sign),
@@ -1037,13 +1043,17 @@ pub const TABLE: &[InstructionSpec] = &[
     implemented(
         "cmp",
         Family::Cmp,
-        // Two forms of two Operands, and the order decides: the general one
-        // first, so that a `cmp` that fits neither is judged against it, and
-        // the `cmpm` shape second, which is the only way two postincrements
-        // are legal (`tests/corpus/README.md`, "Normalisations").
+        // Three forms of two Operands, and the order decides: the general
+        // one first, so that a `cmp` that fits none is judged against it; the
+        // `cmpm` shape second, which is the only way two postincrements are
+        // legal (`tests/corpus/README.md`, "Normalisations"); and an
+        // immediate compared with memory third, which is `cmpi`, as EASy68K's
+        // `cmpfl` has it. An immediate compared with a register is the first
+        // form's, and is a `cmp`.
         &[
             form(&[Modes::ALL, Modes::ANY_REGISTER], SizeRule::Any),
             form(&[Modes::POSTINCREMENT, Modes::POSTINCREMENT], SizeRule::Any),
+            form(&[Modes::IMMEDIATE, Modes::DATA_ALTERABLE], SizeRule::Any),
         ],
     ),
     implemented(
@@ -1143,7 +1153,14 @@ pub const TABLE: &[InstructionSpec] = &[
     implemented(
         "eor",
         Family::Logical(LogicalKind::Eor),
-        &[form(&[Modes::DN, Modes::DATA_ALTERABLE], SizeRule::Any)],
+        // A data register, and an immediate, which is `eori`: EASy68K's
+        // `eorfl` has both, and `eor` has no `<ea>,dn` form for an immediate
+        // to be read by. The register form stays first, so that a line that
+        // fits neither is judged against it.
+        &[
+            form(&[Modes::DN, Modes::DATA_ALTERABLE], SizeRule::Any),
+            form(&[Modes::IMMEDIATE, Modes::DATA_ALTERABLE], SizeRule::Any),
+        ],
     ),
     implemented(
         "andi",
@@ -1698,6 +1715,7 @@ mod tests {
                     matches!(
                         spec.mnemonic,
                         "cmp"
+                            | "eor"
                             | "movem"
                             | "move"
                             | "movep"

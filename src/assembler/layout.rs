@@ -2534,7 +2534,7 @@ second:
             .instructions()
             .iter()
             .filter_map(|instruction| match instruction.instruction {
-                Instruction::BRA(address) => Some(format!("${address:x}")),
+                Instruction::BRA(address, _) => Some(format!("${address:x}")),
                 _ => None,
             })
             .collect();
@@ -3452,7 +3452,7 @@ num3 ds.l 1
 
     #[test]
     fn a_set_variable_may_be_redefined() {
-        let source = "size set 38\n    move.l #size,d0\nsize set 32\n    move.l #size,d1\n";
+        let source = "size set 38\n    move.w #size,d0\nsize set 32\n    move.w #size,d1\n";
         let (program, diagnostics) = assemble(source);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         assert_eq!(program.symbols()["size"].kind, SymbolKind::Variable);

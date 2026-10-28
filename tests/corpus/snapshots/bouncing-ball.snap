@@ -123,7 +123,7 @@ expression: fixture
     {
       "address": "$105c",
       "line": 43,
-      "text": "move.l #$2,d1"
+      "text": "moveq #$2,d1"
     },
     {
       "address": "$1060",
@@ -143,7 +143,7 @@ expression: fixture
     {
       "address": "$106c",
       "line": 49,
-      "text": "cmpi.w #$0,d5"
+      "text": "cmp.w #$0,d5"
     },
     {
       "address": "$1070",
@@ -153,7 +153,7 @@ expression: fixture
     {
       "address": "$1074",
       "line": 51,
-      "text": "cmpi.w #$250,d5"
+      "text": "cmp.w #$250,d5"
     },
     {
       "address": "$1078",
@@ -188,7 +188,7 @@ expression: fixture
     {
       "address": "$1090",
       "line": 61,
-      "text": "cmpi.w #$0,d5"
+      "text": "cmp.w #$0,d5"
     },
     {
       "address": "$1094",
@@ -198,7 +198,7 @@ expression: fixture
     {
       "address": "$1098",
       "line": 63,
-      "text": "cmpi.w #$1b0,d5"
+      "text": "cmp.w #$1b0,d5"
     },
     {
       "address": "$109c",

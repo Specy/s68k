@@ -2,7 +2,9 @@
 //! corpus, one case per Diagnostic, and the Interpreter's own programs.
 
 mod corpus;
+mod decoded_instructions;
 mod diagnostics;
+mod encoding;
 mod history;
 mod include;
 mod instruction_access;

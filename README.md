@@ -28,15 +28,14 @@ The library has three parts:
 
 - **Interpreter** (`src/interpreter.rs`): runs a program using registers, memory, and the status register. It supports stepping, running to the end, undo history, breakpoints, a call stack, and a watched range of memory whose every store ends the run, for a device mapped into memory.
 
-The interpreter does not load encoded instructions into memory, so instructions
-cannot be modified at runtime. Every instruction occupies four bytes regardless
-of its size on a real 68000.
+- **Machine** (`src/machine/`): the 68000's encoding. A decoder reads the words of an instruction for a 68000, a 68010 or a 68020, an encoder writes them, and a disassembler prints an instruction in EASy68K's syntax.
+
+The assembler chooses each instruction's 68000 encoding as EASy68K does (below), and the encoder can write it, but the interpreter does not load encoded instructions into memory yet, so instructions cannot be modified at runtime. Every instruction occupies four bytes regardless of its size on a real 68000.
 
 ## Future work
 
-- Real instruction encodings and programs loaded in memory
+- Real instruction sizes and programs loaded in memory
 - Macros and conditional assembly
-- A disassembler
 
 
 ## Supported instructions
@@ -51,6 +50,17 @@ of its size on a real 68000.
 | Other                  | clr, exg, neg, ext, extb, swap, move, link, unlk, lea, pea, moveq, movea, movem, movep, tas, nop                                                                                                                  |
 | Exceptions             | chk, trapv, illegal, and rtr, which returns and restores the condition codes                                                                                                                                      |
 | Interrupt              | trap #15, with the I/O tasks 0-9, 11-20, 23, 24 and 33 in `d0`, the file tasks 50-59, the mouse task 61, the sound tasks 70-77 and the graphics tasks 80-96 (the `Interrupt` enum of `src/instructions.rs` is the list) |
+
+## Encodings
+
+Where the 68000 has several encodings of a line, s68k picks the one EASy68K picks:
+
+- The first of EASy68K's forms that fits: `cmp #n,dn` is `cmp`, and `cmp #n,(a0)` is `cmpi`; `and #n,dn` and `or #n,dn` are `and` and `or`, and into memory `andi` and `ori`; `eor #n` is `eori`; `add #n,an` and `sub #n,an` are `adda` and `suba`, and `add #n,dn` is `addi`.
+- The optimisations EASy68K always makes: `move.l #n,dn` of -128 to 127 is `moveq`, and an `add`, `addi`, `adda`, `sub`, `subi` or `suba` of 1 to 8 is `addq` or `subq`. Writing the immediate `#n.l` keeps the long form, `move.l #1.l,d0`; it is the one size suffix an immediate takes.
+- An unsized branch is short when its target is above it and its displacement fits a byte and is not 0, which marks a word branch, and a word otherwise; `.s` and `.b` force a short one, and `.w` and `.l` a word one. An unsized absolute address is `.w` when it is above the line and a word holds it, and `.l` otherwise. "Above" counts a label on the line itself, and a number is always above.
+- An immediate is kept at the size the instruction reads it at, so `move.w #-1,d0` holds `$FFFF`, and `exg a0,d0` is `exg d0,a0`.
+
+Three lines EASy68K refuses are refused here too, since the 68000 has no encoding for them: an address register added into memory (`add.l a0,(a1)`), a bit number written as an immediate on an immediate (`btst #1,#5`, where `btst d1,#5` is the instruction), and a `link` displacement outside -32768 to 32767.
 
 ## Supported directives
 | Directive | What it does |
@@ -168,7 +178,7 @@ Where s68k departs from EASy68K, on purpose:
 - On Windows EASy68K cannot delete a file that is open, and reports 2; whether a file that is open can be deleted is the host's file system's to say.
 
 ## Known limitations
-1. Every instruction is four bytes wide whatever it encodes to on a real 68000, so an address computed from instruction sizes will not match the hardware. It is also why a PC-relative operand is resolved while the program is assembled: there is no extension word in memory to read the displacement from, so the assembler stores it and the interpreter adds it to the address of the instruction being executed.
+1. Every instruction is four bytes wide whatever it encodes to on a real 68000, so an address computed from instruction sizes will not match the hardware. It is also why a PC-relative operand is resolved while the program is assembled: there is no extension word in memory to read the displacement from, so the assembler stores the address the operand reaches and the interpreter reads it from there.
 2. The program runs as supervisor, always. The status register is a 16-bit register whose low byte is the condition codes and whose high byte is trace, supervisor and the interrupt mask, readable (`getSr()`, and the `SR:` line of the command line) and of no effect at all. It starts at `$2700`, so `andi #$00,sr` "puts the CPU in user mode" and changes nothing that runs. `move usp,an` and `move an,usp` are refused for the same reason: there is one stack pointer, `a7`.
 4. `chk`, `trapv` and `illegal` raise their exception by ending the run, and so does every other runtime error: an address error, a division by zero, a `trap #15` task that cannot be done. There are no exception vectors, no supervisor stack frame and no `rte`, so a program cannot handle one. The runtime error names the cause, and is the program's termination.
 

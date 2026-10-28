@@ -55,5 +55,18 @@ input_file: tests/diagnostics/value_out_of_range.asm
       "endColumn": 17
     },
     "related": []
+  },
+  {
+    "severity": "error",
+    "code": "value_out_of_range",
+    "message": "The displacement of `link` is -32768 to 32767, and `-70000` is outside it.",
+    "hint": "A frame larger than 32 KB is reserved with `suba.l #n,a7` after the `link`",
+    "location": {
+      "file": "value_out_of_range.asm",
+      "line": 8,
+      "column": 13,
+      "endColumn": 19
+    },
+    "related": []
   }
 ]

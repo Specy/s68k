@@ -1,0 +1,85 @@
+m68000-valid.hex
+================
+
+What it is
+----------
+
+Which of the 65,536 first words of an instruction Musashi's disassembler
+accepts as 68000 instructions: the answer of
+
+    m68k_is_valid_instruction(word, M68K_CPU_TYPE_68000)
+
+for every word from $0000 to $FFFF. It is the legality oracle of the decoder's
+test `the_legal_first_words_are_musashis_68000_words` in
+src/machine/decode.rs, which lists the words where the decoder departs from it
+and why.
+
+Format: 256 lines of 64 hexadecimal digits. Line N (from 0) covers the words
+$NN00 to $NNFF; each digit covers four consecutive words, the most significant
+bit the lowest word; a set bit is a valid instruction.
+
+Where it comes from
+-------------------
+
+Generated on 2026-10-28 from Musashi, https://github.com/kstenerud/Musashi,
+at commit 313ebf1bd9f4d0d93341eb5ce21fd8a119e9dbdd (2026-03-08), by compiling
+its m68kdasm.c, unchanged, with the small program below, outside this
+repository, and running it with no argument. The data is a table of facts
+computed by that code; no part of Musashi's source is in this repository.
+
+    #include <stdio.h>
+    #include "m68k.h"
+    unsigned int m68k_read_disassembler_16(unsigned int a){return 0;}
+    unsigned int m68k_read_disassembler_32(unsigned int a){return 0;}
+    unsigned int m68k_read_disassembler_8(unsigned int a){return 0;}
+    int main(void) {
+        for (unsigned line = 0; line < 256; line++) {
+            for (unsigned digit = 0; digit < 64; digit++) {
+                unsigned value = 0;
+                for (unsigned bit = 0; bit < 4; bit++) {
+                    unsigned word = line * 256 + digit * 4 + bit;
+                    value = (value << 1)
+                        | (m68k_is_valid_instruction(word, M68K_CPU_TYPE_68000) ? 1 : 0);
+                }
+                putchar("0123456789abcdef"[value]);
+            }
+            putchar('\n');
+        }
+        return 0;
+    }
+
+    gcc -O1 -I<Musashi> -o valid valid.c <Musashi>/m68kdasm.c && ./valid
+
+sha256 of the file: 639493e058f9e38d304653ef354c8d5c2dcd746e8fab9bf08f4ea43c45381b44
+
+Musashi's licence
+-----------------
+
+The notice of m68kdasm.c, which applies to Musashi as a whole:
+
+                                  MUSASHI
+                                Version 3.32
+
+A portable Motorola M680x0 processor emulation engine.
+Copyright Karl Stenerud.  All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+Musashi's readme.txt gives the copyright as "Copyright © 1998-2001 Karl
+Stenerud" under the same terms.

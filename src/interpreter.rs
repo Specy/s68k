@@ -45,7 +45,7 @@ use crate::{
     instructions::{
         Bytes, Condition, FileDialogMode, FileExistence, IndexRegister, InputSettings, Instruction,
         Interrupt, InterruptResult, KeyStateRequest, KeyStateResult, Operand, RegisterOperand,
-        ShiftDirection, Sign, Size, SoundOutcome, EXTENSION_WORD_OFFSET,
+        ShiftDirection, Sign, Size, SoundOutcome,
     },
     math::*,
 };
@@ -672,7 +672,11 @@ pub enum RuntimeError {
     },
     DivisionByZero,
     IncorrectAddressingMode(String),
-    Unimplemented,
+    /// A 68000 instruction the Interpreter does not run yet, named in the
+    /// text: `rte`, `stop`, `reset`, `move usp`, and the line A and line F
+    /// words. Each needs exceptions, supervisor mode or interrupts. The
+    /// Assembler refuses all of them, so only a decoded word reaches one.
+    Unimplemented(String),
     /// `chk` found the register outside 0 to the bound it was given.
     ChkOutOfBounds {
         /// The low word of the register, read as a signed number.
@@ -682,7 +686,8 @@ pub enum RuntimeError {
     },
     /// `trapv` with the overflow flag set.
     OverflowException,
-    /// The `illegal` instruction, which always ends the run.
+    /// The `illegal` instruction, or a word that is the first word of no
+    /// instruction ([`Instruction::IllegalWord`]), which always ends the run.
     IllegalInstruction,
     /// A `trap #15` task s68k does not carry out, which is every number in
     /// D0.B that is not one of EASy68K's tasks and the tasks a page in a
@@ -2191,11 +2196,11 @@ impl Interpreter {
                 self.set_register_value(*dest, result as u32, Size::Long);
             }
 
-            Instruction::BRA(address) => {
-                //instead of using the absolute address, the original language uses pc + 2 + offset
+            //the target is kept as an address, so the size of the displacement does not matter here
+            Instruction::BRA(address, _) => {
                 self.pc = *address as usize;
             }
-            Instruction::BSR(address) => {
+            Instruction::BSR(address, _) => {
                 if self.keep_history {
                     let old_address = self.get_sp().wrapping_sub(4);
                     let old_value = self.memory.read_long(old_address)?;
@@ -2598,7 +2603,7 @@ impl Interpreter {
                 let overflow = has_sub_overflowed(dest_value, source_value, result, *size);
                 self.set_compare_flags(result, *size, carry, overflow);
             }
-            Instruction::Bcc(address, condition) => {
+            Instruction::Bcc(address, condition, _) => {
                 if self.get_condition_value(condition) {
                     self.pc = *address as usize;
                 }
@@ -2799,8 +2804,28 @@ impl Interpreter {
                     return Err(self.end_with_an_exception(RuntimeError::OverflowException));
                 }
             }
-            Instruction::ILLEGAL => {
+            //a word that is no instruction is an illegal instruction on a 68000, as `illegal` is
+            Instruction::ILLEGAL | Instruction::IllegalWord(_) => {
                 return Err(self.end_with_an_exception(RuntimeError::IllegalInstruction));
+            }
+            //the 68000 instructions that need exceptions, supervisor mode or interrupts, which the
+            //Interpreter does not have yet; the Assembler refuses them, so only decoded words reach
+            //these
+            Instruction::RTE => return Err(RuntimeError::Unimplemented("`rte`".to_string())),
+            Instruction::STOP(_) => return Err(RuntimeError::Unimplemented("`stop`".to_string())),
+            Instruction::RESET => return Err(RuntimeError::Unimplemented("`reset`".to_string())),
+            Instruction::MOVEUSP { .. } => {
+                return Err(RuntimeError::Unimplemented("`move usp`".to_string()))
+            }
+            Instruction::LINEA(word) => {
+                return Err(RuntimeError::Unimplemented(format!(
+                    "the line A word ${word:04X}"
+                )))
+            }
+            Instruction::LINEF(word) => {
+                return Err(RuntimeError::Unimplemented(format!(
+                    "the line F word ${word:04X}"
+                )))
             }
         };
         Ok(())
@@ -3550,7 +3575,7 @@ impl Interpreter {
         match op {
             Operand::Immediate(v) => Ok(*v),
             Operand::Register(op) => Ok(self.get_register_value(*op, size)),
-            Operand::Absolute(address) => Ok(self.memory.read_size(*address, size)?),
+            Operand::Absolute { address, .. } => Ok(self.memory.read_size(*address, size)?),
 
             Operand::Indirect(reg) => {
                 let address = self.get_a_reg_sized(*reg, Size::Long);
@@ -3591,33 +3616,28 @@ impl Interpreter {
                 let final_address = base_value.wrapping_add(*offset).wrapping_add(index_value);
                 Ok(self.memory.read_size(final_address as usize, size)?)
             }
-            Operand::PcDisplacement { offset } => {
-                let address = self.pc_relative_address(*offset, None);
+            Operand::PcDisplacement { target } => {
+                let address = self.pc_relative_address(*target, None);
                 Ok(self.memory.read_size(address as usize, size)?)
             }
-            Operand::PcIndex { offset, index } => {
-                let address = self.pc_relative_address(*offset, Some(*index));
+            Operand::PcIndex { target, index } => {
+                let address = self.pc_relative_address(*target, Some(*index));
                 Ok(self.memory.read_size(address as usize, size)?)
             }
         }
     }
-    /// The address a PC-relative Operand names, which is the other half of the
-    /// round trip the Assembler started.
+    /// The address a PC-relative Operand names.
     ///
-    /// The Assembler stored `label - (address of this instruction +
-    /// EXTENSION_WORD_OFFSET)`, so adding the two back gives the label again —
-    /// whatever the instruction is and wherever the program counter has got
-    /// to, because the address used is the instruction being executed and not
-    /// the one after it.
-    fn pc_relative_address(&self, offset: i32, index: Option<IndexRegister>) -> u32 {
-        let base = (self.current_instruction_address as u32)
-            .wrapping_add(EXTENSION_WORD_OFFSET as u32)
-            .wrapping_add(offset as u32);
+    /// The Operand keeps the address its displacement reaches, worked out from
+    /// the address of its extension word when it was assembled or decoded, so
+    /// this is that address, plus the index register when there is one. It
+    /// does not read the program counter.
+    fn pc_relative_address(&self, target: u32, index: Option<IndexRegister>) -> u32 {
         match index {
-            None => base,
+            None => target,
             Some(index) => {
                 let value = self.get_register_value(index.register, index.size);
-                base.wrapping_add(sign_extend_to_long(value, index.size) as u32)
+                target.wrapping_add(sign_extend_to_long(value, index.size) as u32)
             }
         }
     }
@@ -3645,10 +3665,10 @@ impl Interpreter {
                 let final_address = base_value.wrapping_add(*offset).wrapping_add(index_value);
                 Ok(final_address as u32)
             }
-            Operand::Absolute(address) => Ok(*address as u32),
-            Operand::PcDisplacement { offset } => Ok(self.pc_relative_address(*offset, None)),
-            Operand::PcIndex { offset, index } => {
-                Ok(self.pc_relative_address(*offset, Some(*index)))
+            Operand::Absolute { address, .. } => Ok(*address as u32),
+            Operand::PcDisplacement { target } => Ok(self.pc_relative_address(*target, None)),
+            Operand::PcIndex { target, index } => {
+                Ok(self.pc_relative_address(*target, Some(*index)))
             }
             _ => Err(RuntimeError::IncorrectAddressingMode(
                 "Attempted to get address of non address addressing mode".to_string(),
@@ -3670,7 +3690,7 @@ impl Interpreter {
                 self.set_register_value(*op, value, size);
                 Ok(())
             }
-            Operand::Absolute(address) => Ok(self.set_memory_value(*address, size, value)?),
+            Operand::Absolute { address, .. } => Ok(self.set_memory_value(*address, size, value)?),
             Operand::Indirect(reg) => {
                 let address = self.get_a_reg_sized(*reg, Size::Long);
                 Ok(self.set_memory_value(address as usize, size, value)?)

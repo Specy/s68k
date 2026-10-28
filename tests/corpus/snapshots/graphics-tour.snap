@@ -13,7 +13,7 @@ expression: fixture
     {
       "address": "$1004",
       "line": 13,
-      "text": "move.l #$0,d1"
+      "text": "moveq #$0,d1"
     },
     {
       "address": "$1008",
@@ -43,12 +43,12 @@ expression: fixture
     {
       "address": "$101c",
       "line": 22,
-      "text": "move.l #$50,d1"
+      "text": "moveq #$50,d1"
     },
     {
       "address": "$1020",
       "line": 23,
-      "text": "move.l #$50,d2"
+      "text": "moveq #$50,d2"
     },
     {
       "address": "$1024",
@@ -93,7 +93,7 @@ expression: fixture
     {
       "address": "$1044",
       "line": 36,
-      "text": "move.l #$64,d1"
+      "text": "moveq #$64,d1"
     },
     {
       "address": "$1048",
@@ -163,22 +163,22 @@ expression: fixture
     {
       "address": "$107c",
       "line": 54,
-      "text": "move.l #$14,d1"
+      "text": "moveq #$14,d1"
     },
     {
       "address": "$1080",
       "line": 55,
-      "text": "move.l #$14,d2"
+      "text": "moveq #$14,d2"
     },
     {
       "address": "$1084",
       "line": 56,
-      "text": "move.l #$3c,d3"
+      "text": "moveq #$3c,d3"
     },
     {
       "address": "$1088",
       "line": 57,
-      "text": "move.l #$3c,d4"
+      "text": "moveq #$3c,d4"
     },
     {
       "address": "$108c",
@@ -223,7 +223,7 @@ expression: fixture
     {
       "address": "$10ac",
       "line": 69,
-      "text": "move.l #$14,d1"
+      "text": "moveq #$14,d1"
     },
     {
       "address": "$10b0",
@@ -233,7 +233,7 @@ expression: fixture
     {
       "address": "$10b4",
       "line": 71,
-      "text": "move.l #$50,d3"
+      "text": "moveq #$50,d3"
     },
     {
       "address": "$10b8",
@@ -268,7 +268,7 @@ expression: fixture
     {
       "address": "$10d0",
       "line": 81,
-      "text": "move.l #$5,d1"
+      "text": "moveq #$5,d1"
     },
     {
       "address": "$10d4",
@@ -343,7 +343,7 @@ expression: fixture
     {
       "address": "$110c",
       "line": 100,
-      "text": "move.l #$5a,d1"
+      "text": "moveq #$5a,d1"
     },
     {
       "address": "$1110",
@@ -393,7 +393,7 @@ expression: fixture
     {
       "address": "$1134",
       "line": 113,
-      "text": "move.l #$a,d1"
+      "text": "moveq #$a,d1"
     },
     {
       "address": "$1138",
@@ -438,7 +438,7 @@ expression: fixture
     {
       "address": "$1158",
       "line": 123,
-      "text": "move.l #$a,d1"
+      "text": "moveq #$a,d1"
     },
     {
       "address": "$115c",
@@ -483,7 +483,7 @@ expression: fixture
     {
       "address": "$117c",
       "line": 133,
-      "text": "move.l #$a,d1"
+      "text": "moveq #$a,d1"
     },
     {
       "address": "$1180",
@@ -528,7 +528,7 @@ expression: fixture
     {
       "address": "$11a0",
       "line": 143,
-      "text": "move.l #$a,d1"
+      "text": "moveq #$a,d1"
     },
     {
       "address": "$11a4",
@@ -593,7 +593,7 @@ expression: fixture
     {
       "address": "$11d4",
       "line": 160,
-      "text": "move.l #$64,d2"
+      "text": "moveq #$64,d2"
     },
     {
       "address": "$11d8",
@@ -643,7 +643,7 @@ expression: fixture
     {
       "address": "$11fc",
       "line": 172,
-      "text": "move.l #$64,d2"
+      "text": "moveq #$64,d2"
     },
     {
       "address": "$1200",
@@ -678,7 +678,7 @@ expression: fixture
     {
       "address": "$1218",
       "line": 181,
-      "text": "move.l #$3c,d2"
+      "text": "moveq #$3c,d2"
     },
     {
       "address": "$121c",

@@ -219,7 +219,13 @@ every `Bcc`, `DBcc` and `Scc`, `btst`, `bset`, `bclr`, `bchg`, `trap`, `rts`,
 `nbcd` and every instruction that names a half of the status register (below).
 Branches are among them because the version these fixtures were taken from
 stores no branch size, and the three decimal instructions because a byte is the
-only size they have, the way `tas` has only a byte.
+only size they have, the way `tas` has only a byte. Since milestone C1 of the
+machine plan a branch carries the size of its displacement, and since milestone
+C2 the Assembler chooses it as EASy68K does. It is still not printed: a size
+chosen while every instruction is four bytes is chosen at addresses the program
+will not have once its instructions take their real sizes, and printing it now
+would move these lines twice (below, "What milestone C2 of the machine plan
+changed").
 
 **Registers.** `d0` to `d7` and `a0` to `a7`. The stack pointer is `a7`; `sp`
 never appears, so `move.l sp,a5` prints as `movea.l a7,a5`.
@@ -228,7 +234,7 @@ never appears, so `move.l sp,a5` prints as `movea.l a7,a5`.
 
 | Addressing mode | Printed | Example |
 | --- | --- | --- |
-| Immediate | `#$` and the stored value in hex, 32-bit as an Operand and 8-bit for a quick form's own count (below) | `#$a` |
+| Immediate | `#$` and the stored value in hex, at the size the instruction reads it as an Operand and 8-bit for a quick form's own count (below) | `#$a` |
 | Data or address register | the register | `d3`, `a6` |
 | Indirect | the register in parentheses | `(a0)` |
 | Postincrement | | `(a0)+` |
@@ -236,8 +242,8 @@ never appears, so `move.l sp,a5` prints as `movea.l a7,a5`.
 | Displacement | signed decimal displacement, then the base register | `-8(a6)`, `0(a6)` |
 | Index | signed decimal displacement, base, index register and its size | `4(a6,d1.w)`, `0(a0,a2.l)` |
 | Absolute | `$` and the address in hex, with no forced width | `$2000` |
-| PC-relative displacement | signed decimal displacement, then `(pc)` | `18(pc)`, `-6(pc)` |
-| PC-relative index | signed decimal displacement, `pc`, index register and its size | `14(pc,d1.w)`, `0(pc,a2.l)` |
+| PC-relative displacement | `$` and the address it reaches in hex, then `(pc)` | `$1014(pc)` |
+| PC-relative index | `$` and the address its displacement reaches, `pc`, index register and its size | `$1014(pc,d1.w)`, `$1002(pc,a2.l)` |
 
 Two things a line can name are **not** in that table, because they are not
 addressing modes at all: the status register, written `sr`, and the condition
@@ -250,40 +256,41 @@ The displacement of a displacement or index Operand is always written, `0`
 included, which is what tells `0(a6)` apart from `(a6)`. An index Operand always
 carries its `.w` or `.l`, the default included.
 
-**A PC-relative Operand prints the displacement the Assembler worked out and
-not the address the source wrote.** The source writes the address it wants —
-`move.l data(pc),d0` — and the Assembler stores the distance from that
-instruction's extension word to it, which is the address of the instruction plus
-two, since an instruction is four bytes here. That "plus two" is one constant
-for every instruction, which is the hardware's number for every form but
-`movem`, whose register-list mask *is* the first extension word and so pushes
-the real one to instruction plus four: s68k encodes no words, so a printed
-`movem` displacement is two less than a real assembler's, and the single
-constant is the deliberate simplification. So the same line at `$1000` with
-`data` at `$1014` prints as `move.l 18(pc),d0`, and a `data` *behind* the
-instruction prints as a negative displacement. The displacement is signed
-decimal, like every other displacement, and it is what the Interpreter adds back
-to reach the address again. `(pc,d1.w)`, which writes no address at all, is a
-displacement of zero and prints as `0(pc,d1.w)`.
+**A PC-relative Operand prints the address it reaches**, `$` and hex like a
+branch target, because that is what the Program holds. The source writes the
+address it wants — `move.l data(pc),d0` — and the Assembler keeps it: with
+`data` at `$1014`, the line prints as `move.l $1014(pc),d0` wherever it sits.
+The displacement a 68000 encodes is measured from the instruction's extension
+word, which is the encoder's business and not the fixture's; the Assembler
+checks that the distance fits its field, measured from that word: the address of
+the instruction plus two, or plus four for `movem` and `btst #n`, whose mask or
+bit number comes first. `(pc,d1.w)`, which writes no address at all, is a
+displacement of zero, so it reaches its own extension word and prints as that
+address: at `$1000`, `$1002(pc,d1.w)`, and `$1004(pc,d1.w)` in a `movem`.
 
-**A forced address width is not printed.** `label.w` and `label.l` name the same
-address here, and the Program holds the address alone, so `move.l $1000.w,d0`
-and `move.l $1000.l,d0` both print as `move.l $1000,d0`. The `.w` form is range
-checked while it is assembled (EASy68K's "Absolute short addressing must be in
-the range -32768 through 32767") and leaves no trace after that.
+**An address width is not printed.** The Program carries the width an address
+is encoded at, and since milestone C2 the Assembler chooses it as EASy68K does:
+`.w` or `.l` as written, else a word for an address above the line that a word
+holds, and a long otherwise. It is not printed, for the reason a branch's size
+is not, so `move.l $1000.w,d0` and `move.l $1000.l,d0` both print as
+`move.l $1000,d0`. The `.w` form is range checked while it is assembled
+(EASy68K's "Absolute short addressing must be in the range -32768 through
+32767").
 
 **Immediates** print as the unsigned value the Assembler stored, in hex, and it
-is the width the Assembler stored it at, not the size of the instruction, that
-decides how many digits come out. An immediate Operand is stored in 32 bits, so
-a negative source value comes out as its two's complement whatever size the
-instruction carries: `move.w #-1,d2` prints as `move.w #$ffffffff,d2`. The
-exception is `moveq`, `addq`, `subq` and `trap`, whose count or vector is not an
-Operand but part of the instruction itself and is stored in eight bits by the
-version these fixtures were taken from: the same `-1` truncates, so
-`moveq #-1,d3` in `editor/binary-search-1.asm` prints as `moveq #$ff,d3` while
-`link a6,#-4` in `editor/factorial-and-fibonacci-1.asm`, whose displacement is a
-32-bit field, prints as `link a6,#$fffffffc`. `printer_rules` in
-`src/test/corpus.rs` holds `moveq #-1,d0` and `move.l #-1,d1` side by side.
+is the width the Assembler stored it at that decides how many digits come out.
+Since milestone C2 an immediate Operand is stored at the size the instruction
+reads it at, zero extended, which is what a 68000 reads from its extension
+words, so a negative source value comes out as its two's complement at that
+size: `move.w #-1,d2` prints as `move.w #$ffff,d2`. *(It printed as
+`#$ffffffff` until then: the immediate was stored in 32 bits whatever the
+instruction's size.)* `moveq`, `addq`, `subq` and `trap` hold their count or
+vector in eight bits, so `moveq #-1,d3` in `editor/binary-search-1.asm` prints
+as `moveq #$ff,d3`, while `link a6,#-4` in
+`editor/factorial-and-fibonacci-1.asm`, whose displacement is a word sign
+extended, is stored in 32 bits and prints as `link a6,#$fffffffc`.
+`printer_rules` in `src/test/corpus.rs` holds `moveq #-1,d0` and
+`move.l #-1.l,d1` side by side, the `.l` keeping the second a `move.l`.
 
 **The status register** is `sr` and the condition codes are `ccr`, and the four
 `move`s and the six immediates that name one carry **no size**: `ccr` is a byte
@@ -304,6 +311,11 @@ and `addx.b -(a0),-(a1)`, `subx.w d0,d1`, `negx.l (a0)`, `abcd d0,d1`,
 shifts, the memory form included, which normalises to an explicit count of one
 and the word size: `roxl (a0)` prints as `roxl.w #$1,(a0)`. `printer_rules` in
 `src/test/corpus.rs` writes all eleven lines, since no corpus program does.
+
+**What only the decoder makes** prints as EASy68K writes it, though no source
+reaches it yet: `rte`, `stop #$2700`, `reset`, `move usp,a0` and `move a0,usp`,
+and, for a line A word, a line F word and a word that is no instruction, the
+`dc.w $a000` that would put the word there.
 
 **`simhalt`** prints as `simhalt` and nothing else. It is a Directive and not a
 68000 instruction, and it is in `instructions` because it is an executable item
@@ -336,18 +348,27 @@ Operand. A `movem` into a predecrement stores its mask reversed, because that is
 the order the registers are written in; the printer undoes that, so the list
 reads as it was written in source.
 
-**Normalisations stay visible.** The Assembler rewrites some instructions as it
-stores them, and the fixture shows what it stored:
+**Normalisations stay visible.** The Assembler stores the encoding EASy68K
+chooses, which is not always the Mnemonic written, and the fixture shows what it
+stored. "Known" below is an immediate written as a number, or with every Symbol
+in it defined above the line, and not written `#n.l` (CONTEXT.md, "Back
+reference"):
 
 | Written | Printed |
 | --- | --- |
-| `add #n,X` | `addi.<size> #$n,X`, X an address register included |
-| `sub #n,X` | `subi.<size> #$n,X`, likewise |
-| `cmp #n,dn` | `cmpi.<size> #$n,dn` |
-| `cmp X,an` | `cmpa.<size> X,an`, and this beats the `cmpi` rule above |
+| `add #n,X`, `addi #n,X`, n known and 1 to 8 | `addq.<size> #$n,X`, X an address register included |
+| `add #n,X`, `addi #n,X`, otherwise | `addi.<size> #$n,X`, or `adda.<size> #$n,X` into an address register |
+| `sub`, `subi` | likewise, `subq`, `subi` and `suba` |
+| `adda #n,an`, `suba #n,an`, n known and 1 to 8 | `addq.<size> #$n,an`, `subq.<size> #$n,an` |
+| `move.l #n,dn`, n known and -128 to 127 | `moveq #$n,dn`; an unsized `move` is a word and stays one |
+| `cmp #n,dn` | `cmp.<size> #$n,dn`, and `cmp #n,X` into memory `cmpi.<size> #$n,X` |
+| `and #n,X`, `or #n,X` | `and`/`or` into a data register, `andi`/`ori` into memory |
+| `eor #n,X` | `eori.<size> #$n,X` |
+| `cmp X,an` | `cmpa.<size> X,an` |
 | `add X,an` | `adda.<size> X,an` |
 | `sub X,an` | `suba.<size> X,an` |
 | `move X,an` | `movea.<size> X,an` |
+| `exg an,dn` | `exg dn,an`: the 68000 has one encoding of the pair, data register first |
 | `asl X` and the other one-operand shifts, `roxl` and `roxr` included | `asl.w #$1,X`: an explicit count of one and the word size |
 | `ext.w dn`, `ext.l dn` | the same, `ext` printing with its destination size |
 | `extb.l dn` | `extb.l dn`, the byte to long form of the same instruction |
@@ -431,7 +452,9 @@ fix it is rather than a regression:
   `moveq #$ff,d3`. *(This one turned out not to move: phase 1 evaluates values
   in 64 bits and range-checks them against the operand size, and then stores the
   immediate in the same 32 bits and the quick form's count in the same 8, so
-  every one of these lines prints exactly as it did.)*
+  every one of these lines prints exactly as it did. Milestone C2 of the machine
+  plan is where it moved: an immediate is stored at its instruction's size, and
+  the flappy-bird line is `cmp.w #$ff74,d5`.)*
 * **The Entry point is the first instruction in all 30 fixtures**, so no
   snapshot tells the two rules of this version apart: `bad-apple.x68` is the
   only program spelling the Label `START:` and it is on the first instruction
@@ -445,7 +468,9 @@ fix it is rather than a regression:
 * **Every instruction is 4 bytes**, whatever it encodes to on a real 68000, so
   every address in `instructions` steps by 4.
 * **`add`/`sub` and `cmp` disagree about which rewrite wins.** `add #1,a0`
-  becomes `addi`, `cmp #1,a0` becomes `cmpa`.
+  becomes `addi`, `cmp #1,a0` becomes `cmpa`. *(Milestone C2 of the machine
+  plan settled it EASy68K's way: into an address register both are the
+  address form, `adda` or `cmpa`, and an `adda` of 1 to 8 is an `addq`.)*
 * **`extb` cannot be written.** The compiler knows the byte to long `ext` but
   the checker does not know the Mnemonic, so no source reaches it and the
   `extb.l` rendering is only reachable from a hand-built instruction.
@@ -620,6 +645,10 @@ does not contain, and every item is deliberate.
 * **`btst #1,#$ff`** — `btst` only reads its destination, so it takes any data
   addressing mode, an immediate included; the checker held it to the same
   data-alterable set as `bset`, `bclr` and `bchg`, which do write theirs.
+  *(Refused again since milestone C2, and for a reason the checker did not
+  have: a 68000 tests an immediate only with a bit number from a register, so
+  `btst d1,#$ff` is accepted and `btst #1,#$ff` has no encoding. See "What
+  milestone C2 of the machine plan changed".)*
 * **The PC-relative modes and the forced widths of an address** — `label(pc)`,
   `(d,pc)`, `label(pc,d1.w)`, `label.w` and `label.l`. The lexer of 1.4.2 had no
   reading for `pc` at all, so none of the first three could be written; the
@@ -871,6 +900,114 @@ In `tests/diagnostics/`, **one kind is new and four cases changed**:
 `unimplemented_operation.snap`, `unterminated_macro_definition.snap` and
 `label_not_allowed.snap` each lost a "yet" from a message about macros or
 conditional assembly, and nothing else in them moved.
+
+### What milestone C1 of the machine plan changed in these fixtures, and why
+
+On 2026-10-28, milestone C1 of the asm-editor's
+`docs/design/m68k-machine-plan.md` extended the encoded instruction so that
+every 68000 encoding has a value of its own, ready for a decoder and an encoder.
+Three things a Program holds changed. **No fixture moved**, in `editor/`,
+`easy68k/` or `tests/diagnostics/`: no program the editor ships writes `(pc)`,
+and the two new fields are not printed yet.
+
+* **A PC-relative Operand keeps the address it reaches**, not a displacement
+  from a base the Assembler guessed. The displacement depends on where the
+  extension word sits, which is two bytes past the instruction for most
+  instructions and four for `movem` and `btst #n,d(pc)`, and only an encoder
+  knows that; the address is the same whichever it is. The rule under
+  "Operands" now prints the address, and the five PC-relative lines of
+  `printer_rules` in `src/test/corpus.rs` changed with it: `move.l 22(pc),d0`
+  is `move.l $1184(pc),d0`, `0(pc,d1.w)` is `$117a(pc,d1.w)`. What the
+  Interpreter reads is unchanged, because the address is what it worked out
+  from the displacement before.
+* **A branch carries the size of its displacement**, short, word or the
+  68020's long, and **an absolute address its width**, `.w` or `.l`. The
+  Assembler does not choose either yet — every branch is stored as a word and
+  every address as a long, the widest a 68000 has — so the printer leaves both
+  out until it does, and the fixtures will show them when they are re-recorded
+  for instructions at their real sizes.
+* **New instructions only the decoder makes**: `rte`, `stop`, `reset`,
+  `move usp`, the line A and line F words, and a word that is no instruction.
+  The Assembler still refuses the first four, so no fixture holds one; their
+  printed forms are under "`text`, the canonical rendering".
+
+### What milestone C2 of the machine plan changed in these fixtures, and why
+
+On 2026-10-28, milestone C2 of the asm-editor's
+`docs/design/m68k-machine-plan.md` made the Assembler choose each line's 68000
+encoding as EASy68K chooses it (the design's decision 5, and
+`docs/research/easy68k-machine-behaviour.md` §13 and §15 there) and gave the
+crate an encoder, `src/machine/encode.rs`, which writes those encodings as words
+and is the decoder's inverse. Every instruction is still four bytes.
+
+**Twenty of the 30 `editor/` assembly fixtures moved, by 113 lines, and every
+one of them is the `text` of an instruction**: no address, `line`, Label, byte of
+data or Entry point moved. **No `-run.snap` moved**: all 30 programs end with
+the same status, step count, registers, flags, memory hash and output, which is
+the evidence that each encoding the Assembler now chooses does what the one it
+replaced did. The three `-errors.snap` are untouched.
+
+| What moved | Lines | Why |
+| --- | --- | --- |
+| `move.l #$n,dn` is `moveq #$n,dn` | 59 | EASy68K always makes a `moveq` of a `move` written `.l` of a value from -128 to 127 into a data register, when the value is known (CONTEXT.md, "Back reference") |
+| `cmpi.<size> #$n,dn` is `cmp.<size> #$n,dn` | 38 | EASy68K tries `cmp <ea>,dn` before `cmpi`, so an immediate compared with a data register is a `cmp`. Three of them also print a narrower immediate, the last row's reason |
+| `addi.<size> #$n,X` is `addq.<size> #$n,X` | 10 | EASy68K always makes an `addq` of an add of a known 1 to 8. Seven are into an address register — the five `add.l #4,sp` of `factorial-and-fibonacci-1`, `add.l #8,sp` in `subroutine-with-stack-arguments-1` and `add.l #COLS*2,a1` in `two-dimensional-array-1` — which the old rule stored as an `addi` into an address register, an instruction the 68000 does not have |
+| `move.w #$ffffffb0,$185e` is `move.w #$ffb0,$185e` | 6 | an immediate is stored at the size the instruction reads it at, so a negative word is sixteen bits, as in `move.w #$ffff,d2` |
+
+The `addi` into an address register of the old rule set the condition codes,
+which an `addq` into one never does. In each of the seven the next instruction
+is a `move`, which sets N, Z, V and C again, or a `dbra`, which tests none of
+them, and none of the three programs reads X, so nothing they run sees the
+difference and the runs did not move.
+
+**Chosen and not printed: a branch's size and an address's width.** Both are
+chosen by EASy68K's back-reference rule now — `bra loop` to a Label above it
+within a byte is short, a branch forward is a word, an address above the line
+that a word holds is `.w` — and both are left out of `text`, as "`text`, the
+canonical rendering" says. While every instruction is four bytes, a branch's
+distance is measured between addresses the program will not have once
+instructions take their real sizes, so printing the sizes now would move these
+lines again in milestone C3, which is where they will be printed.
+
+**Printer rules.** `printer_rules` in `src/test/corpus.rs` moved by four lines,
+for the same reasons as the table — `add #1,d0` and `add #1,a0` are
+`addq.w`, `sub #1,a0` is `subq.w`, `cmp #1,d0` is `cmp.w` — and its
+`move.l #-1,d1` is written `move.l #-1.l,d1`, so that it still holds a 32-bit
+immediate beside `moveq #-1,d0`. `the_section_example_of_the_help` prints the
+help's own `MOVE.L #1,D0` as `moveq #$1,d0`.
+
+**Rules that changed and that no corpus program exercises.** These moved no
+fixture, and are here so that the next one to move is recognised:
+
+* **`#n.l`** is read: the one size suffix an immediate takes, which keeps the
+  long form — `move.l #1.l,d0` is a `move.l`, `add.l #1.l,d0` an `addi.l`. Any
+  other suffix on an immediate is still `malformed_operand`, as it is a syntax
+  error in EASy68K.
+* **`eor #n,X`** assembles, as `eori`, and **`cmp #n,X` into memory**, as
+  `cmpi`: both are EASy68K forms the table did not have.
+* **`and #n,X` and `or #n,X` into memory** are `andi` and `ori`. They were
+  stored as an `and` or an `or` with an immediate source, which has no 68000
+  encoding; the Interpreter ran them alike.
+* **`add #n,an` and `sub #n,an`** of anything but a known 1 to 8 are `adda` and
+  `suba`, no longer `addi` and `subi` into an address register; `adda` and
+  `suba` of a known 1 to 8 are `addq` and `subq`.
+* **`exg an,dn`** is stored as `exg dn,an`, the one encoding of the pair.
+* **A PC-relative distance** is measured from the operand's own extension
+  word, which for `movem` and `btst #n` is the instruction's address plus four;
+  so is the address `(pc,d1.w)` reaches in either.
+* **Three lines are refused**, each because the 68000 has no encoding for it and
+  EASy68K refuses it as well: an address register added into memory,
+  `add.l a0,(a1)`, which is `invalid_addressing_mode` on the first operand; a
+  static bit number on an immediate, `btst #1,#5`, which is
+  `invalid_addressing_mode` on the second (the bullet under "Now accepted" above
+  is corrected); and a `link` displacement outside -32768 to 32767,
+  `value_out_of_range` ("Invalid 16 bit data" in EASy68K). The immediate of
+  `btst d1,#n` is checked against a byte, the size it is read at.
+
+In `tests/diagnostics/`, **no kind is new and two cases grew**:
+`invalid_addressing_mode.asm` gained the first two refusals and
+`value_out_of_range.asm` the third, so that each new sentence has a snapshot to
+be read in, and each snapshot gained exactly those entries.
 
 ## Execution fixtures
 

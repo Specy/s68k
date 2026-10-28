@@ -18,12 +18,12 @@ expression: fixture
     {
       "address": "$1008",
       "line": 10,
-      "text": "move.l #$0,d1"
+      "text": "moveq #$0,d1"
     },
     {
       "address": "$100c",
       "line": 11,
-      "text": "move.l #$0,d2"
+      "text": "moveq #$0,d2"
     },
     {
       "address": "$1010",
@@ -58,7 +58,7 @@ expression: fixture
     {
       "address": "$1028",
       "line": 19,
-      "text": "move.l #$0,d1"
+      "text": "moveq #$0,d1"
     },
     {
       "address": "$102c",
@@ -103,7 +103,7 @@ expression: fixture
     {
       "address": "$104c",
       "line": 29,
-      "text": "move.l #$28,d2"
+      "text": "moveq #$28,d2"
     },
     {
       "address": "$1050",
@@ -238,7 +238,7 @@ expression: fixture
     {
       "address": "$10b8",
       "line": 58,
-      "text": "move.l #$6e,d2"
+      "text": "moveq #$6e,d2"
     },
     {
       "address": "$10bc",

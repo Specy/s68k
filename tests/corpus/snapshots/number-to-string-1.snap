@@ -13,7 +13,7 @@ expression: fixture
     {
       "address": "$1004",
       "line": 1,
-      "text": "move.l #$10,d1"
+      "text": "moveq #$10,d1"
     },
     {
       "address": "$1008",
@@ -28,7 +28,7 @@ expression: fixture
     {
       "address": "$1010",
       "line": 4,
-      "text": "move.l #$a,d1"
+      "text": "moveq #$a,d1"
     },
     {
       "address": "$1014",
@@ -43,7 +43,7 @@ expression: fixture
     {
       "address": "$101c",
       "line": 7,
-      "text": "move.l #$2,d1"
+      "text": "moveq #$2,d1"
     },
     {
       "address": "$1020",
@@ -103,7 +103,7 @@ expression: fixture
     {
       "address": "$104c",
       "line": 23,
-      "text": "cmpi.b #$9,d3"
+      "text": "cmp.b #$9,d3"
     },
     {
       "address": "$1050",

@@ -41,6 +41,7 @@
 pub mod assembler;
 pub mod instructions;
 pub mod interpreter;
+pub mod machine;
 
 mod c_runtime;
 pub mod charset;

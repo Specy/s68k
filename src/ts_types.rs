@@ -312,7 +312,12 @@ export type RuntimeError = { type: "Raw", value: string } |
 { type: "OutOfBounds", value: string } |
 { type: "DivisionByZero" } |
 { type: "IncorrectAddressingMode", value: string } |
-{ type: "Unimplemented" } |
+/**
+ * A 68000 instruction s68k does not run yet, named in `value` ("`rte`",
+ * "the line A word $A000"): `rte`, `stop`, `reset`, `move usp` and the line A
+ * and line F words. The Assembler refuses them, so only a decoded word reaches one.
+ */
+{ type: "Unimplemented", value: string } |
 { type: "AddressError", value : { address: number, size: Size } } |
 /**
  * A load or store that touches the bytes of an instruction, which are not in
@@ -323,7 +328,7 @@ export type RuntimeError = { type: "Raw", value: string } |
 { type: "ChkOutOfBounds", value: { value: number, bound: number } } |
 /** `trapv` with the overflow flag set. */
 { type: "OverflowException" } |
-/** The `illegal` instruction, which always ends the run. */
+/** The `illegal` instruction, or a word that is no instruction, which always ends the run. */
 { type: "IllegalInstruction" } |
 /**
  * A `trap #15` task s68k does not carry out, by its number in D0.B: one that

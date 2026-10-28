@@ -473,10 +473,16 @@ impl Expr {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Operand {
-    /// `#5`
+    /// `#5`, and `#5.l`
     Immediate {
         /// The value.
         value: Expr,
+        /// Whether it was written `#n.l`, which is EASy68K's way of keeping the
+        /// long form of an instruction: a `move.l #1,d0` or an `add.l #1,d0`
+        /// whose immediate is written so is not made a `moveq` or an `addq`
+        /// (`instructions::choice`). It changes nothing else: the size the
+        /// immediate is encoded at is the instruction's.
+        long: bool,
         /// Where the whole Operand was written.
         span: Span,
     },
@@ -862,6 +868,7 @@ mod tests {
         let operands = vec![
             Operand::Immediate {
                 value: value.clone(),
+                long: false,
                 span: span(),
             },
             Operand::DataRegisterDirect {
@@ -1000,6 +1007,7 @@ mod tests {
         assert_eq!(expression.span(), Span::new(1, 4));
         let operand = Operand::Immediate {
             value: expression,
+            long: false,
             span: Span::new(0, 4),
         };
         assert_eq!(operand.span(), Span::new(0, 4));

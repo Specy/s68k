@@ -20,11 +20,18 @@
 //!    registers;
 //! 5. each Operand's mode against its position;
 //! 6. the two Operands together, where the instruction has only one memory
-//!    access;
+//!    access, and the two pairs the 68000 has no encoding for although each
+//!    Operand fits its position: an address register added into memory and a
+//!    static bit number on an immediate;
 //! 7. the values it can already work out: the count of a quick form, a shift
 //!    count, a bit number, a displacement, how far a PC-relative Operand has to
-//!    reach, the width an absolute address is forced to, an immediate against
-//!    its size, and a bare number that is probably a missing `#`.
+//!    reach from its own extension word, the displacement of `link`, the width
+//!    an absolute address is forced to, an immediate against its size, and a
+//!    bare number that is probably a missing `#`.
+//!
+//! What survives is lowered ([`lowering`]), which is where the encoding
+//! EASy68K would choose is chosen: the analyzer says whether a line is right,
+//! and never which of the 68000's encodings it becomes.
 //!
 //! # Where it sits
 //!
@@ -42,7 +49,7 @@
 use super::ast::{self, Line, Operand, Operation, SizeSuffix};
 use super::diagnostics::{Diagnostic, DiagnosticKind};
 use super::expr;
-use super::instructions::encoded::{Instruction, Size};
+use super::instructions::encoded::{Instruction, Size, EXTENSION_WORD_OFFSET};
 use super::instructions::lowering::{self, Values};
 use super::instructions::table::{
     self, Combination, Family, Form, Implementation, InstructionSpec, Modes,
@@ -59,6 +66,19 @@ use super::source::{Location, Span};
 pub trait SymbolValues {
     /// The value of a Symbol, or `None` when it has none the analyzer may use.
     fn value_of(&self, name: &str) -> Option<i64>;
+
+    /// Whether a Symbol is defined above the line, or on it: whether a use of
+    /// it here is EASy68K's **back reference**, which is what decides a
+    /// branch's size, an address's width and the quick forms
+    /// ([`instructions::choice`](super::instructions::choice)).
+    ///
+    /// A Label on the line itself counts, as EASy68K defines it before it
+    /// reads the Operands. The default answers that a name with a value is
+    /// one, which is right for a table that has no lines to be above; the
+    /// Program's own table answers by Position (CONTEXT.md).
+    fn is_defined_above(&self, name: &str) -> bool {
+        self.value_of(name).is_some()
+    }
 }
 
 /// A symbol table that knows nothing, for a line judged on its own.
@@ -136,6 +156,10 @@ impl<'a> Context<'a> {
 impl Values for Context<'_> {
     fn value_of(&self, expression: &ast::Expr) -> Option<i64> {
         self.evaluate(expression)
+    }
+
+    fn is_back_reference(&self, expression: &ast::Expr) -> bool {
+        expr::every_symbol(expression, &|name| self.symbols.is_defined_above(name))
     }
 
     fn instruction_address(&self) -> i64 {
@@ -291,6 +315,13 @@ impl<'a> Analyzer<'a> {
         };
 
         let size = self.check_size(spec, form, operation, operands);
+        // Where a PC-relative Operand's displacement sits, which is what the
+        // distance it reaches is measured from.
+        let extension_offset = spec
+            .family()
+            .map_or(EXTENSION_WORD_OFFSET as i64, |family| {
+                lowering::extension_word_offset(family, operands)
+            });
         // An Operand that is not allowed where it stands is not asked about its
         // value as well: one mistake, one message.
         let judged_as_a_pair = self.check_operand_pair(spec, operands);
@@ -302,14 +333,18 @@ impl<'a> Analyzer<'a> {
             }
             fits[index] = self.check_mode(spec, form, index, operand);
             if fits[index] {
-                self.check_operand_values(operand);
+                self.check_operand_values(operand, extension_offset);
             }
         }
         self.check_combination(spec, form, operands);
+        if fits.iter().all(|fits| *fits) {
+            self.check_encodable_pair(spec, operands);
+        }
         if fits.first() != Some(&false) {
             self.check_instruction_value(spec, operands);
         }
-        self.check_immediate_sizes(size, operands, &fits);
+        self.check_link_displacement(spec, operands, &fits);
+        self.check_immediate_sizes(spec, size, operands, &fits);
         self.suggest_immediates(form, operands, &fits);
 
         // Warnings and suggestions leave a program that still builds; an
@@ -318,7 +353,7 @@ impl<'a> Analyzer<'a> {
             return None;
         }
         let family = spec.family()?;
-        lowering::lower_operation(family, size, operands, self.context)
+        lowering::lower_operation(family, operation.size, size, operands, self.context)
     }
 
     // -- the name ----------------------------------------------------------
@@ -656,6 +691,72 @@ impl<'a> Analyzer<'a> {
         true
     }
 
+    /// The two pairs of Operands each of which every position allows on its
+    /// own and the 68000 has no encoding for.
+    ///
+    /// * **An address register added into memory**, `add a0,(a1)`. `add` and
+    ///   `sub` reach memory through their `dn,<ea>` form only, so the source
+    ///   is then a data register, or an immediate, which is `addi`; an address
+    ///   register is a source only into a register (`addfl` in EASy68K's
+    ///   `INSTTABL.CPP`, which refuses the line too).
+    /// * **A static bit number on an immediate**, `btst #1,#5`. The 68000 tests
+    ///   an immediate with a bit number from a register only; its static form
+    ///   reads no immediate destination (the Programmer's Reference Manual's
+    ///   `BTST`, and the decoder's row for it), so `btst d1,#5` is the line
+    ///   that exists.
+    ///
+    /// Each is said about the Operand to change, in the words of
+    /// `invalid_addressing_mode`, with what the position takes beside the other
+    /// Operand.
+    fn check_encodable_pair(&mut self, spec: &'static InstructionSpec, operands: &[Operand]) {
+        let [first, second] = operands else { return };
+        let (Some(first_mode), Some(second_mode)) = (Modes::of(first), Modes::of(second)) else {
+            return;
+        };
+        let (position, operand, allowed, suggestion) = match spec.family() {
+            Some(Family::AddSub { .. })
+                if first_mode == Modes::AN && Modes::MEMORY.contains(second_mode) =>
+            {
+                (
+                    1,
+                    first,
+                    Modes::DN | Modes::IMMEDIATE,
+                    format!(
+                        "into memory, `{}` takes a data register or an immediate; move the \
+                         address into a data register first",
+                        spec.mnemonic
+                    ),
+                )
+            }
+            Some(Family::Bit(_))
+                if first_mode == Modes::IMMEDIATE && second_mode == Modes::IMMEDIATE =>
+            {
+                (
+                    2,
+                    second,
+                    Modes::DATA.difference(Modes::IMMEDIATE),
+                    format!(
+                        "a bit number written `#n` is tested in a register or in memory; \
+                         `{} d1,{}` takes the bit number from a register",
+                        spec.mnemonic,
+                        self.text_of(second.span())
+                    ),
+                )
+            }
+            _ => return,
+        };
+        self.raise(
+            DiagnosticKind::InvalidAddressingMode {
+                mnemonic: spec.mnemonic.to_string(),
+                position,
+                found: operand.description().to_string(),
+                allowed: allowed.names(),
+                suggestion: Some(suggestion),
+            },
+            operand.span(),
+        );
+    }
+
     /// The rule no position can state: `add`, `sub`, `and` and `or` reach
     /// memory once.
     fn check_combination(
@@ -712,8 +813,8 @@ impl<'a> Analyzer<'a> {
         if form.sizes == table::SizeRule::Branch {
             // A branch's suffix is the width of its displacement and not the
             // size it works at: `.b` and `.s` are the same one-byte offset
-            // (`Reference/68ks9b.htm`), and none of the four reaches the
-            // encoded instruction.
+            // (`Reference/68ks9b.htm`). The lowering reads it as written to
+            // choose the branch's size; it has no size to work at.
             return form.sizes.default_size();
         }
         let size = lowering::lower_size(operation.size, form.sizes.default_size());
@@ -765,7 +866,7 @@ impl<'a> Analyzer<'a> {
     /// vector of `trap`.
     fn check_instruction_value(&mut self, spec: &'static InstructionSpec, operands: &[Operand]) {
         let Some(rule) = spec.value_rule else { return };
-        let Some(Operand::Immediate { value, span }) = operands.first() else {
+        let Some(Operand::Immediate { value, span, .. }) = operands.first() else {
             return;
         };
         let Some(number) = self.context.evaluate(value) else {
@@ -791,6 +892,43 @@ impl<'a> Analyzer<'a> {
         self.check_the_only_trap(spec, number, *span);
     }
 
+    /// The displacement of `link`, which the 68000 encodes in a word and sign
+    /// extends: EASy68K's "Invalid 16 bit data" (`link` in its `BUILD.CPP`).
+    /// A frame takes a negative one, so `#$FFFC` is refused as EASy68K
+    /// refuses it, and `#-4` is the way to write it.
+    fn check_link_displacement(
+        &mut self,
+        spec: &'static InstructionSpec,
+        operands: &[Operand],
+        fits: &[bool],
+    ) {
+        if spec.family() != Some(Family::Link) || fits.get(1) != Some(&true) {
+            return;
+        }
+        let Some(Operand::Immediate { value, .. }) = operands.get(1) else {
+            return;
+        };
+        let Some(number) = self.context.evaluate(value) else {
+            return;
+        };
+        if (-32768..=32767).contains(&number) {
+            return;
+        }
+        self.raise(
+            DiagnosticKind::ValueOutOfRange {
+                subject: "the displacement of `link`".to_string(),
+                value: number,
+                min: -32768,
+                max: 32767,
+                advice: Some(
+                    "a frame larger than 32 KB is reserved with `suba.l #n,a7` after the `link`"
+                        .to_string(),
+                ),
+            },
+            value.span(),
+        );
+    }
+
     /// `trap #15` is the input and output trap and the only one s68k answers;
     /// every other vector assembles on a 68000 and would stop the program here.
     fn check_the_only_trap(&mut self, spec: &'static InstructionSpec, vector: i64, span: Span) {
@@ -811,7 +949,10 @@ impl<'a> Analyzer<'a> {
     /// word, and of an indexed one, which it encodes in a byte; the distance a
     /// PC-relative Operand reaches; and the width an absolute address is
     /// forced to.
-    fn check_operand_values(&mut self, operand: &Operand) {
+    ///
+    /// `extension_offset` is how far past the instruction a PC-relative
+    /// Operand's extension word is ([`lowering::extension_word_offset`]).
+    fn check_operand_values(&mut self, operand: &Operand, extension_offset: i64) {
         match operand {
             Operand::Displacement { displacement, .. } => {
                 self.check_range(displacement, "the displacement of `d(An)`", -32768, 32767);
@@ -827,7 +968,7 @@ impl<'a> Analyzer<'a> {
                 self.check_index_size(index);
             }
             Operand::PcDisplacement { displacement, .. } => {
-                self.check_pc_distance(displacement, "d(PC)", -32768, 32767);
+                self.check_pc_distance(displacement, extension_offset, "d(PC)", -32768, 32767);
             }
             Operand::PcIndex {
                 displacement,
@@ -835,7 +976,7 @@ impl<'a> Analyzer<'a> {
                 ..
             } => {
                 if let Some(displacement) = displacement {
-                    self.check_pc_distance(displacement, "d(PC,Xn)", -128, 127);
+                    self.check_pc_distance(displacement, extension_offset, "d(PC,Xn)", -128, 127);
                 }
                 self.check_index_size(index);
             }
@@ -847,14 +988,22 @@ impl<'a> Analyzer<'a> {
     /// How far a PC-relative Operand has to reach, against the field the 68000
     /// encodes that distance in.
     ///
-    /// The source writes the address it wants and the Assembler works out the
-    /// distance from this instruction's extension word to it
-    /// ([`lowering::pc_relative_offset`], the same arithmetic the lowering
-    /// stores), so the number the range is about is one the student never
-    /// wrote: the message says what it is and the hint says that a plain label
-    /// has no such limit.
-    fn check_pc_distance(&mut self, address: &ast::Expr, notation: &str, min: i64, max: i64) {
-        let Some(distance) = lowering::pc_relative_offset(self.context, address) else {
+    /// The source writes the address it wants, and the Program keeps that
+    /// address; what has to fit the field is the distance from this
+    /// instruction's extension word to it ([`lowering::pc_relative_offset`]),
+    /// which is the displacement the 68000 encodes. So the number the range is
+    /// about is one the student never wrote: the message says what it is and
+    /// the hint says that a plain label has no such limit.
+    fn check_pc_distance(
+        &mut self,
+        address: &ast::Expr,
+        extension_offset: i64,
+        notation: &str,
+        min: i64,
+        max: i64,
+    ) {
+        let Some(distance) = lowering::pc_relative_offset(self.context, address, extension_offset)
+        else {
             return;
         };
         if distance >= min && distance <= max {
@@ -970,18 +1119,34 @@ impl<'a> Analyzer<'a> {
     /// Both readings fit: `move.b #-1,d0` and `move.b #$ff,d0` are the same
     /// byte, so the range runs from the lowest signed value to the highest
     /// unsigned one.
-    fn check_immediate_sizes(&mut self, size: Option<Size>, operands: &[Operand], fits: &[bool]) {
-        let Some(size) = size else { return };
-        let bits = size.to_bits() as u32;
-        let min = -(1i64 << (bits - 1));
-        let max = (1i64 << bits) - 1;
+    ///
+    /// The one immediate read at another size than the instruction's is the
+    /// destination of a bit instruction, `btst d1,#5`, which is a byte whatever
+    /// the instruction is written as.
+    fn check_immediate_sizes(
+        &mut self,
+        spec: &'static InstructionSpec,
+        size: Option<Size>,
+        operands: &[Operand],
+        fits: &[bool],
+    ) {
         for (index, operand) in operands.iter().enumerate() {
-            let Operand::Immediate { value, span } = operand else {
+            let Operand::Immediate { value, span, .. } = operand else {
                 continue;
             };
             if !fits[index] {
                 continue;
             }
+            let size = match (spec.family(), index) {
+                (Some(Family::Bit(_)), 1) => Size::Byte,
+                _ => match size {
+                    Some(size) => size,
+                    None => continue,
+                },
+            };
+            let bits = size.to_bits() as u32;
+            let min = -(1i64 << (bits - 1));
+            let max = (1i64 << bits) - 1;
             let Some(number) = self.context.evaluate(value) else {
                 continue;
             };
@@ -1916,11 +2081,35 @@ mod tests {
     fn the_normalisations_of_the_printer_survive_the_analyzer() {
         assert!(matches!(
             analyze("    add.w #1,a0").1,
-            Some(Instruction::ADDI(..))
+            Some(Instruction::ADDQ(1, _, Size::Word))
+        ));
+        assert!(matches!(
+            analyze("    add.w #100,a0").1,
+            Some(Instruction::ADDA(..))
+        ));
+        assert!(matches!(
+            analyze("    add.w #100,d0").1,
+            Some(Instruction::ADDI(100, _, Size::Word))
         ));
         assert!(matches!(
             analyze("    cmp.w #1,a0").1,
             Some(Instruction::CMPA(..))
+        ));
+        assert!(matches!(
+            analyze("    cmp.w #1,d0").1,
+            Some(Instruction::CMP(..))
+        ));
+        assert!(matches!(
+            analyze("    cmp.w #1,(a0)").1,
+            Some(Instruction::CMPI(..))
+        ));
+        assert!(matches!(
+            analyze("    and.w #1,(a0)").1,
+            Some(Instruction::ANDI(..))
+        ));
+        assert!(matches!(
+            analyze("    eor.w #1,d0").1,
+            Some(Instruction::EORI(..))
         ));
         assert!(matches!(
             analyze("    move.l d0,a0").1,

@@ -37,7 +37,7 @@ use crate::assembler::program::{MemoryContent, Program};
 use crate::assembler::source::Files;
 use crate::assembler::symbols::SymbolKind;
 use crate::instructions::{
-    Condition, FileExistence, Instruction, Interrupt, InterruptResult, KeyStateRequest,
+    BranchSize, Condition, FileExistence, Instruction, Interrupt, InterruptResult, KeyStateRequest,
     KeyStateResult, Operand, RegisterOperand, ShiftDirection, Sign, Size, SoundOutcome,
     TargetDirection,
 };
@@ -284,15 +284,15 @@ fn print_operand(operand: &Operand) -> String {
             register(&index.register),
             size_suffix(index.size)
         ),
-        Operand::Absolute(address) => hex(*address),
-        // A PC-relative Operand prints the displacement the Assembler worked
-        // out and not the address the source wrote: the address is where it
-        // came from and the displacement is what the Program holds
-        // (`tests/corpus/README.md`, "Operands").
-        Operand::PcDisplacement { offset } => format!("{}(pc)", offset),
-        Operand::PcIndex { offset, index } => format!(
+        // The width is not printed until instructions have their real sizes
+        // (`tests/corpus/README.md`, "An address width is not printed").
+        Operand::Absolute { address, width: _ } => hex(*address),
+        // A PC-relative Operand prints the address it reaches, which is what
+        // the Program holds (`tests/corpus/README.md`, "Operands").
+        Operand::PcDisplacement { target } => format!("{}(pc)", hex(*target as usize)),
+        Operand::PcIndex { target, index } => format!(
             "{}(pc,{}.{})",
-            offset,
+            hex(*target as usize),
             register(&index.register),
             size_suffix(index.size)
         ),
@@ -546,7 +546,9 @@ fn print_instruction(instruction: &Instruction) -> String {
             print_operand(source),
             register(destination)
         ),
-        Instruction::Bcc(address, cond) => {
+        // A branch prints no size until instructions have their real sizes
+        // (`tests/corpus/README.md`, "`text`, the canonical rendering").
+        Instruction::Bcc(address, cond, _) => {
             format!("b{} {}", condition(cond), hex(*address as usize))
         }
         Instruction::Scc(destination, cond) => {
@@ -558,7 +560,7 @@ fn print_instruction(instruction: &Instruction) -> String {
             register(counter),
             hex(*address as usize)
         ),
-        Instruction::BRA(address) => format!("bra {}", hex(*address as usize)),
+        Instruction::BRA(address, _) => format!("bra {}", hex(*address as usize)),
         Instruction::LINK(frame, displacement) => {
             format!("link {},#${:x}", register(frame), displacement)
         }
@@ -626,7 +628,7 @@ fn print_instruction(instruction: &Instruction) -> String {
             format!("bchg {},{}", print_operand(bit), print_operand(destination))
         }
         Instruction::JMP(target) => format!("jmp {}", print_operand(target)),
-        Instruction::BSR(address) => format!("bsr {}", hex(*address as usize)),
+        Instruction::BSR(address, _) => format!("bsr {}", hex(*address as usize)),
         Instruction::TRAP(vector) => format!("trap #${:x}", vector),
         Instruction::RTS => "rts".to_string(),
         Instruction::NOP => "nop".to_string(),
@@ -670,6 +672,23 @@ fn print_instruction(instruction: &Instruction) -> String {
         }
         Instruction::TRAPV => "trapv".to_string(),
         Instruction::ILLEGAL => "illegal".to_string(),
+        // What only the decoder makes. The Assembler refuses the first four
+        // and has no way to write the last three but `dc.w`, which is how
+        // they print.
+        Instruction::RTE => "rte".to_string(),
+        Instruction::STOP(value) => format!("stop #${:x}", value),
+        Instruction::RESET => "reset".to_string(),
+        Instruction::MOVEUSP {
+            to_usp: true,
+            register: address,
+        } => format!("move {},usp", register(address)),
+        Instruction::MOVEUSP {
+            to_usp: false,
+            register: address,
+        } => format!("move usp,{}", register(address)),
+        Instruction::LINEA(word) | Instruction::LINEF(word) | Instruction::IllegalWord(word) => {
+            format!("dc.w ${:x}", word)
+        }
     }
 }
 
@@ -1184,7 +1203,7 @@ loop:
     bvs loop
     bmi loop
     moveq #-1,d0
-    move.l #-1,d1
+    move.l #-1.l,d1
     movem.l regs,-(sp)
     movem.l (sp)+,regs
     simhalt
@@ -1266,14 +1285,14 @@ here: dc.l 1
         "bcs $107c",
         "bra $107c",
         "bsr $107c",
-        "addi.w #$1,d0",
+        "addq.w #$1,d0",
         "movea.w #$1,a0",
-        "cmpi.w #$1,d0",
+        "cmp.w #$1,d0",
         "rts",
         // `add`/`sub` rewrite an immediate before they look at the destination,
         // `cmp` looks at the destination first; the fixtures show the difference.
-        "addi.w #$1,a0",
-        "subi.w #$1,a0",
+        "addq.w #$1,a0",
+        "subq.w #$1,a0",
         "cmpa.w #$1,a0",
         "jsr $1000",
         "ori.b #$1,d0",
@@ -1286,9 +1305,10 @@ here: dc.l 1
         "bvc $107c",
         "bvs $107c",
         "bmi $107c",
-        // The count of a quick form is not an operand: this version keeps it
-        // in eight bits, so the same -1 truncates where a 32-bit immediate
-        // operand sign extends. `addq`, `subq` and `trap` truncate the same way.
+        // The count of a quick form is not an operand: it is kept in eight
+        // bits, where the immediate of a `move.l` written `#-1.l`, which is
+        // not made a `moveq`, is a long. `addq`, `subq` and `trap` keep eight
+        // bits the same way.
         "moveq #$ff,d0",
         "move.l #$ffffffff,d1",
         // A `reg` symbol is lowered exactly as the list it stands for, in both
@@ -1336,19 +1356,19 @@ here: dc.l 1
         "roxr.l d1,d0",
         "roxl.w #$1,(a0)",
         // Phase 3's last group. A PC-relative operand is written as the
-        // address it reaches and printed as the displacement the Assembler
-        // stored: `here` is 22 bytes past the extension word of the first of
-        // these lines, 18 past the second's, and 6 bytes *behind* the last
-        // one's. `(pc,d1.w)` writes no address, so its displacement is zero.
-        "move.l 22(pc),d0",
-        "lea 18(pc),a0",
-        "move.l 14(pc,d1.w),d1",
-        "move.l 0(pc,d1.w),d2",
-        // A forced width is not printed: `.w` and `.l` name the same address
-        // here and the Program holds the address alone.
+        // address it reaches and printed as that address, which is what the
+        // Program keeps: `here` is `$1184`, forwards of the first lines and
+        // behind the last one. `(pc,d1.w)` writes no address, so its
+        // displacement is zero and it reaches its own extension word, two
+        // bytes past the instruction at `$1178`.
+        "move.l $1184(pc),d0",
+        "lea $1184(pc),a0",
+        "move.l $1184(pc,d1.w),d1",
+        "move.l $117a(pc,d1.w),d2",
+        // A forced width is not printed, nor a chosen one.
         "move.l $1000,d3",
         "move.l $1000,d4",
-        "move.l -6(pc),d5",
+        "move.l $1184(pc),d5",
     ];
     let fixture = dump("printer_rules", source);
     let texts: Vec<&str> = fixture
@@ -1395,7 +1415,7 @@ fn printer_rules_out_of_reach() {
         "ext.b d0"
     );
     assert_eq!(
-        print_instruction(&Instruction::Bcc(0x1000, Condition::True)),
+        print_instruction(&Instruction::Bcc(0x1000, Condition::True, BranchSize::Word)),
         "bt $1000"
     );
     assert_eq!(
@@ -1453,7 +1473,8 @@ msg2    DC.B    'EASy68K Rules!',$d,$a,0
         .collect();
     assert_eq!(memory, vec![("$2000", 14), ("$200e", 17)]);
     // Section 0 starts at the default origin, which is where its `ORG` puts it
-    // anyway; the two instructions are four bytes each.
+    // anyway; the two instructions are four bytes each. `MOVE.L #1,D0` is the
+    // `moveq` EASy68K makes of it.
     let instructions: Vec<(&str, &str)> = fixture
         .instructions
         .iter()
@@ -1461,7 +1482,7 @@ msg2    DC.B    'EASy68K Rules!',$d,$a,0
         .collect();
     assert_eq!(
         instructions,
-        vec![("$1000", "move.l #$1,d0"), ("$1004", "nop")]
+        vec![("$1000", "moveq #$1,d0"), ("$1004", "nop")]
     );
     // The two Labels are Labels, with the addresses above.
     assert_eq!(fixture.labels["msg1"].address, "$2000");

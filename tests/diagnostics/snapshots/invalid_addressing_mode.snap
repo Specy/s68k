@@ -68,5 +68,31 @@ input_file: tests/diagnostics/invalid_addressing_mode.asm
       "endColumn": 11
     },
     "related": []
+  },
+  {
+    "severity": "error",
+    "code": "invalid_addressing_mode",
+    "message": "The first operand of `add` cannot be an address register.",
+    "hint": "The operand should be Dn or Im. Into memory, `add` takes a data register or an immediate; move the address into a data register first",
+    "location": {
+      "file": "invalid_addressing_mode.asm",
+      "line": 9,
+      "column": 10,
+      "endColumn": 12
+    },
+    "related": []
+  },
+  {
+    "severity": "error",
+    "code": "invalid_addressing_mode",
+    "message": "The second operand of `btst` cannot be an immediate.",
+    "hint": "The operand should be Dn, (An), (An)+, -(An), d(An), d(An,Xn), Ea/<label>, d(PC) or d(PC,Xn). A bit number written `#n` is tested in a register or in memory; `btst d1,#5` takes the bit number from a register",
+    "location": {
+      "file": "invalid_addressing_mode.asm",
+      "line": 10,
+      "column": 12,
+      "endColumn": 14
+    },
+    "related": []
   }
 ]
