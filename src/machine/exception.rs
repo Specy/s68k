@@ -12,9 +12,9 @@
 //!
 //! * Groups 1 and 2, every exception but the two of group 0: the status
 //!   register, then the program counter, six bytes.
-//! * Group 0, the address error (and the bus error of the plan's milestone
-//!   C7): the special status word, the access address, the instruction
-//!   register, the status register and the program counter, fourteen bytes.
+//! * Group 0, the bus error and the address error: the special status word,
+//!   the access address, the instruction register, the status register and
+//!   the program counter, fourteen bytes.
 //!
 //! **The program counter stacked.** An illegal instruction, a privilege
 //! violation and the line A and line F words stack the address of the
@@ -24,11 +24,15 @@
 //! reached when the access faulted, which depends on the instruction and its
 //! operands: [`address_error_pc`] holds the rule, read from the
 //! SingleStepTests/m68000 suite (ADR 0010), which records it for every one of
-//! its 55,606 address errors.
+//! its 55,606 address errors. A bus error, which the Memory map raises and the
+//! suite has none of, aborts the instruction at the same access as an address
+//! error would, and stacks what the same rule says.
 
 use crate::instructions::{AddressWidth, Instruction, Operand, Size};
 use crate::interpreter::{Access, RuntimeError};
 
+/// The vector of the bus error, which the Memory map raises.
+pub const BUS_ERROR: u8 = 2;
 /// The vector of the address error.
 pub const ADDRESS_ERROR: u8 = 3;
 /// The vector of an illegal instruction: `illegal`, and a word that is no
@@ -63,7 +67,7 @@ pub const fn vector_address(vector: u8) -> u32 {
 /// `TRAP #3`, `Divide by zero`.
 pub fn vector_name(vector: u8) -> String {
     match vector {
-        2 => "Bus error".to_string(),
+        BUS_ERROR => "Bus error".to_string(),
         ADDRESS_ERROR => "Address error".to_string(),
         ILLEGAL_INSTRUCTION => "Illegal instruction".to_string(),
         DIVISION_BY_ZERO => "Divide by zero".to_string(),
@@ -91,6 +95,7 @@ pub fn is_easy68k_task(task: u8) -> bool {
 /// for it and the program ends.
 pub fn vector_of(error: &RuntimeError) -> Option<u8> {
     match error {
+        RuntimeError::BusError { .. } => Some(BUS_ERROR),
         RuntimeError::AddressError { .. } => Some(ADDRESS_ERROR),
         RuntimeError::IllegalInstruction => Some(ILLEGAL_INSTRUCTION),
         RuntimeError::DivisionByZero => Some(DIVISION_BY_ZERO),
@@ -125,7 +130,7 @@ pub enum Group {
 /// The group of the exception through `vector`.
 pub fn group(vector: u8) -> Group {
     match vector {
-        2 | ADDRESS_ERROR => Group::Zero,
+        BUS_ERROR | ADDRESS_ERROR => Group::Zero,
         DIVISION_BY_ZERO | CHK | TRAPV | TRAP_0..=TRAP_15 => Group::Two,
         _ => Group::One,
     }

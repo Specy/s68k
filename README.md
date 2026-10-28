@@ -47,6 +47,7 @@ The machine is a 68000 as EASy68K simulates one, and a 68000 where EASy68K is wr
 
 | Vector | Address | Raised by | Stacked PC |
 |---|---|---|---|
+| 2 | `$008` | a bus error: an access the memory map refuses (below, "The memory map") | as for an address error at the same access; an instruction that could not be fetched, its own |
 | 3 | `$00C` | an address error: a word or long at an odd address, an instruction fetched from one, a jump to one | where the prefetch had got to, the 68000's (below) |
 | 4 | `$010` | `illegal`, and a word that is no instruction | the instruction's |
 | 5 | `$014` | `divs` or `divu` by zero | the next instruction's |
@@ -58,13 +59,32 @@ The machine is a 68000 as EASy68K simulates one, and a 68000 where EASy68K is wr
 | 32 to 46 | `$080` to `$0B8` | `trap #0` to `trap #14` | the next instruction's |
 | 47 | `$0BC` | a `trap #15` task that is none of EASy68K's | the next instruction's |
 
-- **Taking one.** The processor reads the vector, copies the status register, sets S and clears T, pushes the frame on the supervisor stack and jumps to the handler. A frame is the status register then the program counter, 6 bytes, except an address error's, 14: the special status word (bits 15 to 5 of the instruction register, R/W, I/N clear, and the function code of the mode and space of the access), the access address, the instruction register, the status register and the program counter. `rte` pops the six bytes; an address error's handler takes the other eight off itself.
+- **Taking one.** The processor reads the vector, copies the status register, sets S and clears T, pushes the frame on the supervisor stack and jumps to the handler. A frame is the status register then the program counter, 6 bytes, except a bus error's and an address error's, 14: the special status word (bits 15 to 5 of the instruction register, R/W, I/N clear, and the function code of the mode and space of the access), the access address, the instruction register, the status register and the program counter. `rte` pops the six bytes; a bus or address error's handler takes the other eight off itself.
 - **No handler.** A vector holding an odd address has no handler, and the program ends with the error as it did before exceptions were taken, the vector named beside it (`Exception {cause, vector}`). Memory starts as `$FF`, so every vector reads `$FFFFFFFF` until the program writes it, and a program that installs nothing ends exactly as before.
-- **A double fault**, a frame pushed on an odd supervisor stack pointer, halts the processor: the termination `Halted {cause, vector}`.
+- **A double fault** halts the processor, the termination `Halted {cause, vector}`: a frame pushed on an odd supervisor stack pointer, or into a range the memory map refuses, and a vector read from an invalid range.
 - **Supervisor and user mode.** A program starts in supervisor mode with EASy68K's registers: SR `$2000`, A7 the supervisor stack pointer at `$01000000`, the user stack pointer at `$00FF0000`. A7 is the stack pointer of the mode S names, and every write of SR, every exception and `rte` can swap the two. `getSystem()` answers `{sr, usp, ssp}`, and `setSr`, `setUsp` and `setSsp` write them, journaled inside a poke. `move sr,<ea>` is not privileged on a 68000, and `trap #15` works in user mode, as in EASy68K.
 - **Trace** is T sampled before an instruction: an instruction that started with it set takes the trace exception after it, unless it raised an illegal instruction, a privilege violation, a line A or F word or an address error, which it did not finish. After `trap`, `trapv`, `chk` or a division by zero, the trace frame goes on top of theirs, so the trace handler runs first and returns into theirs, as on a 68000 (EASy68K pushes them the other way round). A `trap #15` task that waits on the host is traced once it is answered.
 - **The address error's program counter and side effects** are the 68000's as MAME's microcode leaves them on the 55,606 address errors of the conformance suite: a jump to an odd address faults in its own prefetch, `bsr` with its return address pushed and `jsr` without; a data access stacks the address the prefetch had reached, which depends on the operands; a word through `(An)+` has moved the register and a long has not; `clr` and `move sr,<ea>` read their destination first, so an odd one faults as a read. `src/machine/exception.rs` holds the rules.
 - **The call stack** gains a frame for each exception taken, `kind: 'exception'` with its `vector`, which `rte` takes off; Undo walks back through all of it, the stack swaps included (`WriteStackPointers`, `PushException` and `PopException` mutations).
+
+## The memory map
+
+A program declares ranges of EASy68K's memory map with `memory`, one of each kind at most, and the interpreter enforces them as EASy68K's simulator does (`memoryMapCheck`, `mem_put` and `mem_req` in its `UTILS.CPP`):
+
+| Kind | A read | A write |
+|---|---|---|
+| `rom` | allowed | ignored: memory keeps what it held, and it is no error |
+| `read` | allowed | a bus error |
+| `protected` | a bus error from user mode | a bus error from user mode |
+| `invalid` | a bus error | a bus error |
+
+- **What is checked.** Reads against invalid and protected, by their first byte; writes against all four, by any byte, so a long that starts below a range and runs into it is refused as a write and not as a read; and every word of an instruction as it is fetched, as EASy68K fetches each as a read, so code in an invalid range, or in a protected one in user mode, is a bus error in program space. The kinds are checked in EASy68K's order, invalid, protected, read only and ROM. An address error comes first, then the map.
+- **A bus error** is vector 2 with the 14-byte frame of an address error, its status word the 68000's: R/W as the access was, I/N clear, and the function code of the processor's real mode, where EASy68K always says "write" and supervisor. With no handler the program ends with `BusError {address, size, access, range}`, the vector named beside it. The instruction aborts there, as a 68000's does; EASy68K finishes it.
+- **Protected reads the processor's S bit**, where EASy68K reads it from its window's SR field. The vector of an exception is read in supervisor mode, so a protected vector table serves user mode.
+- **A ROM store is no store**: it journals nothing, changes no code, is no Code write and is not a watched write.
+- **The `trap #15` tasks check their buffers as EASy68K does**: a string a task reads (tasks 0, 1, 13, 14, 17, 18, 95, and the paths of 51, 52, 57, 59, 70, 71, 73 and 74), from its start to its NUL, against invalid; the bytes task 54 writes a file from against invalid; and the bytes task 53 reads a file into against invalid, read only and ROM, where ROM takes nothing and the task does nothing. None checks protected, and task 2's line and task 58's dialog are written with no check, as in EASy68K.
+- **The debugger is not the program.** A Poke, a testcase's starting memory, the host's reads and `disassembleAt`, undo, and the program's own initial contents go past the map.
+- With no range declared, an access asks one flag and goes on. The decode cache keeps no instruction a word of which an invalid or protected range reaches, so each fetch of one is decoded and checked in the mode the processor is in then, and a write into one is no Code write.
 
 ## Conformance
 
@@ -93,7 +113,7 @@ The counts on 2026-10-28, with the suite at its pinned commit:
 
 ## Future work
 
-- The memory map's bus errors, interrupts with `stop` and `reset`, and cycles (the asm-editor's `docs/design/m68k-machine.md`)
+- Interrupts with `stop` and `reset`, and cycles (the asm-editor's `docs/design/m68k-machine.md`)
 - The rest of the 68010 and the 68020 dialects (below, "Processor dialects")
 - Macros and conditional assembly
 
@@ -160,7 +180,7 @@ Each record ends with CR LF, as EASy68K writes them on Windows. EASy68K breaks i
 | `offset` | opens a region that produces no bytes, where `ds` names the fields of a structure by their offsets; `org *` ends it |
 | `include` | assembles another file of the project here, as if its lines had been pasted at this line |
 | `incbin` | puts another file's bytes in memory here, as a `dc.b` of the whole file would |
-| `memory` | declares a range of EASy68K's memory map, `memory rom $8000,$8FFF`: `rom`, `read`, `protected` or `invalid`, each kind once; the program carries it, and the interpreter does not enforce it yet |
+| `memory` | declares a range of EASy68K's memory map, `memory rom $8000,$8FFF`: `rom`, `read`, `protected` or `invalid`, each kind once; the program carries it, and the interpreter enforces it (above, "The memory map") |
 | `opt` | `opt p=68000`, `p=68010` or `p=68020` chooses the processor the program is written for, and `opt bit` the 68020's bit-field instructions, once and before the first instruction (above, "Processor dialects"); EASy68K's listing options `cre`, `mex`, `sex`, `war` and `cex`, and each with `no`, are accepted and ignored, and any other word is a warning |
 | `list`, `nolist`, `page` | accepted and ignored: they are about the listing file, which there is none of |
 
@@ -264,9 +284,8 @@ Where s68k departs from EASy68K, on purpose:
 
 ## Known limitations
 1. There are no interrupts yet: the interrupt mask of the status register is stored and masks nothing, `stop` and `reset` are refused by the assembler, and a decoded one in supervisor mode ends the program as not implemented (the plan's milestone C8).
-2. The memory map is carried and not enforced, so there are no bus errors, vector 2, yet (milestone C7).
-3. No cycles are counted (milestone C9).
-4. Vectored and spurious interrupts, the reset exception and the 68000's HALT pin are left out, as EASy68K leaves them out; nothing reads the vectors at `$0` and `$4`.
+2. No cycles are counted (milestone C9).
+3. Vectored and spurious interrupts, the reset exception and the 68000's HALT pin are left out, as EASy68K leaves them out; nothing reads the vectors at `$0` and `$4`.
 
 ## Running the command-line interpreter
 

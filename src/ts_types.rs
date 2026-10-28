@@ -303,9 +303,9 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 #[wasm_bindgen(typescript_custom_section)]
 pub const IRuntimeError: &'static str = r#"
 /**
- * What an access that raised an address error was: a read of data, a write,
- * or a read in program space (an instruction's word, a jump's target, or an
- * operand read relative to the program counter).
+ * What an access that raised an address error or a bus error was: a read of
+ * data, a write, or a read in program space (an instruction's word, a jump's
+ * target, or an operand read relative to the program counter).
  */
 export type Access = "Read" | "Write" | "Program"
 
@@ -316,7 +316,7 @@ export type Access = "Read" | "Write" | "Program"
  * through its vector into the program's handler, and the program goes on; only
  * a vector that holds no handler, an odd address (every vector until the
  * program writes it), ends the program, with the error as its `Termination`
- * and the vector beside it. Those are the address error (3), an illegal
+ * and the vector beside it. Those are the bus error (2), the address error (3), an illegal
  * instruction (4), a division by zero (5), `chk` (6), `trapv` (7), a privilege
  * violation (8), trace (9), line A (10), line F (11), `trap #0` to `#14` (32
  * to 46) and a `trap #15` task EASy68K does not know (47). The others end the
@@ -329,6 +329,15 @@ export type RuntimeError = { type: "Raw", value: string } |
 { type: "OutOfBounds", value: string } |
 /** `divs` or `divu` by zero: vector 5. */
 { type: "DivisionByZero" } |
+/**
+ * An access the memory map refuses: a read or a write in an invalid range,
+ * any access in a protected one from user mode, a write in a read only one,
+ * an instruction fetched from the first two, and a `trap #15` task's buffer
+ * as EASy68K checks it. The 68000's bus error, vector 2. `address` is all 32
+ * bits the program used, the start of the buffer for a task, and `range` the
+ * kind of range that refused it.
+ */
+{ type: "BusError", value: { address: number, size: Size, access: Access, range: "read" | "protected" | "invalid" } } |
 { type: "IncorrectAddressingMode", value: string } |
 /**
  * A 68000 instruction s68k does not run yet, named in `value`: "`stop`" and
@@ -407,9 +416,10 @@ export type Termination =
  */
 { type: "Exception", value: { cause: RuntimeError, vector?: number } } |
 /**
- * The processor halted, a double fault: pushing the frame of the exception of
- * `vector` raised `cause`, an address error on an odd supervisor stack
- * pointer.
+ * The processor halted, a double fault: taking the exception of `vector`
+ * raised `cause`, an address error on an odd supervisor stack pointer, or a
+ * bus error for a frame pushed where the memory map refuses it or a vector
+ * read from an invalid range.
  */
 { type: "Halted", value: { cause: RuntimeError, vector: number } }
 

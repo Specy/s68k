@@ -13,7 +13,9 @@
 //! * [`cache`] keeps the instructions the Interpreter runs, decoded once, by
 //!   the address they start at;
 //! * [`exception`] says what an exception pushes and where it goes: the
-//!   vectors, the frames and the program counter the 68000 stacks.
+//!   vectors, the frames and the program counter the 68000 stacks;
+//! * [`memory_map`] says what the Program's Memory map does with an access:
+//!   ignore it, refuse it with a bus error, or let it be.
 //!
 //! Both are written for a [`Processor`]. Only the 68000 is decoded in full;
 //! the 68010 and the 68020 are dialects of it, and each row of the decoder's
@@ -27,6 +29,7 @@ pub mod decode;
 pub mod disassemble;
 pub mod encode;
 pub mod exception;
+pub mod memory_map;
 
 use serde::Serialize;
 

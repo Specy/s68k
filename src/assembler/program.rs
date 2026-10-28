@@ -197,9 +197,9 @@ impl MemoryRangeKind {
 /// address. A Program holds at most one range of each kind, which is all
 /// EASy68K's memory map has room for.
 ///
-/// What an access inside it does is the Interpreter's to enforce, which it does
-/// not do yet; the Program carries the ranges so that they travel with the
-/// source and reach the S-record.
+/// What an access inside it does is the Interpreter's to enforce
+/// ([`crate::machine::memory_map`]); the Program carries the ranges so that
+/// they travel with the source and reach the S-record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MemoryRange {
     /// What kind of range it is.

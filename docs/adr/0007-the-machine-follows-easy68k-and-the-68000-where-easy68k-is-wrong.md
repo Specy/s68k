@@ -14,7 +14,7 @@ ADR 0001 makes EASy68K the reference for the language, and the asm-editor's ADR 
     - an interrupt taken in the same step as a trap, `chk`, `trapv`, a division by zero or a line A or F word is lost, and one beside an illegal instruction runs the instruction again (interrupts are the plan's milestone C8);
     - the trace and trap frames are pushed in the wrong order, so the trap handler runs before the trace handler;
     - line A, line F and a privilege violation stack the address after the operation word instead of the instruction's own;
-    - the bus error's status word always says "write", never sets I/N and always gives a supervisor function code (bus errors are milestone C7);
+    - the bus error's status word always says "write", never sets I/N and always gives a supervisor function code (bus errors came with milestone C7, with the 68000's status word);
     - the protected range's check reads the S bit from the window rather than the processor;
     - `stop` runs one more instruction before the interrupt it waited for, and calls an immediate with S clear a privilege violation;
     - `link` and `unlk` on A7 use the user stack pointer in supervisor mode.

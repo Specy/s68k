@@ -11,6 +11,7 @@ mod exceptions;
 mod history;
 mod include;
 mod instruction_semantics;
+mod memory_map;
 mod mutations;
 mod pokes;
 mod self_modifying_code;

@@ -1338,6 +1338,35 @@ assert.equal(halting.getTermination().value.vector, 32)
 halting.dispose()
 oddStack.program.dispose()
 
+// ---------------------------------------------------------------------------
+// The memory map: ROM ignores a write, the others are bus errors, vector 2
+// ---------------------------------------------------------------------------
+
+const mappedRun = S68k.assemble(`
+    MEMORY ROM $8000,$8FFF
+    MEMORY INVALID $9000,$9FFF
+    ORG $1000
+START:
+    MOVE.W #$1234,$8000
+    MOVE.W $8000,D0
+    MOVE.W $9000,D1
+`)
+const mapper = new Interpreter(mappedRun.program)
+assert.throws(
+    () => mapper.run(),
+    (error) => error.type === 'BusError' &&
+        error.value.address === 0x9000 && error.value.access === 'Read' && error.value.range === 'invalid'
+)
+assert.equal(mapper.getRegisterValue({type: 'Data', value: 0}) & 0xffff, 0xffff, 'the ROM kept what it held')
+assert.deepEqual(
+    mapper.getTermination(),
+    {type: 'Exception', value: {cause: {type: 'BusError', value: {address: 0x9000, size: 'Word', access: 'Read', range: 'invalid'}}, vector: 2}},
+    'a bus error with no handler ends the program, naming vector 2'
+)
+assert.deepEqual([...mapper.readMemoryBytes(0x9000, 2)], [0xff, 0xff], 'the host reads past the map')
+mapper.dispose()
+mappedRun.program.dispose()
+
 const offTheEnd = S68k.assemble('    ORG $1000\n    NOP\n')
 const ranOff = new Interpreter(offTheEnd.program)
 assert.equal(ranOff.run(), InterpreterStatus.Terminated)

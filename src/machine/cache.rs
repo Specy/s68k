@@ -33,6 +33,15 @@
 //! start of one. The first slot a write clears is kept until it is
 //! [taken](DecodeCache::take_cleared): that is how the Interpreter learns that
 //! the program wrote into its code.
+//!
+//! # Instructions the memory map checks
+//!
+//! A fetch from an invalid range of the Memory map, or from a protected one in
+//! user mode, is a bus error, so the words of an instruction there are checked
+//! every time it is fetched. The Interpreter does not store an instruction a
+//! word of which such a range reaches: every fetch of it misses, and the miss
+//! is where it checks. A Program without such a range stores everything, and
+//! its fetches pay nothing for the map.
 
 use crate::instructions::Instruction;
 
@@ -186,6 +195,7 @@ impl DecodeCache {
             cleared: None,
         }
     }
+
 
     /// The slot of the instruction that starts at `address`, an even address
     /// of the 24 bits of the bus, or `None` when none is kept there.

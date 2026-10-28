@@ -252,7 +252,9 @@ export class Program {
     /**
      * The memory map the program's `memory` lines declare: at most one range of
      * each kind, in EASy68K's order, `rom`, `read`, `protected` and `invalid`.
-     * Empty when the program declares none.
+     * Empty when the program declares none. The interpreter enforces it: a
+     * write to ROM is ignored, and the other kinds answer a `BusError`,
+     * vector 2; a poke and the host's reads go past it.
      */
     getMemoryMap(): MemoryRange[] {
         return this.assembly.wasm_get_memory_map() as MemoryRange[]

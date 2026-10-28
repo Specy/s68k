@@ -288,7 +288,8 @@ interpreter.getTermination()
 // {type: 'TerminatedByHost'} (a Terminate answer),
 // {type: 'Exception', value: {cause: {type: 'DivisionByZero'}, vector: 5}} (vector 5 holds no handler),
 // {type: 'Exception', value: {cause: {type: 'UnsupportedTrapTask', value: {task: 30}}}} (no vector could take it)
-// or {type: 'Halted', value: {cause, vector}} (a frame pushed on an odd supervisor stack pointer)
+// or {type: 'Halted', value: {cause, vector}} (a frame pushed on an odd supervisor stack pointer
+// or into memory the memory map refuses, or a vector read from an invalid range)
 ```
 
 A program ends where it runs into `$FFFF $FFFF` it never placed: EASy68K's
@@ -342,7 +343,14 @@ counter at the Entry point.
 declare, at most one of each kind, in EASy68K's order: `[{kind: 'rom', start:
 0x8000, end: 0x8fff, location}]`, `kind` being `'rom'`, `'read'`, `'protected'`
 or `'invalid'` and both addresses in 24 bits, `end` included. The interpreter
-does not enforce them yet.
+enforces them as EASy68K does: a write to ROM is ignored, a write to a read
+only range is a bus error, and so is any access to a protected range from user
+mode and any access to an invalid one, an instruction's fetch included. A bus
+error is vector 2, with the 14-byte frame, and with no handler ends the program
+with `{type: 'BusError', value: {address, size, access, range}}`, `range`
+`'read'`, `'protected'` or `'invalid'`. The `trap #15` tasks check their
+buffers as EASy68K does. A poke, a testcase's starting memory, the host's reads
+and undo go past the map.
 
 `program.toSRecord()` returns the program as the `.S68` file EASy68K's
 assembler writes, which EASy68K's simulator loads and runs: the `68KPROG`
@@ -525,11 +533,11 @@ not implemented yet and are not listed.
 ### Exceptions
 
 Every exception a 68000 takes is taken through the vector table at `$000` to
-`$3FF`: the address error (3), an illegal instruction (4), a division by zero
+`$3FF`: the bus error (2) of the memory map, the address error (3), an illegal instruction (4), a division by zero
 (5), `chk` (6), `trapv` (7), a privilege violation (8), trace (9), line A and
 line F (10, 11), `trap #0` to `#14` (32 to 46) and a `trap #15` task that is
 none of EASy68K's (47). The processor pushes the status register and the
-program counter on the supervisor stack, 14 bytes for an address error, sets S,
+program counter on the supervisor stack, 14 bytes for a bus or address error, sets S,
 clears T and jumps to the handler; `rte` returns. A vector holding an odd
 address has no handler, and the program ends as it would have before, the
 vector named in the termination: memory starts as `$FF`, so every vector is
@@ -576,6 +584,8 @@ changes:
 | `AddressError {address, size}`, the address in 24 bits | `AddressError {address, size, access}`, `access` `'Read'`, `'Write'` or `'Program'` and the address all 32 bits; a jump to an odd address raises it in the jump |
 | a call stack of calls | `kind: 'call' \| 'exception'`, and an exception frame's `vector` |
 | | the errors `PrivilegeViolation`, `Trace`, `LineA`, `LineF` and `UnhandledTrap {vector}`, and the mutations `WriteStackPointers`, `PushException` and `PopException` |
+| the memory map carried and not enforced | enforced: `BusError {address, size, access, range}`, vector 2 |
+| | each step's `ran`, what it ran, `{address, size, bytes, text}` |
 
 ## Migrating to 4.0.0
 
@@ -675,7 +685,7 @@ are recognised and refused with a diagnostic naming the feature.
 
 ## Known limitations
 1. Characters are one byte, read and written as Windows-1252, as in EASy68K; a source character with no byte of its own is an assembly error.
-2. There are no interrupts, `stop` or `reset` yet, no bus errors from the memory map, and no cycle counter.
+2. There are no interrupts, `stop` or `reset` yet, and no cycle counter.
 
 # How to build
 The interpreter was made for WASM in mind, to build it you need [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) installed.

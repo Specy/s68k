@@ -122,7 +122,7 @@ _Avoid_: compiled program, Compiler (the old type name), binary
 The assignment of an address to every line that produces bytes or an instruction, following `org`, alignment and sections. An instruction takes the bytes of the encoding EASy68K's assembler chooses for it, decided once in the first pass from Back references, so the second pass encodes it at the size it was laid out at. Two lines laid out over the same address are an error.
 
 **Memory map**:
-The ranges a Program's `memory` lines declare, EASy68K's: ROM, where a write is ignored; read only, where a write is a bus error; protected, where any access from user mode is one; and invalid, where any access is one. One range of each kind at most, both ends in the 24 bits of the address bus and both inside it. The Program carries the map, and the Interpreter is what will enforce it; the debugger is not the program, so a Poke and the host's reads will pass it.
+The ranges a Program's `memory` lines declare, EASy68K's: ROM, where a write is ignored; read only, where a write is a bus error; protected, where any access from user mode is one; and invalid, where any access is one. One range of each kind at most, both ends in the 24 bits of the address bus and both inside it. The Program carries the map, and the Interpreter enforces it as EASy68K's simulator does: a read is checked against invalid and protected by its first byte, a write against all four by any byte, an instruction's words as they are fetched, and a Trap task's buffer against the kinds EASy68K checks it against; protected reads the processor's own S bit. The debugger is not the program, so a Poke, a Testcase's starting memory, the host's reads and undo pass it.
 _Avoid_: memory regions (that is the asm-editor's word for the parts of the memory view), protection
 
 **Image**:
@@ -180,7 +180,7 @@ How the read tasks show what is typed: the echo of task 12, and the input prompt
 Why a program ended: task 9, running into `$FFFF $FFFF` in memory the Program never placed (the end of a program that does not end itself, with its address), the host answering Terminate, the Runtime error it ended with, with the Vector that held no Handler when it had one, or Halted. Undoing the step that ended the program takes it back.
 
 **Exception**:
-The processor saving the status register and the program counter on the supervisor stack and continuing at a Vector's Handler, because an instruction raised an error the 68000 has a vector for, or a `trap`, or trace: the address error, an illegal instruction, a division by zero, `chk`, `trapv`, a privilege violation, trace, the line A and line F words, `trap #0` to `#14`, and a Trap task EASy68K does not know. It sets S and clears T, so it always runs in supervisor mode, and `rte` returns from it. It is always taken (ADR 0008); an Exception whose Vector holds no Handler ends the program instead. Distinct from an Interrupt, which is a Trap task waiting on the host.
+The processor saving the status register and the program counter on the supervisor stack and continuing at a Vector's Handler, because an instruction raised an error the 68000 has a vector for, or a `trap`, or trace: the bus error of the Memory map, the address error, an illegal instruction, a division by zero, `chk`, `trapv`, a privilege violation, trace, the line A and line F words, `trap #0` to `#14`, and a Trap task EASy68K does not know. It sets S and clears T, so it always runs in supervisor mode, and `rte` returns from it. It is always taken (ADR 0008); an Exception whose Vector holds no Handler ends the program instead. Distinct from an Interrupt, which is a Trap task waiting on the host.
 _Avoid_: trap (that is one instruction that raises one), interrupt (that is a Trap task's request to the host), fault
 
 **Vector**:
@@ -192,7 +192,7 @@ The code a Vector holds the address of, which runs when its Exception is taken a
 _Avoid_: exception routine, service routine, ISR (that is an IRQ's)
 
 **Halted**:
-The Termination of a double fault: pushing the frame of an Exception itself failed, because the supervisor stack pointer is odd, and the processor stops, as a 68000 does. It names what the push raised and the Vector whose frame it was.
+The Termination of a double fault: taking an Exception itself failed, because the supervisor stack pointer is odd, or the Memory map refuses the frame or the Vector, and the processor stops, as a 68000 does. It names what taking it raised and the Vector whose Exception it was.
 _Avoid_: crashed, double bus fault (the bus error of a memory map is one cause, not the term)
 
 **System register file**:

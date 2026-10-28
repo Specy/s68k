@@ -36,7 +36,9 @@ use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
-use crate::assembler::program::{AssembledInstruction, MemoryContent, Program};
+use crate::assembler::program::{
+    AssembledInstruction, MemoryContent, MemoryRange, MemoryRangeKind, Program,
+};
 use crate::assembler::source::Location;
 #[cfg(any(test, feature = "conformance"))]
 use crate::assembler::symbols::SymbolTable;
@@ -45,6 +47,7 @@ use crate::instructions::TargetDirection;
 use crate::machine::cache::{self, DecodeCache, Slot};
 use crate::machine::decode::{self, Decoded};
 use crate::machine::exception::{self, Frame};
+use crate::machine::memory_map::{Kinds, MemoryMap, Verdict};
 use crate::machine::{disassemble, Processor};
 use crate::{c_runtime, charset};
 use crate::{
@@ -175,17 +178,34 @@ impl MemoryCell {
 /// reduced to before it reaches memory.
 pub const ADDRESS_MASK: usize = 0x00ff_ffff;
 
-/// The 16 MB of memory, and the decode cache of the instructions in it.
+/// The 16 MB of memory, the decode cache of the instructions in it, and the
+/// Memory map the program's accesses are checked against.
 ///
 /// Every write passes the cache (ADR 0006): a typed store of the program, a
 /// run of bytes of a trap task, an answer, the host or undo, and the
 /// Program's initial contents. Each clears the instructions it covers, so the
 /// next fetch decodes what memory holds then.
+///
+/// The program's typed accesses pass the [memory map](crate::machine::memory_map)
+/// too: its reads ([`read_size`](Memory::read_size), [`pop`](Memory::pop),
+/// [`read_program`](Memory::read_program)) and its stores
+/// ([`replace_size`](Memory::replace_size)). Everything else is the host's or
+/// undo's and passes it by: runs of bytes, [`write_size`](Memory::write_size),
+/// which undo writes with, and the Program's initial contents. With no range
+/// declared an access asks one flag, `mapped`, and goes on.
 #[derive(Debug)]
 #[wasm_bindgen]
 pub struct Memory {
     data: Vec<u8>,
     cache: DecodeCache,
+    map: MemoryMap,
+    /// Whether the map declares any range: the one thing an access asks when
+    /// it does not.
+    mapped: bool,
+    /// Whether the processor is in supervisor mode, which a protected range
+    /// reads: the Interpreter keeps it equal to the S bit whenever it writes
+    /// the status register.
+    supervisor: bool,
 }
 
 impl Memory {
@@ -193,16 +213,143 @@ impl Memory {
         Self {
             data: vec![255; MEMORY_SIZE], //16mb
             cache: DecodeCache::new(),
+            map: MemoryMap::default(),
+            mapped: false,
+            supervisor: true,
         }
+    }
+
+    /// Checks the program's accesses against the Memory map of `ranges`. Call
+    /// it before [`load_code`](Memory::load_code), which keeps no instruction
+    /// whose fetch the map checks.
+    pub fn set_map(&mut self, ranges: &[MemoryRange]) {
+        self.map = MemoryMap::new(ranges);
+        self.mapped = !self.map.is_empty();
+    }
+
+    /// Whether the decode cache keeps the instruction of `size` bytes at `pc`,
+    /// an even address of the 24 bits of the bus: every instruction but one a
+    /// word of which an invalid or a protected range reaches, whose fetch has
+    /// to be checked each time, in the mode the processor is in then. Such
+    /// an instruction is decoded at every fetch, and a write into it is no
+    /// Code write, as there is no decoded instruction to clear.
+    #[inline(always)]
+    pub fn keeps(&self, pc: usize, size: usize) -> bool {
+        !self.mapped || !self.is_fetch_checked(pc, size)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn is_fetch_checked(&self, pc: usize, size: usize) -> bool {
+        let last = pc + size.max(1) - 1;
+        self.map
+            .fetched_ranges()
+            .any(|(start, end)| last >= start && pc <= end)
+    }
+
+    /// The Memory map the program's accesses are checked against.
+    pub fn map(&self) -> &MemoryMap {
+        &self.map
+    }
+
+    /// Says whether the processor is in supervisor mode, which is what a
+    /// protected range reads.
+    #[inline(always)]
+    fn set_supervisor(&mut self, supervisor: bool) {
+        self.supervisor = supervisor;
+    }
+
+    /// The bus error of an access of `size` the program made at `address`,
+    /// which the map's range of `range` refused.
+    #[cold]
+    #[inline(never)]
+    fn bus_error(address: usize, size: Size, access: Access, range: MemoryRangeKind) -> RuntimeError {
+        RuntimeError::BusError {
+            address: address as u32 as usize,
+            size,
+            access,
+            range,
+        }
+    }
+
+    /// A read of the program's at `bus`, `address` as it wrote it, against the
+    /// map, in the mode `supervisor` says.
+    #[cold]
+    #[inline(never)]
+    fn check_read(
+        &self,
+        bus: usize,
+        address: usize,
+        size: Size,
+        access: Access,
+        supervisor: bool,
+    ) -> RuntimeResult<()> {
+        match self.map.read(bus, supervisor) {
+            Verdict::Refused(range) => Err(Self::bus_error(address, size, access, range)),
+            Verdict::Allowed | Verdict::Ignored => Ok(()),
+        }
+    }
+
+    /// A store of the program's at `bus` against the map: whether a ROM range
+    /// ignores it, or the bus error a range refuses it with.
+    #[cold]
+    #[inline(never)]
+    fn check_write(&self, bus: usize, address: usize, size: Size) -> RuntimeResult<bool> {
+        match self.map.write(bus, size.to_bytes(), self.supervisor) {
+            Verdict::Allowed => Ok(false),
+            Verdict::Ignored => Ok(true),
+            Verdict::Refused(range) => Err(Self::bus_error(address, size, Access::Write, range)),
+        }
+    }
+
+    /// The first word of the instruction of `size` bytes at `pc`, an even
+    /// address of the 24 bits of the bus, that the map refuses to fetch, and
+    /// the range that refuses it: EASy68K fetches each word as a read, so a
+    /// word in an invalid range, or in a protected one in user mode, is a bus
+    /// error. `None` when every word can be fetched.
+    pub fn fetch_fault(&self, pc: usize, size: usize) -> Option<(usize, MemoryRangeKind)> {
+        if !self.mapped {
+            return None;
+        }
+        (0..size.max(2)).step_by(2).find_map(|offset| {
+            let at = (pc + offset) & ADDRESS_MASK;
+            match self.map.read(at, self.supervisor) {
+                Verdict::Refused(range) => Some((at, range)),
+                Verdict::Allowed | Verdict::Ignored => None,
+            }
+        })
+    }
+
+    /// What the map says of a buffer of `length` bytes at `address` that a
+    /// `trap #15` task reads or writes, against `kinds`
+    /// ([`MemoryMap::buffer`]).
+    pub fn check_buffer(&self, kinds: Kinds, address: usize, length: usize) -> Verdict {
+        if !self.mapped {
+            return Verdict::Allowed;
+        }
+        self.map.buffer(kinds, address & ADDRESS_MASK, length)
+    }
+
+    /// The byte at `address`, wrapping round the 24 bits of the bus, read as
+    /// the host reads memory, past the map: what the trap tasks read a string
+    /// with, once they have checked it as EASy68K checks it.
+    #[inline(always)]
+    fn byte_at(&self, address: usize) -> u8 {
+        self.data[address & ADDRESS_MASK]
     }
 
     /// Fills the decode cache with the Program's instructions, each from the
     /// [`AssembledInstruction`] the Assembler built, so that assembled code is
-    /// never decoded at run time. Their bytes are already in memory.
+    /// never decoded at run time, but for those the memory map checks at every
+    /// fetch ([`keeps`](Memory::keeps)). Their bytes are already in memory.
     pub fn load_code(&mut self, instructions: &[AssembledInstruction]) {
         for (index, instruction) in instructions.iter().enumerate() {
+            let address = instruction.address & ADDRESS_MASK;
+            if !self.keeps(address, instruction.size) {
+                continue;
+            }
             self.cache.store(
-                instruction.address & ADDRESS_MASK,
+                address,
                 Slot::assembled(instruction.instruction, instruction.size, index),
             );
         }
@@ -297,40 +444,69 @@ impl Memory {
         };
         Ok((result, sp))
     }
+    /// The address a read of the program's of `size` reaches, in the 24 bits
+    /// of the bus, or its address error, or the bus error the memory map
+    /// refuses it with.
+    #[inline(always)]
+    fn verify_read(&self, address: usize, size: Size, access: Access) -> RuntimeResult<usize> {
+        let bus = self.verify_address(address, size, access)?;
+        if self.mapped {
+            self.check_read(bus, address, size, access, self.supervisor)?;
+        }
+        Ok(bus)
+    }
     pub fn read_long(&self, address: usize) -> RuntimeResult<u32> {
-        let address = self.verify_address(address, Size::Long, Access::Read)?;
-
+        self.read_long_as(address, Access::Read)
+    }
+    #[inline(always)]
+    fn read_long_as(&self, address: usize, access: Access) -> RuntimeResult<u32> {
+        let address = self.verify_read(address, Size::Long, access)?;
         Ok(u32::from_be_bytes(
             self.data[address..address + 4].try_into().unwrap(),
         ))
     }
     pub fn read_word(&self, address: usize) -> RuntimeResult<u16> {
-        let address = self.verify_address(address, Size::Word, Access::Read)?;
+        self.read_word_as(address, Access::Read)
+    }
+    #[inline(always)]
+    fn read_word_as(&self, address: usize, access: Access) -> RuntimeResult<u16> {
+        let address = self.verify_read(address, Size::Word, access)?;
         Ok(u16::from_be_bytes(
             self.data[address..address + 2].try_into().unwrap(),
         ))
     }
     pub fn read_byte(&self, address: usize) -> RuntimeResult<u8> {
-        let address = self.verify_address(address, Size::Byte, Access::Read)?;
-        Ok(u8::from_be_bytes(
-            self.data[address..address + 1].try_into().unwrap(),
-        ))
+        self.read_byte_as(address, Access::Read)
+    }
+    #[inline(always)]
+    fn read_byte_as(&self, address: usize, access: Access) -> RuntimeResult<u8> {
+        let address = self.verify_read(address, Size::Byte, access)?;
+        Ok(self.data[address])
     }
     pub fn read_size(&self, address: usize, size: Size) -> RuntimeResult<u32> {
+        self.read_size_as(address, size, Access::Read)
+    }
+    #[inline(always)]
+    fn read_size_as(&self, address: usize, size: Size, access: Access) -> RuntimeResult<u32> {
         match size {
-            Size::Byte => {
-                let byte = self.read_byte(address)?;
-                Ok(byte as u32)
-            }
-            Size::Word => {
-                let word = self.read_word(address)?;
-                Ok(word as u32)
-            }
-            Size::Long => {
-                let long = self.read_long(address)?;
-                Ok(long)
-            }
+            Size::Byte => Ok(self.read_byte_as(address, access)? as u32),
+            Size::Word => Ok(self.read_word_as(address, access)? as u32),
+            Size::Long => self.read_long_as(address, access),
         }
+    }
+
+    /// The long at `address` read as the processor reads a vector, in
+    /// supervisor mode whatever the program's mode is, and against the map: a
+    /// vector in an invalid range is a bus error, which halts the processor
+    /// as it takes an exception.
+    fn read_vector(&self, address: usize) -> RuntimeResult<u32> {
+        let bus = self.verify_address(address, Size::Long, Access::Read)?;
+        if self.mapped {
+            self.check_read(bus, address, Size::Long, Access::Read, true)?;
+        }
+        Ok(u32::from_be_bytes(
+            self.data[bus..bus + 4].try_into().unwrap(),
+        ))
     }
     pub fn write_size(&mut self, address: usize, size: Size, data: u32) -> RuntimeResult<()> {
         match size {
@@ -342,15 +518,25 @@ impl Memory {
     }
 
     /// Stores `data` as [`write_size`](Self::write_size) does and answers the
-    /// value it replaced, read at the same size: a store that journals what it
-    /// overwrote, checked once, and as a store.
-    pub fn replace_size(&mut self, address: usize, size: Size, data: u32) -> RuntimeResult<u32> {
-        let address = self.verify_address(address, size, Access::Write)?;
-        self.cache.invalidate(address, size.to_bytes());
-        let bytes = &mut self.data[address..address + size.to_bytes()];
+    /// value it replaced, read at the same size: a store of the program's
+    /// that journals what it overwrote, checked once, and as a store, the
+    /// memory map included. `None` when a ROM range ignored it, which changes
+    /// nothing and is no error.
+    pub fn replace_size(
+        &mut self,
+        address: usize,
+        size: Size,
+        data: u32,
+    ) -> RuntimeResult<Option<u32>> {
+        let bus = self.verify_address(address, size, Access::Write)?;
+        if self.mapped && self.check_write(bus, address, size)? {
+            return Ok(None);
+        }
+        self.cache.invalidate(bus, size.to_bytes());
+        let bytes = &mut self.data[bus..bus + size.to_bytes()];
         let old = bytes.iter().fold(0, |old, byte| (old << 8) | *byte as u32);
         bytes.copy_from_slice(&data.to_be_bytes()[4 - size.to_bytes()..]);
-        Ok(old)
+        Ok(Some(old))
     }
 
     #[inline(always)]
@@ -401,12 +587,9 @@ impl Memory {
 
     /// Reads a word or a long as [`read_size`](Self::read_size) does, in
     /// program space: an operand relative to the program counter, whose
-    /// address error says so.
+    /// address error and bus error say so.
     pub fn read_program(&self, address: usize, size: Size) -> RuntimeResult<u32> {
-        if size != Size::Byte && address & 1 != 0 {
-            return Err(Self::address_error(address, size, Access::Program));
-        }
-        self.read_size(address, size)
+        self.read_size_as(address, size, Access::Program)
     }
     pub fn write_long(&mut self, address: usize, value: u32) -> RuntimeResult<()> {
         let address = self.verify_address(address, Size::Long, Access::Write)?;
@@ -426,15 +609,17 @@ impl Memory {
         self.data[address] = value;
         Ok(())
     }
-    /// Writes a run of bytes as they are, code or data: the Program's initial
-    /// contents, undo, a trap task's buffer and the host's writes.
+    /// Writes a run of bytes as they are, code or data, past the memory map:
+    /// the Program's initial contents, undo, a trap task's buffer and the
+    /// host's writes.
     pub fn write_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
         let address = self.verify_address_bounds(address, bytes.len())?;
         self.cache.invalidate(address, bytes.len());
         self.data[address..address + bytes.len()].copy_from_slice(bytes);
         Ok(())
     }
-    /// Reads a run of bytes as they are, which is how the host inspects memory.
+    /// Reads a run of bytes as they are, past the memory map, which is how the
+    /// host inspects memory.
     pub fn read_bytes(&self, address: usize, length: usize) -> RuntimeResult<&[u8]> {
         let address = self.verify_address_bounds(address, length)?;
         Ok(&self.data[address..address + length])
@@ -795,7 +980,7 @@ impl Cpu {
 /// **An error an instruction raised is an Exception when the 68000 has one
 /// for it** (ADR 0008): the processor pushes a frame and jumps through the
 /// error's vector to the program's handler, and the program goes on. That
-/// covers an address error, an illegal instruction (`illegal`, and a word that
+/// covers a bus error, an address error, an illegal instruction (`illegal`, and a word that
 /// is no instruction), a division by zero, `chk` and `trapv`, a privilege
 /// violation, trace, the line A and line F words, `trap #0` to `#14`, and a
 /// `trap #15` task EASy68K does not know. Only a vector that holds no handler
@@ -838,6 +1023,25 @@ pub enum RuntimeError {
     },
     /// `divs` or `divu` by zero: vector 5.
     DivisionByZero,
+    /// An access the Memory map refuses (the asm-editor's
+    /// `docs/design/m68k-machine.md`, decision 15): a read or a write in an
+    /// invalid range, any access in a protected one from user mode, a write
+    /// in a read only one, and an instruction fetched from the first two, as
+    /// EASy68K fetches each word as a read; a `trap #15` task's buffer, too,
+    /// as EASy68K checks it. The 68000's bus error, vector 2.
+    BusError {
+        /// The address the program used, all 32 bits of it, as the 68000
+        /// stacks it: for a `trap #15` task, the start of its buffer, as in
+        /// EASy68K.
+        address: usize,
+        /// The size of the access.
+        size: Size,
+        /// What the access was.
+        access: Access,
+        /// The kind of range that refused it: read only, protected or
+        /// invalid.
+        range: MemoryRangeKind,
+    },
     IncorrectAddressingMode(String),
     /// A 68000 instruction the Interpreter does not run yet, named in the
     /// text: `stop` and `reset`, which need interrupts (the plan's milestone
@@ -960,13 +1164,15 @@ pub enum Termination {
         vector: Option<u8>,
     },
     /// The processor halted, as a 68000 does when exception processing itself
-    /// fails: a double fault. Pushing the frame of the exception of vector
-    /// `vector` raised `cause`, an address error on an odd supervisor stack
-    /// pointer. [`InterpreterStatus::TerminatedWithException`] too.
+    /// fails: a double fault. Taking the exception of vector `vector` raised
+    /// `cause`: an address error for a frame pushed on an odd supervisor
+    /// stack pointer, or a bus error for one pushed where the memory map
+    /// refuses it, or for a vector read from an invalid range.
+    /// [`InterpreterStatus::TerminatedWithException`] too.
     Halted {
-        /// What pushing the frame raised.
+        /// What taking the exception raised.
         cause: RuntimeError,
-        /// The vector of the exception whose frame it was pushing.
+        /// The vector of the exception it was taking.
         vector: u8,
     },
 }
@@ -1429,6 +1635,7 @@ impl Interpreter {
             //happen for a Program the Assembler built
             panic!("Error preparing memory: {:?}", e);
         }
+        memory.set_map(program.memory_map());
         memory.load_code(program.instructions());
         let mut interpreter = Self::with_memory(program, memory, options);
         if interpreter.ends_at_pc() {
@@ -1656,9 +1863,25 @@ impl Interpreter {
         }
     }
 
-    /// The error of a [`fetch`](Interpreter::fetch) from `pc`, which is odd.
+    /// The error of a [`fetch`](Interpreter::fetch) that found nothing at
+    /// `pc`: the address error of an odd address, or the bus error of a word
+    /// the memory map refuses to fetch, an access in program space, at the
+    /// address of the first such word.
     #[cold]
-    fn odd_fetch(pc: usize) -> RuntimeError {
+    #[inline(never)]
+    fn fetch_error(&self, pc: usize) -> RuntimeError {
+        let bus = pc & ADDRESS_MASK;
+        if bus & 1 == 0 {
+            let size = self.memory.decode_at(bus, self.program.processor()).size as usize;
+            if let Some((at, range)) = self.memory.fetch_fault(bus, size) {
+                return RuntimeError::BusError {
+                    address: (pc as u32).wrapping_add(at.wrapping_sub(bus) as u32) as usize,
+                    size: Size::Word,
+                    access: Access::Program,
+                    range,
+                };
+            }
+        }
         Self::jump_to_an_odd_address(pc as u32)
     }
 
@@ -1675,13 +1898,22 @@ impl Interpreter {
     }
 
     /// A miss of [`fetch`](Interpreter::fetch): bytes the Program did not place
-    /// as code, or code a write has changed since it was last decoded.
+    /// as code, code a write has changed since it was last decoded, or an
+    /// instruction the memory map checks at every fetch, which is not kept
+    /// ([`Memory::keeps`]).
     #[cold]
     #[inline(never)]
     fn decode_into_the_cache(&mut self, pc: usize) -> Slot {
         let decoded = self.memory.decode_at(pc, self.program.processor());
+        //a word the memory map refuses to fetch is a bus error, which the step that fetches
+        //it raises, as for an odd address (`fetch_error`); the cache keeps nothing there
+        if self.memory.fetch_fault(pc, decoded.size as usize).is_some() {
+            return cache::EMPTY;
+        }
         let slot = Slot::decoded(decoded, self.is_an_end(pc, &decoded));
-        self.memory.cache.store(pc, slot);
+        if self.memory.keeps(pc, decoded.size as usize) {
+            self.memory.cache.store(pc, slot);
+        }
         slot
     }
 
@@ -1818,11 +2050,13 @@ impl Interpreter {
         //T as it was before the instruction, which is what decides a trace exception after it
         let traced = self.cpu.is_tracing();
         let mut executed = match slot.is_empty() {
-            true => Err(Self::odd_fetch(pc)),
+            true => Err(self.fetch_error(pc)),
             false => self.execute_instruction(&slot.instruction),
         };
         if executed.is_err() || traced {
-            executed = self.take_exceptions(executed, &slot.instruction, pc, traced);
+            //an empty slot is an instruction that could not be fetched, which ran nothing
+            let fetched = (!slot.is_empty()).then_some(&slot.instruction);
+            executed = self.take_exceptions(executed, fetched, pc, traced);
         }
         let sp = self.get_sp();
         let top = if sp.abs_diff(sp_before) > 4096 || sp > self.stack_top { sp } else { self.stack_top };
@@ -1880,7 +2114,7 @@ impl Interpreter {
     fn take_exceptions(
         &mut self,
         executed: RuntimeResult<()>,
-        instruction: &Instruction,
+        instruction: Option<&Instruction>,
         at: usize,
         traced: bool,
     ) -> RuntimeResult<()> {
@@ -1932,29 +2166,38 @@ impl Interpreter {
         &self,
         error: &RuntimeError,
         vector: u8,
-        instruction: &Instruction,
+        instruction: Option<&Instruction>,
         at: usize,
     ) -> Frame {
         let at = at as u32;
         match *error {
             RuntimeError::AddressError {
                 address, access, ..
+            }
+            | RuntimeError::BusError {
+                address, access, ..
             } => {
                 let address = address as u32;
-                //an instruction fetched from an odd address is no instruction at all
-                let pc = match at & 1 != 0 {
-                    true => at,
-                    false => exception::address_error_pc(
-                        instruction,
-                        at,
-                        self.pc as u32,
-                        access,
-                        address,
-                    ),
+                //an instruction that could not be fetched, from an odd address or one the memory
+                //map refuses, is no instruction at all, and stacks its own address. A bus error
+                //is the same abort as an address error at the same access, so the prefetch has
+                //reached the same place
+                let (pc, register_at) = match instruction {
+                    None => (at, at),
+                    Some(instruction) => {
+                        let pc = exception::address_error_pc(
+                            instruction,
+                            at,
+                            self.pc as u32,
+                            access,
+                            address,
+                        );
+                        let register_at =
+                            exception::instruction_register_address(instruction, at, pc, access);
+                        (pc, register_at)
+                    }
                 };
-                let instruction_register = self.memory.word_at(
-                    exception::instruction_register_address(instruction, at, pc, access) as usize,
-                );
+                let instruction_register = self.memory.word_at(register_at as usize);
                 Frame::Group0 {
                     pc,
                     access_address: address,
@@ -1979,14 +2222,17 @@ impl Interpreter {
     /// raised: the one frame builder (the design's decision 10), which the
     /// dialects' frames will extend.
     ///
-    /// The vector is read first. An odd address there is no handler, which is
+    /// The vector is read first, in supervisor mode, as the 68000 reads it,
+    /// and against the memory map: one in an invalid range is a bus error, a
+    /// double fault. An odd address there is no handler, which is
     /// what every vector holds until the program writes it, and the program
     /// ends with `cause` as it would have before exceptions were taken, the
     /// vector named beside it. Otherwise the processor copies the status
     /// register, sets S and clears T, which makes A7 the supervisor stack
     /// pointer, pushes the frame there with the copy, and jumps to the
     /// handler. A fault while it pushes the frame, which an odd supervisor
-    /// stack pointer raises, is a double fault, and the processor halts.
+    /// stack pointer raises, or the memory map where it refuses the frame, is
+    /// a double fault, and the processor halts.
     ///
     /// The call stack gains an exception frame, which `rte` takes off.
     fn take_exception(
@@ -1997,7 +2243,7 @@ impl Interpreter {
     ) -> RuntimeResult<()> {
         let handler = match self
             .memory
-            .read_long(exception::vector_address(vector) as usize)
+            .read_vector(exception::vector_address(vector) as usize)
         {
             Ok(handler) => handler,
             Err(fault) => return Err(self.halt(fault, vector)),
@@ -2053,6 +2299,7 @@ impl Interpreter {
         let pointers = self.cpu.stack_pointers();
         if self.cpu.set_sr(value) {
             self.journal_stack_pointers(pointers, pointers);
+            self.memory.set_supervisor(self.cpu.is_supervisor());
         }
     }
 
@@ -2179,6 +2426,7 @@ impl Interpreter {
                 //without moving a stack pointer: every change of S journaled both of them, and
                 //they are put back below, A7 being the one of this mode
                 self.cpu.restore_sr(step.get_sr());
+                self.memory.set_supervisor(self.cpu.is_supervisor());
                 //doing from right to left because mutations are added from left to right
                 for mutation in step.get_mutations().iter().rev() {
                     match mutation {
@@ -3918,13 +4166,18 @@ impl Interpreter {
         }
     }
 
+    /// Stores `value` at `address` for the program, journaled, watched and
+    /// checked against the memory map: a store a ROM range ignores changes
+    /// nothing, and is neither journaled nor watched, as it is no store.
     pub fn set_memory_value(
         &mut self,
         address: usize,
         size: Size,
         value: u32,
     ) -> RuntimeResult<()> {
-        let old_value = self.memory.replace_size(address, size, value)?;
+        let Some(old_value) = self.memory.replace_size(address, size, value)? else {
+            return Ok(());
+        };
         self.watch_store(address, size, value);
         if self.keep_history {
             self.debugger.add_mutation(MutationOperation::WriteMemory {
@@ -4090,7 +4343,7 @@ impl Interpreter {
     fn read_string(&self, address: usize, limit: usize) -> RuntimeResult<String> {
         let mut bytes = Vec::new();
         for offset in 0..limit {
-            let byte = self.memory.read_byte(address.wrapping_add(offset))?;
+            let byte = self.memory.byte_at(address.wrapping_add(offset));
             if byte == 0x00 {
                 break;
             }
@@ -4100,16 +4353,18 @@ impl Interpreter {
     }
 
     /// The NUL terminated string at `address`, decoded from Windows-1252: what
-    /// tasks 13, 14, 17, 18 and 95 take at (A1).
+    /// tasks 13, 14, 17, 18 and 95 take at (A1), checked against the memory map
+    /// as EASy68K checks it ([`check_string`](Interpreter::check_string)).
     ///
     /// Every byte decodes to a character, so no string is refused for what it
     /// holds. EASy68K reads a string for as long as it goes; this one stops at
     /// [`STRING_LIMIT`] bytes with no NUL, which is a missing terminator rather
     /// than a string anybody wrote, and is an argument error of `task`.
     fn read_null_terminated_string(&self, address: usize, task: u8) -> RuntimeResult<String> {
+        self.check_string(address)?;
         let mut bytes = Vec::new();
         loop {
-            let byte = self.memory.read_byte(address.wrapping_add(bytes.len()))?;
+            let byte = self.memory.byte_at(address.wrapping_add(bytes.len()));
             if byte == 0x00 {
                 break;
             }
@@ -4132,6 +4387,50 @@ impl Interpreter {
     /// Windows-1252, with `\` written as `/` ([`as_path`]).
     fn read_path(&self, address: u32) -> RuntimeResult<String> {
         Ok(as_path(self.read_string(address as usize, NAME_LIMIT)?))
+    }
+
+    /// The path at `address` that a file or sound task names, checked against
+    /// the memory map as EASy68K checks it ([`check_string`](Interpreter::check_string)):
+    /// every task's path but the dialog's of task 58, which EASy68K does not
+    /// check.
+    fn read_checked_path(&self, address: u32) -> RuntimeResult<String> {
+        self.check_string(address as usize)?;
+        self.read_path(address)
+    }
+
+    /// EASy68K's check of a string a `trap #15` task reads at `address`,
+    /// `memoryMapCheck(Invalid, A1, strlen(A1))` in its `CODE9.CPP`: its
+    /// characters up to the NUL, at most [`STRING_LIMIT`] of them, against an
+    /// invalid range. Protected and read only ranges are not checked, as
+    /// EASy68K checks neither, and with no map nothing is read.
+    fn check_string(&self, address: usize) -> RuntimeResult<()> {
+        if !self.memory.mapped {
+            return Ok(());
+        }
+        let length = (0..STRING_LIMIT)
+            .take_while(|offset| self.memory.byte_at(address.wrapping_add(*offset)) != 0)
+            .count();
+        self.check_buffer(Kinds::INVALID, address, length, Access::Read)
+            .map(|_| ())
+    }
+
+    /// EASy68K's check of the `length` bytes at `address` a `trap #15` task
+    /// reads or writes, against `kinds` (`memoryMapCheck` in its `CODE9.CPP`):
+    /// whether the task goes ahead, `false` when a ROM range takes the bytes
+    /// and the task does nothing, or the bus error, for an `access` that
+    /// starts at `address` as EASy68K reports it.
+    fn check_buffer(
+        &self,
+        kinds: Kinds,
+        address: usize,
+        length: usize,
+        access: Access,
+    ) -> RuntimeResult<bool> {
+        match self.memory.check_buffer(kinds, address, length) {
+            Verdict::Allowed => Ok(true),
+            Verdict::Ignored => Ok(false),
+            Verdict::Refused(range) => Err(Memory::bus_error(address, Size::Byte, access, range)),
+        }
     }
 
     /// Carries out `trap #15` task `task`, and answers the interrupt it raises
@@ -4206,10 +4505,23 @@ impl Interpreter {
         let address = self.cpu.a_reg[1].get_long();
         let interrupt = match task {
             50 => Some(Interrupt::CloseAllFiles),
-            51 => Some(Interrupt::OpenFile(self.read_path(address)?)),
-            52 => Some(Interrupt::NewFile(self.read_path(address)?)),
+            51 => Some(Interrupt::OpenFile(self.read_checked_path(address)?)),
+            52 => Some(Interrupt::NewFile(self.read_checked_path(address)?)),
             53 | 54 => {
                 let count = self.cpu.d_reg[2].get_long();
+                //EASy68K checks the bytes against the memory map once they fit in memory, before
+                //it looks at the file: those task 53 reads a file into against invalid, read only
+                //and ROM, which takes nothing and leaves D0 as it is, and those task 54 writes a
+                //file from against invalid
+                if self.memory.mapped && fits_in_memory(address, count) {
+                    let (kinds, access) = match task {
+                        53 => (Kinds::INVALID_READ_ROM, Access::Write),
+                        _ => (Kinds::INVALID, Access::Read),
+                    };
+                    if !self.check_buffer(kinds, address as usize, count as usize, access)? {
+                        return Ok(None);
+                    }
+                }
                 match handle {
                     Some(handle) if count > 0 && fits_in_memory(address, count) => {
                         Some(if task == 53 {
@@ -4240,7 +4552,7 @@ impl Interpreter {
                 }
             }
             56 => handle.map(Interrupt::CloseFile),
-            57 => Some(Interrupt::DeleteFile(self.read_path(address)?)),
+            57 => Some(Interrupt::DeleteFile(self.read_checked_path(address)?)),
             58 => {
                 //`switch (*mode)` over the whole of D1.L, and a title or a filter only when its
                 //register is not 0 (`simIOu.cpp`, `displayFileDialog`)
@@ -4276,7 +4588,7 @@ impl Interpreter {
             }
             //EASy68K reserves D1.L for other operations and reads none of it, so neither does
             //this: any D1.L asks whether the file exists (`fileOp`)
-            59 => Some(Interrupt::FileExists(self.read_path(address)?)),
+            59 => Some(Interrupt::FileExists(self.read_checked_path(address)?)),
             _ => return Err(RuntimeError::UnsupportedTrapTask { task }),
         };
         if interrupt.is_none() {
@@ -4297,6 +4609,8 @@ impl Interpreter {
                 //which shows what EASy68K shows for a string with a NUL in its first 255 bytes.
                 let address = self.cpu.a_reg[1].get_long() as usize;
                 let length = (self.cpu.d_reg[1].get_word() as usize).min(DISPLAY_LIMIT);
+                //EASy68K checks the whole string, to its NUL, whatever D1.W says
+                self.check_string(address)?;
                 let text = self.read_string(address, length)?;
                 if value == 0 {
                     Ok(Interrupt::DisplayStringWithCRLF(text))
@@ -4538,18 +4852,18 @@ impl Interpreter {
             }
             // Sound: the arguments, for a host with a sound device to play them on
             70 => Ok(Interrupt::PlaySound(
-                self.read_path(self.cpu.a_reg[1].get_long())?,
+                self.read_checked_path(self.cpu.a_reg[1].get_long())?,
             )),
             71 => Ok(Interrupt::LoadSound {
-                path: self.read_path(self.cpu.a_reg[1].get_long())?,
+                path: self.read_checked_path(self.cpu.a_reg[1].get_long())?,
                 index: self.cpu.d_reg[1].get_byte(),
             }),
             72 => Ok(Interrupt::PlayLoadedSound(self.cpu.d_reg[1].get_byte())),
             73 => Ok(Interrupt::PlaySoundDirectX(
-                self.read_path(self.cpu.a_reg[1].get_long())?,
+                self.read_checked_path(self.cpu.a_reg[1].get_long())?,
             )),
             74 => Ok(Interrupt::LoadSoundDirectX {
-                path: self.read_path(self.cpu.a_reg[1].get_long())?,
+                path: self.read_checked_path(self.cpu.a_reg[1].get_long())?,
                 index: self.cpu.d_reg[1].get_byte(),
             }),
             75 => Ok(Interrupt::PlayLoadedSoundDirectX(
@@ -5620,7 +5934,7 @@ impl Memory {
     pub fn zeroed() -> Self {
         Self {
             data: vec![0; MEMORY_SIZE],
-            cache: DecodeCache::new(),
+            ..Self::new()
         }
     }
 
@@ -5710,6 +6024,7 @@ impl Interpreter {
         };
         let mut interpreter = Self::with_memory(program, memory, Some(options));
         interpreter.cpu = cpu;
+        interpreter.memory.set_supervisor(cpu.is_supervisor());
         interpreter.stack_top = cpu.a_reg[7].get_long() as usize;
         interpreter.takes_trace = false;
         interpreter
