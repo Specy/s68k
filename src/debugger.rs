@@ -402,9 +402,18 @@ pub struct StackFrameLabel {
     pub location: Location,
 }
 
-/// Overwrites `into` with `from`, reusing the buffer of `into`'s File path.
+/// Overwrites `into` with `from`, reusing the buffer of `into`'s File path,
+/// which is left alone when it names the same File already, as it nearly
+/// always does: it is the File of the step the slot held before.
+///
+/// It is kept out of line: inlined into every run's loop, the comparison and
+/// the copy, which only a run that keeps a history makes, slowed the loop of
+/// a run that keeps none.
+#[inline(never)]
 fn copy_location(into: &mut Location, from: &Location) {
-    into.file.clone_from(&from.file);
+    if into.file != from.file {
+        into.file.clone_from(&from.file);
+    }
     into.line = from.line;
     into.column = from.column;
     into.end_column = from.end_column;
@@ -487,19 +496,30 @@ impl Debugger {
     /// which the new step replaces.
     fn claim_slot(&mut self) -> usize {
         if self.len < self.capacity {
-            let index = (self.oldest + self.len) % self.capacity;
+            let index = self.wrap(self.oldest + self.len);
             self.len += 1;
             index
         } else {
             let index = self.oldest;
-            self.oldest = (self.oldest + 1) % self.capacity;
+            self.oldest = self.wrap(self.oldest + 1);
             index
         }
     }
     /// The index in `history` of the step `age` steps before the newest, where
     /// age 0 is the newest. `age` must be less than `len`.
     fn index_of(&self, age: usize) -> usize {
-        (self.oldest + self.len - 1 - age) % self.capacity
+        self.wrap(self.oldest + self.len - 1 - age)
+    }
+    /// `position % capacity` for a `position` below twice the capacity, which
+    /// every index into the history is, without a division: it is on the path
+    /// of every step that keeps a history, several times.
+    #[inline(always)]
+    fn wrap(&self, position: usize) -> usize {
+        if position >= self.capacity {
+            position - self.capacity
+        } else {
+            position
+        }
     }
     /// The step being recorded, or None before the first one: what is written
     /// then belongs to no step, and there is nothing it could be undone to.
@@ -578,7 +598,7 @@ impl Debugger {
     }
     /// Every step of the history, oldest first.
     pub fn get_history(&self) -> impl Iterator<Item = &ExecutionStep> {
-        (0..self.len).map(move |position| &self.history[(self.oldest + position) % self.capacity])
+        (0..self.len).map(move |position| &self.history[self.wrap(self.oldest + position)])
     }
     pub fn get_last_steps(&self, count: usize) -> Vec<&ExecutionStep> {
         (0..count.min(self.len))

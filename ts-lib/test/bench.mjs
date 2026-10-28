@@ -3,7 +3,7 @@
 // docs/design/m68k-machine-plan.md, planning decision 2), which must not be
 // slower than the instruction list it replaced.
 //
-// Two endless loops, one of 8 instructions and one of about 20,000, each run
+// Three endless loops, of 2 instructions, of 8 and of about 20,000, each run
 // with no history and with a history of 100, through runWithLimit and through
 // runWithBreakpoints with no breakpoint (the editor's run). Not part of
 // `npm test`: run `npm run build-lib` and then `node test/bench.mjs`.
@@ -24,6 +24,17 @@ const { S68k, Interpreter } = await import(dist)
 const SLICE = 100_000
 const SECONDS = 0.6
 const ROUNDS = 5
+
+// The editor's own compute loop, an addq to a register and a branch: the
+// cheapest steps there are, so it is the loop where what a step costs besides
+// its instruction shows most.
+const TINY = `
+    org $1000
+start:
+loop:
+    addq.l #1,d0
+    bra loop
+`
 
 // Eight instructions of the kinds a student's loop is made of, which assemble
 // to five sizes: a moveq-sized addq, a word immediate, a register move, a
@@ -98,6 +109,7 @@ function measure(compiled, options, run) {
 }
 
 const cases = [
+    ['2 instructions', program(TINY)],
     ['8 instructions', program(SMALL)],
     ['20,000 instructions', program(large(20_000))],
 ]

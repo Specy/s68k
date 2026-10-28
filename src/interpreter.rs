@@ -39,7 +39,7 @@ use crate::assembler::source::Location;
 use crate::assembler::symbols::SymbolTable;
 use crate::debugger::PrettyStackFrame;
 use crate::instructions::TargetDirection;
-use crate::machine::cache::{Cleared, DecodeCache, Slot};
+use crate::machine::cache::{self, DecodeCache, Slot};
 use crate::machine::decode::{self, Decoded};
 use crate::machine::{disassemble, Processor};
 use crate::{c_runtime, charset};
@@ -1354,18 +1354,24 @@ impl Interpreter {
     /// The instruction at `pc`, from the decode cache, decoded from memory and
     /// kept there on a miss.
     ///
-    /// The address is reduced to the 24 bits of the bus. An odd one has none:
-    /// it is the 68000's address error, an instruction fetched from an odd
-    /// address ([`odd_fetch`](Interpreter::odd_fetch)).
+    /// The address is reduced to the 24 bits of the bus. An odd one has none,
+    /// and fetches the [empty](Slot::is_empty) slot: it is the 68000's address
+    /// error, an instruction fetched from an odd address
+    /// ([`odd_fetch`](Interpreter::odd_fetch)).
+    ///
+    /// The slot is copied once, out of the cache into the step that runs it. An
+    /// `Option` around it would be copied again on the way, and for an
+    /// instruction as cheap as an `addq` to a register, that second copy is a
+    /// good part of the step.
     #[inline(always)]
-    fn fetch(&mut self, pc: usize) -> Option<Slot> {
+    fn fetch(&mut self, pc: usize) -> Slot {
         let pc = pc & ADDRESS_MASK;
         if pc & 1 != 0 {
-            return None;
+            return cache::EMPTY;
         }
         match self.memory.cache.get(pc) {
-            Some(slot) => Some(slot),
-            None => Some(self.decode_into_the_cache(pc)),
+            Some(slot) => *slot,
+            None => self.decode_into_the_cache(pc),
         }
     }
 
@@ -1391,10 +1397,18 @@ impl Interpreter {
 
     /// Whether the instruction at the program counter ends the program, as
     /// [`has_reached_bottom`](Interpreter::has_reached_bottom), read through the
-    /// cache: what the next step will fetch, fetched now.
+    /// cache: what the next step will fetch, fetched now, though only the
+    /// slot's index is read.
     #[inline(always)]
     fn ends_at_pc(&mut self) -> bool {
-        matches!(self.fetch(self.pc), Some(slot) if slot.ends_the_program())
+        let pc = self.pc & ADDRESS_MASK;
+        if pc & 1 != 0 {
+            return false;
+        }
+        match self.memory.cache.get(pc) {
+            Some(slot) => slot.ends_the_program(),
+            None => self.decode_into_the_cache(pc).ends_the_program(),
+        }
     }
 
     /// Records the code write the cache saw since it was last asked, as the
@@ -1402,16 +1416,20 @@ impl Interpreter {
     /// already.
     #[inline(always)]
     fn take_code_write(&mut self) {
-        if let Some(cleared) = self.memory.cache.take_cleared() {
-            if self.code_write.is_none() {
-                self.record_code_write(cleared);
-            }
+        if self.memory.cache.has_cleared() {
+            self.record_code_write();
         }
     }
 
     #[cold]
     #[inline(never)]
-    fn record_code_write(&mut self, cleared: Cleared) {
+    fn record_code_write(&mut self) {
+        let Some(cleared) = self.memory.cache.take_cleared() else {
+            return;
+        };
+        if self.code_write.is_some() {
+            return;
+        }
         let write = CodeWrite {
             address: cleared.address,
             instruction_index: cleared
@@ -1442,16 +1460,34 @@ impl Interpreter {
     /// that failed, running. An instruction fetched from an odd address is such
     /// an error, the 68000's [address error](RuntimeError::AddressError).
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
+        self.verify_can_run()?;
+        self.run_step()?;
+        self.end_if_reached();
+        Ok(self.status)
+    }
+
+    /// A [`step`](Interpreter::step) taken by a run, which has checked once
+    /// that the program can run and takes a step only while it still can, and
+    /// which leaves the end of the program to the next step: that step's fetch
+    /// finds the end and ends the program before anything runs.
+    ///
+    /// That way each step looks its instruction up once, where a step on its own
+    /// looks the next one up as well, to know whether it has ended the program.
+    /// A run that stops while the program is running, on its limit or on a
+    /// breakpoint, takes no next step and checks the end itself
+    /// ([`end_if_reached`](Interpreter::end_if_reached)), so every run answers
+    /// the status and the [`Termination`] a run of single steps would have.
+    #[inline(always)]
+    fn run_step(&mut self) -> RuntimeResult<()> {
         let sp_before = self.get_sp();
         let old_status = self.status;
-        self.verify_can_run()?;
         let pc = self.pc;
-        let fetched = self.fetch(pc);
-        if matches!(&fetched, Some(slot) if slot.ends_the_program()) {
+        let slot = self.fetch(pc);
+        if slot.ends_the_program() {
             self.terminate(Termination::EndOfProgram {
                 address: pc & ADDRESS_MASK,
             });
-            return Ok(self.status);
+            return Ok(());
         }
         if self.is_resumable_stop() {
             self.set_status(InterpreterStatus::Running);
@@ -1467,10 +1503,9 @@ impl Interpreter {
         }
         self.current_instruction_address = pc;
         self.code_write = None;
-        let slot = match fetched {
-            Some(slot) => slot,
-            None => return Err(self.end_with_an_exception(Self::odd_fetch(pc))),
-        };
+        if slot.is_empty() {
+            return Err(self.end_with_an_exception(Self::odd_fetch(pc)));
+        }
         if self.keep_history {
             //the line the address map has there, which a change to the bytes does not move;
             //copied into the step's own slot, so a full history copies without allocating
@@ -1513,13 +1548,21 @@ impl Interpreter {
                 self.status = InterpreterStatus::WatchedWrite;
             } else if self.stop_on_code_write && self.code_write.is_some() {
                 self.status = InterpreterStatus::CodeWrite;
-            } else if self.ends_at_pc() {
-                self.terminate(Termination::EndOfProgram {
-                    address: self.pc & ADDRESS_MASK,
-                });
             }
         }
-        Ok(self.status)
+        Ok(())
+    }
+
+    /// Ends the program when it is running and the next step would end it
+    /// ([`ends_at_pc`](Interpreter::ends_at_pc)): what a step does after its
+    /// instruction, so that the status after the last instruction already says
+    /// the program has ended.
+    fn end_if_reached(&mut self) {
+        if self.status == InterpreterStatus::Running && self.ends_at_pc() {
+            self.terminate(Termination::EndOfProgram {
+                address: self.pc & ADDRESS_MASK,
+            });
+        }
     }
     pub fn get_pretty_call_stack(&self) -> Vec<PrettyStackFrame> {
         self.debugger.to_call_stack()
@@ -4013,10 +4056,11 @@ impl Interpreter {
     pub fn run(&mut self) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
         if self.is_resumable_stop() {
-            self.step()?;
+            self.run_step()?;
         }
+        //the step after the last instruction is the one that ends the program
         while self.status == InterpreterStatus::Running {
-            self.step()?;
+            self.run_step()?;
         }
         Ok(self.status)
     }
@@ -4120,9 +4164,13 @@ impl Interpreter {
                 self.status = InterpreterStatus::Running;
                 break;
             }
-            self.step()?;
+            self.run_step()?;
             limit_counter -= 1;
             iterations += 1;
+        }
+        //the end the last step reached, which no next step's fetch has found
+        if iterations > 0 {
+            self.end_if_reached();
         }
         //a stop the last instruction the limit allows made is reported, not the limit: the
         //host has an interrupt to answer, a pause or a watched write to see, or an end
@@ -4155,9 +4203,13 @@ impl Interpreter {
             || (resuming_after_pause && iterations == 0))
             && limit_counter > 0
         {
-            self.step()?;
+            self.run_step()?;
             limit_counter -= 1;
             iterations += 1;
+        }
+        //the end the last step reached, which no next step's fetch has found
+        if iterations > 0 {
+            self.end_if_reached();
         }
         //a stop the last instruction the limit allows made is reported, not the limit: the
         //host has an interrupt to answer, a pause or a watched write to see, or an end

@@ -79,7 +79,7 @@ pub struct Slot {
 }
 
 /// A slot that holds nothing.
-const EMPTY: Slot = Slot {
+pub const EMPTY: Slot = Slot {
     instruction: Instruction::NOP,
     index: DECODED,
     size: 0,
@@ -104,6 +104,12 @@ impl Slot {
             index: if ends { END } else { DECODED },
             size: decoded.size as u8,
         }
+    }
+
+    /// Whether the slot holds nothing: [`EMPTY`].
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
     }
 
     /// How many bytes the instruction takes up.
@@ -184,10 +190,10 @@ impl DecodeCache {
     /// The slot of the instruction that starts at `address`, an even address
     /// of the 24 bits of the bus, or `None` when none is kept there.
     #[inline(always)]
-    pub fn get(&self, address: usize) -> Option<Slot> {
+    pub fn get(&self, address: usize) -> Option<&Slot> {
         let page = self.pages[(address >> PAGE_SHIFT) & (PAGES - 1)].as_deref()?;
         let slot = &page[(address & (PAGE_BYTES - 1)) >> 1];
-        (slot.size != 0).then_some(*slot)
+        (slot.size != 0).then_some(slot)
     }
 
     /// Keeps `slot` as the instruction that starts at `address`, an even
@@ -251,6 +257,13 @@ impl DecodeCache {
                 at += 2;
             }
         }
+    }
+
+    /// Whether a write has cleared a slot since the last
+    /// [`take_cleared`](DecodeCache::take_cleared).
+    #[inline(always)]
+    pub fn has_cleared(&self) -> bool {
+        self.cleared.is_some()
     }
 
     /// The first slot a write cleared since the last call, and the record of
