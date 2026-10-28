@@ -21,7 +21,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use crate::{
     assembler::{program::ProgramSymbol, source::Location, symbols::SymbolKind},
     instructions::{InputSettings, RegisterOperand, Size},
-    interpreter::{Flags, InterpreterStatus},
+    interpreter::{CodeWrite, Flags, InterpreterStatus},
 };
 
 /// One thing a step changed, with the value it replaced beside the value it
@@ -251,6 +251,11 @@ pub struct ExecutionStep {
     old_sr: u16,
     /// The whole status register after the step.
     new_sr: u16,
+    /// The [code write](CodeWrite) the instruction made: the first instruction
+    /// whose bytes it changed, or `None`. Undoing the step takes it back with
+    /// the bytes.
+    #[serde(rename = "wroteCode")]
+    wrote_code: Option<CodeWrite>,
     /// The Interpreter state before the step. This is internal history state:
     /// undo needs it to put a resumed instruction back behind the pause it
     /// crossed, but it is not part of the public ExecutionStep shape.
@@ -278,6 +283,7 @@ impl ExecutionStep {
             old_sr: sr,
             new_sr: sr,
             location: StepLocation::default(),
+            wrote_code: None,
             old_interpreter_status: interpreter_status,
         }
     }
@@ -302,6 +308,7 @@ impl ExecutionStep {
         self.old_sr = sr;
         self.new_sr = sr;
         self.location.present = false;
+        self.wrote_code = None;
         self.old_interpreter_status = interpreter_status;
     }
     pub fn add_mutation(&mut self, mutation: MutationOperation) {
@@ -348,6 +355,10 @@ impl ExecutionStep {
     /// Where the instruction this step ran was written.
     pub fn get_location(&self) -> Option<&Location> {
         self.location.present.then_some(&self.location.location)
+    }
+    /// The code write the instruction made, if it made one.
+    pub fn get_code_write(&self) -> Option<CodeWrite> {
+        self.wrote_code
     }
 }
 
@@ -533,6 +544,12 @@ impl Debugger {
     pub fn set_new_sr(&mut self, sr: u16) {
         if let Some(step) = self.newest_mut() {
             step.new_sr = sr;
+        }
+    }
+    /// Records the code write of the step being executed.
+    pub fn set_code_write(&mut self, write: CodeWrite) {
+        if let Some(step) = self.newest_mut() {
+            step.wrote_code = Some(write);
         }
     }
     /// Records where the instruction of the step being executed was written.

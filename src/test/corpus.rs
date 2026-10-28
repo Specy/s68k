@@ -1857,8 +1857,20 @@ fn a_runtime_error_ends_the_run_with_an_exception() {
     assert_eq!(fixture.status, "exception");
     assert_eq!(fixture.steps, 2);
 
-    // An address with no instruction on it, below the last instruction of the
-    // program: the jump runs, then the step that lands there fails and counts.
+    // An odd address: the jump runs, then the step that fetches from there
+    // raises the address error and counts.
+    let to_an_odd_address = "\
+    ORG $1000
+    jmp $1005
+    ORG $2000
+    nop
+";
+    let fixture = run("to_an_odd_address", to_an_odd_address, RUN_LIMIT);
+    assert_eq!(fixture.status, "exception");
+    assert_eq!(fixture.steps, 2);
+
+    // A gap between two runs of code is memory the program never placed, so a
+    // jump into it ends the program there, in the jump's own step (ADR 0009).
     let into_a_gap = "\
     ORG $1000
     jmp $1004
@@ -1866,8 +1878,9 @@ fn a_runtime_error_ends_the_run_with_an_exception() {
     nop
 ";
     let fixture = run("into_a_gap", into_a_gap, RUN_LIMIT);
-    assert_eq!(fixture.status, "exception");
-    assert_eq!(fixture.steps, 2);
+    assert_eq!(fixture.status, "terminated");
+    assert_eq!(fixture.steps, 1);
+    assert_eq!(fixture.pc, "$1004");
 }
 
 /// The memory the fixture hashes is the whole address space and not a part of it.

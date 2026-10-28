@@ -27,6 +27,7 @@
 */
 use core::panic;
 use std::collections::HashSet;
+use std::convert::Infallible;
 
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,9 @@ use crate::assembler::program::{AssembledInstruction, MemoryContent, Program};
 use crate::assembler::source::Location;
 use crate::debugger::PrettyStackFrame;
 use crate::instructions::TargetDirection;
+use crate::machine::cache::{Cleared, DecodeCache, Slot};
+use crate::machine::decode::{self, Decoded};
+use crate::machine::{disassemble, Processor};
 use crate::{c_runtime, charset};
 use crate::{
     debugger::{
@@ -161,107 +165,67 @@ impl MemoryCell {
     }
 }
 
-/// Which bytes of the address space an instruction takes up.
-///
-/// The instructions are not in memory: the Interpreter looks them up in the
-/// Program by address, and the bytes under them are whatever [`Memory::new`]
-/// filled them with. A program that reads or writes there is reading or
-/// writing an instruction that is not there, which MARS and RARS refuse as an
-/// access to the text segment, and so does s68k.
-///
-/// Every load and store of the program asks it, so it is one bit per byte over
-/// the addresses from just before the first instruction to the end of the
-/// last, and an access outside them, the stack's and most data's, is answered
-/// by one comparison.
-#[derive(Debug, Default)]
-struct InstructionMap {
-    /// The address of the first bit, three bytes before the first instruction
-    /// so that an access of up to four bytes that ends inside an instruction
-    /// starts inside the map.
-    base: usize,
-    /// How many addresses from `base` the map covers.
-    span: usize,
-    /// One bit per address from `base`, low bit first, and a spare byte at the
-    /// end so that the two bytes [`holds`](Self::holds) reads are always there.
-    bits: Vec<u8>,
-}
+/// The mask of the 24 bits of the 68000's address bus: what every address is
+/// reduced to before it reaches memory.
+pub const ADDRESS_MASK: usize = 0x00ff_ffff;
 
-impl InstructionMap {
-    fn new(instructions: &[AssembledInstruction]) -> Self {
-        let start = instructions.iter().map(|ins| ins.address).min();
-        let end = instructions.iter().map(|ins| ins.address + ins.size).max();
-        let (Some(start), Some(end)) = (start, end) else {
-            return Self::default();
-        };
-        let base = start.saturating_sub(3);
-        let span = end - base;
-        let mut bits = vec![0; span / 8 + 2];
-        for ins in instructions {
-            for address in ins.address..ins.address + ins.size {
-                let offset = address - base;
-                bits[offset >> 3] |= 1 << (offset & 7);
-            }
-        }
-        Self { base, span, bits }
-    }
-    /// Whether any of the `length` bytes at `address`, one to four, is an
-    /// instruction's.
-    #[inline(always)]
-    fn holds(&self, address: usize, length: usize) -> bool {
-        //an address before `base` wraps round to a huge offset and is outside too
-        let offset = address.wrapping_sub(self.base);
-        if offset >= self.span {
-            return false;
-        }
-        let at = offset >> 3;
-        let window = u16::from_le_bytes([self.bits[at], self.bits[at + 1]]);
-        (window >> (offset & 7)) & ((1 << length) - 1) != 0
-    }
-    /// Whether any of the `length` bytes at `address` is an instruction's, for
-    /// a run of any length.
-    fn holds_any(&self, address: usize, length: usize) -> bool {
-        let start = address.max(self.base);
-        let end = address.saturating_add(length).min(self.base + self.span);
-        (start..end).any(|address| {
-            let offset = address - self.base;
-            self.bits[offset >> 3] & (1 << (offset & 7)) != 0
-        })
-    }
-}
-
+/// The 16 MB of memory, and the decode cache of the instructions in it.
+///
+/// Every write passes the cache (ADR 0006): a typed store of the program, a
+/// run of bytes of a trap task, an answer, the host or undo, and the
+/// Program's initial contents. Each clears the instructions it covers, so the
+/// next fetch decodes what memory holds then.
 #[derive(Debug)]
 #[wasm_bindgen]
 pub struct Memory {
     data: Vec<u8>,
-    instructions: InstructionMap,
+    cache: DecodeCache,
 }
 
 impl Memory {
     pub fn new() -> Self {
         Self {
-            data: vec![255; 0x01000000], //16mb
-            instructions: InstructionMap::default(),
+            data: vec![255; MEMORY_SIZE], //16mb
+            cache: DecodeCache::new(),
         }
     }
-    /// Marks the bytes `instructions` take up, which the program's loads and
-    /// stores are refused from then on.
-    pub fn set_instructions(&mut self, instructions: &[AssembledInstruction]) {
-        self.instructions = InstructionMap::new(instructions);
-    }
-    /// Refuses a run of `length` bytes at `address` that touches an
-    /// instruction, for an access the typed reads and writes do not go
-    /// through: a trap task's string or buffer, or a Poke.
-    pub fn verify_not_instruction(
-        &self,
-        address: usize,
-        length: usize,
-        write: bool,
-    ) -> RuntimeResult<()> {
-        let address = address & 0x00ffffff;
-        if self.instructions.holds_any(address, length) {
-            return Err(RuntimeError::InstructionAccess { address, write });
+
+    /// Fills the decode cache with the Program's instructions, each from the
+    /// [`AssembledInstruction`] the Assembler built, so that assembled code is
+    /// never decoded at run time. Their bytes are already in memory.
+    pub fn load_code(&mut self, instructions: &[AssembledInstruction]) {
+        for (index, instruction) in instructions.iter().enumerate() {
+            self.cache.store(
+                instruction.address & ADDRESS_MASK,
+                Slot::assembled(instruction.instruction, instruction.size, index),
+            );
         }
-        Ok(())
+    }
+
+    /// The decode cache.
+    pub fn cache(&self) -> &DecodeCache {
+        &self.cache
+    }
+
+    /// The word at `address`, wrapping round the 24 bits of the bus, as an
+    /// instruction is read: an odd address reads the two bytes there.
+    #[inline(always)]
+    fn word_at(&self, address: usize) -> u16 {
+        let address = address & ADDRESS_MASK;
+        u16::from_be_bytes([self.data[address], self.data[(address + 1) & ADDRESS_MASK]])
+    }
+
+    /// The instruction memory holds at `address` now, decoded for the 68000,
+    /// its words wrapping round the 24 bits of the bus. Every word is an
+    /// instruction or [`Instruction::IllegalWord`], so this never fails.
+    pub fn decode_at(&self, address: usize) -> Decoded {
+        let decoded = decode::decode(address as u32, Processor::M68000, |at| {
+            Ok::<u16, Infallible>(self.word_at(at as usize))
+        });
+        match decoded {
+            Ok(decoded) => decoded,
+            Err(never) => match never {},
+        }
     }
 
     pub fn push(&mut self, data: &MemoryCell, mut sp: usize) -> RuntimeResult<usize> {
@@ -305,20 +269,20 @@ impl Memory {
         Ok((result, sp))
     }
     pub fn read_long(&self, address: usize) -> RuntimeResult<u32> {
-        let address = self.verify_access(address, Size::Long, false)?;
+        let address = self.verify_address(address, Size::Long)?;
 
         Ok(u32::from_be_bytes(
             self.data[address..address + 4].try_into().unwrap(),
         ))
     }
     pub fn read_word(&self, address: usize) -> RuntimeResult<u16> {
-        let address = self.verify_access(address, Size::Word, false)?;
+        let address = self.verify_address(address, Size::Word)?;
         Ok(u16::from_be_bytes(
             self.data[address..address + 2].try_into().unwrap(),
         ))
     }
     pub fn read_byte(&self, address: usize) -> RuntimeResult<u8> {
-        let address = self.verify_access(address, Size::Byte, false)?;
+        let address = self.verify_address(address, Size::Byte)?;
         Ok(u8::from_be_bytes(
             self.data[address..address + 1].try_into().unwrap(),
         ))
@@ -352,7 +316,8 @@ impl Memory {
     /// value it replaced, read at the same size: a store that journals what it
     /// overwrote, checked once, and as a store.
     pub fn replace_size(&mut self, address: usize, size: Size, data: u32) -> RuntimeResult<u32> {
-        let address = self.verify_access(address, size, true)?;
+        let address = self.verify_address(address, size)?;
+        self.cache.invalidate(address, size.to_bytes());
         let bytes = &mut self.data[address..address + size.to_bytes()];
         let old = bytes.iter().fold(0, |old, byte| (old << 8) | *byte as u32);
         bytes.copy_from_slice(&data.to_be_bytes()[4 - size.to_bytes()..]);
@@ -386,41 +351,33 @@ impl Memory {
         }
         Ok(address)
     }
-    /// [`verify_address`](Self::verify_address) for a load or store of the
-    /// program, which is also refused when it touches an instruction.
-    #[inline(always)]
-    fn verify_access(&self, address: usize, size: Size, write: bool) -> RuntimeResult<usize> {
-        let address = self.verify_address(address, size)?;
-        if self.instructions.holds(address, size.to_bytes()) {
-            return Err(RuntimeError::InstructionAccess { address, write });
-        }
-        Ok(address)
-    }
     pub fn write_long(&mut self, address: usize, value: u32) -> RuntimeResult<()> {
-        let address = self.verify_access(address, Size::Long, true)?;
+        let address = self.verify_address(address, Size::Long)?;
+        self.cache.invalidate(address, 4);
         self.data[address..address + 4].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
     pub fn write_word(&mut self, address: usize, value: u16) -> RuntimeResult<()> {
-        let address = self.verify_access(address, Size::Word, true)?;
+        let address = self.verify_address(address, Size::Word)?;
+        self.cache.invalidate(address, 2);
         self.data[address..address + 2].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
     pub fn write_byte(&mut self, address: usize, value: u8) -> RuntimeResult<()> {
-        let address = self.verify_access(address, Size::Byte, true)?;
+        let address = self.verify_address(address, Size::Byte)?;
+        self.cache.invalidate(address, 1);
         self.data[address] = value;
         Ok(())
     }
-    /// Writes a run of bytes as they are, instructions or not: the Program's
-    /// initial contents and undo. A write of the program's or the host's checks
-    /// [`verify_not_instruction`](Self::verify_not_instruction) first.
+    /// Writes a run of bytes as they are, code or data: the Program's initial
+    /// contents, undo, a trap task's buffer and the host's writes.
     pub fn write_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
         let address = self.verify_address_bounds(address, bytes.len())?;
+        self.cache.invalidate(address, bytes.len());
         self.data[address..address + bytes.len()].copy_from_slice(bytes);
         Ok(())
     }
-    /// Reads a run of bytes as they are, instructions or not, which is how the
-    /// host inspects memory.
+    /// Reads a run of bytes as they are, which is how the host inspects memory.
     pub fn read_bytes(&self, address: usize, length: usize) -> RuntimeResult<&[u8]> {
         let address = self.verify_address_bounds(address, length)?;
         Ok(&self.data[address..address + length])
@@ -639,7 +596,8 @@ impl Cpu {
 /// [`InterpreterStatus::TerminatedWithException`], the error is the
 /// [`Termination`]'s cause, and undoing the step that raised it brings the
 /// program back to the instruction, running. That covers a memory fault, a
-/// division by zero, `chk`, `trapv` and `illegal`, and every `trap #15` task
+/// division by zero, `chk`, `trapv`, `illegal` and a word that is no
+/// instruction, an instruction fetched from an odd address, and every `trap #15` task
 /// the Interpreter cannot carry out:
 /// [`UnsupportedTrapTask`](RuntimeError::UnsupportedTrapTask) and
 /// [`InvalidTrapArgument`](RuntimeError::InvalidTrapArgument).
@@ -657,18 +615,13 @@ pub enum RuntimeError {
     Raw(String),
     ExecutionLimit(usize),
     OutOfBounds(String),
+    /// A word or a long read or written at an odd address, and an instruction
+    /// fetched from one: the 68000's address error. It ends the program until
+    /// exceptions are taken (the asm-editor's `docs/design/m68k-machine-plan.md`,
+    /// milestone C6).
     AddressError {
         address: usize,
         size: Size,
-    },
-    /// A load or store that touches the bytes of an instruction. The
-    /// instructions are not in memory (see [`Memory::set_instructions`]), so
-    /// there is nothing there to read or to change.
-    InstructionAccess {
-        /// The first byte of the access.
-        address: usize,
-        /// Whether it was a store.
-        write: bool,
     },
     DivisionByZero,
     IncorrectAddressingMode(String),
@@ -735,9 +688,16 @@ pub type RuntimeResult<T> = Result<T, RuntimeError>;
 pub enum Termination {
     /// Task 9, which ends the program on purpose.
     TerminateTask,
-    /// The program counter left the last instruction, or the Program had no
-    /// instruction to run.
-    EndOfProgram,
+    /// The program ran into memory it never placed: the instruction at
+    /// `address` is `$FFFF $FFFF`, EASy68K's SIMHALT, and none of its bytes
+    /// is one the Program placed (ADR 0009). Memory starts as `$FF`, so this is
+    /// where a program that does not end itself ends, one past its last
+    /// instruction when nothing follows it. `address` is the Entry point of a
+    /// Program with no instruction, which ends before it starts.
+    EndOfProgram {
+        /// Where the program counter was, in the 24 bits of the bus.
+        address: usize,
+    },
     /// The host answered an interrupt with [`InterruptResult::Terminate`].
     TerminatedByHost,
     /// An instruction raised a runtime error, and the program ended with an
@@ -938,6 +898,91 @@ pub enum InterpreterStatus {
     ///
     /// Appended after `Paused` for the same reason.
     WatchedWrite,
+    /// The instruction that has just run wrote into code, and the run that ran
+    /// it was asked to stop there ([`RunOptions::stop_on_code_write`]): a
+    /// [Code write](CodeWrite), which [`Interpreter::get_code_write`] and the
+    /// step's `wrote_code` describe. Like a
+    /// [`WatchedWrite`](InterpreterStatus::WatchedWrite) stop, the instruction
+    /// is finished and in the history, the program counter is on the next one,
+    /// and any run or step method goes on from it, the overwritten instruction
+    /// running as its new bytes decode.
+    ///
+    /// A watched write by the same instruction comes first and stops the run as
+    /// `WatchedWrite`; the code write is recorded all the same. An instruction
+    /// that wrote into code and was the last one stops here, and the next call
+    /// ends the program. Only a limited run asked to stop answers this status:
+    /// [`step`](Interpreter::step), [`run`](Interpreter::run) and an answer to
+    /// an interrupt record the code write and go on.
+    ///
+    /// Appended after `WatchedWrite` for the same reason.
+    CodeWrite,
+}
+
+/// A **Code write**: a write of the program's own that changed the bytes of an
+/// instruction the Interpreter had decoded, which it will decode again before
+/// running it (ADR 0006). The program's stores and the trap tasks' writes on
+/// its behalf are the program's; a Poke, a Testcase's starting memory and undo
+/// are not, and never make one.
+///
+/// It names the first instruction the write changed, when one write changed
+/// several. It is what the editor's pause on a write into code reads: "The
+/// program wrote into its own code at $1008, line 4".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeWrite {
+    /// The address the overwritten instruction started at.
+    pub address: usize,
+    /// The index of the Program instruction laid out at that address, in the
+    /// order of [`Program::instructions`] (which is `getInstructionAddresses()`
+    /// in ts-lib), or `None` when the instruction was not one the Program laid
+    /// out there: code the program reached in data, or the middle of a line.
+    pub instruction_index: Option<usize>,
+}
+
+/// What a limited run, [`Interpreter::run_with_breakpoints`], does besides
+/// stopping at the breakpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunOptions {
+    /// What a breakpoint on the instruction the program counter is *already*
+    /// on does: `true` runs it anyway, `false` stops before it, having run
+    /// nothing. See [`Interpreter::run_with_breakpoints`].
+    pub skip_breakpoint_at_pc: bool,
+    /// Whether the run stops after an instruction that wrote into code, with
+    /// [`InterpreterStatus::CodeWrite`]. Off, the run goes on and the write is
+    /// recorded as it always is.
+    pub stop_on_code_write: bool,
+}
+
+impl RunOptions {
+    /// "Continue": run the instruction the program counter is on, whatever
+    /// breakpoint names it, and do not stop on a code write. These are the
+    /// defaults.
+    pub const CONTINUE: RunOptions = RunOptions {
+        skip_breakpoint_at_pc: true,
+        stop_on_code_write: false,
+    };
+
+    /// Go on mid-program: stop before the instruction the program counter is
+    /// on when a breakpoint names it, as after an interrupt, a watched write or
+    /// a slice of the host's own; do not stop on a code write.
+    pub const RESUME: RunOptions = RunOptions {
+        skip_breakpoint_at_pc: false,
+        stop_on_code_write: false,
+    };
+
+    /// These options, stopping on a code write.
+    pub fn stopping_on_code_writes(self) -> RunOptions {
+        RunOptions {
+            stop_on_code_write: true,
+            ..self
+        }
+    }
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self::CONTINUE
+    }
 }
 
 /// One store into the range [`Interpreter::watch_memory`] watches, as
@@ -1028,11 +1073,9 @@ impl Breakpoint {
 /// [`MemoryContent::Reserved`] run leaves the fill the Interpreter starts with
 /// where it is, and so does the pad byte before an aligned item.
 ///
-/// The instructions' bytes are in memory so that the host reads what a 68000
-/// would hold there. The program itself still runs the Program's
-/// instructions and may not load or store a byte of them
-/// ([`RuntimeError::InstructionAccess`]); running from memory is the decode
-/// cache's, which is still to come.
+/// The instructions' bytes are in memory as a 68000 would hold them, and the
+/// Interpreter runs them from there, through the decode cache
+/// ([`Memory::load_code`] fills it after this).
 fn prepare_memory(memory: &mut Memory, program: &Program) -> RuntimeResult<()> {
     for instruction in program.instructions() {
         memory.write_bytes(instruction.address, &instruction.bytes)?;
@@ -1052,9 +1095,9 @@ pub struct Interpreter {
     memory: Memory,
     cpu: Cpu,
     pc: usize,
-    /// What is being run. The instructions are looked up in it by address
-    /// rather than kept in memory, which is less like a real processor and
-    /// keeps a wild write from rewriting the program.
+    /// What is being run. The instructions run from memory, through the decode
+    /// cache the Program filled; the Program is the address map the source
+    /// lookups read, and says which bytes it placed.
     program: Program,
     debugger: Debugger,
     keep_history: bool,
@@ -1072,9 +1115,6 @@ pub struct Interpreter {
     /// The address of the instruction being executed, and after the step, of
     /// the one that has just run. It is 0 before the first step, when none has.
     current_instruction_address: usize,
-    /// One past the last byte of the last instruction: a program counter that
-    /// reaches it has walked off the bottom of the program.
-    end_address: usize,
     current_interrupt: Option<Interrupt>,
     status: InterpreterStatus,
     /// Why the program ended, once it has: set with the terminated status and
@@ -1089,20 +1129,26 @@ pub struct Interpreter {
     watched_writes: Vec<WatchedWrite>,
     /// How many instructions have run since the Interpreter was made.
     executed_instructions: u64,
+    /// The code write of the instruction that has just run, if it made one.
+    code_write: Option<CodeWrite>,
+    /// Whether the run in progress stops after a code write: set by
+    /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints) for its
+    /// duration, and read by [`step`](Interpreter::step).
+    stop_on_code_write: bool,
 }
 
 impl Interpreter {
     /// An Interpreter ready to run `program` from its Entry point.
     ///
     /// Memory is the 16 MB of the address space, filled as [`Memory::new`]
-    /// leaves it and then written with the Program's initial contents; the
-    /// stack pointer starts at the top of it. A Program with no instruction in
-    /// it, or whose Entry point is past the last of them, is
-    /// [`Terminated`](InterpreterStatus::Terminated) before it starts.
+    /// leaves it and then written with the Program's initial contents, and the
+    /// decode cache is filled with the Program's instructions; the stack
+    /// pointer starts at the top of memory. A Program with no instruction in
+    /// it, or whose Entry point is on `$FFFF $FFFF` the Program did not place,
+    /// has [ended](Termination::EndOfProgram) before it starts.
     pub fn new(program: Program, options: Option<InterpreterOptions>) -> Self {
         let sp = 0x01000000;
         let start = program.entry();
-        let end = program.end_address();
         let options = options.unwrap_or_default();
         let mut memory = Memory::new();
         if let Err(e) = prepare_memory(&mut memory, &program) {
@@ -1110,37 +1156,35 @@ impl Interpreter {
             //happen for a Program the Assembler built
             panic!("Error preparing memory: {:?}", e);
         }
-        memory.set_instructions(program.instructions());
-        let runnable = !program.is_empty() && start < end;
+        memory.load_code(program.instructions());
+        let empty = program.is_empty();
         let mut interpreter = Self {
             stack_top: sp,
             memory,
             cpu: Cpu::new(),
             pc: start,
-            end_address: end,
             keep_history: options.keep_history,
             poke: None,
             executing: false,
             current_instruction_address: 0,
             debugger: Debugger::new(options.history_size, program.symbols()),
             current_interrupt: None,
-            status: if runnable {
-                InterpreterStatus::Running
-            } else {
-                InterpreterStatus::Terminated
-            },
-            termination: if runnable {
-                None
-            } else {
-                Some(Termination::EndOfProgram)
-            },
+            status: InterpreterStatus::Running,
+            termination: None,
             input_settings: InputSettings::default(),
             watched: WatchedRange::default(),
             watched_writes: Vec::new(),
             executed_instructions: 0,
+            code_write: None,
+            stop_on_code_write: false,
             program,
         };
         interpreter.cpu.a_reg[7].store_long(sp as u32);
+        if empty || interpreter.ends_at_pc() {
+            interpreter.terminate(Termination::EndOfProgram {
+                address: start & ADDRESS_MASK,
+            });
+        }
         interpreter
     }
 
@@ -1270,97 +1314,200 @@ impl Interpreter {
             || self.status == InterpreterStatus::TerminatedWithException
     }
 
-    /// Whether the program counter has walked off the bottom of the program.
+    /// Whether the next step ends the program: the program counter is on
+    /// `$FFFF $FFFF`, EASy68K's SIMHALT, none of whose bytes the Program placed
+    /// (ADR 0009). That is where a program that does not end itself gets to:
+    /// one past its last instruction, when nothing follows it, since memory
+    /// starts as `$FF`.
     ///
-    /// The program ends one byte past the last instruction, which is that
-    /// instruction's address plus the size stored with it.
-    #[inline(always)]
+    /// A SIMHALT inside the bytes the Program placed is a `simhalt`, which
+    /// pauses, and any other bytes run as what they decode to.
     pub fn has_reached_bottom(&self) -> bool {
-        self.pc >= self.end_address
+        let pc = self.pc & ADDRESS_MASK;
+        if pc & 1 != 0 {
+            return false;
+        }
+        match self.memory.cache.get(pc) {
+            Some(slot) => slot.ends_the_program(),
+            None => self.is_an_end(pc, &self.memory.decode_at(pc)),
+        }
+    }
+
+    /// Whether `decoded`, the instruction at `pc`, ends the program rather than
+    /// running: a SIMHALT none of whose four bytes the Program placed.
+    fn is_an_end(&self, pc: usize, decoded: &Decoded) -> bool {
+        matches!(decoded.instruction, Instruction::SIMHALT) && !self.program.places_any(pc, 4)
+    }
+
+    /// The instruction at `pc`, from the decode cache, decoded from memory and
+    /// kept there on a miss.
+    ///
+    /// The address is reduced to the 24 bits of the bus. An odd one has none:
+    /// it is the 68000's address error, an instruction fetched from an odd
+    /// address ([`odd_fetch`](Interpreter::odd_fetch)).
+    #[inline(always)]
+    fn fetch(&mut self, pc: usize) -> Option<Slot> {
+        let pc = pc & ADDRESS_MASK;
+        if pc & 1 != 0 {
+            return None;
+        }
+        match self.memory.cache.get(pc) {
+            Some(slot) => Some(slot),
+            None => Some(self.decode_into_the_cache(pc)),
+        }
+    }
+
+    /// The error of a [`fetch`](Interpreter::fetch) from `pc`, which is odd.
+    #[cold]
+    fn odd_fetch(pc: usize) -> RuntimeError {
+        RuntimeError::AddressError {
+            address: pc & ADDRESS_MASK,
+            size: Size::Word,
+        }
+    }
+
+    /// A miss of [`fetch`](Interpreter::fetch): bytes the Program did not place
+    /// as code, or code a write has changed since it was last decoded.
+    #[cold]
+    #[inline(never)]
+    fn decode_into_the_cache(&mut self, pc: usize) -> Slot {
+        let decoded = self.memory.decode_at(pc);
+        let slot = Slot::decoded(decoded, self.is_an_end(pc, &decoded));
+        self.memory.cache.store(pc, slot);
+        slot
+    }
+
+    /// Whether the instruction at the program counter ends the program, as
+    /// [`has_reached_bottom`](Interpreter::has_reached_bottom), read through the
+    /// cache: what the next step will fetch, fetched now.
+    #[inline(always)]
+    fn ends_at_pc(&mut self) -> bool {
+        matches!(self.fetch(self.pc), Some(slot) if slot.ends_the_program())
+    }
+
+    /// Records the code write the cache saw since it was last asked, as the
+    /// code write of the instruction executing, when it has not made one
+    /// already.
+    #[inline(always)]
+    fn take_code_write(&mut self) {
+        if let Some(cleared) = self.memory.cache.take_cleared() {
+            if self.code_write.is_none() {
+                self.record_code_write(cleared);
+            }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn record_code_write(&mut self, cleared: Cleared) {
+        let write = CodeWrite {
+            address: cleared.address,
+            instruction_index: cleared
+                .index
+                .or_else(|| self.program.instruction_index_at(cleared.address)),
+        };
+        self.code_write = Some(write);
+        if self.keep_history {
+            self.debugger.set_code_write(write);
+        }
     }
 
     /// Runs one instruction. If the Interpreter is paused, this resumes at the
     /// instruction after the `simhalt` that paused it, and after a
-    /// [watched write](InterpreterStatus::WatchedWrite) at the instruction
-    /// after the one that made it.
+    /// [watched write](InterpreterStatus::WatchedWrite) or a
+    /// [code write](InterpreterStatus::CodeWrite) stop at the instruction after
+    /// the one that made it.
+    ///
+    /// The instruction is the one memory holds at the program counter, from the
+    /// decode cache. On `$FFFF $FFFF` the Program never placed, the program
+    /// ends there ([`Termination::EndOfProgram`]) and nothing runs; the end is
+    /// already the step before's, when it got there by running on.
     ///
     /// An instruction that raises a runtime error ends the program with an
     /// exception, [`InterpreterStatus::TerminatedWithException`], and the error
     /// is answered as well as recorded as the [`Termination`]. The step stays in
     /// the history, so undoing it brings the program back to the instruction
-    /// that failed, running.
+    /// that failed, running. An instruction fetched from an odd address is such
+    /// an error, the 68000's [address error](RuntimeError::AddressError).
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
         let sp_before = self.get_sp();
         let old_status = self.status;
         self.verify_can_run()?;
+        let pc = self.pc;
+        let fetched = self.fetch(pc);
+        if matches!(&fetched, Some(slot) if slot.ends_the_program()) {
+            self.terminate(Termination::EndOfProgram {
+                address: pc & ADDRESS_MASK,
+            });
+            return Ok(self.status);
+        }
         if self.is_resumable_stop() {
-            if self.has_reached_bottom() {
-                self.terminate(Termination::EndOfProgram);
-                return Ok(self.status);
-            }
             self.set_status(InterpreterStatus::Running);
         }
         if self.keep_history {
             self.debugger.begin_step(
                 ExecutionStepKind::Instruction,
-                self.pc,
+                pc,
                 self.cpu.ccr,
                 self.cpu.get_sr(),
                 old_status,
             );
         }
-        self.current_instruction_address = self.pc;
-        let instruction = self
-            .get_instruction_at(self.pc)
-            .map(|i| (i.size, i.instruction));
-        match instruction {
-            Some((size, ins)) => {
-                if self.keep_history {
-                    //copied only when a history is kept, and into the step's own slot, so a
-                    //full history copies without allocating
-                    self.debugger
-                        .set_location(self.program.instruction_at(self.pc).map(|i| &i.location));
-                }
-                self.increment_pc(size);
-                self.executing = true;
-                self.executed_instructions += 1;
-                let watched = self.watched_writes.len();
-                let executed = self.execute_instruction(&ins);
-                let sp = self.get_sp();
-                let top = if sp.abs_diff(sp_before) > 4096 || sp > self.stack_top { sp } else { self.stack_top };
-                if top != self.stack_top {
-                    if self.keep_history { self.debugger.record_stack_top(self.stack_top); }
-                    self.stack_top = top;
-                }
-                //an instruction that raised an Interrupt is not finished until the host answers
-                //it, and what `answer_interrupt` writes belongs to this step
-                self.executing = self.status == InterpreterStatus::Interrupt;
-                if self.keep_history {
-                    self.debugger.set_new_ccr(self.cpu.ccr);
-                    self.debugger.set_new_sr(self.cpu.get_sr());
-                }
-                if let Err(error) = executed {
-                    return Err(self.end_with_an_exception(error));
-                }
-                if self.status == InterpreterStatus::Running {
-                    //the host takes what the instruction stored before the next one runs; the end
-                    //of the program, if this was the last instruction, is the next call's
-                    if self.watched_writes.len() != watched {
-                        self.status = InterpreterStatus::WatchedWrite;
-                    } else if self.has_reached_bottom() {
-                        self.terminate(Termination::EndOfProgram);
-                    }
-                }
-                Ok(self.status)
-            }
-            None if self.pc < self.end_address => Err(self.end_with_an_exception(
-                RuntimeError::OutOfBounds(format!("Invalid instruction address: {}", self.pc,)),
-            )),
-            None => {
-                Err(self
-                    .end_with_an_exception(RuntimeError::Raw("Program has terminated".to_string())))
+        self.current_instruction_address = pc;
+        self.code_write = None;
+        let slot = match fetched {
+            Some(slot) => slot,
+            None => return Err(self.end_with_an_exception(Self::odd_fetch(pc))),
+        };
+        if self.keep_history {
+            //the line the address map has there, which a change to the bytes does not move;
+            //copied into the step's own slot, so a full history copies without allocating
+            let location = match slot.program_index() {
+                Some(index) => Some(&self.program.instructions()[index].location),
+                None => self
+                    .program
+                    .instruction_at(pc & ADDRESS_MASK)
+                    .map(|instruction| &instruction.location),
+            };
+            self.debugger.set_location(location);
+        }
+        self.increment_pc(slot.size());
+        self.executing = true;
+        self.executed_instructions += 1;
+        let watched = self.watched_writes.len();
+        let executed = self.execute_instruction(&slot.instruction);
+        let sp = self.get_sp();
+        let top = if sp.abs_diff(sp_before) > 4096 || sp > self.stack_top { sp } else { self.stack_top };
+        if top != self.stack_top {
+            if self.keep_history { self.debugger.record_stack_top(self.stack_top); }
+            self.stack_top = top;
+        }
+        //an instruction that raised an Interrupt is not finished until the host answers
+        //it, and what `answer_interrupt` writes belongs to this step
+        self.executing = self.status == InterpreterStatus::Interrupt;
+        self.take_code_write();
+        if self.keep_history {
+            self.debugger.set_new_ccr(self.cpu.ccr);
+            self.debugger.set_new_sr(self.cpu.get_sr());
+        }
+        if let Err(error) = executed {
+            return Err(self.end_with_an_exception(error));
+        }
+        if self.status == InterpreterStatus::Running {
+            //the host takes what the instruction stored before the next one runs, and sees the
+            //code write it was asked to stop for; the end of the program, if this was the last
+            //instruction, is the next call's after either
+            if self.watched_writes.len() != watched {
+                self.status = InterpreterStatus::WatchedWrite;
+            } else if self.stop_on_code_write && self.code_write.is_some() {
+                self.status = InterpreterStatus::CodeWrite;
+            } else if self.ends_at_pc() {
+                self.terminate(Termination::EndOfProgram {
+                    address: self.pc & ADDRESS_MASK,
+                });
             }
         }
+        Ok(self.status)
     }
     pub fn get_pretty_call_stack(&self) -> Vec<PrettyStackFrame> {
         self.debugger.to_call_stack()
@@ -1368,6 +1515,11 @@ impl Interpreter {
     /// Takes back the newest step of the history, instruction or Poke, and
     /// answers it. It empties the log of watched writes
     /// ([`take_watched_writes`](Interpreter::take_watched_writes)).
+    ///
+    /// The bytes it writes back pass the decode cache like any write, so an
+    /// instruction the step overwrote is decoded again from its old bytes
+    /// before it runs, and the step's code write goes with it:
+    /// [`get_code_write`](Interpreter::get_code_write) is `None` after an undo.
     pub fn undo(&mut self) -> RuntimeResult<ExecutionStep> {
         match self.debugger.pop_step() {
             Some(step) => {
@@ -1439,6 +1591,9 @@ impl Interpreter {
                 //a write not taken yet may be one this undo has just taken back, so none is kept:
                 //the host reads the watched range again, as memory now holds it
                 self.watched_writes.clear();
+                //the old bytes undo wrote back are no code write of the program's
+                self.memory.cache.take_cleared();
+                self.code_write = None;
                 Ok(step)
             }
             None => Err(RuntimeError::Raw("No more steps to undo".to_string())),
@@ -1653,12 +1808,13 @@ impl Interpreter {
 
     /// Whether the Interpreter stopped between two instructions and the next
     /// run or step goes on from there: [`Paused`](InterpreterStatus::Paused)
-    /// at a `simhalt`, or after a [watched write](InterpreterStatus::WatchedWrite).
+    /// at a `simhalt`, or after a [watched write](InterpreterStatus::WatchedWrite)
+    /// or a [code write](InterpreterStatus::CodeWrite).
     #[inline(always)]
     fn is_resumable_stop(&self) -> bool {
         matches!(
             self.status,
-            InterpreterStatus::Paused | InterpreterStatus::WatchedWrite
+            InterpreterStatus::Paused | InterpreterStatus::WatchedWrite | InterpreterStatus::CodeWrite
         )
     }
 
@@ -1671,9 +1827,14 @@ impl Interpreter {
     /// It is refused, changing nothing and leaving the interrupt pending, with
     /// [`RuntimeError::NoPendingInterrupt`] when nothing waits for it, with
     /// [`RuntimeError::InvalidAnswer`] when it is not the pending interrupt's,
-    /// with the [`RuntimeError::OutOfBounds`] of the write when what it writes
-    /// does not fit in memory, and with [`RuntimeError::InstructionAccess`]
-    /// when it would write over an instruction.
+    /// and with the [`RuntimeError::OutOfBounds`] of the write when what it
+    /// writes does not fit in memory.
+    ///
+    /// What the answer writes is the program's, on behalf of the instruction
+    /// that raised the interrupt: a line read over code is a
+    /// [code write](CodeWrite) of that instruction's, which
+    /// [`get_code_write`](Interpreter::get_code_write) and the step answer
+    /// after this. Nothing is stopped for it, as no run is in progress.
     ///
     /// [`InterruptResult::Terminate`] answers any task, and ends the program:
     /// it is how a host that cannot do a task stops the run.
@@ -1689,9 +1850,11 @@ impl Interpreter {
         let watched = self.watched_writes.len();
         let answered = check_answer(&pending, &answer).and_then(|()| self.apply_answer(answer));
         if let Err(error) = answered {
+            self.memory.cache.take_cleared();
             self.current_interrupt = Some(pending);
             return Err(error);
         }
+        self.take_code_write();
         self.executing = false;
         //an answer of Terminate ends the program, and so does the answer to an interrupt the
         //last instruction raised; an answer that wrote into the watched range stops first, as
@@ -1700,8 +1863,10 @@ impl Interpreter {
             self.terminate(Termination::TerminatedByHost);
         } else if self.watched_writes.len() != watched {
             self.status = InterpreterStatus::WatchedWrite;
-        } else if self.has_reached_bottom() {
-            self.terminate(Termination::EndOfProgram);
+        } else if self.ends_at_pc() {
+            self.terminate(Termination::EndOfProgram {
+                address: self.pc & ADDRESS_MASK,
+            });
         } else {
             self.status = InterpreterStatus::Running;
         }
@@ -1710,7 +1875,7 @@ impl Interpreter {
 
     /// Writes what an answer [`check_answer`] took carries, as EASy68K writes
     /// it for the task. It fails, having written nothing, only when a run of
-    /// bytes does not fit in memory or lands on an instruction.
+    /// bytes does not fit in memory.
     fn apply_answer(&mut self, answer: InterruptResult) -> RuntimeResult<()> {
         match answer {
             InterruptResult::DisplayNumber
@@ -1949,10 +2114,51 @@ impl Interpreter {
     pub fn set_sp(&mut self, sp: usize) {
         self.set_register_value(RegisterOperand::Address(7), sp as u32, Size::Long);
     }
-    /// The instruction laid out at `address`, if one is.
+    /// The instruction the Program laid out at `address`, if one is: the
+    /// address map, which is the line as it was assembled even after the
+    /// program or a Poke changed its bytes.
+    /// [`disassemble_at`](Interpreter::disassemble_at) reads what memory holds
+    /// there now.
     #[inline(always)]
     pub fn get_instruction_at(&self, address: usize) -> Option<&AssembledInstruction> {
-        self.program.instruction_at(address)
+        self.program.instruction_at(address & ADDRESS_MASK)
+    }
+
+    /// What the instruction laid out at `address` assembled as, when the
+    /// Assembler chose something its line did not write
+    /// ([`Program::assembled_as`]), with the Program's Labels for its
+    /// addresses.
+    pub fn get_assembled_as(&self, instruction: &AssembledInstruction) -> Option<String> {
+        let labels = self.debugger.get_labels();
+        let names = |address: u32| labels.get(&(address as usize)).map(|label| label.name.clone());
+        self.program.assembled_as(instruction, Some(&names))
+    }
+
+    /// The instruction memory holds at `address` now, decoded for the 68000
+    /// and printed in EASy68K's syntax with the Program's Labels: what runs
+    /// there, whatever the Program laid out. Bytes that are no instruction
+    /// print as `DC.W`. It reads memory and leaves the decode cache alone.
+    pub fn disassemble_at(&self, address: usize) -> disassemble::Line {
+        let address = address & ADDRESS_MASK;
+        let decoded = self.memory.decode_at(address);
+        let labels = self.debugger.get_labels();
+        let names = |address: u32| labels.get(&(address as usize)).map(|label| label.name.clone());
+        let bytes = (0..decoded.size as usize)
+            .map(|offset| self.memory.data[(address + offset) & ADDRESS_MASK])
+            .collect();
+        disassemble::Line {
+            address: address as u32,
+            size: decoded.size,
+            bytes,
+            text: disassemble::disassemble(&decoded.instruction, Some(&names)),
+        }
+    }
+
+    /// The [code write](CodeWrite) of the instruction that has just run, or of
+    /// the one whose interrupt was answered, if it made one; `None` before the
+    /// first step and after an undo.
+    pub fn get_code_write(&self) -> Option<CodeWrite> {
+        self.code_write
     }
 
     /// The address of the instruction being executed, and after the step, of
@@ -1968,9 +2174,13 @@ impl Interpreter {
     /// This is what the editor highlights while a program is stopped: a
     /// [`Location`] and not a line number, because a Program is assembled from
     /// several Files.
+    ///
+    /// It is the address map's ([`get_instruction_at`](Interpreter::get_instruction_at)),
+    /// so a line the program changed is still highlighted as itself, and a
+    /// program counter on no line the Program laid out, in data or in the
+    /// middle of a line, is on none.
     pub fn get_current_location(&self) -> Option<&Location> {
-        self.program
-            .instruction_at(self.pc)
+        self.get_instruction_at(self.pc)
             .map(|instruction| &instruction.location)
     }
     pub fn get_current_interrupt(&self) -> RuntimeResult<Interrupt> {
@@ -3023,11 +3233,14 @@ impl Interpreter {
     /// Poke puts them back; outside one it is a direct write and records
     /// nothing, which is what a Testcase's preset memory needs. Bytes equal to
     /// the ones already there are no write at all and journal nothing.
+    ///
+    /// Code takes it like data: an instruction it covers is decoded again
+    /// before it runs, and runs as its new bytes say. It is the host's write,
+    /// never a [code write](CodeWrite) of the program's.
     pub fn write_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
-        self.memory
-            .verify_not_instruction(address, bytes.len(), true)?;
         if self.poke.is_none() {
             self.memory.write_bytes(address, bytes)?;
+            self.memory.cache.take_cleared();
             self.watch_bytes(address, bytes);
             return Ok(());
         }
@@ -3036,6 +3249,7 @@ impl Interpreter {
             return Ok(());
         }
         self.memory.write_bytes(address, bytes)?;
+        self.memory.cache.take_cleared();
         self.watch_bytes(address, bytes);
         let poke = self.poke.as_mut().expect("a poke is open");
         poke.add_mutation(MutationOperation::WriteMemoryBytes {
@@ -3047,9 +3261,9 @@ impl Interpreter {
         Ok(())
     }
 
+    /// Writes a run of bytes on behalf of the program, a trap task's answer,
+    /// journaled into the step being executed.
     pub fn set_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
-        self.memory
-            .verify_not_instruction(address, bytes.len(), true)?;
         if self.keep_history {
             let old_bytes = self.memory.read_bytes(address, bytes.len())?;
             self.debugger
@@ -3063,8 +3277,9 @@ impl Interpreter {
         self.watch_bytes(address, bytes);
         Ok(())
     }
-    /// The instruction the program counter is on, which is the one the next
-    /// step will run.
+    /// The instruction the Program laid out where the program counter is, as
+    /// [`get_instruction_at`](Interpreter::get_instruction_at) reads it: the one
+    /// the next step will run, unless its bytes have changed since.
     pub fn get_next_instruction(&self) -> Option<&AssembledInstruction> {
         self.get_instruction_at(self.pc)
     }
@@ -3197,11 +3412,6 @@ impl Interpreter {
                         Some(if task == 53 {
                             Interrupt::ReadFile { handle, count }
                         } else {
-                            self.memory.verify_not_instruction(
-                                address as usize,
-                                count as usize,
-                                false,
-                            )?;
                             let bytes = self
                                 .memory
                                 .read_bytes(address as usize, count as usize)?
@@ -3777,6 +3987,9 @@ impl Interpreter {
     /// an instruction stores into the watched range, or the Program
     /// terminates. Calling it while paused, or after a watched write, resumes
     /// the Program.
+    ///
+    /// It never stops for a [code write](CodeWrite); a run that should is
+    /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints).
     pub fn run(&mut self) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
         if self.is_resumable_stop() {
@@ -3813,11 +4026,19 @@ impl Interpreter {
     }
 
     /// Runs until a breakpoint, `simhalt`, the end of the program, an
-    /// interrupt, a store into the watched range or `limit` instructions.
-    /// Calling it while paused, or after a watched write, resumes the Program.
+    /// interrupt, a store into the watched range, a write into code when
+    /// `options` asks for it, or `limit` instructions. Calling it while
+    /// paused, after a watched write or after a code write, resumes the
+    /// Program.
     ///
-    /// `skip_breakpoint_at_pc` decides what a breakpoint on the instruction the
-    /// program counter is *already* on does. `true` runs it anyway, which is
+    /// With [`stop_on_code_write`](RunOptions::stop_on_code_write), the run
+    /// stops after an instruction that wrote into code, with
+    /// [`InterpreterStatus::CodeWrite`]; the next run goes on and the
+    /// overwritten instruction runs as its new bytes decode.
+    ///
+    /// [`skip_breakpoint_at_pc`](RunOptions::skip_breakpoint_at_pc) decides
+    /// what a breakpoint on the instruction the program counter is *already* on
+    /// does. `true` runs it anyway, which is
     /// what makes "continue" from a breakpoint move; `false` stops before it,
     /// having run nothing, which is what a caller that has just arrived here
     /// some other way wants. A caller that answers an interrupt and runs on has
@@ -3827,10 +4048,11 @@ impl Interpreter {
     /// after a [`WatchedWrite`](InterpreterStatus::WatchedWrite) stop.
     ///
     /// A stop made by the last of the `limit` instructions — an interrupt, a
-    /// pause, a watched write or the end of the program — is answered as that
-    /// status rather than as the [`ExecutionLimit`](RuntimeError::ExecutionLimit),
-    /// so that the host answers the interrupt or sees the stop before anything
-    /// else runs. The limit is the answer only when the program would run on.
+    /// pause, a watched write, a code write or the end of the program — is
+    /// answered as that status rather than as the
+    /// [`ExecutionLimit`](RuntimeError::ExecutionLimit), so that the host
+    /// answers the interrupt or sees the stop before anything else runs. The
+    /// limit is the answer only when the program would run on.
     ///
     /// Only the instruction the run starts on is affected; every breakpoint the
     /// run reaches after that stops it before the instruction executes.
@@ -3838,11 +4060,25 @@ impl Interpreter {
         &mut self,
         breakpoints: &[Breakpoint],
         limit: Option<usize>,
+        options: RunOptions,
+    ) -> RuntimeResult<InterpreterStatus> {
+        self.stop_on_code_write = options.stop_on_code_write;
+        let ran = self.run_to_breakpoints(breakpoints, limit, options.skip_breakpoint_at_pc);
+        self.stop_on_code_write = false;
+        ran
+    }
+
+    fn run_to_breakpoints(
+        &mut self,
+        breakpoints: &[Breakpoint],
+        limit: Option<usize>,
         skip_breakpoint_at_pc: bool,
     ) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
-        if self.is_resumable_stop() && self.has_reached_bottom() {
-            self.terminate(Termination::EndOfProgram);
+        if self.is_resumable_stop() && self.ends_at_pc() {
+            self.terminate(Termination::EndOfProgram {
+                address: self.pc & ADDRESS_MASK,
+            });
             return Ok(self.status);
         }
         let resuming_after_pause = self.is_resumable_stop();
@@ -3855,7 +4091,9 @@ impl Interpreter {
             && limit_counter > 0
         {
             let at_starting_pc = iterations == 0;
-            if !(at_starting_pc && skip_breakpoint_at_pc) && addresses.contains(&self.pc) {
+            if !(at_starting_pc && skip_breakpoint_at_pc)
+                && addresses.contains(&(self.pc & ADDRESS_MASK))
+            {
                 //a run that stops on a breakpoint is running, not paused: the
                 //status a `simhalt` left behind belongs to the halt, not to the
                 //breakpoint the resumed run stopped at
@@ -3879,12 +4117,16 @@ impl Interpreter {
     /// the watched range or `limit` instructions, which answers the
     /// [`ExecutionLimit`](RuntimeError::ExecutionLimit) only when the last of
     /// them stopped nothing, as [`run_with_breakpoints`](Interpreter::run_with_breakpoints)
-    /// does.
+    /// does. It never stops for a code write; `run_with_breakpoints` with no
+    /// breakpoint and [`RunOptions::stopping_on_code_writes`] is the limited run
+    /// that does.
     pub fn run_with_limit(&mut self, limit: usize) -> RuntimeResult<InterpreterStatus> {
         let mut limit_counter = limit;
         self.verify_can_run()?;
-        if self.is_resumable_stop() && self.has_reached_bottom() {
-            self.terminate(Termination::EndOfProgram);
+        if self.is_resumable_stop() && self.ends_at_pc() {
+            self.terminate(Termination::EndOfProgram {
+                address: self.pc & ADDRESS_MASK,
+            });
             return Ok(self.status);
         }
         let resuming_after_pause = self.is_resumable_stop();
@@ -4045,6 +4287,41 @@ impl Interpreter {
 /// Serialising one of this crate's own shapes cannot fail, but a panic in
 /// WebAssembly leaves the module unusable for every call after it, so a
 /// failure is answered as a message instead of unwrapped.
+/// An [`AssembledInstruction`] as JavaScript reads it, the `InstructionLine` of
+/// `src/ts_types.rs`: its own fields, camelCase, and what it
+/// [assembled as](Program::assembled_as), worked out when it is asked for.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstructionLine<'a> {
+    address: usize,
+    size: usize,
+    bytes: &'a [u8],
+    instruction: &'a Instruction,
+    location: &'a Location,
+    include_chain: &'a [Location],
+    source: &'a str,
+    assembled_as: Option<String>,
+}
+
+impl Interpreter {
+    /// `instruction` as an `InstructionLine`, or `null`.
+    fn instruction_line(&self, instruction: Option<&AssembledInstruction>) -> JsValue {
+        match instruction {
+            Some(instruction) => js(&InstructionLine {
+                address: instruction.address,
+                size: instruction.size,
+                bytes: &instruction.bytes,
+                instruction: &instruction.instruction,
+                location: &instruction.location,
+                include_chain: &instruction.include_chain,
+                source: &instruction.source,
+                assembled_as: self.get_assembled_as(instruction),
+            }),
+            None => JsValue::NULL,
+        }
+    }
+}
+
 fn js(value: &impl Serialize) -> JsValue {
     serde_wasm_bindgen::to_value(value)
         .unwrap_or_else(|error| JsValue::from_str(&format!("cannot serialise: {}", error)))
@@ -4098,9 +4375,21 @@ impl Interpreter {
     pub fn wasm_get_sp(&self) -> usize {
         self.get_sp()
     }
+    /// The instruction the Program laid out at `address`, as the
+    /// `InstructionLine` of `src/ts_types.rs` with its `assembledAs`, or `null`.
     pub fn wasm_get_instruction_at(&self, address: usize) -> JsValue {
-        match self.get_instruction_at(address) {
-            Some(ins) => js(ins),
+        self.instruction_line(self.get_instruction_at(address))
+    }
+    /// What memory holds at `address` now, `{address, size, bytes, text}`:
+    /// [`disassemble_at`](Interpreter::disassemble_at).
+    pub fn wasm_disassemble_at(&self, address: usize) -> JsValue {
+        js(&self.disassemble_at(address))
+    }
+    /// The [code write](CodeWrite) of the instruction that has just run,
+    /// `{address, instructionIndex}`, or `null`.
+    pub fn wasm_get_code_write(&self) -> JsValue {
+        match self.get_code_write() {
+            Some(write) => js(&write),
             None => JsValue::NULL,
         }
     }
@@ -4123,12 +4412,14 @@ impl Interpreter {
     }
     /// `breakpoints` is an array of `{ file, line }`, a Location without its
     /// columns. `skip_breakpoint_at_pc` defaults to `true`, the "continue"
-    /// behaviour described on [`Interpreter::run_with_breakpoints`].
+    /// behaviour described on [`Interpreter::run_with_breakpoints`], and
+    /// `stop_on_code_write` to `false`.
     pub fn wasm_run_with_breakpoints(
         &mut self,
         breakpoints: JsValue,
         limit: Option<usize>,
         skip_breakpoint_at_pc: Option<bool>,
+        stop_on_code_write: Option<bool>,
     ) -> Result<InterpreterStatus, JsValue> {
         let breakpoints: Vec<Breakpoint> =
             serde_wasm_bindgen::from_value(breakpoints).map_err(|e| {
@@ -4137,7 +4428,11 @@ impl Interpreter {
                     e
                 )))
             })?;
-        self.run_with_breakpoints(&breakpoints, limit, skip_breakpoint_at_pc.unwrap_or(true))
+        let options = RunOptions {
+            skip_breakpoint_at_pc: skip_breakpoint_at_pc.unwrap_or(true),
+            stop_on_code_write: stop_on_code_write.unwrap_or(false),
+        };
+        self.run_with_breakpoints(&breakpoints, limit, options)
             .map_err(|e| js(&e))
     }
     pub fn wasm_get_call_stack(&self) -> JsValue {
@@ -4147,10 +4442,7 @@ impl Interpreter {
         self.run_with_limit(limit).map_err(|e| js(&e))
     }
     pub fn wasm_get_next_instruction(&self) -> JsValue {
-        match self.get_next_instruction() {
-            Some(ins) => js(ins),
-            None => JsValue::NULL,
-        }
+        self.instruction_line(self.get_next_instruction())
     }
     pub fn wasm_get_previous_mutations(&self) -> JsValue {
         match self.debugger.get_previous_mutations() {

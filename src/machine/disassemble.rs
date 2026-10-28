@@ -63,8 +63,10 @@ pub fn disassemble(instruction: &Instruction, symbols: Option<&dyn Symbols>) -> 
     Printer { symbols }.instruction(instruction)
 }
 
-/// One instruction of a run of memory, as [`disassemble_bytes`] reads it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One instruction of a run of memory, as [`disassemble_bytes`] reads it, and
+/// as the Interpreter's `disassemble_at` answers it (`{address, size, bytes,
+/// text}` in ts-lib).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Line {
     /// The address of its first byte.
     pub address: u32,

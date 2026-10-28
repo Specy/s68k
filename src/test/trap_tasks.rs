@@ -97,6 +97,8 @@ start:
     move.b #{task},d0
     trap #15
     nop
+* the data is apart from the code, so that running off the nop ends the program
+    ORG $2000
 path:   dc.b 'data\\in.txt',0
 other:  dc.b 'caf',$E9,'.txt',0
 filter: dc.b '*.txt',0
@@ -971,11 +973,19 @@ mod failures {
 
         let mut ran_off = prepare("    nop");
         ran_off.run().expect("the run");
-        assert_eq!(ran_off.get_termination(), Some(&Termination::EndOfProgram));
+        //into the `$FFFF $FFFF` past the nop, which the program never placed
+        assert_eq!(
+            ran_off.get_termination(),
+            Some(&Termination::EndOfProgram { address: 0x1002 })
+        );
 
         let empty = prepare("    ORG $1000\n");
         assert!(empty.has_terminated());
-        assert_eq!(empty.get_termination(), Some(&Termination::EndOfProgram));
+        //at its Entry point, before it starts
+        assert_eq!(
+            empty.get_termination(),
+            Some(&Termination::EndOfProgram { address: 0x1000 })
+        );
 
         let mut stopped = prepare("    move.b #70,d0\n    trap #15\n    nop");
         run_to_interrupt(&mut stopped);
@@ -992,7 +1002,11 @@ mod failures {
         run_to_interrupt(&mut last);
         last.answer_interrupt(InterruptResult::DisplayNumber)
             .expect("the answer");
-        assert_eq!(last.get_termination(), Some(&Termination::EndOfProgram));
+        //past the four-byte move.b and the trap
+        assert_eq!(
+            last.get_termination(),
+            Some(&Termination::EndOfProgram { address: 0x1006 })
+        );
 
         let mut undone = with_history("    move.b #9,d0\n    trap #15\n    nop");
         undone.run().expect("the run");

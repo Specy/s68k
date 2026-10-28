@@ -126,7 +126,7 @@ The ranges a Program's `memory` lines declare, EASy68K's: ROM, where a write is 
 _Avoid_: memory regions (that is the asm-editor's word for the parts of the memory view), protection
 
 **Image**:
-Everything a Program writes into memory: each instruction's encoding, `simhalt`'s `$FFFF $FFFF` among them, and the bytes of `dc`, `dcb` and `incbin`. A pad byte before an aligned item and the room `ds` reserves are not part of it, so they keep the fill memory starts with.
+Everything a Program writes into memory: each instruction's encoding, `simhalt`'s `$FFFF $FFFF` among them, and the bytes of `dc`, `dcb` and `incbin`. These are the bytes the Program **placed**. A pad byte before an aligned item and the room `ds` reserves are not part of it, so they keep the fill memory starts with, and are not placed.
 _Avoid_: binary, object code (that is EASy68K's word for the S-record file)
 
 **S-record**:
@@ -134,11 +134,11 @@ A Program written as the `.S68` file EASy68K's assembler writes and its simulato
 _Avoid_: object file, hex file, binary
 
 **Interpreter**:
-What runs a Program: registers, memory, the step, run, undo and interrupt operations. It never reads source; it reaches the source only through each instruction's Location.
+What runs a Program: registers, memory, the step, run, undo and interrupt operations. It runs what memory holds, through a decode cache: the instructions it has decoded, kept by address, filled from the Program's own when it is made, and cleared wherever a write changes their bytes, so a changed instruction is decoded again before it runs. It never reads source; it reaches the source only through the Program's map of the lines it laid out, which does not move when bytes change, so a changed line keeps its Location.
 _Avoid_: emulator (that is the asm-editor's object around it), simulator, CPU
 
 **Execution step**:
-One entry of the Interpreter's history: an instruction that ran, or a Poke. It carries an id of its own, the mutations undo replays, the program counter and the status register before it, and says which of the two kinds it is.
+One entry of the Interpreter's history: an instruction that ran, or a Poke. It carries an id of its own, the mutations undo replays, the program counter and the status register before it, the Code write an instruction made, and says which of the two kinds it is.
 _Avoid_: history entry, undo record
 
 **Mutation**:
@@ -150,9 +150,13 @@ A register or memory value the host â€” the asm-editor's user or coding agent â€
 _Avoid_: patch, edit, host write (that is any write from outside, Poke or not)
 
 **Paused**:
-The Interpreter status after it executes `simhalt`. The Program counter already
+The Interpreter status after it executes `simhalt`, which is `$FFFF $FFFF` inside the bytes the Program placed. The Program counter already
 names the following instruction, and the next step or run operation resumes
 from it. A Paused Interpreter has not terminated.
+
+**Code write**:
+A write of the program's own, a store or a Trap task's answer on its behalf, into the bytes of an instruction the Interpreter has decoded. The Execution step records the first instruction it overwrote, by address and by the line laid out there, and a run can be asked to stop after it; the overwritten instruction then runs as its new bytes decode. A Poke, a Testcase's starting memory and undo write code too, and are never a Code write.
+_Avoid_: self-modifying code (that is the program's purpose, not the event), code corruption
 
 **Watched range**:
 The one range of addresses, its start included and its end not, whose stores the Interpreter records for the host, for a device the host keeps in memory. Every store with a byte in it is a Watched write.
@@ -173,7 +177,7 @@ _Avoid_: callback, event, request (in prose, for the Rust type)
 How the read tasks show what is typed: the echo of task 12, and the input prompt and the line feed after Enter of task 16. They are the Interpreter's state, all on when a program starts, journaled like a register so that undo puts them back, and read by the host while a read task waits.
 
 **Termination**:
-Why a program ended: task 9, the program counter leaving the last instruction, the host answering Terminate, or the Runtime error it ended with. Undoing the step that ended the program takes it back.
+Why a program ended: task 9, running into `$FFFF $FFFF` in memory the Program never placed (the end of a program that does not end itself, with its address), the host answering Terminate, or the Runtime error it ended with. Undoing the step that ended the program takes it back.
 
 ### Diagnosis
 

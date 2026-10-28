@@ -281,21 +281,20 @@ two errors of its own:
 {type: 'InvalidTrapArgument', value: {task: 15, reason: 'D2.B is 37, and a base is 2 to 36'}}
 
 interpreter.getTermination()
-// null while it runs, then {type: 'TerminateTask'} (task 9), {type: 'EndOfProgram'},
+// null while it runs, then {type: 'TerminateTask'} (task 9),
+// {type: 'EndOfProgram', value: {address: 0x1012}} (it ran into memory it never placed),
 // {type: 'TerminatedByHost'} (a Terminate answer) or {type: 'Exception', value: error}
 ```
 
-The instructions are not in memory: the interpreter looks them up by address.
-A load or store that touches an instruction's bytes, the program's own or a
-`trap #15` task's string or buffer, is refused like a load or store in the text
-segment of MARS and RARS:
-
-```ts
-{type: 'InstructionAccess', value: {address: 4096, write: true}}  // the first byte of the access, and whether it stored
-```
-
-`readMemoryBytes` still reads those bytes, and `writeMemoryBytes` throws the
-same error for them.
+A program ends where it runs into `$FFFF $FFFF` it never placed: EASy68K's
+SIMHALT, outside the bytes of its code and data. Memory starts as `$FF`, so a
+program that does not end itself ends one past its last instruction when
+nothing follows it, and `EndOfProgram` says where. `$FFFF $FFFF` inside the
+program's own bytes is a `simhalt`, which pauses. Anything else runs as what it
+decodes to: a program that runs on into its data, or jumps there, runs the
+data, a word that is no instruction is `IllegalInstruction`, and an instruction
+fetched from an odd address is an `AddressError`. `hasReachedBottom()` is true
+when the next step ends the program.
 
 Undoing the step that ended the program brings it back, running. The tasks s68k
 does not carry out are the printer (10), the text window's font and contents
@@ -323,7 +322,8 @@ Where this departs from EASy68K:
 ```ts
 interpreter.runWithBreakpoints([{file: 'lib/io.x68', line: 12}])
 interpreter.getCurrentLocation()      // {file, line, column, endColumn} | null
-interpreter.getNextInstruction()      // {address, size, bytes, location, includeChain, source} | null
+interpreter.getNextInstruction()      // {address, size, bytes, location, includeChain, source, assembledAs?} | null
+interpreter.disassembleAt(0x1008)     // {address, size, bytes, text: 'ADD.W D1,D2'}, what memory holds now
 interpreter.getCallStack()            // one frame per subroutine entered
 interpreter.canUndo() && interpreter.undo()
 ```
@@ -346,6 +346,45 @@ assembler writes, which EASy68K's simulator loads and runs: the `68KPROG`
 header, the code and data in `S1`/`S2` records of up to 32 bytes, the memory map
 as EASy68K's extra `S0` records and the entry point in an `S8` record, each
 record ending with CR LF.
+
+`getInstructionAt`, `getNextInstruction` and `getLastInstruction` answer the
+line the program laid out at an address, as it was assembled, and
+`assembledAs` says what it assembled as when the assembler chose something the
+line did not write: another mnemonic (`add.l #1,d0` is `ADDQ.L #1,D0`, `move.l
+#5,d0` is `MOVEQ #5,D0`, `move.l d0,a0` is `MOVEA.L D0,A0`), a branch size
+(`bra loop` is `BRA.S loop`) or an address in a word (`lea $1000,a0` is `LEA
+$1000.W,A0`). It is absent when the line is what it says; an alias, `dbra` for
+`DBF`, is no other mnemonic. The text is EASy68K's, with the program's labels.
+
+### Code is memory
+
+The interpreter runs what memory holds, through a cache of the instructions it
+has decoded, filled from the assembler's own when the interpreter is made.
+Every write passes it, so a program can change its own code and the change
+runs; `writeMemoryBytes` writes code like data, and undo writes the old bytes
+back. The source does not move: a changed line keeps its location, its
+breakpoint and its `getInstructionAt`, and `disassembleAt` reads what runs
+there now.
+
+A write of the program's own into an instruction, a store or a `trap #15`
+task's answer, is a code write. The step says what it overwrote first, and
+`getCodeWrite()` says it of the instruction that has just run; a poke, a
+testcase's memory and undo never make one:
+
+```ts
+interpreter.getUndoHistory(1)[0].wroteCode  // {address: 0x1008, instructionIndex: 3}, or absent
+interpreter.getCodeWrite()                  // the same, or null
+interpreter.runWithBreakpoints(breakpoints, limit, {skipBreakpointAtPc: false, stopOnCodeWrite: true})
+// InterpreterStatus.CodeWrite after the instruction that wrote into code; the next run goes on
+```
+
+`instructionIndex` indexes `getInstructionAddresses()`, and is absent for code
+no line was laid out at, such as data the program jumped into. A stop for a code
+write is like one for a watched write: the instruction is finished, the
+program counter is on the next one, and any run or step goes on. A watched
+write by the same instruction stops the run first, as `WatchedWrite`. `run()`,
+`runWithLimit()`, `step()` and an answer to an interrupt record the code write
+and do not stop.
 
 `program.getInstructionAddresses()` returns the assembled instruction addresses
 in ascending order. It is intended for whole-build editor annotations: use
@@ -498,12 +537,21 @@ stop.
 | `{type: 'PlaySound', value: true}`, and the other sound answers but `LoadSound`, with a boolean | a `SoundOutcome`: `'Done'`, `'Busy'`, `'Missing'` or `'Unplayable'` |
 | tasks 70 and 72 wrote 0 to D0.W for a missing file or sound | `'Missing'` leaves D0 as it was, as EASy68K does |
 | a trap, `simhalt` or the program's end on the last instruction a `runWithLimit` or `runWithBreakpoints` limit allowed threw `ExecutionLimit`, with the interrupt left pending | the status is answered, `Interrupt`, `Paused` or `Terminated`; `ExecutionLimit` only when the program would run on |
+| a load or store into code, and a host write there, threw `InstructionAccess` | the code is memory, and the write runs; `InstructionAccess` is gone |
+| `{type: 'EndOfProgram'}` when the program counter left the last instruction | `{type: 'EndOfProgram', value: {address}}` when the program runs into `$FFFF $FFFF` it never placed, which is still one past the last instruction when nothing follows it |
+| a program that ran off its last instruction into its data ended there | it runs the data, as a 68000 does, so it should end itself (`simhalt`, or task 9) |
+| a jump between two instructions threw `OutOfBounds` ("Invalid instruction address") | it runs what is there: an instruction decoded from those bytes, the end in memory the program never placed, or an `AddressError` at an odd address |
 
 It also adds a watched range of memory: `watchMemory`, `unwatchMemory`,
 `takeWatchedWrites` and the status `InterpreterStatus.WatchedWrite`, numbered 5
 after `Paused`, which only an interpreter that watches a range ever answers, and
-`getExecutedInstructions()`, the count of instructions run. Nothing that existed
-changes.
+`getExecutedInstructions()`, the count of instructions run.
+
+It adds what code in memory needs: `disassembleAt(address)`, `getCodeWrite()`,
+`wroteCode` on a step, `assembledAs` on an instruction line, the
+`stopOnCodeWrite` option of `runWithBreakpoints` and the status
+`InterpreterStatus.CodeWrite`, numbered 6, which only a run asked to stop
+answers.
 
 ## Migrating to 3.0.0
 
@@ -577,7 +625,7 @@ are recognised and refused with a diagnostic naming the feature.
 ## Known limitations
 1. Characters are one byte, read and written as Windows-1252, as in EASy68K; a source character with no byte of its own is an assembly error.
 2. The program runs as supervisor, always.
-3. Each instruction is in memory as its 68000 encoding, at its real size, and `readMemoryBytes` reads it; the program itself cannot read or write those bytes yet, so it cannot modify itself.
+3. There are no exception vectors yet: an illegal instruction, an address error and the other exceptions end the program.
 
 # How to build
 The interpreter was made for WASM in mind, to build it you need [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) installed.
@@ -587,7 +635,7 @@ Once installed you can build the whole package by running `npm run build-all` in
 
 `Program.getLayoutItems()` returns a `Uint32Array` after assembly, with five
 values per item: address, byte length, kind (`0` code, `1` data, `2` reserved),
-numbered section, and byte alignment. `org` gaps remain gaps; `offset` regions
+numbered section, and byte alignment, which is 2 for every instruction. `org` gaps remain gaps; `offset` regions
 and zero-length reservations emit no item. `ds` remains reserved even with a fill.
 The existing `Program.labels` supplies the symbols, including qualified locals.
 

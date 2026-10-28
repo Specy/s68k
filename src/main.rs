@@ -540,7 +540,10 @@ fn step_through(
 fn describe_termination(termination: &Termination) -> String {
     match termination {
         Termination::TerminateTask => "The program ended with task 9.".to_string(),
-        Termination::EndOfProgram => "The program ran past its last instruction.".to_string(),
+        Termination::EndOfProgram { address } => format!(
+            "The program ran into memory it never placed, at ${:06X}.",
+            address
+        ),
         Termination::TerminatedByHost => {
             "The program was ended: the command line cannot do a task it asked for.".to_string()
         }

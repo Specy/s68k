@@ -1095,6 +1095,39 @@ the distance its `move.l far(pc),d0` reaches moved from 192502 to 192504,
 because the lines above it are their real sizes. The three `-errors.snap` did
 not move: no Diagnostic of theirs holds an address.
 
+### What milestone C4 of the machine plan changed in these fixtures, and why
+
+On 2026-10-28, milestone C4 of the asm-editor's
+`docs/design/m68k-machine-plan.md` made the Interpreter run what memory holds,
+through a cache of decoded instructions filled from the Program (ADR 0006),
+and gave the end of a program its rule (ADR 0009): `$FFFF $FFFF` inside the
+bytes the program placed is a `simhalt`, and anywhere else it ends the
+program, `EndOfProgram` with the address. Since C3 the memory hash covers the
+code, so the cache moves no hash by itself.
+
+**No assembly fixture moved**, and **one run fixture moved, for behaviour**:
+`sum-of-an-array-1`. It ends with a `dbra` and no `simhalt`, and its
+`numbers: dc.w 4,8,15,16,23,42` follow the code. It used to end when its
+program counter passed the `dbra`; now it runs on into its data, as it would in
+EASy68K. `$0004 $0008` is `ori.b #8,d4`, which runs (`d4` is `$8`), and `$000F`,
+`ori.b` into an address register, is no instruction, so the run ends there
+with an exception: `status` `exception` for `terminated`, `steps` 17 for 15
+(the `ori.b` and the word that failed), and `pc` `$1018` for `$1012`, past that
+word. Its sum in `d0`, `$6c`, is the same, and so is its memory hash: nothing it
+ran in its data stores. The lecture should end itself, with `simhalt`; the
+fixture records what it does as written.
+
+The other 29 end as they did, at the same step and the same `pc`: 22 by task 9
+or by running off their last instruction into memory they never placed, which
+is the new end at the same address, and seven at the limit.
+
+In `src/test/corpus.rs`, `a_runtime_error_ends_the_run_with_an_exception` kept
+its division by zero, and its jump into a gap between two runs of code, which
+was an "Invalid instruction address" runtime error, now ends the program in
+the jump's own step, `terminated` after one step at `$1004`, because the gap is
+memory the program never placed. The `exception` it stood for is a jump to an
+odd address, whose fetch is the address error, two steps.
+
 ## Execution fixtures
 
 The fixtures above stop where the Assembler stops. Beside each one is the

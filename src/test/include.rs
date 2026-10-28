@@ -480,7 +480,7 @@ fn the_two_copies_of_a_file_differ_only_in_their_chain() {
 
 #[test]
 fn a_breakpoint_stops_in_an_included_file() {
-    use crate::interpreter::{Breakpoint, Interpreter, InterpreterStatus};
+    use crate::interpreter::{Breakpoint, Interpreter, InterpreterStatus, RunOptions};
     let files = project(&[
         (
             "main.m68k",
@@ -497,7 +497,7 @@ fn a_breakpoint_stops_in_an_included_file() {
         "a breakpoint is a (file, line) and the included file is a file"
     );
     let status = interpreter
-        .run_with_breakpoints(&breakpoints, None, true)
+        .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
         .expect("to stop at the breakpoint");
     assert_eq!(
         status,

@@ -1145,6 +1145,62 @@ assert.deepEqual(watcher.takeWatchedWrites(), [])
 watcher.dispose()
 device.program.dispose()
 
+// ---------------------------------------------------------------------------
+// Code is memory: a write into code runs, and a run can stop after it
+// ---------------------------------------------------------------------------
+
+const selfModifying = S68k.assemble(`
+    ORG $1000
+START:
+    MOVE.W #$7005,NEXT
+NEXT:
+    MOVE.L #1,D0
+    BRA START
+`)
+const modifier = new Interpreter(selfModifying.program)
+const nextLine = selfModifying.program.getSymbols()['NEXT'].value
+assert.equal(InterpreterStatus.CodeWrite, 6, 'appended after WatchedWrite')
+assert.equal(
+    modifier.runWithBreakpoints([], 100, {stopOnCodeWrite: true}),
+    InterpreterStatus.CodeWrite,
+    'the run stops after the write into code'
+)
+assert.equal(modifier.getPc(), nextLine)
+const written = {address: nextLine, instructionIndex: 1}
+assert.deepEqual(modifier.getCodeWrite(), written)
+assert.deepEqual(modifier.getUndoHistory(1)[0].wroteCode, written, 'and the step carries it')
+assert.deepEqual(
+    modifier.disassembleAt(nextLine),
+    {address: nextLine, size: 2, bytes: [0x70, 0x05], text: 'MOVEQ #5,D0'},
+    'what runs there now'
+)
+const assembledLine = modifier.getInstructionAt(nextLine)
+assert.deepEqual(assembledLine.bytes, [0x70, 0x01], 'the line as it was assembled')
+assert.equal(assembledLine.assembledAs, 'MOVEQ #1,D0', 'and what the move.l assembled as')
+assert.equal(modifier.getInstructionAt(0x1000).assembledAs, undefined, 'a move.w that is what it says')
+assert.equal(modifier.getCurrentLocation().line, 5, 'the changed line keeps its location, the MOVE.L of line 5')
+assert.equal(modifier.step(), InterpreterStatus.Running)
+assert.equal(modifier.getRegisterValue({type: 'Data', value: 0}), 5, 'the new bytes ran')
+assert.equal(modifier.getUndoHistory(1)[0].wroteCode, undefined, 'a step that wrote no code')
+modifier.undo()
+modifier.undo()
+assert.equal(modifier.getCodeWrite(), null, 'undo takes the code write back')
+assert.deepEqual([...modifier.readMemoryBytes(nextLine, 2)], [0x70, 0x01], 'and the bytes')
+modifier.dispose()
+selfModifying.program.dispose()
+
+const offTheEnd = S68k.assemble('    ORG $1000\n    NOP\n')
+const ranOff = new Interpreter(offTheEnd.program)
+assert.equal(ranOff.run(), InterpreterStatus.Terminated)
+assert.deepEqual(
+    ranOff.getTermination(),
+    {type: 'EndOfProgram', value: {address: 0x1002}},
+    'into memory the program never placed, past the nop'
+)
+assert.equal(ranOff.hasReachedBottom(), true)
+ranOff.dispose()
+offTheEnd.program.dispose()
+
 interpreter.dispose()
 assembly.program.dispose()
 

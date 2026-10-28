@@ -3,14 +3,14 @@ source: src/test/corpus.rs
 expression: fixture
 ---
 {
-  "status": "terminated",
-  "steps": 15,
+  "status": "exception",
+  "steps": 17,
   "d": [
     "$6c",
     "$ffff",
     "$0",
     "$0",
-    "$0",
+    "$8",
     "$0",
     "$0",
     "$0"
@@ -25,7 +25,7 @@ expression: fixture
     "$0",
     "$1000000"
   ],
-  "pc": "$1012",
+  "pc": "$1018",
   "flags": "X:0 N:0 Z:0 V:0 C:0",
   "output": "",
   "memory": "2a9a43ba468c6907"

@@ -27,15 +27,23 @@ The library has three parts:
 
 - **Program**: the assembler's output, a program containing assembled instructions with their addresses, sizes, encodings, and source locations; the initial memory; the symbols; and the entry point.
 
-- **Interpreter** (`src/interpreter.rs`): runs a program using registers, memory, and the status register. It supports stepping, running to the end, undo history, breakpoints, a call stack, and a watched range of memory whose every store ends the run, for a device mapped into memory.
+- **Interpreter** (`src/interpreter.rs`): runs a program from memory using registers and the status register. It supports stepping, running to the end, undo history, breakpoints, a call stack, and a watched range of memory whose every store ends the run, for a device mapped into memory.
 
-- **Machine** (`src/machine/`): the 68000's encoding. A decoder reads the words of an instruction for a 68000, a 68010 or a 68020, an encoder writes them, and a disassembler prints an instruction in EASy68K's syntax.
+- **Machine** (`src/machine/`): the 68000's encoding. A decoder reads the words of an instruction for a 68000, a 68010 or a 68020, an encoder writes them, a disassembler prints an instruction in EASy68K's syntax, and the decode cache keeps the instructions the interpreter runs.
 
-The assembler chooses each instruction's 68000 encoding as EASy68K does (below) and writes it into the program's memory at its real size, so every address is the one a 68000 and EASy68K's listing give. The interpreter still runs the instructions the assembler built rather than decoding those bytes, so a program may not load or store a byte of its own code yet, and cannot modify itself (below, "Known limitations").
+The assembler chooses each instruction's 68000 encoding as EASy68K does (below) and writes it into the program's memory at its real size, so every address is the one a 68000 and EASy68K's listing give. The interpreter runs those bytes (below, "Code is memory").
+
+## Code is memory
+
+The interpreter runs what memory holds, through a cache of decoded instructions: 4 KB pages of one slot per word, a page made only where code is, filled from the assembler's own instructions when the interpreter is made, so the program's code is never decoded while it runs. Every write passes the cache, the program's, a trap task's, the host's and undo's, and clears the instructions it covers, which are decoded again from their new bytes before they run. So a program can read and change its own code, and the change runs, as on a 68000; undo writes the old bytes back, and the old instruction runs again.
+
+- **A code write** is a write of the program's own, its stores and a trap task's answer, into an instruction it had decoded. Each step says which instruction it overwrote first (`wroteCode` on the step, `getCodeWrite()`), as the instruction's address and the index of its line. A run stops after one when asked to (`runWithBreakpoints(…, {stopOnCodeWrite: true})`, the status `CodeWrite`), and the next run goes on. A Poke, a testcase's starting memory and undo never make one.
+- **The source** is read through the program's own map of the lines it laid out, which does not move when bytes change: a changed line keeps its location, its breakpoint and its `getInstructionAt` as assembled, and `disassembleAt(address)` prints what memory holds there now. `getInstructionAt` also says what the line assembled as when the assembler chose something it did not write (`assembledAs`: `add.l #1,d0` is `ADDQ.L #1,D0`, `bra loop` is `BRA.S loop`, `lea $1000,a0` is `LEA $1000.W,A0`).
+- **The end.** `$FFFF $FFFF` is EASy68K's SIMHALT wherever it is. Inside the bytes the program placed, its code and its data, it pauses, as `simhalt` does. Anywhere else it ends the program, `EndOfProgram` with the address: memory starts as `$FF`, so that is where a program that does not end itself ends, one past its last instruction when nothing follows it (ADR 0009). Any other bytes run as what they decode to, so a program that runs on into its data, or jumps there, runs the data, and a word that is no instruction is an illegal instruction. An instruction fetched from an odd address is an address error.
 
 ## Future work
 
-- Running from memory, through a cache of decoded instructions the assembler fills, so that a program can change its own code
+- Exceptions through the vector table, supervisor and user mode, the memory map's bus errors, interrupts and cycles (the asm-editor's `docs/design/m68k-machine.md`)
 - Macros and conditional assembly
 
 
@@ -178,7 +186,7 @@ The interrupts carry the arguments, and the interpreter plays nothing itself: `P
 
 Every error an instruction raises ends the program, as an exception would on a 68000 with no handler: the status is `TerminatedWithException`, the error is thrown, and `getTermination()` answers it as the cause. The trap tasks raise two of their own: `UnsupportedTrapTask {task}` for a number that is not one of EASy68K's tasks and for the tasks a page in a browser cannot do faithfully (10, 21, 22, 25, 30 to 32, 40 to 43, 60, 62, 100 to 107), and `InvalidTrapArgument {task, reason}` for a value a task cannot take, the reason naming the register. Undoing the step that failed brings the program back to it, running.
 
-`getTermination()` is `null` while the program runs, and then says why it ended: `TerminateTask` (task 9), `EndOfProgram` (the program counter left the last instruction), `TerminatedByHost` (an interrupt answered with `Terminate`) or `Exception` with the error.
+`getTermination()` is `null` while the program runs, and then says why it ended: `TerminateTask` (task 9), `EndOfProgram {address}` (it ran into `$FFFF $FFFF` it never placed, above), `TerminatedByHost` (an interrupt answered with `Terminate`) or `Exception` with the error.
 
 An answer is taken only by the interrupt of the same `type`, with a value the task can take, or it is `Terminate`, which answers any task and ends the program. Anything else is refused with a typed error and leaves the interrupt waiting: `NoPendingInterrupt`, `InvalidAnswer {interrupt, reason}` for an answer of another type, a value that is not an answer at all, a key state of the other form, more bytes than a read asked for or a file number past 7, and the `OutOfBounds` of a write that does not fit in memory. Every WebAssembly method throws a `RuntimeError` object and none of them panics, so the interpreter stays usable after a bad call.
 
@@ -195,9 +203,8 @@ Where s68k departs from EASy68K, on purpose:
 - On Windows EASy68K cannot delete a file that is open, and reports 2; whether a file that is open can be deleted is the host's file system's to say.
 
 ## Known limitations
-1. The program's code is in memory, where the host reads it, but the interpreter runs the instructions the assembler built rather than the bytes there, so the program is refused a load or a store that touches its code and cannot modify itself. Running from memory is the next step, and so is what `$FFFF $FFFF` does where the program placed nothing: a program that runs off its end into erased memory will end there, rather than end because its program counter passed the last instruction as it does now.
-2. The program runs as supervisor, always. The status register is a 16-bit register whose low byte is the condition codes and whose high byte is trace, supervisor and the interrupt mask, readable (`getSr()`, and the `SR:` line of the command line) and of no effect at all. It starts at `$2700`, so `andi #$00,sr` "puts the CPU in user mode" and changes nothing that runs. `move usp,an` and `move an,usp` are refused for the same reason: there is one stack pointer, `a7`.
-3. `chk`, `trapv` and `illegal` raise their exception by ending the run, and so does every other runtime error: an address error, a division by zero, a `trap #15` task that cannot be done. There are no exception vectors, no supervisor stack frame and no `rte`, so a program cannot handle one. The runtime error names the cause, and is the program's termination.
+1. The program runs as supervisor, always. The status register is a 16-bit register whose low byte is the condition codes and whose high byte is trace, supervisor and the interrupt mask, readable (`getSr()`, and the `SR:` line of the command line) and of no effect at all. It starts at `$2700`, so `andi #$00,sr` "puts the CPU in user mode" and changes nothing that runs. `move usp,an` and `move an,usp` are refused for the same reason: there is one stack pointer, `a7`.
+2. `chk`, `trapv` and `illegal` raise their exception by ending the run, and so does every other runtime error: an address error, a word that is no instruction, a division by zero, a `trap #15` task that cannot be done. There are no exception vectors, no supervisor stack frame and no `rte`, so a program cannot handle one. The runtime error names the cause, and is the program's termination.
 
 ## Running the command-line interpreter
 

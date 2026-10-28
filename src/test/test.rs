@@ -282,8 +282,8 @@ end:",
         use crate::assembler::source::DEFAULT_ENTRY_PATH;
         use crate::instructions::InterruptResult;
         use crate::interpreter::{
-            Breakpoint, Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError,
-            Termination,
+            Breakpoint, Interpreter, InterpreterOptions, InterpreterStatus, RunOptions,
+            RuntimeError, Termination,
         };
         use crate::test::test::{assemble, prepare};
 
@@ -428,7 +428,7 @@ second:
             let mut breaking = prepare(code);
             [
                 (limited.run_with_limit(limit), limited),
-                (breaking.run_with_breakpoints(&[], Some(limit), true), breaking),
+                (breaking.run_with_breakpoints(&[], Some(limit), RunOptions::CONTINUE), breaking),
             ]
         }
 
@@ -471,7 +471,8 @@ second:
                 assert_eq!(status, Ok(InterpreterStatus::Terminated));
                 assert_eq!(
                     interpreter.get_termination(),
-                    Some(&Termination::EndOfProgram)
+                    Some(&Termination::EndOfProgram { address: 0x1004 }),
+                    "on the $FFFF $FFFF past the two nops"
                 );
             }
         }
@@ -577,7 +578,7 @@ start:
                 [0x1002].into_iter().collect()
             );
             interpreter
-                .run_with_breakpoints(&breakpoints, None, true)
+                .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
                 .expect("to stop at the breakpoint");
             assert_eq!(interpreter.get_pc(), 0x1002);
             assert_eq!(
@@ -590,7 +591,7 @@ start:
             );
             //a breakpoint on the line the pc is already on does not stop it again
             let status = interpreter
-                .run_with_breakpoints(&breakpoints, None, true)
+                .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
                 .expect("to run on");
             assert_eq!(status, InterpreterStatus::Terminated);
         }
@@ -600,7 +601,7 @@ start:
             let mut interpreter = prepare(THREE_MOVES);
             let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 3)];
             interpreter
-                .run_with_breakpoints(&breakpoints, None, true)
+                .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
                 .expect("to stop at the breakpoint");
             assert_eq!(interpreter.get_pc(), 0x1002);
 
@@ -608,7 +609,7 @@ start:
             //from it: nothing runs, which is what a caller that arrived here
             //some other way asks for
             let status = interpreter
-                .run_with_breakpoints(&breakpoints, None, false)
+                .run_with_breakpoints(&breakpoints, None, RunOptions::RESUME)
                 .expect("to stop before the instruction");
             assert_eq!(status, InterpreterStatus::Running);
             assert_eq!(interpreter.get_pc(), 0x1002);
@@ -643,7 +644,7 @@ start:
 
             assert_eq!(
                 interpreter
-                    .run_with_breakpoints(&breakpoints, None, true)
+                    .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
                     .expect("the trap"),
                 InterpreterStatus::Interrupt
             );
@@ -652,7 +653,7 @@ start:
                 .expect("the trap to be answered");
 
             let status = interpreter
-                .run_with_breakpoints(&breakpoints, None, false)
+                .run_with_breakpoints(&breakpoints, None, RunOptions::RESUME)
                 .expect("the breakpoint after the trap");
             assert_eq!(status, InterpreterStatus::Running);
             assert_eq!(interpreter.get_pc(), after_the_trap);
@@ -677,7 +678,7 @@ start:
 
             assert_eq!(
                 interpreter
-                    .run_with_breakpoints(&breakpoints, None, true)
+                    .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
                     .expect("the simhalt"),
                 InterpreterStatus::Paused
             );
@@ -685,7 +686,7 @@ start:
 
             assert_eq!(
                 interpreter
-                    .run_with_breakpoints(&breakpoints, None, false)
+                    .run_with_breakpoints(&breakpoints, None, RunOptions::RESUME)
                     .expect("the breakpoint after the pause"),
                 InterpreterStatus::Running
             );
@@ -694,7 +695,7 @@ start:
 
             assert_eq!(
                 interpreter
-                    .run_with_breakpoints(&breakpoints, None, true)
+                    .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
                     .expect("continue from the breakpoint"),
                 InterpreterStatus::Terminated
             );
@@ -714,13 +715,13 @@ start:
             let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 3)];
             assert_eq!(
                 interpreter
-                    .run_with_breakpoints(&breakpoints, None, true)
+                    .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
                     .expect("the simhalt"),
                 InterpreterStatus::Paused
             );
             assert_eq!(
                 interpreter
-                    .run_with_breakpoints(&breakpoints, None, true)
+                    .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
                     .expect("to resume past the breakpoint it is parked on"),
                 InterpreterStatus::Terminated
             );
@@ -754,7 +755,7 @@ start:
                 .get_breakpoint_addresses(&breakpoints)
                 .is_empty());
             let status = interpreter
-                .run_with_breakpoints(&breakpoints, None, true)
+                .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
                 .expect("to run to the end");
             assert_eq!(status, InterpreterStatus::Terminated);
         }
@@ -1888,6 +1889,17 @@ routine:
             interpreter.get_register_value(RegisterOperand::Address(register), Size::Long)
         }
 
+        /// Runs the `count` instructions above a program's data, which the
+        /// program does not end before: it would run on into the data, as a
+        /// 68000 does (ADR 0009), so the run stops at its limit.
+        fn run_up_to_the_data(interpreter: &mut crate::interpreter::Interpreter, count: usize) {
+            assert_eq!(
+                interpreter.run_with_limit(count),
+                Err(crate::interpreter::RuntimeError::ExecutionLimit(count)),
+                "the {count} instructions, with the data after them still to run"
+            );
+        }
+
         #[test]
         fn a_pc_relative_read_reaches_the_address_the_source_wrote() {
             // Five instructions from `$1000`, three of four bytes and two of
@@ -1902,7 +1914,7 @@ routine:
 value: dc.l $12345678
 ",
             );
-            interpreter.run().expect("the five instructions");
+            run_up_to_the_data(&mut interpreter, 5);
             assert_eq!(data(&interpreter, 0), 0x12345678);
             assert_eq!(
                 data(&interpreter, 1),
@@ -1938,7 +1950,7 @@ value: dc.l $12345678
 value: dc.l $11223344
 ",
             );
-            interpreter.run().expect("the five instructions");
+            run_up_to_the_data(&mut interpreter, 5);
             assert_eq!(data(&interpreter, 0), 0x11223344);
             assert_eq!(data(&interpreter, 1), 0x11223344);
             assert_eq!(data(&interpreter, 2), 0x11223344);
@@ -1953,7 +1965,7 @@ value: dc.l $11223344
 table: dc.l $aaaaaaaa,$bbbbbbbb
 ",
             );
-            interpreter.run().expect("the three instructions");
+            run_up_to_the_data(&mut interpreter, 3);
             assert_eq!(
                 data(&interpreter, 0),
                 0xbbbbbbbb,
@@ -1971,7 +1983,7 @@ table: dc.l $aaaaaaaa,$bbbbbbbb
 table: dc.l $00c0ffee
 ",
             );
-            interpreter.run().expect("the three instructions");
+            run_up_to_the_data(&mut interpreter, 3);
             assert_eq!(data(&interpreter, 2), 0x00c0ffee);
         }
 
@@ -1986,7 +1998,7 @@ table: dc.l $00c0ffee
 table: dc.l $11111111,$22222222,$33333333
 ",
             );
-            interpreter.run().expect("the two instructions");
+            run_up_to_the_data(&mut interpreter, 2);
             assert_eq!(data(&interpreter, 0), 0x11111111);
             assert_eq!(data(&interpreter, 1), 0x22222222);
             assert_eq!(data(&interpreter, 2), 0x33333333);
@@ -2023,7 +2035,7 @@ done:
 greeting: dc.b 'hi',0
 ",
             );
-            interpreter.run().expect("the four instructions");
+            run_up_to_the_data(&mut interpreter, 4);
             //a four-byte `pea` and three two-byte instructions
             assert_eq!(address(&interpreter, 1), 0x100a);
             assert_eq!(data(&interpreter, 0) & 0xff, u32::from(b'h'));
@@ -2549,6 +2561,7 @@ start:
     move.l #text,a1
     move.b #14,d0
     trap #15
+    ORG $2000
 text: dc.b '€ “ok” — naïve ½',0"
                 ),
                 ["€ “ok” — naïve ½"]

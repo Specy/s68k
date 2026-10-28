@@ -224,7 +224,8 @@ impl WasmAssembly {
 pub struct ProgramInfo<'a> {
     /// The address the program starts running at.
     pub entry_point: usize,
-    /// One past the last byte of the last instruction.
+    /// One past the last byte of the last instruction, which is where the code
+    /// ends and not where a run ends ([`Program::end_address`]).
     pub end_address: usize,
     /// How many instructions were assembled.
     pub instruction_count: usize,

@@ -572,10 +572,14 @@ fn an_interpreter_that_keeps_no_history_records_nothing() {
 
 #[test]
 fn memory_layout_and_stack_top_survive_undo() {
-    let code = " org $1000\nstart: lea $8000,a7\n move.l d0,-(a7)\n simhalt\nbuffer: dc.b 1,2,3\n dc.w 7\nroom: ds.w 8\n section 1\n org $9000\nother: dc.b 5\n end start";
+    let code = " org $1000\nstart: lea $8000,a7\n move.l d0,-(a7)\n move.b d0,d1\n simhalt\nbuffer: dc.b 1,2,3\n dc.w 7\nroom: ds.w 8\n section 1\n org $9000\nother: dc.b 5\n end start";
     let program = assemble(code);
     let items = program.layout_items();
     assert!(items.chunks(5).any(|item| item[2] == 0));
+    assert!(
+        items.chunks(5).filter(|item| item[2] == 0).all(|item| item[4] == 2),
+        "every instruction aligns to a word"
+    );
     assert!(items.chunks(5).any(|item| item[2] == 1 && item[3] == 1));
     assert!(items.chunks(5).any(|item| item[2] == 2 && item[1] == 16));
     let mut interpreter = with_history(code);

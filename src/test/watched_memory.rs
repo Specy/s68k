@@ -12,8 +12,8 @@ use crate::assembler::source::DEFAULT_ENTRY_PATH;
 use crate::debugger::MutationOperation;
 use crate::instructions::{InterruptResult, RegisterOperand, Size};
 use crate::interpreter::{
-    Breakpoint, Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError, Termination,
-    WatchedWrite,
+    Breakpoint, Interpreter, InterpreterOptions, InterpreterStatus, RunOptions, RuntimeError,
+    Termination, WatchedWrite,
 };
 
 /// The first address watched.
@@ -365,7 +365,7 @@ fn a_store_by_the_last_instruction_stops_before_the_end() {
     assert_eq!(interpreter.run().unwrap(), InterpreterStatus::Terminated);
     assert_eq!(
         interpreter.get_termination(),
-        Some(&Termination::EndOfProgram)
+        Some(&Termination::EndOfProgram { address: 0x1008 })
     );
 }
 
@@ -381,7 +381,7 @@ fn a_breakpoint_on_the_next_instruction_is_reported_by_the_next_call() {
     let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 2)];
     assert_eq!(
         interpreter
-            .run_with_breakpoints(&breakpoints, None, true)
+            .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
             .unwrap(),
         InterpreterStatus::WatchedWrite,
         "the watched write first"
@@ -392,7 +392,7 @@ fn a_breakpoint_on_the_next_instruction_is_reported_by_the_next_call() {
     interpreter.take_watched_writes();
     assert_eq!(
         interpreter
-            .run_with_breakpoints(&breakpoints, None, false)
+            .run_with_breakpoints(&breakpoints, None, RunOptions::RESUME)
             .unwrap(),
         InterpreterStatus::Running,
         "then the breakpoint, before its instruction runs"
@@ -401,7 +401,7 @@ fn a_breakpoint_on_the_next_instruction_is_reported_by_the_next_call() {
     assert_eq!(data(&interpreter, 0), 0);
     assert_eq!(
         interpreter
-            .run_with_breakpoints(&breakpoints, None, true)
+            .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
             .unwrap(),
         InterpreterStatus::Terminated
     );
@@ -419,14 +419,14 @@ fn a_breakpoint_on_the_storing_instruction_stops_before_it() {
     let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 1)];
     assert_eq!(
         interpreter
-            .run_with_breakpoints(&breakpoints, None, false)
+            .run_with_breakpoints(&breakpoints, None, RunOptions::RESUME)
             .unwrap(),
         InterpreterStatus::Running
     );
     assert!(interpreter.take_watched_writes().is_empty());
     assert_eq!(
         interpreter
-            .run_with_breakpoints(&breakpoints, None, true)
+            .run_with_breakpoints(&breakpoints, None, RunOptions::CONTINUE)
             .unwrap(),
         InterpreterStatus::WatchedWrite
     );
@@ -456,18 +456,18 @@ fn a_store_on_the_last_instruction_of_a_limit_is_still_reported() {
         Err(RuntimeError::ExecutionLimit(0))
     ));
     assert_eq!(
-        interpreter.run_with_breakpoints(&[], Some(2), false).unwrap(),
+        interpreter.run_with_breakpoints(&[], Some(2), RunOptions::RESUME).unwrap(),
         InterpreterStatus::Terminated
     );
 }
 
 #[test]
 fn a_failure_after_a_store_ends_the_program_with_the_write_kept() {
-    // the second long of the movem lands on the first instruction
+    // the second long of the movem runs past the last byte of memory
     let mut interpreter = Interpreter::new(
         assemble(
             "    org $1000
-    lea $FFC,a0
+    lea $FFFFFA,a0
     movem.l d0-d1,(a0)
 ",
         ),
@@ -476,16 +476,16 @@ fn a_failure_after_a_store_ends_the_program_with_the_write_kept() {
             history_size: 100,
         }),
     );
-    interpreter.watch_memory(0xF00, 0x1000).unwrap();
+    interpreter.watch_memory(0xFFFF00, 0x1000000).unwrap();
     assert!(matches!(
         interpreter.run(),
-        Err(RuntimeError::InstructionAccess { .. })
+        Err(RuntimeError::OutOfBounds(_))
     ));
     assert_eq!(
         *interpreter.get_status(),
         InterpreterStatus::TerminatedWithException
     );
-    assert_eq!(interpreter.take_watched_writes(), vec![write(0xFFC, 4, 0)]);
+    assert_eq!(interpreter.take_watched_writes(), vec![write(0xFFFFFA, 4, 0)]);
 }
 
 #[test]

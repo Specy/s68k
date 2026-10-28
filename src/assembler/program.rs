@@ -26,21 +26,30 @@
 //! A pad byte before an aligned item and the room `ds` reserves are not part
 //! of it: neither is written, as in EASy68K.
 //!
-//! # Looking an instruction up
+//! # The address map
 //!
-//! [`Program::instruction_at`] is what the Interpreter steps with. The
-//! instructions are sorted by address and no two share one — two lines laid out
-//! over the same address is an error, so a Program cannot hold that — which
-//! makes the look-up a binary search over the list itself, with no index beside
-//! it.
+//! The instructions are sorted by address and no two share one — two lines
+//! laid out over the same address is an error, so a Program cannot hold that —
+//! so the list is itself the map from an address to the line laid out there,
+//! read by a binary search ([`Program::instruction_at`]). It is what the source
+//! lookups read: the current line, a step's line, the Breakpoints' addresses.
+//! The Interpreter runs from its decode cache, filled from the same list, and
+//! never from this map, so a line whose bytes the program changes keeps its
+//! Location: the bytes moved on, the source did not.
+//!
+//! The Program also keeps the ranges of the bytes it placed, code and data
+//! ([`Program::places_any`]): `$FFFF $FFFF` inside them is a `simhalt`, and
+//! outside them the end of the program (ADR 0009).
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use super::instructions::encoded::Instruction;
+use super::ast::{self, SizeSuffix};
+use super::instructions::encoded::{BranchSize, Instruction};
 use super::source::Location;
 use super::symbols::{SymbolKind, SymbolTable, SymbolValue};
+use crate::machine::disassemble::{disassemble, Symbols};
 
 /// One assembled instruction: what it is, where it goes and where it came from.
 ///
@@ -228,6 +237,10 @@ pub struct Program {
     symbols: BTreeMap<String, ProgramSymbol>,
     entry: usize,
     memory_map: Vec<MemoryRange>,
+    /// The ranges of bytes the image places, start included and end not, in
+    /// address order, none touching another.
+    #[serde(skip)]
+    placed: Vec<(usize, usize)>,
 }
 
 impl Program {
@@ -262,6 +275,7 @@ impl Program {
                 )
             })
             .collect();
+        let placed = placed_ranges(&instructions, &memory);
         Self {
             layout_items: Vec::new(),
             instructions,
@@ -269,6 +283,7 @@ impl Program {
             symbols,
             entry,
             memory_map: Vec::new(),
+            placed,
         }
     }
 
@@ -310,25 +325,43 @@ impl Program {
         self.entry
     }
 
-    /// The instruction laid out at `address`, if one is.
+    /// The instruction laid out at `address`, if one is: the address map.
     ///
-    /// This is the Interpreter's step: an address that falls *between* two
-    /// instructions has none, which is what makes a jump into the middle of the
-    /// program a runtime error rather than a wrong instruction.
+    /// An address that falls *between* the starts of two instructions has
+    /// none. This is what the source lookups read, never what runs: the
+    /// Interpreter runs what memory holds, so after the program changes a line's
+    /// bytes this still answers the line as it was assembled.
     pub fn instruction_at(&self, address: usize) -> Option<&AssembledInstruction> {
-        self.instructions
-            .binary_search_by_key(&address, |instruction| instruction.address)
-            .ok()
+        self.instruction_index_at(address)
             .map(|index| &self.instructions[index])
     }
 
-    /// One past the last byte of the last instruction: where the program ends.
+    /// The index in [`instructions`](Program::instructions) of the instruction
+    /// laid out at `address`, if one is.
+    pub fn instruction_index_at(&self, address: usize) -> Option<usize> {
+        self.instructions
+            .binary_search_by_key(&address, |instruction| instruction.address)
+            .ok()
+    }
+
+    /// Whether any of the `length` bytes from `address` is a byte the Program
+    /// placed: an instruction's, or one of `dc`, `dcb` or `incbin`. The pad
+    /// byte before an aligned item and the room `ds` reserves are not placed.
+    pub fn places_any(&self, address: usize, length: usize) -> bool {
+        let index = self.placed.partition_point(|&(_, end)| end <= address);
+        self.placed
+            .get(index)
+            .is_some_and(|&(start, _)| start < address.saturating_add(length))
+    }
+
+    /// One past the last byte of the last instruction, and 0 for a Program
+    /// with none.
     ///
-    /// A run that reaches this address has walked off the bottom of the program
-    /// and stops. It is built from the last instruction's own
-    /// [`size`](AssembledInstruction::size) and not from a fixed instruction
-    /// width, so a later version that encodes real sizes needs no change here.
-    /// An empty Program ends at 0, which is where it also starts.
+    /// It is where the code ends and not where a run ends: the Interpreter runs
+    /// on into what follows, and a program that does not end itself ends when
+    /// it reaches `$FFFF $FFFF` the Program did not place, which is what memory
+    /// past the last instruction holds when nothing else was placed there
+    /// (ADR 0009).
     pub fn end_address(&self) -> usize {
         self.instructions
             .last()
@@ -337,12 +370,8 @@ impl Program {
     }
 
     /// The instruction whose last byte is just before `address`, if there is
-    /// one.
-    ///
-    /// This is how the Interpreter finds the instruction that *called* a
-    /// subroutine: the return address on the stack is one past the calling
-    /// instruction, and the size stored with each instruction is what turns it
-    /// back into the address the call was written at.
+    /// one: the instruction a return address on the stack comes back from, as
+    /// the Program laid it out.
     pub fn instruction_ending_at(&self, address: usize) -> Option<&AssembledInstruction> {
         let index = self
             .instructions
@@ -356,6 +385,78 @@ impl Program {
     /// nothing to run.
     pub fn is_empty(&self) -> bool {
         self.instructions.is_empty()
+    }
+
+    /// What `instruction` assembled as, in EASy68K's syntax as the
+    /// [disassembler](crate::machine::disassemble) prints it, when the
+    /// Assembler chose something its line did not write; `None` when it did
+    /// not.
+    ///
+    /// It is the "assembled as" of a hover, so it counts the choices of
+    /// EASy68K's assembler (ADR 0006), and nothing the line said:
+    ///
+    /// * **another mnemonic**: `add.l #1,d0` assembles as `ADDQ.L #$1,D0`,
+    ///   `move.l #5,d0` as `MOVEQ #5,D0`, `add #100,d0` as `ADDI.W`, `move.l
+    ///   d0,a0` as `MOVEA.L D0,A0`. An alias is the same mnemonic: `dbra` is
+    ///   `DBF`, `bhs` is `BCC` and `blo` is `BCS`, and none of them counts.
+    /// * **a branch's size** the line did not write: `bra loop` assembles as
+    ///   `BRA.S loop` or `BRA.W loop`. `.b` is `.s`, and `.l`, which the 68000
+    ///   has not got, is a word.
+    /// * **an absolute address in a word** the line did not write `.w` on:
+    ///   `lea $1000,a0` assembles as `LEA $1000.W,A0`. A long one is the
+    ///   default form, and is not a choice to show.
+    ///
+    /// A size the line left to its default is not a choice either: `move
+    /// d0,d1` is `MOVE.W` by definition. `symbols` names the addresses the
+    /// text holds, a Label in place of its number.
+    pub fn assembled_as(
+        &self,
+        instruction: &AssembledInstruction,
+        symbols: Option<&dyn Symbols>,
+    ) -> Option<String> {
+        let line = super::parse_line(&instruction.source);
+        let operation = line.operation?;
+        let text = disassemble(&instruction.instruction, symbols);
+        let (head, operands) = text.split_once(' ').unwrap_or((&text, ""));
+        let mnemonic = head.split('.').next().unwrap_or(head);
+        if canonical_mnemonic(mnemonic) != canonical_mnemonic(&operation.name) {
+            return Some(text);
+        }
+        let branch = match instruction.instruction {
+            Instruction::Bcc(_, _, size) | Instruction::BRA(_, size) | Instruction::BSR(_, size) => {
+                Some(size)
+            }
+            _ => None,
+        };
+        if let Some(size) = branch {
+            let written = operation.size.map(|written| match written {
+                SizeSuffix::Short | SizeSuffix::Byte => BranchSize::Short,
+                SizeSuffix::Word => BranchSize::Word,
+                SizeSuffix::Long => BranchSize::Long,
+            });
+            if written != Some(size) {
+                return Some(text);
+            }
+        }
+        let words = top_level_operands(operands)
+            .filter(|operand| {
+                operand.ends_with(".W") && !operand.contains('(') && !operand.starts_with('#')
+            })
+            .count();
+        let written_words = operation
+            .operands
+            .iter()
+            .filter(|operand| {
+                matches!(
+                    operand,
+                    ast::Operand::Absolute {
+                        size: Some(SizeSuffix::Word),
+                        ..
+                    }
+                )
+            })
+            .count();
+        (words > written_words).then_some(text)
     }
 
     /// The Program as the S-record file EASy68K's assembler writes, `.S68`:
@@ -399,6 +500,71 @@ impl Program {
         }
         runs
     }
+}
+
+/// The ranges of bytes `instructions` and the written runs of `memory` place,
+/// merged where they touch, in address order.
+fn placed_ranges(instructions: &[AssembledInstruction], memory: &[MemoryRun]) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = instructions
+        .iter()
+        .map(|instruction| (instruction.address, instruction.address + instruction.size))
+        .chain(
+            memory
+                .iter()
+                .filter_map(|run| run.bytes().map(|bytes| (run.address, run.address + bytes.len()))),
+        )
+        .filter(|(start, end)| start < end)
+        .collect();
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
+/// A mnemonic as [`Program::assembled_as`] compares it: in lower case, with
+/// `dbra` written `dbf` and the condition aliases `hs` and `lo` written `cc`
+/// and `cs`, as the disassembler prints them.
+fn canonical_mnemonic(name: &str) -> String {
+    let name = name.to_ascii_lowercase();
+    if name == "dbra" {
+        return "dbf".to_string();
+    }
+    for prefix in ["db", "b", "s"] {
+        match name.strip_prefix(prefix) {
+            Some("hs") => return format!("{prefix}cc"),
+            Some("lo") => return format!("{prefix}cs"),
+            _ => {}
+        }
+    }
+    name
+}
+
+/// The Operands of a disassembled line, split at the commas that are not
+/// inside parentheses: `4(A0,D1.W),D0` is two.
+fn top_level_operands(field: &str) -> impl Iterator<Item = &str> {
+    let mut depth = 0i32;
+    let mut start = 0;
+    let mut operands = Vec::new();
+    for (index, character) in field.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                operands.push(&field[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < field.len() {
+        operands.push(&field[start..]);
+    }
+    operands.into_iter()
 }
 
 /// One stretch of consecutive bytes of a Program's [image](Program::image).

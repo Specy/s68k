@@ -318,17 +318,20 @@ export type RuntimeError = { type: "Raw", value: string } |
  * and line F words. The Assembler refuses them, so only a decoded word reaches one.
  */
 { type: "Unimplemented", value: string } |
-{ type: "AddressError", value : { address: number, size: Size } } |
 /**
- * A load or store that touches the bytes of an instruction, which are not in
- * memory: `address` is the first byte of the access, `write` whether it was a store.
+ * A word or a long read or written at an odd address, or an instruction
+ * fetched from one: the 68000's address error, which ends the program.
  */
-{ type: "InstructionAccess", value: { address: number, write: boolean } } |
+{ type: "AddressError", value : { address: number, size: Size } } |
 /** `chk` found the register outside 0 to the bound it was given. */
 { type: "ChkOutOfBounds", value: { value: number, bound: number } } |
 /** `trapv` with the overflow flag set. */
 { type: "OverflowException" } |
-/** The `illegal` instruction, or a word that is no instruction, which always ends the run. */
+/**
+ * The `illegal` instruction, or a word that is no instruction, which always
+ * ends the run: what bytes never assembled as code can decode to when the
+ * program runs into them.
+ */
 { type: "IllegalInstruction" } |
 /**
  * A `trap #15` task s68k does not carry out, by its number in D0.B: one that
@@ -351,8 +354,15 @@ export type RuntimeError = { type: "Raw", value: string } |
 export type Termination =
 /** Task 9. */
 { type: "TerminateTask" } |
-/** The program counter left the last instruction, or there was none to run. */
-{ type: "EndOfProgram" } |
+/**
+ * The program ran into memory it never placed: the instruction at `address`
+ * is `$FFFF $FFFF`, none of whose bytes the program placed. Memory starts as
+ * `$FF`, so this is where a program that does not end itself ends, one past
+ * its last instruction when nothing follows it. `$FFFF $FFFF` inside the
+ * program's own bytes is a `simhalt` and pauses instead. A program with no
+ * instruction ends at its entry point before it starts.
+ */
+{ type: "EndOfProgram", value: { address: number } } |
 /** The host answered an interrupt with `Terminate`. */
 { type: "TerminatedByHost" } |
 /** A runtime error, and the program ended with an exception. */
@@ -449,6 +459,41 @@ export type InstructionLine = {
     includeChain: Location[]
     /** That line, as it was written. */
     source: string
+    /**
+     * What it assembled as, in EASy68K's syntax with the program's labels, when
+     * the assembler chose something the line did not write: another mnemonic
+     * (`add.l #1,d0` is `ADDQ.L #1,D0`, `move.l #5,d0` is `MOVEQ #5,D0`), a
+     * branch size (`bra loop` is `BRA.S loop`) or an address in a word
+     * (`lea $1000,a0` is `LEA $1000.W,A0`); absent when it is what the line
+     * wrote. An alias is no other mnemonic: `dbra` is `DBF`.
+     */
+    assembledAs?: string
+}
+
+/**
+ * One instruction as memory holds it, which is what
+ * `Interpreter.disassembleAt` answers: its address, its size and bytes, and its
+ * text in EASy68K's syntax with the program's labels. Bytes that are no
+ * instruction print as `DC.W`.
+ */
+export type DisassembledLine = {
+    address: number,
+    size: number,
+    bytes: number[],
+    text: string
+}
+
+/**
+ * A write of the program's own into the bytes of an instruction it had run
+ * or was about to run: the first instruction it changed. `instructionIndex`
+ * indexes `Program.getInstructionAddresses()`, and is absent when no line was
+ * laid out at `address`, as for code the program reached in its data. A poke,
+ * a testcase's memory and undo never make one.
+ */
+export type CodeWrite = {
+    /** Where the overwritten instruction starts. */
+    address: number,
+    instructionIndex?: number
 }
 "#;
 
@@ -501,7 +546,10 @@ export type MemoryRange = {
 export type ProgramInfo = {
     /** The address the program starts running at. */
     entryPoint: number,
-    /** One past the last byte of the last instruction. */
+    /**
+     * One past the last byte of the last instruction: where the code ends, not
+     * where a run ends, which is wherever it meets `$FFFF $FFFF` it never placed.
+     */
     endAddress: number,
     instructionCount: number,
     /** Every symbol, by full name. */
@@ -682,8 +730,14 @@ export type ExecutionStep = {
     old_sr: number,
     /** The whole status register after the step. */
     new_sr: number,
-    /** Where the instruction that ran was written; absent when it ran on none. */
-    location?: Location
+    /**
+     * Where the instruction that ran was written; absent when it ran on no line,
+     * in data or in the middle of one. A line whose bytes have changed keeps its
+     * location.
+     */
+    location?: Location,
+    /** The code write the instruction made, the first instruction it overwrote; absent when it made none. */
+    wroteCode?: CodeWrite
 }
 "#;
 #[wasm_bindgen(typescript_custom_section)]

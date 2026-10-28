@@ -1197,9 +1197,14 @@ impl<'a> Layout<'a> {
             Item::Nothing => (0, 0),
         };
         if length > 0 {
-            let alignment = line.operation.as_ref().map(|op| {
-                if op.size == Some(super::ast::SizeSuffix::Byte) { 1 } else { 2 }
-            }).unwrap_or(1);
+            // Every instruction starts on an even address, `.b` or not; data is
+            // aligned by its size.
+            let alignment = match plan.item {
+                Item::Instruction(_) => 2,
+                _ => line.operation.as_ref().map(|op| {
+                    if op.size == Some(super::ast::SizeSuffix::Byte) { 1 } else { 2 }
+                }).unwrap_or(1),
+            };
             self.layout_items.extend_from_slice(&[plan.address as u32, length as u32, kind, plan.section as u32, alignment]);
         }
         match plan.item {

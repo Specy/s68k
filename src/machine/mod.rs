@@ -9,7 +9,9 @@
 //! * [`encode`] writes the words of an [`Instruction`] at an address, and is
 //!   the decoder's inverse;
 //! * [`disassemble`] prints an [`Instruction`] in EASy68K's syntax, and reads
-//!   and prints a run of bytes.
+//!   and prints a run of bytes;
+//! * [`cache`] keeps the instructions the Interpreter runs, decoded once, by
+//!   the address they start at.
 //!
 //! Both are written for a [`Processor`]. Only the 68000 is decoded in full;
 //! the 68010 and the 68020 are dialects of it, and each row of the decoder's
@@ -18,6 +20,7 @@
 //!
 //! [`Instruction`]: crate::instructions::Instruction
 
+pub mod cache;
 pub mod decode;
 pub mod disassemble;
 pub mod encode;

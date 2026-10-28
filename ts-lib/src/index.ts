@@ -1,8 +1,10 @@
 import {
     Breakpoint,
+    CodeWrite,
     Condition,
     Cpu as RawCpu,
     Diagnostic,
+    DisassembledLine,
     ExecutionStep,
     ExecutionStepKind,
     FileDialogMode,
@@ -189,7 +191,11 @@ export class Program {
         return this.getInfo().entryPoint
     }
 
-    /** One past the last byte of the last instruction. */
+    /**
+     * One past the last byte of the last instruction: where the code ends. A run
+     * goes on past it, into whatever follows, and ends where it meets
+     * `$FFFF $FFFF` the program never placed.
+     */
     getEndAddress(): number {
         return this.getInfo().endAddress
     }
@@ -254,7 +260,10 @@ export type WatchedWrite = {
     value: number
 }
 
-/** What {@link Interpreter.runWithBreakpoints} does with the breakpoint the program counter is on. */
+/**
+ * What {@link Interpreter.runWithBreakpoints} does with the breakpoint the
+ * program counter is on, and whether it stops on a write into code.
+ */
 export type RunWithBreakpointsOptions = {
     /**
      * `true` (the default) runs the instruction the program counter is on even
@@ -262,6 +271,14 @@ export type RunWithBreakpointsOptions = {
      * needs; `false` stops before it, having run nothing.
      */
     skipBreakpointAtPc?: boolean
+    /**
+     * `true` stops the run after an instruction that wrote into code, with
+     * `InterpreterStatus.CodeWrite`: {@link Interpreter.getCodeWrite} says what
+     * it overwrote, and the next run goes on, the overwritten instruction
+     * running as its new bytes decode. `false` (the default) records the
+     * write and runs on.
+     */
+    stopOnCodeWrite?: boolean
 }
 
 export class Interpreter {
@@ -303,9 +320,10 @@ export class Interpreter {
     }
 
     /**
-     * Why the program ended, or null while it has not: task 9, the end of the
-     * program, a `Terminate` answer, or the runtime error it ended with. Undoing
-     * the step that ended it takes the end back.
+     * Why the program ended, or null while it has not: task 9, running into
+     * memory it never placed (`EndOfProgram`, with the address), a `Terminate`
+     * answer, or the runtime error it ended with. Undoing the step that ended
+     * it takes the end back.
      */
     getTermination(): Termination | null {
         return this.interpreter.wasm_get_termination() as Termination | null
@@ -341,7 +359,8 @@ export class Interpreter {
      * journaled, so undo puts them back; outside one it is a direct write that
      * records nothing, which is what a testcase's preset memory needs. Either
      * way, the bytes that land in the watched range are watched writes
-     * ({@link Interpreter.watchMemory}), and stop nothing.
+     * ({@link Interpreter.watchMemory}), and stop nothing. Code takes the bytes
+     * like data, and runs as they decode; a host's write is never a code write.
      */
     writeMemoryBytes(address: number, data: Uint8Array) {
         return this.interpreter.wasm_write_memory_bytes(address, data)
@@ -371,7 +390,10 @@ export class Interpreter {
         return this.interpreter.wasm_end_poke()
     }
 
-    /** The instruction that has just run, or null before the first step. */
+    /**
+     * The line the program laid out where the instruction that has just run
+     * is, or null before the first step and when it ran on none.
+     */
     getLastInstruction(): InstructionLine | null {
         return this.interpreter.wasm_get_last_instruction() as InstructionLine | null
     }
@@ -380,7 +402,8 @@ export class Interpreter {
      * Revert the newest step of the history, instruction or poke alike, and
      * answer it. Undoing a poke puts back every value it wrote and touches
      * nothing else. Undo empties the log of watched writes: read the watched
-     * range again instead.
+     * range again instead. An instruction the step overwrote runs as its old
+     * bytes again, and the step's code write goes with it.
      */
     undo(): ExecutionStep {
         return internalExecutionStepToExecutionStep(this.interpreter.wasm_undo())
@@ -528,8 +551,35 @@ export class Interpreter {
         return this.interpreter.wasm_get_undo_history(amount).map(internalExecutionStepToExecutionStep)
     }
 
+    /**
+     * The line the program laid out at `address`, as it was assembled: its
+     * bytes are what the build placed, and `assembledAs` says what it assembled
+     * as when that differs from what the line wrote. A line whose bytes the
+     * program or a poke changed keeps its location and is still answered as
+     * assembled; {@link Interpreter.disassembleAt} reads what runs there now.
+     * Null where no line was laid out.
+     */
     getInstructionAt(address: number): InstructionLine | null {
         return this.interpreter.wasm_get_instruction_at(address) as InstructionLine | null
+    }
+
+    /**
+     * The instruction memory holds at `address` now, decoded and printed in
+     * EASy68K's syntax with the program's labels: what runs there, whatever the
+     * build laid out. Words that are no instruction print as `DC.W`.
+     */
+    disassembleAt(address: number): DisassembledLine {
+        return this.interpreter.wasm_disassemble_at(address) as DisassembledLine
+    }
+
+    /**
+     * The code write of the instruction that has just run, or of the one whose
+     * interrupt was just answered: the first instruction its write overwrote,
+     * or null. Null before the first step and after an undo. Each step of the
+     * history carries its own as `wroteCode`.
+     */
+    getCodeWrite(): CodeWrite | null {
+        return this.interpreter.wasm_get_code_write() as CodeWrite | null
     }
 
     getStatus(): InterpreterStatus {
@@ -551,6 +601,7 @@ export class Interpreter {
         this.interpreter.wasm_set_register_value(register, value, size)
     }
 
+    /** The line the program laid out where the program counter is, as {@link Interpreter.getInstructionAt} reads it. */
     getNextInstruction(): InstructionLine | null {
         return this.interpreter.wasm_get_next_instruction() as InstructionLine | null
     }
@@ -559,13 +610,19 @@ export class Interpreter {
         return this.interpreter.wasm_has_terminated()
     }
 
+    /**
+     * Whether the next step ends the program: the program counter is on
+     * `$FFFF $FFFF` none of whose bytes the program placed, which is where a
+     * program that does not end itself gets to.
+     */
     hasReachedBottom(): boolean {
         return this.interpreter.wasm_has_reached_bottom()
     }
 
     /**
      * Run until the program pauses, requests an interrupt, stores into the
-     * watched range, or terminates.
+     * watched range, or terminates. It does not stop on a write into code;
+     * {@link Interpreter.runWithBreakpoints} can.
      */
     run(): InterpreterStatus {
         return this.interpreter.wasm_run()
@@ -593,8 +650,8 @@ export class Interpreter {
 
     /**
      * Run until one of `breakpoints` is reached, the program pauses, requests
-     * an interrupt, stores into the watched range or ends, or `limit`
-     * instructions have run.
+     * an interrupt, stores into the watched range or ends, writes into code
+     * when `stopOnCodeWrite` asks for it, or `limit` instructions have run.
      *
      * A breakpoint is a line of a file: a breakpoint on a comment, a directive
      * or a label alone stops nothing, and neither does one on a line of a file
@@ -611,15 +668,20 @@ export class Interpreter {
      * executes, whichever value this takes.
      *
      * A stop made by the last of the `limit` instructions — an interrupt, a
-     * pause, a watched write, the end — is answered as that status; the
-     * `ExecutionLimit` is thrown only when the program would run on.
+     * pause, a watched write, a code write, the end — is answered as that
+     * status; the `ExecutionLimit` is thrown only when the program would run on.
+     *
+     * With `stopOnCodeWrite`, an instruction that wrote into code stops the run
+     * after it, with `InterpreterStatus.CodeWrite`, and the next call resumes,
+     * with `skipBreakpointAtPc: false` like any resume mid-program. A watched
+     * write by the same instruction stops it as `WatchedWrite` first.
      */
     runWithBreakpoints(
         breakpoints: Breakpoint[],
         limit?: number,
-        {skipBreakpointAtPc = true}: RunWithBreakpointsOptions = {}
+        {skipBreakpointAtPc = true, stopOnCodeWrite = false}: RunWithBreakpointsOptions = {}
     ): InterpreterStatus {
-        return this.interpreter.wasm_run_with_breakpoints(breakpoints, limit, skipBreakpointAtPc)
+        return this.interpreter.wasm_run_with_breakpoints(breakpoints, limit, skipBreakpointAtPc, stopOnCodeWrite)
     }
 
     async runWithInterruptHandler(onInterrupt: InterruptHandler): Promise<InterpreterStatus> {
@@ -756,7 +818,9 @@ export type ExecutionStepInternal = {
     old_sr: number,
     /** The whole status register after it. */
     new_sr: number,
-    location?: Location
+    location?: Location,
+    /** The code write the instruction made; absent when it made none. */
+    wroteCode?: CodeWrite
 }
 
 
@@ -790,8 +854,10 @@ export {
     RawCpu,
     RawRegister,
     Breakpoint,
+    CodeWrite,
     Condition,
     Diagnostic,
+    DisassembledLine,
     ExecutionStep,
     ExecutionStepKind,
     FileDialogMode,
