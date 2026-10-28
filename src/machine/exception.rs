@@ -30,6 +30,7 @@
 
 use crate::instructions::{AddressWidth, Instruction, Operand, Size};
 use crate::interpreter::{Access, RuntimeError};
+use crate::machine::interrupts;
 
 /// The vector of the bus error, which the Memory map raises.
 pub const BUS_ERROR: u8 = 2;
@@ -58,13 +59,18 @@ pub const TRAP_0: u8 = 32;
 /// goes through: EASy68K's task trap is a `trap #15` that is not taken.
 pub const TRAP_15: u8 = 47;
 
+/// The autovector of an IRQ at level 1, at `$064`.
+pub const FIRST_AUTOVECTOR: u8 = interrupts::autovector(1);
+/// The autovector of an IRQ at level 7, at `$07C`.
+pub const LAST_AUTOVECTOR: u8 = interrupts::autovector(7);
+
 /// The address of a vector in the table, from `$000` to `$3FC`.
 pub const fn vector_address(vector: u8) -> u32 {
     vector as u32 * 4
 }
 
 /// How an Exception names itself in the call stack and the History: `Trace`,
-/// `TRAP #3`, `Divide by zero`.
+/// `TRAP #3`, `Divide by zero`, `IRQ 2`.
 pub fn vector_name(vector: u8) -> String {
     match vector {
         BUS_ERROR => "Bus error".to_string(),
@@ -78,6 +84,9 @@ pub fn vector_name(vector: u8) -> String {
         LINE_A => "Line A".to_string(),
         LINE_F => "Line F".to_string(),
         TRAP_0..=TRAP_15 => format!("TRAP #{}", vector - TRAP_0),
+        FIRST_AUTOVECTOR..=LAST_AUTOVECTOR => {
+            format!("IRQ {}", vector - interrupts::AUTOVECTOR_BASE)
+        }
         other => format!("Vector {other}"),
     }
 }
@@ -106,6 +115,7 @@ pub fn vector_of(error: &RuntimeError) -> Option<u8> {
         RuntimeError::LineA(_) => Some(LINE_A),
         RuntimeError::LineF(_) => Some(LINE_F),
         RuntimeError::UnhandledTrap { vector } => Some(*vector),
+        RuntimeError::Irq { level } => Some(interrupts::autovector(*level)),
         RuntimeError::UnsupportedTrapTask { task } if !is_easy68k_task(*task) => Some(TRAP_15),
         _ => None,
     }
@@ -118,8 +128,9 @@ pub enum Group {
     /// The address and bus errors, which abort the instruction and push the
     /// long frame.
     Zero,
-    /// An illegal instruction, a privilege violation, trace and the line A
-    /// and F words: the instruction did not run, and is not traced.
+    /// An illegal instruction, a privilege violation, trace, an IRQ and the
+    /// line A and F words: the instruction did not run, and is not traced. An
+    /// IRQ is taken between two instructions, as a step of its own.
     One,
     /// `trap`, `trapv`, `chk` and a division by zero, which an instruction
     /// raises as it runs: it has run, and a trace exception follows it when T

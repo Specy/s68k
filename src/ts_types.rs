@@ -318,8 +318,9 @@ export type Access = "Read" | "Write" | "Program"
  * program writes it), ends the program, with the error as its `Termination`
  * and the vector beside it. Those are the bus error (2), the address error (3), an illegal
  * instruction (4), a division by zero (5), `chk` (6), `trapv` (7), a privilege
- * violation (8), trace (9), line A (10), line F (11), `trap #0` to `#14` (32
- * to 46) and a `trap #15` task EASy68K does not know (47). The others end the
+ * violation (8), trace (9), line A (10), line F (11), an IRQ (25 to 31),
+ * `trap #0` to `#14` (32 to 46) and a `trap #15` task EASy68K does not know
+ * (47). The others end the
  * program with no exception, or are the host's (an answer refused, a value
  * that is not what a call takes, a call at the wrong time, the run's own
  * limit) and change nothing.
@@ -339,12 +340,6 @@ export type RuntimeError = { type: "Raw", value: string } |
  */
 { type: "BusError", value: { address: number, size: Size, access: Access, range: "read" | "protected" | "invalid" } } |
 { type: "IncorrectAddressingMode", value: string } |
-/**
- * A 68000 instruction s68k does not run yet, named in `value`: "`stop`" and
- * "`reset`", which need interrupts. The Assembler refuses them, so only a
- * decoded word reaches one; in user mode each is a privilege violation first.
- */
-{ type: "Unimplemented", value: string } |
 /**
  * A word or a long read or written at an odd address, or an instruction
  * fetched from one, a jump to an odd address included: the 68000's address
@@ -375,13 +370,21 @@ export type RuntimeError = { type: "Raw", value: string } |
 /** `trap #0` to `#14`, through `vector`, 32 to 46. */
 { type: "UnhandledTrap", value: { vector: number } } |
 /**
+ * An interrupt request at `level`, 1 to 7, taken through its autovector,
+ * vector 24 plus the level at `$60` plus four times it: the cause the program
+ * ends with when that vector holds no handler ("IRQ 2: vector 26 at $000068
+ * holds no handler").
+ */
+{ type: "Irq", value: { level: number } } |
+/**
  * A `trap #15` task s68k does not carry out, by its number in D0.B. One that is
  * none of EASy68K's goes through vector 47, as in EASy68K; one of EASy68K's
  * own that a browser cannot do faithfully ends the program with no exception:
  * the printer (10), the text window's font and contents (21, 22, 25), the
- * cycle counter (30, 31), the hardware window (32, but its D1.B of 5, which is
- * accepted), the serial ports (40 to 43), the interrupt requests (60, 62) and
- * the network (100 to 107). The host says why from the number.
+ * cycle counter (30, 31), the hardware window (32 with 0 to 3 or 7 in D1.B,
+ * which show it and answer its devices' addresses: there is no hardware
+ * window), the serial ports (40 to 43) and the network (100 to 107). The host
+ * says why from the number.
  */
 { type: "UnsupportedTrapTask", value: { task: number } } |
 /** A `trap #15` task given a value it cannot take; `reason` names the register. */
@@ -409,10 +412,11 @@ export type Termination =
 /** The host answered an interrupt with `Terminate`. */
 { type: "TerminatedByHost" } |
 /**
- * An instruction raised `cause` and the program ended with it. `vector` is
- * the exception's when the 68000 has one and it held no handler (the message
- * names it: "vector 5 at $000014 holds no handler"); absent for an error no
- * handler could take, such as a `trap #15` task s68k does not carry out.
+ * An instruction raised `cause`, or an IRQ was taken (`Irq`, with its level),
+ * and the program ended with it. `vector` is the exception's when the 68000
+ * has one and it held no handler (the message names it: "vector 5 at $000014
+ * holds no handler"); absent for an error no handler could take, such as a
+ * `trap #15` task s68k does not carry out.
  */
 { type: "Exception", value: { cause: RuntimeError, vector?: number } } |
 /**
@@ -431,6 +435,54 @@ export type SystemRegisters = {
     sr: number,
     usp: number,
     ssp: number
+}
+"#;
+
+/// [`MachineState`](crate::machine::interrupts::MachineState) and
+/// [`DeviceEvent`](crate::machine::interrupts::DeviceEvent): the interrupt
+/// requests, what `getMachineState()` answers and `deviceEvent` reports.
+#[wasm_bindgen(typescript_custom_section)]
+pub const IMachineState: &'static str = r#"
+/**
+ * An event on the Screen the program can ask an IRQ for, with task 62 for the
+ * keyboard and task 60 for the mouse.
+ */
+export type DeviceEvent = "keyDown" | "keyUp" | "mouseDown" | "mouseUp" | "mouseMove"
+
+/** One timer task 32 set: an IRQ at `level` every `intervalMs` milliseconds. */
+export type AutoIrq = {
+    level: number,
+    intervalMs: number
+}
+
+/**
+ * The machine's interrupt state: the IRQ latch, whether `stop` has stopped
+ * the processor, and what the program set up with tasks 32, 60 and 62. A
+ * level of 0 is none.
+ *
+ * Everything but `pendingIrqs` is the program's, and undo puts it back. The
+ * latch is the host's input as well: undoing the step that took a request
+ * makes it pending again, but a request that came after a step stays pending
+ * when the step is undone.
+ */
+export type MachineState = {
+    /** The levels requested and not taken yet, lowest first. */
+    pendingIrqs: number[],
+    /**
+     * Whether `stop` has stopped the processor and no IRQ has woken it. The
+     * status is `Stopped` while it waits, and `Running` once a request that
+     * can wake it is pending, until the next step takes that request.
+     */
+    stopped: boolean,
+    /**
+     * The timers task 32 with 6 in D1.B turned on, by level, which the host
+     * runs on the program's time and reports with `raiseIrq(level)`.
+     */
+    autoIrqs: AutoIrq[],
+    /** The levels task 62 set for a key down and a key up. */
+    keyboardLevels: { keyDown: number, keyUp: number },
+    /** The levels task 60 set for a button down, a button up and a move. */
+    mouseLevels: { down: number, up: number, move: number }
 }
 "#;
 
@@ -797,8 +849,11 @@ export type InterpreterOptions = {
 /// [`PokeWrite`](crate::debugger::PokeWrite).
 #[wasm_bindgen(typescript_custom_section)]
 pub const IExecutionStep: &'static str = r#"
-/** Whether a step of the history is an instruction or a poke. */
-export type ExecutionStepKind = "instruction" | "poke"
+/**
+ * Whether a step of the history is an instruction, a poke, or an IRQ taken
+ * between two instructions.
+ */
+export type ExecutionStepKind = "instruction" | "poke" | "irq"
 
 /**
  * One value a poke wrote: what was there before it and what is there when the
@@ -819,7 +874,12 @@ export type PokeWrite = {
 export type ExecutionStep = {
     /** Identifies this execution, including repeated visits to the same PC. */
     id: number,
-    /** An instruction the program ran, or a poke the host made between two of them. */
+    /**
+     * An instruction the program ran, a poke the host made between two of them,
+     * or an IRQ taken before the instruction at `pc`, which has not run: its
+     * `PushException` mutation names the autovector, and its `SetMachineState`
+     * the request it took.
+     */
     kind: ExecutionStepKind,
     mutations: MutationOperation[],
     /** What a poke wrote, old and new; empty on an instruction. */
@@ -842,8 +902,8 @@ export type ExecutionStep = {
     new_sr: number,
     /**
      * Where the instruction that ran was written; absent when it ran on no line,
-     * in data or in the middle of one. A line whose bytes have changed keeps its
-     * location.
+     * in data or in the middle of one, and on a poke and an IRQ. A line whose
+     * bytes have changed keeps its location.
      */
     location?: Location,
     /** The code write the instruction made, the first instruction it overwrote; absent when it made none. */
@@ -851,8 +911,8 @@ export type ExecutionStep = {
     /**
      * What the step ran, as `disassembleAt` prints a line: the instruction's
      * address, size, bytes and text, from its words as they were when it ran,
-     * so a later write into code leaves it right. Absent on a poke, and on a
-     * step that ran nothing, an instruction fetched from an odd address.
+     * so a later write into code leaves it right. Absent on a poke, on an IRQ,
+     * and on a step that ran nothing, an instruction fetched from an odd address.
      */
     ran?: DisassembledLine
 }
@@ -866,6 +926,7 @@ pub const IMutationOperation: &'static str = r#"
  * Both sides are read where the write happened and never reconstructed
  * afterwards. `PushCall`, `PopCall`, `PushException` and `PopException` write
  * no value and carry neither: they are the call stack's.
+ * `SetMachineState` is the interrupt state's.
  */
 export type MutationOperation = {
     type: "WriteRegister",
@@ -944,6 +1005,16 @@ export type MutationOperation = {
     value: {
         to: number,
         from: number
+    }
+} | {
+    /**
+     * The interrupt state before and after the step: an IRQ taken, a `stop`,
+     * or tasks 32, 60 and 62 setting up the requests.
+     */
+    type: "SetMachineState",
+    value: {
+        old: MachineState,
+        new: MachineState
     }
 }
 "#;

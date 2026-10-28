@@ -21,8 +21,8 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use crate::{
     assembler::{program::ProgramSymbol, source::Location, symbols::SymbolKind},
     instructions::{InputSettings, RegisterOperand, Size},
-    interpreter::{CodeWrite, Flags, InterpreterStatus, StackPointers},
-    machine::decode::MAX_68000_SIZE,
+    interpreter::{CodeWrite, Flags, InterpreterStatus, StackPointers, StackTops},
+    machine::{decode::MAX_68000_SIZE, interrupts::MachineState},
 };
 
 /// One thing a step changed, with the value it replaced beside the value it
@@ -35,7 +35,8 @@ use crate::{
 /// is what the panels draw; a memory write reports the value at the width it
 /// was made. `PushCall`, `PopCall`, `PushException` and `PopException` write
 /// no value and carry neither: they are the call stack's. `SetInputSettings` is
-/// tasks 12 and 16, which change how input is shown and nothing a panel draws.
+/// tasks 12 and 16, which change how input is shown and nothing a panel draws,
+/// and `SetMachineState` the IRQs' state.
 ///
 /// The status register is not a mutation: a step carries it whole, before and
 /// after, and undo writes it back first, as it was, without moving a stack
@@ -114,10 +115,21 @@ pub enum MutationOperation {
         #[serde(skip)]
         frame: Option<CallStackFrame>,
     },
+    /// The [`MachineState`] before and after the step changed it: an IRQ
+    /// taken, `stop`, and tasks 32, 60 and 62 setting up the interrupt
+    /// requests. Undo puts back what the program set up and whether it was
+    /// stopped as `old` has them, and makes pending again the request the
+    /// step took, keeping the requests that came after it
+    /// ([`MachineState::undone`]). Boxed, as it is rare and the two states
+    /// would make every mutation larger.
+    SetMachineState {
+        old: Box<MachineState>,
+        new: Box<MachineState>,
+    },
 }
-/// What a step of the history is: an instruction the program ran, or a
+/// What a step of the history is: an instruction the program ran, a
 /// [`Poke`](crate::interpreter::Interpreter::begin_poke) the host made between
-/// two of them.
+/// two of them, or an IRQ taken between two of them.
 ///
 /// It is written on every step, so a reader never has to guess what an absent
 /// field meant.
@@ -129,6 +141,11 @@ pub enum ExecutionStepKind {
     /// One Poke: the register and memory values the host wrote between two
     /// instructions, in one transaction.
     Poke,
+    /// One IRQ taken: the frame pushed and the jump through the autovector of
+    /// its level, before the instruction at the step's program counter, which
+    /// has not run. It runs no instruction, so it has no location and runs
+    /// nothing; its mutations say which level it was.
+    Irq,
 }
 
 /// One value a Poke wrote, as the editor shows it: what was there before the
@@ -197,24 +214,46 @@ impl SystemRegister {
 ///
 /// The status register as the Poke found it is kept too: it is the step's
 /// status register before, which undo writes back as it does an instruction's.
-#[derive(Default)]
+/// So is the Interpreter's status, which a Poke of the status register can
+/// change, waking a stopped processor or leaving it waiting.
 pub struct PokeJournal {
     mutations: Vec<MutationOperation>,
     targets: Vec<PokeTarget>,
     sr: u16,
+    status: InterpreterStatus,
+    /// The tops of the stacks before a Poke of S swapped them, or of the
+    /// stack pointer A7 is not on moved one.
+    stack_tops: Option<StackTops>,
 }
 
 impl PokeJournal {
-    /// An empty journal, opened with the status register at `sr`.
-    pub fn new(sr: u16) -> Self {
+    /// An empty journal, opened with the status register at `sr` and the
+    /// Interpreter in `status`.
+    pub fn new(sr: u16, status: InterpreterStatus) -> Self {
         Self {
+            mutations: Vec::new(),
+            targets: Vec::new(),
             sr,
-            ..Self::default()
+            status,
+            stack_tops: None,
         }
+    }
+    /// Records the tops of the stacks before the Poke changed them, the first
+    /// time it does.
+    pub fn record_stack_tops(&mut self, old: StackTops) {
+        self.stack_tops.get_or_insert(old);
+    }
+    /// The tops of the stacks before the Poke changed them, if it did.
+    pub fn stack_tops(&self) -> Option<StackTops> {
+        self.stack_tops
     }
     /// The status register when the Poke was opened.
     pub fn sr(&self) -> u16 {
         self.sr
+    }
+    /// The Interpreter's status when the Poke was opened.
+    pub fn status(&self) -> InterpreterStatus {
+        self.status
     }
     /// Whether nothing has been written into it, which is a Poke that records
     /// no step.
@@ -310,7 +349,9 @@ impl Serialize for StepLocation {
 #[derive(Clone, Serialize)]
 pub struct ExecutionStep {
     #[serde(skip)]
-    pub(crate) old_stack_top: Option<usize>,
+    /// The tops of the two stacks before the step changed either, the one
+    /// A7 was on first, which undo puts back.
+    pub(crate) old_stack_tops: Option<StackTops>,
     /// Identifies this execution, including repeated visits to the same PC. Never reused by undo.
     id: u64,
     /// Whether the step is an instruction or a Poke. Always written.
@@ -394,7 +435,7 @@ impl ExecutionStep {
         interpreter_status: InterpreterStatus,
     ) -> Self {
         Self {
-            old_stack_top: None,
+            old_stack_tops: None,
             id: 0,
             kind,
             mutations: vec![],
@@ -421,7 +462,7 @@ impl ExecutionStep {
         sr: u16,
         interpreter_status: InterpreterStatus,
     ) {
-        self.old_stack_top = None;
+        self.old_stack_tops = None;
         self.kind = kind;
         self.mutations.clear();
         self.writes.clear();
@@ -718,9 +759,11 @@ impl Debugger {
             Some(&self.history[self.index_of(0)])
         }
     }
-    pub fn record_stack_top(&mut self, old: usize) {
+    /// Records the tops of the stacks before the step being recorded changed
+    /// them, the first time it does: a step can follow A7's and swap them.
+    pub fn record_stack_tops(&mut self, old: StackTops) {
         if let Some(step) = self.newest_mut() {
-            step.old_stack_top = Some(old);
+            step.old_stack_tops.get_or_insert(old);
         }
     }
     pub fn set_new_ccr(&mut self, ccr: Flags) {

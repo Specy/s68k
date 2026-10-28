@@ -451,6 +451,60 @@ handler:
         );
     }
 
+    /// A handler that cannot be fetched: a group 1 or 2 exception's raises
+    /// the bus error of its first fetch, a group 0 one, and a group 0
+    /// exception's halts the processor, a double bus fault, as a 68000 halts
+    /// and EASy68K does after two bus or address errors in a row. It used to
+    /// take the bus error again, through the same handler, for ever.
+    #[test]
+    fn a_bus_error_whose_handler_cannot_be_fetched_halts() {
+        let mut interpreter = machine(
+            "    memory invalid $8000,$8fff
+    org $1000
+start:
+    move.l #$8000,$8
+    move.l #$8000,$14
+    moveq #0,d1
+    divu d1,d0
+    simhalt
+",
+        );
+        let fault = bus_error(0x8000, Size::Word, Access::Program, MemoryRangeKind::Invalid);
+        assert_eq!(interpreter.run_with_limit(200), Err(fault.clone()));
+        assert_eq!(
+            interpreter.get_termination(),
+            Some(&Termination::Halted {
+                cause: fault,
+                vector: 2,
+            })
+        );
+        //the division's frame and the bus error's, and no other
+        assert_eq!(interpreter.get_ssp(), 0x0100_0000 - 6 - 14);
+        assert_eq!(interpreter.get_pc(), 0x8000);
+        //the same for an address error whose handler is out of reach
+        let mut interpreter = machine(
+            "    memory invalid $8000,$8fff
+    org $1000
+start:
+    move.l #$8000,$c
+    move.w $1001,d0
+    simhalt
+",
+        );
+        let fault = bus_error(0x8000, Size::Word, Access::Program, MemoryRangeKind::Invalid);
+        assert_eq!(interpreter.run_with_limit(200), Err(fault.clone()));
+        assert_eq!(
+            interpreter.get_termination(),
+            Some(&Termination::Halted {
+                cause: fault,
+                vector: 3,
+            })
+        );
+        interpreter.undo().unwrap();
+        assert!(!interpreter.has_terminated(), "undo takes the halt back");
+        assert_eq!(interpreter.get_ssp(), 0x0100_0000);
+    }
+
     /// The vector is read in supervisor mode, so a protected vector table
     /// serves an exception taken in user mode.
     #[test]
@@ -576,6 +630,36 @@ text:
         // Outside the map the file is read as before.
         let mut interpreter = trap("rom $9000,$9fff", setup);
         assert_eq!(interpreter.run(), Ok(InterpreterStatus::Interrupt));
+    }
+
+    /// A buffer of no bytes is checked as EASy68K checks it,
+    /// `loc + bytes - 1 >= start && loc <= end`: one that starts past the
+    /// first byte of a range and inside it is refused, and one on the first
+    /// byte is not, as `loc - 1` is below the start.
+    #[test]
+    fn a_buffer_of_no_bytes_is_refused_strictly_inside_a_range() {
+        //task 13 with A1 on the NUL of `hi`
+        let on_the_nul = "    lea text+2,a1\n    moveq #13,d0";
+        let mut interpreter = trap("invalid $8000,$8fff", on_the_nul);
+        assert_eq!(
+            interpreter.run(),
+            Err(bus_error(0x8002, Size::Byte, Access::Read, Invalid))
+        );
+        let mut interpreter = trap("invalid $8002,$8fff", on_the_nul);
+        assert_eq!(interpreter.run(), Ok(InterpreterStatus::Interrupt));
+        //task 53 reading no bytes
+        let none = "    lea text+2,a1\n    moveq #0,d1\n    moveq #0,d2\n    moveq #53,d0";
+        let mut interpreter = trap("read $8000,$8fff", none);
+        assert_eq!(
+            interpreter.run(),
+            Err(bus_error(0x8002, Size::Byte, Access::Write, Read))
+        );
+        let mut interpreter = trap("rom $8000,$8fff", none);
+        assert_eq!(interpreter.run(), Ok(InterpreterStatus::Paused));
+        assert_eq!(d(&interpreter, 0), 53, "ROM takes nothing, and D0 is as it was");
+        let mut interpreter = trap("read $8002,$8fff", none);
+        assert_eq!(interpreter.run(), Ok(InterpreterStatus::Paused));
+        assert_eq!(d(&interpreter, 0) & 0xFFFF, 2, "a read of no bytes, as before");
     }
 
     /// Task 54 checks the bytes it writes a file from against invalid.

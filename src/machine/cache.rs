@@ -94,6 +94,17 @@ pub const EMPTY: Slot = Slot {
     size: 0,
 };
 
+/// The slot a fetch answers while an interrupt request is ready to be taken:
+/// it holds nothing, and it says the step does not run the instruction there,
+/// as [`ends_the_program`](Slot::ends_the_program) does, so that the step
+/// asks why on the path it already takes for the end of the program, and a
+/// step that runs an instruction pays nothing for the interrupts.
+pub const NOT_RUN: Slot = Slot {
+    instruction: Instruction::NOP,
+    index: END,
+    size: 0,
+};
+
 impl Slot {
     /// The slot of the Program's instruction of index `index`, `size` bytes long.
     pub fn assembled(instruction: Instruction, size: usize, index: usize) -> Self {
@@ -135,7 +146,8 @@ impl Slot {
     }
 
     /// Whether fetching this slot ends the program: SIMHALT where the program
-    /// placed nothing.
+    /// placed nothing. [`NOT_RUN`] answers true as well, and the Interpreter
+    /// tells the two apart on that path.
     #[inline(always)]
     pub fn ends_the_program(&self) -> bool {
         self.index == END

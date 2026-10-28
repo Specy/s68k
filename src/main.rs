@@ -492,6 +492,16 @@ fn run_to_the_end(
                 println!("Program paused at ${:x}", interpreter.get_pc());
                 return;
             }
+            //nothing here raises an interrupt request, so a stopped processor waits for ever
+            InterpreterStatus::Stopped => {
+                println!(
+                    "The processor stopped at ${:x}, waiting for an interrupt above level {}, \
+                     which the command line never raises.",
+                    interpreter.get_pc(),
+                    (interpreter.get_sr() >> 8) & 7
+                );
+                return;
+            }
             _ => {}
         }
     }

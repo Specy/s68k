@@ -438,9 +438,10 @@ assert.deepEqual(
 assert.equal(moveRow.forms.find((form) => form.operands[0][0] === 'ccr').processor, '68010')
 assert.equal(table.find(({mnemonic}) => mnemonic === 'extb').forms[0].processor, '68020')
 assert.equal(table.find(({mnemonic}) => mnemonic === 'rtd'), undefined, 'one still to come is not listed')
-assert.equal(table.find(({mnemonic}) => mnemonic === 'stop'), undefined, 'a refused mnemonic is not listed')
+assert.equal(table.find(({mnemonic}) => mnemonic === 'callm'), undefined, 'a refused mnemonic is not listed')
 assert.equal(table.find(({mnemonic}) => mnemonic === 'rte').forms[0].privileged, true, '`rte` is listed, privileged')
-assert.equal(table.flatMap(({forms}) => forms).filter((form) => form.privileged).length, 7, 'the four that write sr, the two move usp and rte')
+assert.deepEqual(table.find(({mnemonic}) => mnemonic === 'stop').forms[0].operands, [['Im']], '`stop #n` is listed')
+assert.equal(table.flatMap(({forms}) => forms).filter((form) => form.privileged).length, 9, 'the four that write sr, the two move usp, rte, stop and reset')
 assert.deepEqual(JSON.parse(JSON.stringify(table)), table, 'the table is plain data')
 
 // ---------------------------------------------------------------------------
@@ -1278,6 +1279,7 @@ let handledSteps = 0
 while (handled.getPc() !== handlerAddress && handledSteps++ < 20) handled.step()
 assert.equal(handled.getPc(), handlerAddress, 'the divide by zero went through vector 5')
 assert.deepEqual(handled.getSystem(), {sr: 0x2004, usp: 0x8000, ssp: 0x00fffffa}, 'supervisor mode, a frame on the SSP')
+assert.equal(handled.getStackTop(), 0x01000000, 'the supervisor stack\'s top, above its frame')
 const [frame] = handled.getCallStack()
 assert.equal(frame.kind, 'exception')
 assert.equal(frame.vector, 5)
@@ -1293,6 +1295,7 @@ assert.equal(handled.run(), InterpreterStatus.Paused)
 assert.equal(handled.getRegisterValue({type: 'Data', value: 6}), afterAddress)
 assert.deepEqual(handled.getSystem(), {sr: 0x0004, usp: 0x8000, ssp: 0x01000000}, 'rte went back to user mode')
 assert.equal(handled.getSp(), 0x8000, 'A7 is the USP again')
+assert.equal(handled.getStackTop(), 0x8000, 'and the top is the user stack\'s')
 assert.deepEqual(handled.getCallStack(), [])
 handled.undo()
 handled.undo()
@@ -1337,6 +1340,118 @@ assert.equal(halting.getTermination().type, 'Halted', 'a frame on an odd stack p
 assert.equal(halting.getTermination().value.vector, 32)
 halting.dispose()
 oddStack.program.dispose()
+
+// ---------------------------------------------------------------------------
+// Interrupt requests: stop, raiseIrq, deviceEvent and tasks 32, 60 and 62
+// ---------------------------------------------------------------------------
+
+const timed = S68k.assemble(`
+    ORG $1000
+START:
+    MOVE.L  #TIMER,$68
+    MOVE.L  #KEY,$74
+    MOVE.B  #32,D0
+    MOVE.B  #6,D1
+    MOVE.B  #$82,D2
+    MOVE.L  #500,D3
+    TRAP    #15
+    MOVE.B  #62,D0
+    MOVE.W  #$0501,D1
+    TRAP    #15
+    MOVE.B  #32,D0
+    MOVE.B  #4,D1
+    TRAP    #15
+WAIT:
+    STOP    #$2000
+    BRA     WAIT
+TIMER:
+    ADDQ.L  #1,D6
+    RTE
+KEY:
+    ADDQ.L  #1,D7
+    RTE
+`)
+assert.deepEqual(timed.diagnostics, [], 'stop assembles')
+const waiting = new Interpreter(timed.program)
+assert.deepEqual(
+    waiting.getMachineState(),
+    {pendingIrqs: [], stopped: false, autoIrqs: [], keyboardLevels: {keyDown: 0, keyUp: 0}, mouseLevels: {down: 0, up: 0, move: 0}},
+    'nothing set up before the program runs'
+)
+assert.equal(waiting.run(), InterpreterStatus.Stopped, 'stop waits for an interrupt')
+assert.equal(waiting.getRegisterValue({type: 'Data', value: 1}), 0x00051001, 'task 32 with 4 answers EASy68K\'s version')
+const waitAddress = timed.program.getSymbols()['WAIT'].value
+assert.equal(waiting.getPc(), waitAddress + 4, 'past the stop')
+assert.deepEqual(waiting.getMachineState(), {
+    pendingIrqs: [],
+    stopped: true,
+    autoIrqs: [{level: 2, intervalMs: 500}],
+    keyboardLevels: {keyDown: 5, keyUp: 0},
+    mouseLevels: {down: 0, up: 0, move: 0},
+}, 'the timer and the key level the program set')
+const lastId = waiting.getLastStepId()
+assert.equal(waiting.step(), InterpreterStatus.Stopped, 'a step runs nothing while nothing is pending')
+assert.equal(waiting.runWithBreakpoints([], 100, {skipBreakpointAtPc: false}), InterpreterStatus.Stopped)
+assert.equal(waiting.getLastStepId(), lastId)
+// a timer fires: the processor no longer waits, and the next step is the IRQ, a step of its own
+waiting.raiseIrq(2)
+assert.deepEqual(waiting.getMachineState().pendingIrqs, [2])
+assert.equal(waiting.getStatus(), InterpreterStatus.Running, 'woken by the request')
+assert.equal(waiting.step(), InterpreterStatus.Running)
+const irqStep = waiting.getUndoHistory(1)[0]
+assert.equal(irqStep.kind, 'irq')
+assert.equal(irqStep.location, undefined, 'an IRQ is on no line')
+assert.ok(irqStep.mutations.some(({type, value}) => type === 'PushException' && value.vector === 26))
+const journaled = irqStep.mutations.find(({type}) => type === 'SetMachineState')
+assert.deepEqual(journaled.value.old.pendingIrqs, [2])
+assert.equal(journaled.value.old.stopped, true)
+assert.deepEqual(journaled.value.new.pendingIrqs, [])
+assert.equal(journaled.value.new.stopped, false)
+assert.equal(waiting.getSr(), 0x2200, 'the mask rises to the level')
+assert.equal(waiting.getCallStack()[0].vector, 26)
+assert.equal(waiting.run(), InterpreterStatus.Stopped, 'the handler returns, and the loop stops again')
+assert.equal(waiting.getRegisterValue({type: 'Data', value: 6}), 1)
+// a key the program asked for, and a mouse event it did not
+assert.equal(waiting.deviceEvent('mouseMove'), null)
+assert.equal(waiting.deviceEvent('keyDown'), 5)
+assert.equal(waiting.run(), InterpreterStatus.Stopped)
+assert.equal(waiting.getRegisterValue({type: 'Data', value: 7}), 1)
+assert.throws(() => waiting.raiseIrq(8), (error) => error.type === 'InvalidArgument')
+assert.throws(() => waiting.deviceEvent('click'), (error) => error.type === 'InvalidArgument')
+// undo takes the IRQ back to pending, and the processor back to stopped, as the
+// key had woken it: the stop, the bra, the rte, the addq and the IRQ
+for (let i = 0; i < 5; i++) waiting.undo()
+assert.equal(waiting.getStatus(), InterpreterStatus.Running)
+assert.equal(waiting.getMachineState().stopped, true)
+assert.deepEqual(waiting.getMachineState().pendingIrqs, [5])
+// a poke of a higher mask leaves it waiting again
+waiting.beginPoke()
+waiting.setSr(0x2700)
+waiting.endPoke()
+assert.equal(waiting.getStatus(), InterpreterStatus.Stopped, 'the request is masked now')
+waiting.undo()
+assert.equal(waiting.getStatus(), InterpreterStatus.Running)
+waiting.dispose()
+timed.program.dispose()
+
+const unhandledIrq = S68k.assemble('    ORG $1000\nSTART:\n    STOP #$2000\n')
+const noIrqHandler = new Interpreter(unhandledIrq.program)
+assert.equal(noIrqHandler.run(), InterpreterStatus.Stopped)
+noIrqHandler.raiseIrq(3)
+assert.throws(() => noIrqHandler.run(), (error) => error.type === 'Irq' && error.value.level === 3)
+assert.deepEqual(
+    noIrqHandler.getTermination(),
+    {type: 'Exception', value: {cause: {type: 'Irq', value: {level: 3}}, vector: 27}},
+    'an autovector with no handler ends the program, naming it'
+)
+noIrqHandler.dispose()
+unhandledIrq.program.dispose()
+
+const window = S68k.assemble('    ORG $1000\nSTART:\n    MOVE.B #32,D0\n    MOVE.B #1,D1\n    TRAP #15\n')
+const noWindow = new Interpreter(window.program)
+assert.throws(() => noWindow.run(), (error) => error.type === 'UnsupportedTrapTask' && error.value.task === 32)
+noWindow.dispose()
+window.program.dispose()
 
 // ---------------------------------------------------------------------------
 // The memory map: ROM ignores a write, the others are bus errors, vector 2

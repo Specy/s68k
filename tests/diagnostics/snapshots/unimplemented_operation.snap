@@ -7,21 +7,8 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`stop` is not implemented: s68k has no interrupts to wake a stopped processor.",
-    "hint": "Write `simhalt` instead",
-    "location": {
-      "file": "unimplemented_operation.asm",
-      "line": 1,
-      "column": 4,
-      "endColumn": 8
-    },
-    "related": []
-  },
-  {
-    "severity": "error",
-    "code": "unimplemented_operation",
-    "message": "`reset` is not implemented: s68k has no external hardware to reset.",
-    "hint": null,
+    "message": "`callm` is not implemented: s68k's 68020 leaves out the module call, which no later processor kept.",
+    "hint": "Write `jsr` instead",
     "location": {
       "file": "unimplemented_operation.asm",
       "line": 2,

@@ -408,7 +408,7 @@ start:
         assert_eq!(d(&interpreter, 0), 32);
         assert_eq!(d(&interpreter, 1), 5);
         let mut other =
-            machine("    org $1000\nstart:\n    move.b #32,d0\n    move.b #4,d1\n    trap #15\n");
+            machine("    org $1000\nstart:\n    move.b #32,d0\n    move.b #0,d1\n    trap #15\n");
         assert_eq!(
             other.run(),
             Err(RuntimeError::UnsupportedTrapTask { task: 32 })
@@ -628,6 +628,80 @@ handler:
             );
             assert_eq!(d(&interpreter, 1) & 0x2000, 0, "{code}: still in user mode");
         }
+    }
+
+    /// Each stack pointer has a top of its own, which the memory view draws
+    /// the Stack region up to: a handler entered from user mode is on the
+    /// supervisor stack, whose top is its own, and the `rte` back finds the
+    /// user stack's top where the program left it, with what it pushed under
+    /// it. One top swapped from stack to stack drew an empty region in the
+    /// handler and lost the user stack's data after it.
+    #[test]
+    fn each_stack_pointer_keeps_its_own_top() {
+        let mut interpreter = machine(
+            "    org $1000
+start:
+    move.l #handler,$80
+    lea $8000,a0
+    move.l a0,usp
+    andi.w #$dfff,sr
+    move.l #1,-(a7)
+    trap #0
+back:
+    simhalt
+handler:
+    nop
+    rte
+",
+        );
+        let mut seen = vec![(interpreter.get_pc(), interpreter.get_stack_top())];
+        let mut step = |interpreter: &mut Interpreter| {
+            interpreter.step().unwrap();
+            seen.push((interpreter.get_pc(), interpreter.get_stack_top()));
+        };
+        for _ in 0..3 {
+            step(&mut interpreter);
+        }
+        assert_eq!(interpreter.get_stack_top(), 0x0100_0000, "still the supervisor stack's");
+        step(&mut interpreter);
+        assert_eq!(interpreter.get_sp(), 0x8000);
+        assert_eq!(interpreter.get_stack_top(), 0x8000, "the user stack's, where move usp put it");
+        step(&mut interpreter);
+        assert_eq!(interpreter.get_sp(), 0x7FFC);
+        assert_eq!(interpreter.get_stack_top(), 0x8000);
+        step(&mut interpreter);
+        assert_eq!(interpreter.get_pc() as u32, label(&interpreter, "handler"));
+        assert_eq!(interpreter.get_sp(), 0x00FF_FFFA);
+        assert_eq!(
+            interpreter.get_stack_top(),
+            0x0100_0000,
+            "the handler's stack holds its frame"
+        );
+        step(&mut interpreter);
+        step(&mut interpreter);
+        assert_eq!(interpreter.get_pc() as u32, label(&interpreter, "back"));
+        assert_eq!(interpreter.get_sp(), 0x7FFC);
+        assert_eq!(
+            interpreter.get_stack_top(),
+            0x8000,
+            "the user stack's top, with the long it pushed under it"
+        );
+        //undo walks both tops back
+        seen.pop();
+        while let Some(before) = seen.pop() {
+            interpreter.undo().unwrap();
+            assert_eq!((interpreter.get_pc(), interpreter.get_stack_top()), before);
+        }
+        //a Poke of S swaps them as well, and its undo swaps them back
+        for _ in 0..3 {
+            interpreter.step().unwrap();
+        }
+        interpreter.begin_poke().unwrap();
+        interpreter.set_sr(0x0000);
+        assert!(interpreter.end_poke().unwrap());
+        assert_eq!(interpreter.get_stack_top(), 0x8000, "the user stack's");
+        interpreter.undo().unwrap();
+        assert_eq!(interpreter.get_stack_top(), 0x0100_0000, "the supervisor stack's");
     }
 
     #[test]
@@ -908,6 +982,82 @@ start:
                 ..
             }
         )));
+    }
+
+    /// A return to an odd address takes its frame off the call stack: the
+    /// return has popped it, and the address error it raises in its own
+    /// prefetch pushes the frame of vector 3 in its place. Undoing it puts the
+    /// frame back.
+    #[test]
+    fn a_return_to_an_odd_address_takes_its_frame_off_the_call_stack() {
+        let frames = |interpreter: &Interpreter| -> Vec<(FrameKind, Option<u8>)> {
+            interpreter
+                .get_pretty_call_stack()
+                .iter()
+                .map(|frame| (frame.kind, frame.vector))
+                .collect()
+        };
+        for (name, setup, returns, before) in [
+            (
+                "rts",
+                "    bsr sub
+    simhalt
+sub:
+    move.l #$1001,(a7)
+",
+                "    rts",
+                (FrameKind::Call, None),
+            ),
+            (
+                "rtr",
+                "    bsr sub
+    simhalt
+sub:
+    move.l #$1001,(a7)
+    move.w #0,-(a7)
+",
+                "    rtr",
+                (FrameKind::Call, None),
+            ),
+            (
+                "rte",
+                "    move.l #trap_handler,$80
+    trap #0
+    simhalt
+trap_handler:
+    move.l #$1001,2(a7)
+",
+                "    rte",
+                (FrameKind::Exception, Some(32)),
+            ),
+        ] {
+            let mut interpreter = machine(&format!(
+                "    org $1000
+start:
+    move.l #address_error,$c
+{setup}returning:
+{returns}
+address_error:
+    simhalt
+"
+            ));
+            run_to_the_halt(&mut interpreter);
+            assert_eq!(
+                interpreter.get_pc() as u32,
+                label(&interpreter, "address_error") + 4,
+                "`{name}` faulted into the handler"
+            );
+            assert_eq!(
+                frames(&interpreter),
+                [(FrameKind::Exception, Some(3))],
+                "`{name}` took its frame off"
+            );
+            //the simhalt, then the address error the return raised
+            interpreter.undo().unwrap();
+            interpreter.undo().unwrap();
+            assert_eq!(interpreter.get_pc() as u32, label(&interpreter, "returning"));
+            assert_eq!(frames(&interpreter), [before], "undoing `{name}` puts it back");
+        }
     }
 
     #[test]

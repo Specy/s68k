@@ -134,20 +134,32 @@ A Program written as the `.S68` file EASy68K's assembler writes and its simulato
 _Avoid_: object file, hex file, binary
 
 **Interpreter**:
-What runs a Program: registers, memory, the step, run, undo and interrupt operations, and the Exceptions a 68000 takes. It runs what memory holds, through a decode cache: the instructions it has decoded, kept by address, filled from the Program's own when it is made, and cleared wherever a write changes their bytes, so a changed instruction is decoded again before it runs. It never reads source; it reaches the source only through the Program's map of the lines it laid out, which does not move when bytes change, so a changed line keeps its Location.
+What runs a Program: registers, memory, the step, run, undo and interrupt operations, and the Exceptions and IRQs a 68000 takes. It runs what memory holds, through a decode cache: the instructions it has decoded, kept by address, filled from the Program's own when it is made, and cleared wherever a write changes their bytes, so a changed instruction is decoded again before it runs. It never reads source; it reaches the source only through the Program's map of the lines it laid out, which does not move when bytes change, so a changed line keeps its Location.
 _Avoid_: emulator (that is the asm-editor's object around it), simulator, CPU
 
 **Execution step**:
-One entry of the Interpreter's history: an instruction that ran, or a Poke. It carries an id of its own, the mutations undo replays, the program counter and the status register before it, the Code write an instruction made, the words of the instruction it ran as they were then, so that it says what ran after a write has changed them, and says which of the two kinds it is.
+One entry of the Interpreter's history: an instruction that ran, a Poke, or an IRQ taken. It carries an id of its own, the mutations undo replays, the program counter and the status register before it, the Code write an instruction made, the words of the instruction it ran as they were then, so that it says what ran after a write has changed them, and says which of the three kinds it is. An IRQ's step runs no instruction and is on no line.
 _Avoid_: history entry, undo record
 
 **Mutation**:
-One thing an Execution step changed: a register write, a memory write at a size, a run of bytes, the two stack pointers, a call pushed or popped, or an Exception taken or returned from. The status register is not one: a step carries it whole, before and after, and undo writes it back first, without moving a stack pointer, so every change of S journals both stack pointers. Every write carries the value it replaced beside the value it wrote, both read where the write happened — a register write reports the whole register on both sides, because a sized store changes only part of one — so nothing about what a step did is reconstructed after the fact.
+One thing an Execution step changed: a register write, a memory write at a size, a run of bytes, the two stack pointers, a call pushed or popped, an Exception taken or returned from, or the Machine state. The status register is not one: a step carries it whole, before and after, and undo writes it back first, without moving a stack pointer, so every change of S journals both stack pointers. Every write carries the value it replaced beside the value it wrote, both read where the write happened — a register write reports the whole register on both sides, because a sized store changes only part of one — so nothing about what a step did is reconstructed after the fact.
 _Avoid_: diff, change record, delta
 
 **Poke**:
 A register, memory or System register value the host — the asm-editor's user or coding agent — changes between two instructions. Everything written between `begin_poke` and `end_poke` is one Execution step of its own, undone by the Interpreter like an instruction; the same setters called outside a transaction write directly and record nothing, which is what a Testcase's preset values need.
 _Avoid_: patch, edit, host write (that is any write from outside, Poke or not)
+
+**Stopped**:
+The Interpreter status while `stop` has stopped the processor and it waits for an IRQ above the interrupt mask `stop` loaded, or at level 7: nothing runs, and a step or run answers at once. The program counter is on the instruction after the `stop`, where the IRQ's handler returns. A request that can wake it ends the status at once, and the next step is the IRQ, which wakes the processor; the Machine state says it is stopped until then. Neither ended nor Paused, as only an IRQ goes on from it.
+_Avoid_: halted (that is a double fault's Termination), waiting (a Trap task waits on the host, as an Interrupt), sleeping
+
+**IRQ**:
+An interrupt request of the 68000, at a level from 1 to 7: latched until it is taken, a second at a level already pending being the same one, and taken between two instructions, the highest pending level above the status register's interrupt mask first and level 7 whatever the mask, as the Exception of its level's autovector, vector 24 plus the level at `$64` to `$7C`, which raises the mask to the level. Taking one is an Execution step of its own. The program sets up its sources with Trap tasks 32 (timers), 60 (the mouse) and 62 (the keyboard), and the host delivers them, a timer's firing or a Screen event, between two calls; the Interpreter decides from the program's settings what an event raises. Distinct from an Interrupt, which is a Trap task waiting on the host.
+_Avoid_: interrupt (that is a Trap task's request to the host), signal, event (that is what the host reports)
+
+**Machine state**:
+The IRQ latch, whether the processor is Stopped, and what the program set up for its IRQs: a timer interval per level and the level of each keyboard and mouse event. Everything but the latch is the program's and is journaled like a register, so undo puts it back. The latch is the host's input too: undoing the step that took a request makes it pending again, but a request the program never saw, latched after a step, stays pending when that step is undone, as a key pressed does.
+_Avoid_: interrupt state, hardware state
 
 **Paused**:
 The Interpreter status after it executes `simhalt`, which is `$FFFF $FFFF` inside the bytes the Program placed. The Program counter already
@@ -166,21 +178,21 @@ _Avoid_: watchpoint (a debugger's stops the user; this one stops for the host), 
 One store into the Watched range: its address, its size and the value stored, kept in order until the host takes it. The instruction that made one has finished and ends the run or step that ran it with the status `WatchedWrite`; the next step or run operation goes on, as after a Pause. Undo empties the log, so the host reads the range back.
 
 **Trap task**:
-One of EASy68K's `trap #15` services, chosen by the number in D0.B. The Interpreter carries some out itself — the Input settings, a file result it can decide alone — and raises an Interrupt for the rest; a task it does not carry out, or one given a value it cannot take, is a Runtime error that ends the program. A number that is none of EASy68K's tasks is the Exception of vector 47, as in EASy68K.
+One of EASy68K's `trap #15` services, chosen by the number in D0.B. The Interpreter carries some out itself — the Input settings, a file result it can decide alone, the IRQ settings of tasks 32, 60 and 62 — and raises an Interrupt for the rest; a task it does not carry out, or one given a value it cannot take, is a Runtime error that ends the program. A number that is none of EASy68K's tasks is the Exception of vector 47, as in EASy68K.
 _Avoid_: syscall, service call
 
 **Interrupt**:
-What a Trap task asks the host for, with its arguments decoded: text to display, a line or a key to read, a file operation, a sound. The instruction is not finished until the host answers it, with the answer of the same name or with Terminate; any other answer is refused and the Interrupt still waits. Distinct from an Exception, and from the 68000's interrupt requests, which the Interpreter does not have yet.
+What a Trap task asks the host for, with its arguments decoded: text to display, a line or a key to read, a file operation, a sound. The instruction is not finished until the host answers it, with the answer of the same name or with Terminate; any other answer is refused and the Interrupt still waits. Distinct from an Exception, and from an IRQ, the 68000's interrupt request.
 _Avoid_: callback, event, request (in prose, for the Rust type)
 
 **Input settings**:
 How the read tasks show what is typed: the echo of task 12, and the input prompt and the line feed after Enter of task 16. They are the Interpreter's state, all on when a program starts, journaled like a register so that undo puts them back, and read by the host while a read task waits.
 
 **Termination**:
-Why a program ended: task 9, running into `$FFFF $FFFF` in memory the Program never placed (the end of a program that does not end itself, with its address), the host answering Terminate, the Runtime error it ended with, with the Vector that held no Handler when it had one, or Halted. Undoing the step that ended the program takes it back.
+Why a program ended: task 9, running into `$FFFF $FFFF` in memory the Program never placed (the end of a program that does not end itself, with its address), the host answering Terminate, the Runtime error it ended with, or an IRQ, with the Vector that held no Handler when it had one, or Halted. Undoing the step that ended the program takes it back.
 
 **Exception**:
-The processor saving the status register and the program counter on the supervisor stack and continuing at a Vector's Handler, because an instruction raised an error the 68000 has a vector for, or a `trap`, or trace: the bus error of the Memory map, the address error, an illegal instruction, a division by zero, `chk`, `trapv`, a privilege violation, trace, the line A and line F words, `trap #0` to `#14`, and a Trap task EASy68K does not know. It sets S and clears T, so it always runs in supervisor mode, and `rte` returns from it. It is always taken (ADR 0008); an Exception whose Vector holds no Handler ends the program instead. Distinct from an Interrupt, which is a Trap task waiting on the host.
+The processor saving the status register and the program counter on the supervisor stack and continuing at a Vector's Handler, because an instruction raised an error the 68000 has a vector for, or a `trap`, or trace, or an IRQ came: the bus error of the Memory map, the address error, an illegal instruction, a division by zero, `chk`, `trapv`, a privilege violation, trace, an IRQ through its autovector, the line A and line F words, `trap #0` to `#14`, and a Trap task EASy68K does not know. It sets S and clears T, so it always runs in supervisor mode, and `rte` returns from it. It is always taken (ADR 0008); an Exception whose Vector holds no Handler ends the program instead. Distinct from an Interrupt, which is a Trap task waiting on the host.
 _Avoid_: trap (that is one instruction that raises one), interrupt (that is a Trap task's request to the host), fault
 
 **Vector**:
@@ -192,7 +204,7 @@ The code a Vector holds the address of, which runs when its Exception is taken a
 _Avoid_: exception routine, service routine, ISR (that is an IRQ's)
 
 **Halted**:
-The Termination of a double fault: taking an Exception itself failed, because the supervisor stack pointer is odd, or the Memory map refuses the frame or the Vector, and the processor stops, as a 68000 does. It names what taking it raised and the Vector whose Exception it was.
+The Termination of a double fault: taking an Exception itself failed, because the supervisor stack pointer is odd, or the Memory map refuses the frame or the Vector, or, for a bus or an address error, the first fetch of its Handler, and the processor stops, as a 68000 does. It names what taking it raised and the Vector whose Exception it was.
 _Avoid_: crashed, double bus fault (the bus error of a memory map is one cause, not the term)
 
 **System register file**:

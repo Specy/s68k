@@ -13,6 +13,9 @@
 //! **Exception**, taken into the program's handler as a 68000 takes it, in
 //! supervisor mode on the supervisor stack, and it ends the program only when
 //! the vector holds no handler (ADR 0008, and [`crate::machine::exception`]).
+//! An **IRQ**, an interrupt request at a level from 1 to 7, is taken between
+//! two instructions as an Execution step of its own, and `stop` waits for one
+//! in the status [`InterpreterStatus::Stopped`] ([`crate::machine::interrupts`]).
 //!
 //! Much of this module predates the assembler rewrite and its public items are
 //! not all documented yet; everything the rewrite added or changed is.
@@ -47,6 +50,7 @@ use crate::instructions::TargetDirection;
 use crate::machine::cache::{self, DecodeCache, Slot};
 use crate::machine::decode::{self, Decoded};
 use crate::machine::exception::{self, Frame};
+use crate::machine::interrupts::{self, DeviceEvent, MachineState};
 use crate::machine::memory_map::{Kinds, MemoryMap, Verdict};
 use crate::machine::{disassemble, Processor};
 use crate::{c_runtime, charset};
@@ -749,6 +753,10 @@ pub const TRACE_BIT: u16 = 0x8000;
 /// supervisor mode and A7 is the supervisor stack pointer.
 pub const SUPERVISOR_BIT: u16 = 0x2000;
 
+/// The status register's interrupt mask, bits 10 to 8: an IRQ is taken only
+/// at a level above it, or at level 7.
+pub const INTERRUPT_MASK: u16 = 0x0700;
+
 /// The status register a program starts with: `$2000`, EASy68K's own
 /// (`STARTSIM.CPP`): supervisor, interrupt mask 0, no trace and no condition
 /// code set (the asm-editor's `docs/design/m68k-machine.md`, decision 2).
@@ -990,11 +998,13 @@ impl Cpu {
 /// [`Termination`]'s cause with the vector beside it, and undoing the step that
 /// raised it brings the program back to the instruction, running.
 ///
+/// An IRQ whose autovector holds no handler ends the program the same way,
+/// with [`Irq`](RuntimeError::Irq) as the cause.
+///
 /// The others end the program with no exception to take: a `trap #15` task the
 /// Interpreter cannot carry out ([`UnsupportedTrapTask`](RuntimeError::UnsupportedTrapTask)
 /// for one of EASy68K's own tasks) or one given a value it cannot take
-/// ([`InvalidTrapArgument`](RuntimeError::InvalidTrapArgument)), and `stop`
-/// and `reset`, which are not run yet.
+/// ([`InvalidTrapArgument`](RuntimeError::InvalidTrapArgument)).
 ///
 /// The rest are the host's: an answer refused
 /// ([`NoPendingInterrupt`](RuntimeError::NoPendingInterrupt),
@@ -1043,10 +1053,6 @@ pub enum RuntimeError {
         range: MemoryRangeKind,
     },
     IncorrectAddressingMode(String),
-    /// A 68000 instruction the Interpreter does not run yet, named in the
-    /// text: `stop` and `reset`, which need interrupts (the plan's milestone
-    /// C8). The Assembler refuses both, so only a decoded word reaches one.
-    Unimplemented(String),
     /// `chk` found the register outside 0 to the bound it was given: vector 6.
     ChkOutOfBounds {
         /// The low word of the register, read as a signed number.
@@ -1076,15 +1082,23 @@ pub enum RuntimeError {
         /// The vector, 32 and the trap's number.
         vector: u8,
     },
+    /// An IRQ, taken through the autovector of its level, vectors 25 to 31 at
+    /// `$64` to `$7C`: the cause a program ends with when that vector holds
+    /// no handler.
+    Irq {
+        /// The level of the request, 1 to 7.
+        level: u8,
+    },
     /// A `trap #15` task s68k does not carry out, by its number in D0.B.
     ///
     /// A number that is none of EASy68K's tasks goes through vector 47, as in
     /// EASy68K, so a program can handle it. One of EASy68K's own tasks that a
     /// page in a browser cannot do faithfully ends the program with no
     /// exception: the printer (10), the text window's font and contents (21,
-    /// 22, 25), the cycle counter (30, 31), the hardware window (32 but its
-    /// `D1.B` of 5), the serial ports (40 to 43), the interrupt requests (60,
-    /// 62) and the network (100 to 107). The host says why from the number.
+    /// 22, 25), the cycle counter (30, 31), the hardware window (32 with 0 to
+    /// 3 or 7 in `D1.B`, which show it and answer its devices' addresses), the
+    /// serial ports (40 to 43) and the network (100 to 107). The host says why
+    /// from the number.
     UnsupportedTrapTask {
         /// The task, D0.B.
         task: u8,
@@ -1388,6 +1402,25 @@ pub enum InterpreterStatus {
     ///
     /// Appended after `WatchedWrite` for the same reason.
     CodeWrite,
+    /// `stop` has loaded the status register and the processor waits for an
+    /// IRQ above its new mask, or at level 7 (the asm-editor's
+    /// `docs/design/m68k-machine.md`, decision 17). It is neither ended nor
+    /// paused: [`step`](Interpreter::step) and every run return at once,
+    /// running nothing. The program counter is on the instruction after the
+    /// `stop`, where the handler's `rte` returns.
+    ///
+    /// It is the status while the processor waits, and no longer: a request
+    /// that can wake it, latched by [`Interpreter::raise_irq`] or
+    /// [`Interpreter::device_event`], or one a lower mask lets through, makes
+    /// the status `Running` at once, the [`MachineState`] still saying the
+    /// processor is stopped, and the next step takes it, which wakes the
+    /// processor and goes on in the handler. So a `stop` that loads a mask with
+    /// a request above it already pending does not wait at all. One that starts
+    /// with T set does not stop either: the trace exception follows it, as on a
+    /// 68000.
+    ///
+    /// Appended after `CodeWrite` for the same reason.
+    Stopped,
 }
 
 /// A **Code write**: a write of the program's own that changed the bytes of an
@@ -1561,9 +1594,25 @@ fn prepare_memory(memory: &mut Memory, program: &Program) -> RuntimeResult<()> {
     Ok(())
 }
 
+/// The tops of the two stacks, the one A7 is on first, as a step journals
+/// them before it changes either.
+pub type StackTops = (usize, usize);
+
 #[wasm_bindgen]
 pub struct Interpreter {
+    /// The top of the stack A7 is on: the highest A7 has been, or where it
+    /// last jumped to, a move of more than 4 KB.
     stack_top: usize,
+    /// The top of the other stack, the one of the mode the processor is not
+    /// in. Each stack pointer keeps its own, and a change of S swaps them with
+    /// the stack pointers (`swap_stack_tops`).
+    inactive_stack_top: usize,
+    /// The last change of S, as the step that made it (its count of
+    /// [`executed_instructions`](Interpreter::executed_instructions)) and A7
+    /// as it swapped it in: what that step's move of A7 is measured from, so
+    /// that the swap is no jump to a new stack. Read only when A7 has moved
+    /// far, or above its top.
+    swapped: Option<(u64, usize)>,
     memory: Memory,
     cpu: Cpu,
     pc: usize,
@@ -1614,6 +1663,15 @@ pub struct Interpreter {
     /// Whether the instruction waiting on the host started with T set, so
     /// that the trace exception follows the answer.
     trace_after_answer: bool,
+    /// The IRQ latch, whether `stop` has stopped the processor, and what the
+    /// program set up with tasks 32, 60 and 62.
+    machine: MachineState,
+    /// Whether an IRQ is taken before the next instruction: a pending level
+    /// is above the interrupt mask, or is 7. It is worked out again only where
+    /// one of the two changes, a request latched or taken, a write of the
+    /// status register and undo, so that a run asks this one flag between two
+    /// instructions and nothing else.
+    irq_ready: bool,
 }
 
 impl Interpreter {
@@ -1655,6 +1713,8 @@ impl Interpreter {
         let options = options.unwrap_or_default();
         let interpreter = Self {
             stack_top: sp,
+            inactive_stack_top: INITIAL_USER_STACK_POINTER as usize,
+            swapped: None,
             memory,
             cpu: Cpu::new(),
             pc: start,
@@ -1674,6 +1734,8 @@ impl Interpreter {
             stop_on_code_write: false,
             takes_trace: true,
             trace_after_answer: false,
+            machine: MachineState::default(),
+            irq_ready: false,
             program,
         };
         interpreter
@@ -1821,10 +1883,11 @@ impl Interpreter {
     /// starts as `$FF`.
     ///
     /// A SIMHALT inside the bytes the Program placed is a `simhalt`, which
-    /// pauses, and any other bytes run as what they decode to.
+    /// pauses, and any other bytes run as what they decode to. An IRQ ready to
+    /// be taken comes first, and the next step takes it instead.
     pub fn has_reached_bottom(&self) -> bool {
         let pc = self.pc & ADDRESS_MASK;
-        if pc & 1 != 0 {
+        if pc & 1 != 0 || self.irq_ready {
             return false;
         }
         match self.memory.cache.get(pc) {
@@ -1851,15 +1914,33 @@ impl Interpreter {
     /// `Option` around it would be copied again on the way, and for an
     /// instruction as cheap as an `addq` to a register, that second copy is a
     /// good part of the step.
+    ///
+    /// While an IRQ is ready to be taken, the step takes it instead of the
+    /// instruction, and the fetch answers [`cache::NOT_RUN`], which sends the
+    /// step there on the path of the end of the program. The test rides on the
+    /// one of an odd address, so that a step that runs its instruction asks
+    /// nothing more of the interrupts.
     #[inline(always)]
     fn fetch(&mut self, pc: usize) -> Slot {
         let pc = pc & ADDRESS_MASK;
-        if pc & 1 != 0 {
-            return cache::EMPTY;
+        if (pc | self.irq_ready as usize) & 1 != 0 {
+            return self.fetch_nothing();
         }
         match self.memory.cache.get(pc) {
             Some(slot) => *slot,
             None => self.decode_into_the_cache(pc),
+        }
+    }
+
+    /// What a [`fetch`](Interpreter::fetch) answers at an odd address or with
+    /// an IRQ ready: [`cache::NOT_RUN`] for the IRQ, which comes first, and
+    /// [`cache::EMPTY`] for the address error of an odd address.
+    #[cold]
+    #[inline(never)]
+    fn fetch_nothing(&self) -> Slot {
+        match self.irq_ready {
+            true => cache::NOT_RUN,
+            false => cache::EMPTY,
         }
     }
 
@@ -1870,19 +1951,33 @@ impl Interpreter {
     #[cold]
     #[inline(never)]
     fn fetch_error(&self, pc: usize) -> RuntimeError {
-        let bus = pc & ADDRESS_MASK;
-        if bus & 1 == 0 {
-            let size = self.memory.decode_at(bus, self.program.processor()).size as usize;
-            if let Some((at, range)) = self.memory.fetch_fault(bus, size) {
-                return RuntimeError::BusError {
-                    address: (pc as u32).wrapping_add(at.wrapping_sub(bus) as u32) as usize,
-                    size: Size::Word,
-                    access: Access::Program,
-                    range,
-                };
+        if pc & 1 == 0 {
+            if let Some(error) = self.fetch_bus_error(pc) {
+                return error;
             }
         }
         Self::jump_to_an_odd_address(pc as u32)
+    }
+
+    /// The bus error of fetching the instruction at `pc`, an even address,
+    /// when the memory map refuses one of its words in the mode the processor
+    /// is in: an access in program space, at the address of the first such
+    /// word. `None` when it can be fetched.
+    #[cold]
+    #[inline(never)]
+    fn fetch_bus_error(&self, pc: usize) -> Option<RuntimeError> {
+        if !self.memory.mapped {
+            return None;
+        }
+        let bus = pc & ADDRESS_MASK;
+        let size = self.memory.decode_at(bus, self.program.processor()).size as usize;
+        let (at, range) = self.memory.fetch_fault(bus, size)?;
+        Some(RuntimeError::BusError {
+            address: (pc as u32).wrapping_add(at.wrapping_sub(bus) as u32) as usize,
+            size: Size::Word,
+            access: Access::Program,
+            range,
+        })
     }
 
     /// The address error of a jump to `target`, odd, which the 68000 raises in
@@ -1970,6 +2065,14 @@ impl Interpreter {
     /// [code write](InterpreterStatus::CodeWrite) stop at the instruction after
     /// the one that made it.
     ///
+    /// An IRQ ready to be taken, a pending level above the interrupt mask or
+    /// at level 7, is the step instead: it is taken through its autovector, a
+    /// step of [kind](ExecutionStepKind::Irq) `Irq`, and the instruction at the
+    /// program counter runs after the handler's `rte`; one that wakes a
+    /// stopped processor is such a step. While the processor is
+    /// [`Stopped`](InterpreterStatus::Stopped), waiting, it runs nothing and
+    /// answers `Stopped`.
+    ///
     /// The instruction is the one memory holds at the program counter, from the
     /// decode cache. On `$FFFF $FFFF` the Program never placed, the program
     /// ends there ([`Termination::EndOfProgram`]) and nothing runs; the end is
@@ -1983,9 +2086,27 @@ impl Interpreter {
     /// an error, the 68000's [address error](RuntimeError::AddressError).
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
+        if self.status == InterpreterStatus::Stopped {
+            return Ok(self.status);
+        }
         self.run_step()?;
         self.end_if_reached();
         Ok(self.status)
+    }
+
+    /// A step whose fetch said it runs no instruction: it takes the IRQ that
+    /// is ready, or, with none, it ends the program, on `$FFFF $FFFF` the
+    /// Program never placed at `pc`.
+    #[cold]
+    #[inline(never)]
+    fn take_irq_or_end(&mut self, pc: usize) -> RuntimeResult<()> {
+        if self.irq_ready {
+            return self.take_irq();
+        }
+        self.terminate(Termination::EndOfProgram {
+            address: pc & ADDRESS_MASK,
+        });
+        Ok(())
     }
 
     /// A [`step`](Interpreter::step) taken by a run, which has checked once
@@ -1999,6 +2120,11 @@ impl Interpreter {
     /// breakpoint, takes no next step and checks the end itself
     /// ([`end_if_reached`](Interpreter::end_if_reached)), so every run answers
     /// the status and the [`Termination`] a run of single steps would have.
+    ///
+    /// An IRQ ready to be taken is the step instead of the instruction
+    /// ([`take_irq`](Interpreter::take_irq)), which the fetch tells it on the
+    /// path of the end of the program, so that the interrupts cost a step
+    /// that runs its instruction nothing but the fetch's test.
     #[inline(always)]
     fn run_step(&mut self) -> RuntimeResult<()> {
         let sp_before = self.get_sp();
@@ -2006,10 +2132,7 @@ impl Interpreter {
         let pc = self.pc;
         let slot = self.fetch(pc);
         if slot.ends_the_program() {
-            self.terminate(Termination::EndOfProgram {
-                address: pc & ADDRESS_MASK,
-            });
-            return Ok(());
+            return self.take_irq_or_end(pc);
         }
         if self.is_resumable_stop() {
             self.set_status(InterpreterStatus::Running);
@@ -2058,12 +2181,7 @@ impl Interpreter {
             let fetched = (!slot.is_empty()).then_some(&slot.instruction);
             executed = self.take_exceptions(executed, fetched, pc, traced);
         }
-        let sp = self.get_sp();
-        let top = if sp.abs_diff(sp_before) > 4096 || sp > self.stack_top { sp } else { self.stack_top };
-        if top != self.stack_top {
-            if self.keep_history { self.debugger.record_stack_top(self.stack_top); }
-            self.stack_top = top;
-        }
+        self.track_stack_top(sp_before);
         //an instruction that raised an Interrupt is not finished until the host answers
         //it, and what `answer_interrupt` writes belongs to this step
         self.executing = self.status == InterpreterStatus::Interrupt;
@@ -2073,9 +2191,93 @@ impl Interpreter {
             self.debugger.set_new_sr(self.cpu.get_sr());
         }
         executed?;
+        self.stop_for_the_host(watched);
+        Ok(())
+    }
+
+    /// Follows the top of the stack the memory view draws, after a step that
+    /// found A7 at `sp_before`: the highest it has been, or where it jumped
+    /// to, a move of more than 4 KB, as a new stack.
+    #[inline(always)]
+    fn track_stack_top(&mut self, sp_before: usize) {
+        let sp = self.get_sp();
+        if sp.abs_diff(sp_before) > 4096 || sp > self.stack_top {
+            self.move_stack_top(sp, sp_before);
+        }
+    }
+
+    /// [`track_stack_top`](Interpreter::track_stack_top) where A7 has moved
+    /// far or above its top: the top moves to it, unless the step changed S
+    /// and A7 has not moved so from the stack pointer the step swapped in.
+    #[cold]
+    #[inline(never)]
+    fn move_stack_top(&mut self, sp: usize, sp_before: usize) {
+        let from = match self.swapped {
+            Some((step, swapped_in)) if step == self.executed_instructions => swapped_in,
+            _ => sp_before,
+        };
+        if (sp.abs_diff(from) > 4096 || sp > self.stack_top) && sp != self.stack_top {
+            if self.keep_history {
+                self.debugger.record_stack_tops(self.stack_tops());
+            }
+            self.stack_top = sp;
+        }
+    }
+
+    /// The tops of the two stacks, the one A7 is on first.
+    fn stack_tops(&self) -> StackTops {
+        (self.stack_top, self.inactive_stack_top)
+    }
+
+    /// Journals the tops of the stacks as they were before a change, into
+    /// the step being executed or the open Poke, which keep the first.
+    fn journal_stack_tops(&mut self, tops: StackTops) {
+        if self.executing {
+            if self.keep_history {
+                self.debugger.record_stack_tops(tops);
+            }
+        } else if let Some(poke) = self.poke.as_mut() {
+            poke.record_stack_tops(tops);
+        }
+    }
+
+    /// A change of S has swapped the stack pointers, `left` being the one A7
+    /// was: the stack left keeps the top it had, or `left` when that is
+    /// higher, and the stack swapped in takes its own back. The step goes on
+    /// from A7 as it is now ([`swapped`](Interpreter::swapped)), so the swap is
+    /// no jump to a new stack.
+    #[cold]
+    #[inline(never)]
+    fn swap_stack_tops(&mut self, left: usize) {
+        let tops = self.stack_tops();
+        self.stack_top = self.inactive_stack_top;
+        self.inactive_stack_top = tops.0.max(left);
+        self.swapped = Some((self.executed_instructions, self.get_sp()));
+        self.journal_stack_tops(tops);
+    }
+
+    /// Follows the top of the stack A7 is not on, whose stack pointer a write
+    /// has moved from `old` to `new`, `move An,usp` or a Poke, as a step
+    /// follows A7's: a move of more than 4 KB is a new stack.
+    #[cold]
+    #[inline(never)]
+    fn track_inactive_stack_top(&mut self, old: u32, new: u32) {
+        let (old, new) = (old as usize, new as usize);
+        if new.abs_diff(old) > 4096 || new > self.inactive_stack_top {
+            let tops = self.stack_tops();
+            self.inactive_stack_top = new;
+            self.journal_stack_tops(tops);
+        }
+    }
+
+    /// After a step that left the program running, the stops the host asked
+    /// for: the watched writes it made, the log having held `watched` before
+    /// it, and the code write a run was asked to stop for.
+    #[inline(always)]
+    fn stop_for_the_host(&mut self, watched: usize) {
         if self.status == InterpreterStatus::Running {
-            //the host takes what the instruction stored before the next one runs, and sees the
-            //code write it was asked to stop for; the end of the program, if this was the last
+            //the host takes what the step stored before the next one runs, and sees the code
+            //write it was asked to stop for; the end of the program, if this was the last
             //instruction, is the next call's after either
             if self.watched_writes.len() != watched {
                 self.status = InterpreterStatus::WatchedWrite;
@@ -2083,19 +2285,101 @@ impl Interpreter {
                 self.status = InterpreterStatus::CodeWrite;
             }
         }
+    }
+
+    /// Takes the IRQ that is ready, as an Execution step of its own (the
+    /// asm-editor's `docs/design/m68k-machine.md`, decision 16): the highest
+    /// pending level, which is above the interrupt mask or is 7. A step whose
+    /// fetch finds one ready comes here instead of running its instruction.
+    ///
+    /// It is kept out of the run loops, which call it only through the fetch's
+    /// test, so that the steps that run an instruction keep their code.
+    ///
+    /// It is the Exception of the level's autovector, vector 24 plus the
+    /// level, taken before the instruction at the program counter, which is
+    /// the one the frame stacks and the handler's `rte` returns to: the status
+    /// register is copied, S set and T cleared, the frame pushed on the
+    /// supervisor stack and the handler jumped to, as for any Exception; then
+    /// the mask rises to the level, the request is no longer pending, and a
+    /// stopped processor runs again. An autovector that holds no handler ends
+    /// the program, with [`RuntimeError::Irq`] as the cause, and the request
+    /// stays pending. No trace exception follows, as no instruction ran: one
+    /// that was set stays in the stacked status register, and traces the
+    /// instruction after the `rte`.
+    ///
+    /// Taken between two instructions, it comes after everything the one
+    /// before raised, and before anything the next raises, as on a 68000: an
+    /// instruction's trace exception and the frame of a `trap` are pushed
+    /// first, and the IRQ handler runs before their handlers; an illegal
+    /// instruction at the program counter has not been fetched yet, and raises
+    /// its exception after the `rte`.
+    #[cold]
+    #[inline(never)]
+    fn take_irq(&mut self) -> RuntimeResult<()> {
+        let Some(level) = self.machine.ready_level(self.cpu.get_sr()) else {
+            self.irq_ready = false;
+            return Ok(());
+        };
+        let sp_before = self.get_sp();
+        //an IRQ step runs no instruction, so the count of the one before is no step of its
+        self.swapped = None;
+        let pc = self.pc;
+        if self.keep_history {
+            self.debugger.begin_step(
+                ExecutionStepKind::Irq,
+                pc,
+                self.cpu.ccr,
+                self.cpu.get_sr(),
+                self.status,
+            );
+        }
+        self.code_write = None;
+        self.executing = true;
+        let watched = self.watched_writes.len();
+        let vector = interrupts::autovector(level);
+        let taken = self.take_exception(
+            vector,
+            Frame::Short { pc: pc as u32 },
+            RuntimeError::Irq { level },
+            pc,
+        );
+        if taken.is_ok() {
+            //no longer pending, and no longer stopped, before the mask rises
+            self.set_machine_state(self.machine.taken(level));
+            let sr = self.cpu.get_sr();
+            self.write_sr((sr & !INTERRUPT_MASK) | ((level as u16) << 8));
+            self.status = InterpreterStatus::Running;
+        }
+        self.track_stack_top(sp_before);
+        self.executing = false;
+        self.take_code_write();
+        if self.keep_history {
+            self.debugger.set_new_ccr(self.cpu.ccr);
+            self.debugger.set_new_sr(self.cpu.get_sr());
+        }
+        taken?;
+        self.stop_for_the_host(watched);
         Ok(())
     }
 
     /// Ends the program when it is running and the next step would end it
     /// ([`ends_at_pc`](Interpreter::ends_at_pc)): what a step does after its
     /// instruction, so that the status after the last instruction already says
-    /// the program has ended.
+    /// the program has ended. An IRQ ready to be taken is the next step
+    /// instead, and its handler's `rte` comes back here.
     fn end_if_reached(&mut self) {
-        if self.status == InterpreterStatus::Running && self.ends_at_pc() {
+        if self.status == InterpreterStatus::Running && self.ends_next() {
             self.terminate(Termination::EndOfProgram {
                 address: self.pc & ADDRESS_MASK,
             });
         }
+    }
+
+    /// Whether the next step ends the program: no IRQ is ready to be taken
+    /// first, and [`ends_at_pc`](Interpreter::ends_at_pc).
+    #[inline(always)]
+    fn ends_next(&mut self) -> bool {
+        !self.irq_ready && self.ends_at_pc()
     }
     /// What follows an instruction that raised an error or started with T
     /// set: the Exceptions it takes (ADR 0008).
@@ -2133,7 +2417,7 @@ impl Interpreter {
             return Err(self.end_with_an_exception(error, None));
         };
         let frame = self.frame_of(&error, vector, instruction, at);
-        self.take_exception(vector, frame, error)?;
+        self.take_exception(vector, frame, error, at)?;
         if traced && exception::group(vector) == exception::Group::Two {
             self.trace_after_instruction()?;
         }
@@ -2148,6 +2432,7 @@ impl Interpreter {
                 exception::TRACE,
                 Frame::Short { pc: self.pc as u32 },
                 RuntimeError::Trace,
+                self.current_instruction_address,
             ),
             InterpreterStatus::Interrupt => {
                 self.trace_after_answer = true;
@@ -2234,12 +2519,23 @@ impl Interpreter {
     /// stack pointer raises, or the memory map where it refuses the frame, is
     /// a double fault, and the processor halts.
     ///
-    /// The call stack gains an exception frame, which `rte` takes off.
+    /// So is a handler of the bus error or the address error that the memory
+    /// map refuses to fetch: the 68000 fetches the handler's first words as
+    /// part of taking the exception, and a bus error there, during the
+    /// processing of one of group 0, is a double bus fault. The handler of an
+    /// exception of the other groups is fetched by the next step, whose bus
+    /// error is one of group 0, and halts in turn if its own handler is out of
+    /// reach, so no exception is taken again and again.
+    ///
+    /// The call stack gains an exception frame, which `rte` takes off, and the
+    /// step a `PushException` from `from`: the instruction that raised it, or
+    /// for an IRQ the one it came before.
     fn take_exception(
         &mut self,
         vector: u8,
         frame: Frame,
         cause: RuntimeError,
+        from: usize,
     ) -> RuntimeResult<()> {
         let handler = match self
             .memory
@@ -2256,8 +2552,12 @@ impl Interpreter {
         if let Err(fault) = self.push_frame(&frame, sr) {
             return Err(self.halt(fault, vector));
         }
-        let from = self.current_instruction_address;
         self.pc = handler as usize;
+        if exception::group(vector) == exception::Group::Zero {
+            if let Some(fault) = self.fetch_bus_error(self.pc) {
+                return Err(self.halt(fault, vector));
+            }
+        }
         if self.keep_history {
             self.debugger
                 .add_mutation(MutationOperation::PushException {
@@ -2295,12 +2595,116 @@ impl Interpreter {
     /// ([`MutationOperation::WriteStackPointers`]) into the step being executed
     /// or the open Poke, so that undo, which writes the status register back
     /// without moving the stack pointers, puts each back where it was.
+    ///
+    /// A new interrupt mask can make a pending IRQ ready to be taken, or keep
+    /// one from being, so this works it out again.
     fn write_sr(&mut self, value: u16) {
+        let left = self.get_sp();
         let pointers = self.cpu.stack_pointers();
         if self.cpu.set_sr(value) {
             self.journal_stack_pointers(pointers, pointers);
             self.memory.set_supervisor(self.cpu.is_supervisor());
+            self.swap_stack_tops(left);
         }
+        self.update_irq_ready();
+    }
+
+    /// Works out again whether an IRQ is taken before the next instruction,
+    /// after a change of the latch or of the status register.
+    ///
+    /// A processor `stop` stopped waits only while no IRQ is ready: its status
+    /// is [`Stopped`](InterpreterStatus::Stopped) then, and `Running` as soon
+    /// as one is, the next step being the IRQ that wakes it. So the runs need
+    /// nothing of their own for a stopped processor: they run while the
+    /// status is `Running`, and the step takes the IRQ.
+    #[inline]
+    fn update_irq_ready(&mut self) {
+        self.irq_ready = self.machine.ready_level(self.cpu.get_sr()).is_some();
+        if self.machine.is_stopped() {
+            self.settle_stopped();
+        }
+    }
+
+    /// The status of a stopped processor: `Stopped` while it waits, `Running`
+    /// while an IRQ is ready to wake it.
+    #[cold]
+    #[inline(never)]
+    fn settle_stopped(&mut self) {
+        match (self.status, self.irq_ready) {
+            (InterpreterStatus::Stopped, true) => self.status = InterpreterStatus::Running,
+            (InterpreterStatus::Running, false) => self.status = InterpreterStatus::Stopped,
+            _ => {}
+        }
+    }
+
+    /// Replaces the [`MachineState`], journaling the one it replaced into the
+    /// step being executed, a `SetMachineState`, so that undo puts it back.
+    /// A state equal to the one in force changes nothing and journals nothing.
+    fn set_machine_state(&mut self, state: MachineState) {
+        if state == self.machine {
+            return;
+        }
+        if self.executing && self.keep_history {
+            self.debugger
+                .add_mutation(MutationOperation::SetMachineState {
+                    old: Box::new(self.machine),
+                    new: Box::new(state),
+                });
+        }
+        self.machine = state;
+        self.update_irq_ready();
+    }
+
+    /// The IRQ latch, whether the processor is stopped, and what the program
+    /// set up with tasks 32, 60 and 62: `getMachineState()`.
+    pub fn get_machine_state(&self) -> MachineState {
+        self.machine
+    }
+
+    /// Latches a request at `level`, 1 to 7, for the host: a timer of the
+    /// program's firing, which is what `raiseIrq(level)` is for. It is taken
+    /// before the next instruction when it is above the interrupt mask or is
+    /// level 7, and waits in the latch until then; a request at a level
+    /// already pending is the same request. A stopped processor takes it at
+    /// the next step or run.
+    ///
+    /// A request that can wake a processor `stop` stopped makes the status
+    /// `Running` at once, the next step being the IRQ.
+    ///
+    /// A request is the host's input, as a key pressed is, and is journaled
+    /// nowhere: undo does not take it back, and a step undone before it
+    /// leaves it pending. The step that takes it is the program's, and undoing
+    /// that one makes it pending again ([`MachineState::undone`]). After the
+    /// end of the program nothing can take it, and it changes nothing. A level
+    /// that is not 1 to 7 is an [`InvalidArgument`](RuntimeError::InvalidArgument).
+    pub fn raise_irq(&mut self, level: u8) -> RuntimeResult<()> {
+        if !interrupts::is_level(level) {
+            return Err(RuntimeError::InvalidArgument(format!(
+                "an interrupt request is at a level from 1 to 7, not {}",
+                level
+            )));
+        }
+        if !self.has_terminated() {
+            self.machine = self.machine.latched(level);
+            self.update_irq_ready();
+        }
+        Ok(())
+    }
+
+    /// Reports an event on the Screen, a key or a mouse event, for the host,
+    /// and latches the request the program asked for on it with task 62 or
+    /// 60, as [`raise_irq`](Interpreter::raise_irq) latches one: `deviceEvent`.
+    /// Answers the level it latched, or `None` when the program asked for no
+    /// IRQ on that event, or has ended. The event itself, the key and the
+    /// mouse's state, is still the host's, read when the program asks for it.
+    pub fn device_event(&mut self, event: DeviceEvent) -> Option<u8> {
+        let level = self.machine.level_of(event)?;
+        if self.has_terminated() {
+            return None;
+        }
+        self.machine = self.machine.latched(level);
+        self.update_irq_ready();
+        Some(level)
     }
 
     /// Journals a change of the stack pointers into the step being executed,
@@ -2324,6 +2728,9 @@ impl Interpreter {
         self.cpu.restore_stack_pointers(new);
         if old != new {
             self.journal_stack_pointers(old, new);
+            if self.cpu.is_supervisor() {
+                self.track_inactive_stack_top(old.usp, value);
+            }
         }
     }
 
@@ -2335,6 +2742,13 @@ impl Interpreter {
     /// The supervisor stack pointer.
     pub fn get_ssp(&self) -> u32 {
         self.cpu.get_ssp()
+    }
+
+    /// The top of the stack A7 is on, which the memory view draws the Stack
+    /// region up to from A7: the highest A7 has been, or where it last jumped
+    /// to, a move of more than 4 KB.
+    pub fn get_stack_top(&self) -> usize {
+        self.stack_top
     }
 
     /// The status register and the two stack pointers: the System register
@@ -2369,6 +2783,9 @@ impl Interpreter {
                 self.cpu.restore_stack_pointers(new);
                 if pointers != new {
                     self.journal_stack_pointers(pointers, new);
+                    if !self.cpu.is_supervisor() {
+                        self.track_inactive_stack_top(pointers.ssp, value);
+                    }
                 }
             }
         }
@@ -2419,7 +2836,10 @@ impl Interpreter {
     pub fn undo(&mut self) -> RuntimeResult<ExecutionStep> {
         match self.debugger.pop_step() {
             Some(step) => {
-                if let Some(top) = step.old_stack_top { self.stack_top = top; }
+                if let Some((top, inactive)) = step.old_stack_tops {
+                    self.stack_top = top;
+                    self.inactive_stack_top = inactive;
+                }
                 self.pc = step.get_pc();
                 //the whole status register, which is the condition codes and the system byte
                 //`move #n,sr`, an exception and `rte` can have changed. It is written back
@@ -2483,6 +2903,9 @@ impl Interpreter {
                                 self.debugger.restore_call(frame.clone());
                             }
                         }
+                        MutationOperation::SetMachineState { old, new } => {
+                            self.machine = self.machine.undone(old, new);
+                        }
                     }
                 }
                 //whatever an instruction left behind is gone with it: the interrupt an undone trap
@@ -2499,6 +2922,9 @@ impl Interpreter {
                 if !self.has_terminated() {
                     self.termination = None;
                 }
+                //the status register and the latch are as the step found them, but for the
+                //requests that came after it, which can wake a processor the step found stopped
+                self.update_irq_ready();
                 //a write not taken yet may be one this undo has just taken back, so none is kept:
                 //the host reads the watched range again, as memory now holds it
                 self.watched_writes.clear();
@@ -2561,7 +2987,7 @@ impl Interpreter {
                 "Cannot begin a poke while an instruction is executing".to_string(),
             ));
         }
-        self.poke = Some(PokeJournal::new(self.cpu.get_sr()));
+        self.poke = Some(PokeJournal::new(self.cpu.get_sr(), self.status));
         Ok(())
     }
 
@@ -2586,6 +3012,8 @@ impl Interpreter {
             return Ok(false);
         }
         let opened_with = journal.sr();
+        let opened_in = journal.status();
+        let stack_tops = journal.stack_tops();
         let (mutations, targets) = journal.into_parts();
         //the new value is what the Poke leaves behind, read now, so that a register written
         //twice reports the value it ends on and not one it passed through
@@ -2624,10 +3052,13 @@ impl Interpreter {
             self.pc,
             Flags::from_ccr_byte(opened_with as u8),
             opened_with,
-            self.status,
+            opened_in,
         );
         for mutation in mutations {
             self.debugger.add_mutation(mutation);
+        }
+        if let Some(tops) = stack_tops {
+            self.debugger.record_stack_tops(tops);
         }
         self.debugger.set_writes(writes);
         self.debugger.set_new_ccr(self.cpu.ccr);
@@ -2787,6 +3218,7 @@ impl Interpreter {
                 exception::TRACE,
                 Frame::Short { pc: self.pc as u32 },
                 RuntimeError::Trace,
+                self.current_instruction_address,
             );
             if self.keep_history {
                 self.debugger.set_new_ccr(self.cpu.ccr);
@@ -2805,7 +3237,7 @@ impl Interpreter {
             self.terminate(Termination::TerminatedByHost);
         } else if self.watched_writes.len() != watched {
             self.status = InterpreterStatus::WatchedWrite;
-        } else if self.ends_at_pc() {
+        } else if self.ends_next() {
             self.terminate(Termination::EndOfProgram {
                 address: self.pc & ADDRESS_MASK,
             });
@@ -3857,12 +4289,10 @@ impl Interpreter {
             // `step` advances the PC before executing it, so the next run or
             // step call resumes at the following instruction.
             Instruction::SIMHALT => self.set_status(InterpreterStatus::Paused),
+            //a return to an odd address has popped it, and faults in its own prefetch: the call
+            //is off the call stack, and the address error pushes its own frame
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
-                if value.get_long() & 1 != 0 {
-                    self.set_sp(new_sp);
-                    return Err(Self::jump_to_an_odd_address(value.get_long()));
-                }
                 let frame = self.debugger.pop_call();
                 if self.keep_history {
                     self.debugger.add_mutation(MutationOperation::PopCall {
@@ -3872,6 +4302,9 @@ impl Interpreter {
                     })
                 }
                 self.set_sp(new_sp);
+                if value.get_long() & 1 != 0 {
+                    return Err(Self::jump_to_an_odd_address(value.get_long()));
+                }
                 self.pc = value.get_long() as usize;
             }
             Instruction::TRAP(vector) => match vector {
@@ -3985,11 +4418,7 @@ impl Interpreter {
                 //address (`Reference/68ks9f.htm`); the stack pointer goes up by six
                 let (status, sp) = self.memory.pop(Size::Word, self.get_sp())?;
                 let (address, sp) = self.memory.pop(Size::Long, sp)?;
-                if address.get_long() & 1 != 0 {
-                    self.cpu.set_ccr_byte(status.get_word() as u8);
-                    self.set_sp(sp);
-                    return Err(Self::jump_to_an_odd_address(address.get_long()));
-                }
+                //off the call stack before an odd address faults, as for `rts`
                 let frame = self.debugger.pop_call();
                 if self.keep_history {
                     self.debugger.add_mutation(MutationOperation::PopCall {
@@ -4000,6 +4429,9 @@ impl Interpreter {
                 }
                 self.cpu.set_ccr_byte(status.get_word() as u8);
                 self.set_sp(sp);
+                if address.get_long() & 1 != 0 {
+                    return Err(Self::jump_to_an_odd_address(address.get_long()));
+                }
                 self.pc = address.get_long() as usize;
             }
             Instruction::CHK(source, register) => {
@@ -4035,17 +4467,13 @@ impl Interpreter {
             }
             //the status register, then the program counter, off the supervisor stack, which A7 is;
             //an S of 0 in the word popped makes A7 the user stack pointer. A return to an odd
-            //address faults in `rte`'s own prefetch, with the status register restored
+            //address faults in `rte`'s own prefetch, with the status register restored and the
+            //exception's frame off the call stack, as `rte` has popped it
             Instruction::RTE => {
                 self.check_privilege()?;
                 let (status, sp) = self.memory.pop(Size::Word, self.get_sp())?;
                 let (address, sp) = self.memory.pop(Size::Long, sp)?;
                 let target = address.get_long();
-                self.set_sp(sp);
-                self.write_sr(status.get_word());
-                if target & 1 != 0 {
-                    return Err(Self::jump_to_an_odd_address(target));
-                }
                 let frame = self.debugger.pop_exception();
                 if self.keep_history {
                     self.debugger.add_mutation(MutationOperation::PopException {
@@ -4054,17 +4482,18 @@ impl Interpreter {
                         frame,
                     });
                 }
+                self.set_sp(sp);
+                self.write_sr(status.get_word());
+                if target & 1 != 0 {
+                    return Err(Self::jump_to_an_odd_address(target));
+                }
                 self.pc = target as usize;
             }
-            //privileged, and run in the plan's milestone C8, with interrupts; the Assembler refuses
-            //both, so only decoded words reach these
-            Instruction::STOP(_) => {
-                self.check_privilege()?;
-                return Err(RuntimeError::Unimplemented("`stop`".to_string()));
-            }
+            Instruction::STOP(value) => self.stop(*value)?,
+            //asserts the reset line, and there are no devices behind it, so its only effect is
+            //its time, `interrupts::RESET_CYCLES`, which the cycle counter will count
             Instruction::RESET => {
                 self.check_privilege()?;
-                return Err(RuntimeError::Unimplemented("`reset`".to_string()));
             }
             //the user stack pointer, which supervisor mode keeps aside
             Instruction::MOVEUSP { to_usp, register } => {
@@ -4435,8 +4864,9 @@ impl Interpreter {
 
     /// Carries out `trap #15` task `task`, and answers the interrupt it raises
     /// for the host, or `None` when the Interpreter did the whole task itself:
-    /// the input settings of tasks 12 and 16, and a file task whose result it
-    /// can decide without the host's file system.
+    /// the input settings of tasks 12 and 16, a file task whose result it can
+    /// decide without the host's file system, and the IRQ settings of tasks
+    /// 32, 60 and 62.
     ///
     /// Every error it answers is the program's, and ends it.
     fn trap_task(&mut self, task: u8) -> RuntimeResult<Option<Interrupt>> {
@@ -4446,11 +4876,54 @@ impl Interpreter {
                 Ok(None)
             }
             50..=59 => self.file_task(task),
-            //task 32 with D1.B of 5 turns EASy68K's "Enable exceptions" on; s68k always takes
-            //them (ADR 0008), so it is accepted and changes nothing. Its other parts are the
-            //hardware window's, and stay refused
-            32 if self.cpu.d_reg[1].get_byte() == 5 => Ok(None),
+            32 => self.hardware_task().map(|()| None),
+            60 => {
+                let d1 = self.cpu.d_reg[1].get_long();
+                self.set_machine_state(self.machine.with_mouse_levels(d1));
+                Ok(None)
+            }
+            62 => {
+                let d1 = self.cpu.d_reg[1].get_long();
+                self.set_machine_state(self.machine.with_keyboard_levels(d1));
+                Ok(None)
+            }
             _ => self.get_trap(task).map(Some),
+        }
+    }
+
+    /// Task 32, EASy68K's hardware window and simulator settings, by D1.B
+    /// (`CODE9.CPP`): the parts there is something behind without the window
+    /// (the asm-editor's `docs/design/m68k-machine.md`, decisions 20 and 21).
+    ///
+    /// * 4 answers EASy68K's version in D1.L, `$00051001`.
+    /// * 5 turns EASy68K's "Enable exceptions" on; s68k always takes them
+    ///   (ADR 0008), so it is accepted and changes nothing.
+    /// * 6 sets the timers, EASy68K's `setAutoIRQ(D2.B, D3.L)`
+    ///   ([`MachineState::with_auto_irq`]), which the host runs on the
+    ///   Program's time and reports with `raiseIrq`.
+    /// * 0 shows the window and 1, 2, 3 and 7 answer the addresses of its
+    ///   devices: there is no hardware window, and they are refused, the
+    ///   program ending with [`UnsupportedTrapTask`](RuntimeError::UnsupportedTrapTask)
+    ///   for the host to say so.
+    /// * Any other value does nothing, as in EASy68K.
+    fn hardware_task(&mut self) -> RuntimeResult<()> {
+        match self.cpu.d_reg[1].get_byte() {
+            0..=3 | 7 => Err(RuntimeError::UnsupportedTrapTask { task: 32 }),
+            4 => {
+                self.set_register_value(
+                    RegisterOperand::Data(1),
+                    interrupts::SIMULATOR_VERSION,
+                    Size::Long,
+                );
+                Ok(())
+            }
+            6 => {
+                let selector = self.cpu.d_reg[2].get_byte();
+                let interval = self.cpu.d_reg[3].get_long();
+                self.set_machine_state(self.machine.with_auto_irq(selector, interval));
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
 
@@ -4880,6 +5353,32 @@ impl Interpreter {
             _ => Err(RuntimeError::UnsupportedTrapTask { task: value }),
         }
     }
+    /// `stop #value`: the whole status register loaded from `value`, T
+    /// included, as the 68000 loads it, and then the processor waits for an
+    /// IRQ above the new mask: [`Stopped`](InterpreterStatus::Stopped), with
+    /// the program counter on the next instruction, where the IRQ's frame
+    /// returns. A request already pending above the new mask wakes it at once:
+    /// the processor is stopped, but does not wait, and the next step takes
+    /// the request. One that started with T set does not stop: the trace
+    /// exception follows it, and its handler returns past it. EASy68K keeps an
+    /// old T and calls an S of 0 a privilege violation; a 68000 stops in user
+    /// mode.
+    ///
+    /// It is out of line, as the rare instructions are, so that
+    /// `execute_instruction` keeps the code of the common ones.
+    #[cold]
+    #[inline(never)]
+    fn stop(&mut self, value: u16) -> RuntimeResult<()> {
+        self.check_privilege()?;
+        let traced = self.takes_trace && self.cpu.is_tracing();
+        self.write_sr(value);
+        if !traced {
+            //which makes the status `Stopped` unless an IRQ is ready (`update_irq_ready`)
+            self.set_machine_state(self.machine.stopped());
+        }
+        Ok(())
+    }
+
     /**
     Some instructions limit inputs to 8 bits if the destination is
     not a register.
@@ -5263,9 +5762,12 @@ impl Interpreter {
         Ok(())
     }
     /// Runs until `simhalt` pauses the Program, an interrupt needs an answer,
-    /// an instruction stores into the watched range, or the Program
-    /// terminates. Calling it while paused, or after a watched write, resumes
-    /// the Program.
+    /// an instruction stores into the watched range, `stop` stops the
+    /// processor with no IRQ to wake it, or the Program terminates. Calling it
+    /// while paused, or after a watched write, resumes the Program; calling it
+    /// while [`Stopped`](InterpreterStatus::Stopped) answers `Stopped` at once.
+    /// Every IRQ ready on the way is taken, a step of its own, the one that
+    /// woke a stopped processor first.
     ///
     /// It never stops for a [code write](CodeWrite); a run that should is
     /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints).
@@ -5336,6 +5838,17 @@ impl Interpreter {
     ///
     /// Only the instruction the run starts on is affected; every breakpoint the
     /// run reaches after that stops it before the instruction executes.
+    ///
+    /// An IRQ ready to be taken is taken before the breakpoint at the program
+    /// counter is looked at, since the next instruction to run is then the
+    /// handler's: a breakpoint in the handler stops the run there, and the one
+    /// at the instruction it came before stops it when the handler returns,
+    /// that instruction being about to run. `skip_breakpoint_at_pc` is about
+    /// the run's first step, which is then the IRQ, so "continue" from a
+    /// breakpoint with an IRQ ready runs the handler and stops at the same
+    /// breakpoint again. A `stop` stops the run with
+    /// [`Stopped`](InterpreterStatus::Stopped), and a run of a processor that
+    /// waits answers `Stopped` at once.
     pub fn run_with_breakpoints(
         &mut self,
         breakpoints: &[Breakpoint],
@@ -5355,28 +5868,31 @@ impl Interpreter {
         skip_breakpoint_at_pc: bool,
     ) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
-        if self.is_resumable_stop() && self.ends_at_pc() {
+        if self.is_resumable_stop() && self.ends_next() {
             self.terminate(Termination::EndOfProgram {
                 address: self.pc & ADDRESS_MASK,
             });
             return Ok(self.status);
         }
-        let resuming_after_pause = self.is_resumable_stop();
         let addresses = self.get_breakpoint_addresses(breakpoints);
-        let mut iterations = 0;
         let limit = limit.unwrap_or(usize::MAX);
         let mut limit_counter = limit;
+        let resuming_after_pause = self.is_resumable_stop();
+        let mut iterations = 0;
         while (self.status == InterpreterStatus::Running
             || (resuming_after_pause && iterations == 0))
             && limit_counter > 0
         {
             let at_starting_pc = iterations == 0;
+            //an IRQ ready is the next step, before the breakpoint here: the next instruction
+            //to run is its handler's
             if !(at_starting_pc && skip_breakpoint_at_pc)
                 && addresses.contains(&(self.pc & ADDRESS_MASK))
+                && !self.irq_ready
             {
-                //a run that stops on a breakpoint is running, not paused: the
-                //status a `simhalt` left behind belongs to the halt, not to the
-                //breakpoint the resumed run stopped at
+                //a run that stops on a breakpoint is running, not paused: the status a
+                //`simhalt` left behind belongs to the halt, not to the breakpoint the resumed
+                //run stopped at
                 self.status = InterpreterStatus::Running;
                 break;
             }
@@ -5398,16 +5914,19 @@ impl Interpreter {
     }
 
     /// Runs until `simhalt`, the end of the program, an interrupt, a store into
-    /// the watched range or `limit` instructions, which answers the
-    /// [`ExecutionLimit`](RuntimeError::ExecutionLimit) only when the last of
-    /// them stopped nothing, as [`run_with_breakpoints`](Interpreter::run_with_breakpoints)
-    /// does. It never stops for a code write; `run_with_breakpoints` with no
+    /// the watched range, a `stop` with no IRQ to wake it or `limit` steps,
+    /// which answers the [`ExecutionLimit`](RuntimeError::ExecutionLimit) only
+    /// when the last of them stopped nothing, as
+    /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints) does. An IRQ
+    /// taken is one of the `limit` steps, as it is a step of the history, and
+    /// no instruction of [`get_executed_instructions`](Interpreter::get_executed_instructions).
+    /// It never stops for a code write; `run_with_breakpoints` with no
     /// breakpoint and [`RunOptions::stopping_on_code_writes`] is the limited run
     /// that does.
     pub fn run_with_limit(&mut self, limit: usize) -> RuntimeResult<InterpreterStatus> {
         let mut limit_counter = limit;
         self.verify_can_run()?;
-        if self.is_resumable_stop() && self.ends_at_pc() {
+        if self.is_resumable_stop() && self.ends_next() {
             self.terminate(Termination::EndOfProgram {
                 address: self.pc & ADDRESS_MASK,
             });
@@ -5659,7 +6178,9 @@ impl Interpreter {
     pub fn wasm_get_pc(&self) -> usize {
         self.get_pc()
     }
-    pub fn wasm_get_stack_top(&self) -> usize { self.stack_top }
+    pub fn wasm_get_stack_top(&self) -> usize {
+        self.get_stack_top()
+    }
     pub fn wasm_get_sp(&self) -> usize {
         self.get_sp()
     }
@@ -5804,6 +6325,31 @@ impl Interpreter {
     /// one.
     pub fn wasm_set_ssp(&mut self, value: u32) {
         self.set_ssp(value)
+    }
+    /// The IRQ latch, whether the processor is stopped, and what the program
+    /// set up with tasks 32, 60 and 62, as `{pendingIrqs, stopped, autoIrqs,
+    /// keyboardLevels, mouseLevels}`: [`get_machine_state`](Interpreter::get_machine_state).
+    pub fn wasm_get_machine_state(&self) -> JsValue {
+        js(&self.get_machine_state())
+    }
+    /// Latches an IRQ at `level`, which is `raiseIrq(level)`:
+    /// [`raise_irq`](Interpreter::raise_irq). It throws an `InvalidArgument`
+    /// for a level that is not 1 to 7.
+    pub fn wasm_raise_irq(&mut self, level: u8) -> Result<(), JsValue> {
+        self.raise_irq(level).map_err(|e| js(&e))
+    }
+    /// Reports an event on the Screen, `'keyDown'`, `'keyUp'`, `'mouseDown'`,
+    /// `'mouseUp'` or `'mouseMove'`, and answers the level of the IRQ it
+    /// latched, or `undefined`: [`device_event`](Interpreter::device_event).
+    /// It throws an `InvalidArgument` for any other value.
+    pub fn wasm_device_event(&mut self, event: JsValue) -> Result<Option<u8>, JsValue> {
+        let event: DeviceEvent = serde_wasm_bindgen::from_value(event).map_err(|e| {
+            js(&RuntimeError::InvalidArgument(format!(
+                "a device event is 'keyDown', 'keyUp', 'mouseDown', 'mouseUp' or 'mouseMove': {}",
+                e
+            )))
+        })?;
+        Ok(self.device_event(event))
     }
     pub fn wasm_undo(&mut self) -> Result<JsValue, JsValue> {
         self.undo()
@@ -6026,6 +6572,10 @@ impl Interpreter {
         interpreter.cpu = cpu;
         interpreter.memory.set_supervisor(cpu.is_supervisor());
         interpreter.stack_top = cpu.a_reg[7].get_long() as usize;
+        interpreter.inactive_stack_top = match cpu.is_supervisor() {
+            true => cpu.get_usp(),
+            false => cpu.get_ssp(),
+        } as usize;
         interpreter.takes_trace = false;
         interpreter
     }

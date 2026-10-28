@@ -599,6 +599,10 @@ pub fn lower(
         Family::Tas => Some(Instruction::TAS(operand(0)?)),
         Family::Rtr => Some(Instruction::RTR),
         Family::Rte => Some(Instruction::RTE),
+        // the immediate is the word the status register is loaded with, which
+        // the analyzer has checked fits one
+        Family::Stop => Some(Instruction::STOP(immediate(operand(0))? as u16)),
+        Family::Reset => Some(Instruction::RESET),
         Family::Chk => Some(Instruction::CHK(
             at_size(operand(0)?, Size::Word),
             register(operand(1))?,

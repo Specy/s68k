@@ -1,10 +1,10 @@
 //! What the Interpreter does with the instructions only the decoder makes.
 //!
-//! `stop` and `reset` need interrupts, which the Interpreter does not have yet
-//! (the plan's milestone C8), and the Assembler refuses both; the line A and
-//! line F words take vectors 10 and 11, and a word that is no instruction is
-//! an illegal instruction, vector 4. None of them can reach the Interpreter
-//! from source, so each is placed in a Program by hand.
+//! The line A and line F words take vectors 10 and 11, and a word that is no
+//! instruction is an illegal instruction, vector 4. None of them can reach the
+//! Interpreter from source, so each is placed in a Program by hand. (`stop`
+//! and `reset` were here until the plan's milestone C8 assembled and ran them;
+//! `src/test/interrupts.rs` has them now.)
 
 use crate::assembler::program::{AssembledInstruction, Program};
 use crate::assembler::source::Location;
@@ -47,18 +47,6 @@ fn run(instruction: Instruction) -> (Interpreter, RuntimeError) {
         })
     );
     (interpreter, error)
-}
-
-#[test]
-fn stop_and_reset_are_not_run_yet() {
-    let cases = [
-        (Instruction::STOP(0x2700), "`stop`"),
-        (Instruction::RESET, "`reset`"),
-    ];
-    for (instruction, named) in cases {
-        let (_, error) = run(instruction);
-        assert_eq!(error, RuntimeError::Unimplemented(named.to_string()));
-    }
 }
 
 #[test]

@@ -579,9 +579,9 @@ impl ParsedLine {
 /// from the assembler that checks them rather than from a copy. It is the
 /// [instruction table](assembler::instructions::table) read as data: the
 /// implemented rows in the table's order, each Form with its Addressing modes
-/// by name and the first processor that has it. The rows s68k refuses (`rte`,
-/// `stop`, `reset`, and the instructions of the 68010 and the 68020 its
-/// dialects do not have yet) have no Forms and are left out.
+/// by name and the first processor that has it. The rows s68k refuses (the
+/// 68020's `callm` and `rtm`, and the instructions of the 68010 and the 68020
+/// its dialects do not have yet) have no Forms and are left out.
 #[wasm_bindgen]
 pub fn wasm_get_instruction_table() -> Result<JsValue, JsValue> {
     set_panic_hook();
@@ -796,7 +796,7 @@ mod api_tests {
                 .find(|row| row["mnemonic"] == mnemonic)
                 .unwrap_or_else(|| panic!("`{mnemonic}` is listed"))
         };
-        for refused in ["stop", "reset"] {
+        for refused in ["callm", "rtm"] {
             assert!(
                 rows.iter().all(|row| row["mnemonic"] != refused),
                 "`{refused}` is not implemented and is not listed"
@@ -858,8 +858,9 @@ mod api_tests {
             .filter(|form| form["privileged"] == true)
             .count();
         assert_eq!(
-            privileged, 7,
-            "`move`, `andi`, `ori` and `eori` into `sr`, the two `move usp` and `rte`"
+            privileged, 9,
+            "`move`, `andi`, `ori` and `eori` into `sr`, the two `move usp`, `rte`, `stop` and \
+             `reset`"
         );
         assert_eq!(move_forms[4]["operands"][0], json!(["ccr"]));
         assert_eq!(move_forms[4]["processor"], "68010");

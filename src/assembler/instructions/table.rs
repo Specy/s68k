@@ -321,8 +321,9 @@ pub struct Form {
     /// What the Operands may not be together.
     pub combination: Combination,
     /// Whether the 68000 runs this shape only in supervisor mode: `move <ea>,sr`,
-    /// `andi`, `ori` and `eori` into `sr`, `rte` and `move usp`. `move sr,<ea>`
-    /// is not, on a 68000 (the 68010 made it so), and no `ccr` shape ever was.
+    /// `andi`, `ori` and `eori` into `sr`, `rte`, `stop`, `reset` and
+    /// `move usp`. `move sr,<ea>` is not, on a 68000 (the 68010 made it so),
+    /// and no `ccr` shape ever was.
     ///
     /// A privileged Form assembles like any other: a program decides its mode
     /// as it runs, and the Interpreter raises a privilege violation, vector 8,
@@ -551,6 +552,10 @@ pub enum Family {
     Rtr,
     /// `rte`.
     Rte,
+    /// `stop #n`.
+    Stop,
+    /// `reset`.
+    Reset,
     /// `chk`.
     Chk,
     /// `trapv`.
@@ -1327,12 +1332,19 @@ pub const TABLE: &[InstructionSpec] = &[
         &[form(&[Modes::DATA, Modes::DN], SizeRule::WordOnly)],
     ),
     implemented("illegal", Family::Illegal, &[form(&[], SizeRule::Unsized)]),
-    not_implemented(
+    // `stop #n` loads the whole status register from its immediate word and
+    // waits for an interrupt request above the new mask; `reset` asserts the
+    // reset line to devices s68k does not have, and only takes its time
+    implemented(
         "stop",
-        "s68k has no interrupts to wake a stopped processor",
-        Some("`simhalt`"),
+        Family::Stop,
+        &[privileged_form(&[Modes::IMMEDIATE], SizeRule::Unsized)],
     ),
-    not_implemented("reset", "s68k has no external hardware to reset", None),
+    implemented(
+        "reset",
+        Family::Reset,
+        &[privileged_form(&[], SizeRule::Unsized)],
+    ),
     // ---- Bcc ----
     branch("bcc", Condition::CarryClear),
     branch("bhs", Condition::CarryClear),
@@ -1688,10 +1700,11 @@ mod tests {
 
     #[test]
     fn a_refused_instruction_is_in_the_table_with_its_reason() {
-        // The two that wait for interrupts (the plan's milestone C8). The
-        // extend-flag and binary-coded-decimal group was here until phase 3's
-        // second half implemented it, and `rte` until exceptions (C6).
-        for mnemonic in ["stop", "reset"] {
+        // The 68020's module call, left out for good. The extend-flag and
+        // binary-coded-decimal group was here until phase 3's second half
+        // implemented it, `rte` until exceptions (C6), and `stop` and `reset`
+        // until interrupts (C8).
+        for mnemonic in ["callm", "rtm"] {
             let spec = lookup(mnemonic).unwrap_or_else(|| panic!("`{mnemonic}` is in the table"));
             match spec.implementation {
                 Implementation::NotImplemented { reason, .. } => {
@@ -2002,10 +2015,10 @@ mod tests {
         );
     }
 
-    /// The 68000 reserves seven shapes for supervisor mode: the four that
+    /// The 68000 reserves nine shapes for supervisor mode: the four that
     /// write `sr` (`move <ea>,sr` and `andi`, `ori` and `eori` into it),
-    /// `rte`, and the two of `move usp`. `move sr,<ea>` became privileged on
-    /// the 68010, and the `ccr` shapes never were.
+    /// `rte`, `stop`, `reset`, and the two of `move usp`. `move sr,<ea>`
+    /// became privileged on the 68010, and the `ccr` shapes never were.
     #[test]
     fn only_the_forms_that_write_sr_or_reach_the_user_stack_pointer_are_privileged() {
         let privileged: Vec<(&str, usize)> = TABLE
@@ -2027,7 +2040,9 @@ mod tests {
                 ("andi", 2),
                 ("ori", 2),
                 ("eori", 2),
-                ("rte", 0)
+                ("rte", 0),
+                ("stop", 0),
+                ("reset", 0)
             ]
         );
         for spec in TABLE {
@@ -2036,9 +2051,9 @@ mod tests {
                     form.privileged,
                     form.operands.last() == Some(&Modes::SR)
                         || form.operands.contains(&Modes::USP)
-                        || spec.mnemonic == "rte",
+                        || ["rte", "stop", "reset"].contains(&spec.mnemonic),
                     "`{}`: a form is privileged exactly when it writes `sr`, reaches `usp` or \
-                     is `rte`",
+                     is `rte`, `stop` or `reset`",
                     spec.mnemonic
                 );
             }

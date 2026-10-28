@@ -1317,7 +1317,7 @@ impl<'a> Analyzer<'a> {
     ///
     /// The one immediate read at another size than the instruction's is the
     /// destination of a bit instruction, `btst d1,#5`, which is a byte whatever
-    /// the instruction is written as.
+    /// the instruction is written as; `stop`, which has no size, takes a word.
     fn check_immediate_sizes(
         &mut self,
         spec: &'static InstructionSpec,
@@ -1337,6 +1337,8 @@ impl<'a> Analyzer<'a> {
                 // encoded ([`Self::check_bit_number`])
                 (Some(Family::Bit(_)), 0) => continue,
                 (Some(Family::Bit(_)), 1) => Size::Byte,
+                // the word `stop` loads the status register with
+                (Some(Family::Stop), 0) => Size::Word,
                 _ => match size {
                     Some(size) => size,
                     None => continue,
@@ -1846,9 +1848,23 @@ mod tests {
 
     #[test]
     fn an_instruction_that_is_not_assembled_says_why() {
-        assert_eq!(codes("    stop #$2700"), ["unimplemented_operation"]);
-        assert_eq!(codes("    reset"), ["unimplemented_operation"]);
+        assert_eq!(codes("    callm #0,(a0)"), ["unimplemented_operation"]);
+        assert_eq!(codes("    rtm d0"), ["unimplemented_operation"]);
         assert_eq!(codes("    trap #16"), ["value_out_of_range"]);
+    }
+
+    /// `stop` and `reset` are assembled since interrupts are taken (the
+    /// plan's milestone C8); `stop`'s immediate is the word it loads the
+    /// status register with, a word immediate's range.
+    #[test]
+    fn stop_and_reset_assemble() {
+        assert!(matches!(analyze("    stop #$2700"), (codes, Some(Instruction::STOP(0x2700))) if codes.is_empty()));
+        assert!(matches!(analyze("    stop #-1"), (codes, Some(Instruction::STOP(0xFFFF))) if codes.is_empty()));
+        assert!(matches!(analyze("    reset"), (codes, Some(Instruction::RESET)) if codes.is_empty()));
+        assert_eq!(codes("    stop #$12345"), ["immediate_out_of_range"]);
+        assert_eq!(codes("    stop d0"), ["invalid_addressing_mode"]);
+        assert_eq!(codes("    stop"), ["wrong_operand_count"]);
+        assert_eq!(codes("    reset #1"), ["wrong_operand_count"]);
     }
 
     /// `rte` and every `trap` are assembled since exceptions are taken (the

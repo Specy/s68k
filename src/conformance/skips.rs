@@ -2,13 +2,14 @@
 //! reason for every entry (ADR 0010; the asm-editor's
 //! `docs/design/m68k-machine-plan.md`, planning decision 6).
 //!
-//! The machine has no interrupts and no cycle counter yet, so a test that
-//! needs either is skipped, and each such entry names the milestone of the
-//! plan whose work lets it go with an [`Until`]: the milestone deletes every
-//! line of [`SKIPS`] and [`MUSASHI`] that names it, and C9 turns
-//! [`CHECK_LENGTH`] on. An entry marked [`Until::Never`] is a choice of
-//! s68k's and stays. Milestone C6, exceptions, deleted its lines: every
-//! exception the suite takes, its address errors among them, is checked.
+//! The machine has no cycle counter yet, so the length of a test is not
+//! compared, and an entry that waits for a milestone of the plan names it
+//! with an [`Until`]: the milestone deletes every line of [`SKIPS`] and
+//! [`MUSASHI`] that names it, and C9 turns [`CHECK_LENGTH`] on. An entry
+//! marked [`Until::Never`] is a choice of s68k's and stays. Milestone C6,
+//! exceptions, deleted its lines: every exception the suite takes, its address
+//! errors among them, is checked. Milestone C8, interrupts, deleted those of
+//! `stop` and `reset`, whose files are checked whole.
 //!
 //! A **skip** leaves a test out. A **relaxation** runs it and compares less,
 //! for the suite's own documented errata; every relaxation is one line of
@@ -19,8 +20,6 @@ use super::suite::{Kind, Test};
 /// The milestone whose work makes a skip unnecessary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Until {
-    /// Interrupts, `stop` and `reset`.
-    C8,
     /// Cycles.
     C9,
     /// Never: s68k means to differ here.
@@ -51,8 +50,6 @@ pub struct Skip {
 #[rustfmt::skip]
 pub const SKIPS: &[Skip] = &[
     Skip { name: "trap #15", when: When::TrapFifteen, until: Until::Never, reason: "trap #15 is EASy68K's service trap in either mode, not vector 47 (design decision 12)" },
-    Skip { name: "STOP", when: When::File("STOP"), until: Until::C8, reason: "stop loads SR and waits for an interrupt" },
-    Skip { name: "RESET", when: When::File("RESET"), until: Until::C8, reason: "reset is privileged and takes 132 cycles, and s68k does not run it yet" },
 ];
 
 /// What a [`Relaxation`] compares less.

@@ -6,7 +6,8 @@
 //! both stack pointers, SR, the program counter and every RAM word the final
 //! state lists. It also checks that the step
 //! wrote no byte the final state leaves out. The length in cycles is compared
-//! only when [`CHECK_LENGTH`] is on.
+//! only when [`CHECK_LENGTH`] is on. A `stop` leaves the processor stopped,
+//! which is the one status besides running a test may end in.
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -121,12 +122,13 @@ fn check(file: &str, test: &Test) -> Vec<String> {
     };
     let expected = &test.final_state;
     let mut problems = Vec::new();
+    let stopped = result == Ok(InterpreterStatus::Stopped);
     match result {
         Err(error) => problems.push(format!("raised {error:?}")),
-        Ok(status) if status != InterpreterStatus::Running => {
+        Ok(InterpreterStatus::Running | InterpreterStatus::Stopped) => {}
+        Ok(status) => {
             problems.push(format!("ended as {status:?}, {:?}", interpreter.get_termination()))
         }
-        Ok(_) => {}
     }
     let registers = interpreter.get_cpu().get_register_values();
     let mut compare = |name: String, found: u32, wanted: u32| {
@@ -154,7 +156,12 @@ fn check(file: &str, test: &Test) -> Vec<String> {
         ));
     }
     let pc = (interpreter.get_pc() & ADDRESS_MASK) as u32;
-    let wanted_pc = expected.pc.wrapping_sub(4) & ADDRESS_MASK as u32;
+    //a stopped processor prefetches nothing, so MAME's next prefetch is the instruction after
+    //the `stop`, which is the program counter the 68000 resumes at and stacks
+    let wanted_pc = match stopped {
+        true => expected.pc,
+        false => expected.pc.wrapping_sub(4),
+    } & ADDRESS_MASK as u32;
     if pc != wanted_pc {
         problems.push(format!("PC is ${pc:06X}, expected ${wanted_pc:06X}"));
     }
@@ -265,8 +272,8 @@ const MUSASHI_LIMIT: usize = 50_000_000;
 /// Runs one of Musashi's self-checking programs, the bytes of its `.bin`,
 /// and answers whether it passed: it wrote `TEST_PASS_REG` and never
 /// `TEST_FAIL_REG`. The writes are seen through watched memory. Each program
-/// ends with `stop #$2700` after its verdict, which s68k ends the program on
-/// until C8; that end is expected.
+/// ends with `stop #$2700` after its verdict, and nothing raises an IRQ, so
+/// the processor stopped is its end.
 pub fn run_musashi(bytes: &[u8]) -> Result<(), String> {
     let program = Program::from_image(MUSASHI_LOAD_ADDRESS, bytes.to_vec(), MUSASHI_LOAD_ADDRESS);
     let options = InterpreterOptions {
@@ -286,7 +293,6 @@ pub fn run_musashi(bytes: &[u8]) -> Result<(), String> {
                 Err(RuntimeError::ExecutionLimit(_)) => {
                     return Err(format!("ran {MUSASHI_LIMIT} instructions without ending"))
                 }
-                Err(error) if passed && is_the_final_stop(&error) => return Ok(()),
                 Err(error) => {
                     return Err(format!(
                         "raised {error:?} at ${:06X}",
@@ -304,7 +310,7 @@ pub fn run_musashi(bytes: &[u8]) -> Result<(), String> {
                 }
                 passed |= write.address == MUSASHI_PASS;
             }
-            if interpreter.has_terminated() {
+            if interpreter.has_terminated() || status == InterpreterStatus::Stopped {
                 return match passed {
                     true => Ok(()),
                     false => Err(format!("ended as {:?} without passing", status)),
@@ -313,10 +319,4 @@ pub fn run_musashi(bytes: &[u8]) -> Result<(), String> {
         }
     });
     run.unwrap_or_else(|message| Err(format!("panicked: {message}")))
-}
-
-/// Whether `error` is the `stop` a program ends with, which s68k does not run
-/// yet.
-fn is_the_final_stop(error: &RuntimeError) -> bool {
-    matches!(error, RuntimeError::Unimplemented(text) if text == "`stop`")
 }

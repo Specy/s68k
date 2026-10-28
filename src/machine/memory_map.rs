@@ -116,15 +116,16 @@ impl MemoryMap {
     /// EASy68K's `memoryMapCheck`: the `length` bytes at `address`, an address
     /// of the 24 bits of the bus, against the ranges of `kinds`, in its order,
     /// invalid, protected, read only and ROM, the first that has a byte of
-    /// them deciding. Protected refuses only when `supervisor` is false. No
-    /// byte at all touches no range.
+    /// them deciding. Protected refuses only when `supervisor` is false.
+    ///
+    /// The test is EASy68K's own, `loc + bytes - 1 >= start && loc <= end` in
+    /// signed numbers, so a buffer of no bytes, a `trap #15` task's string
+    /// that is only its NUL or a read of none, touches a range it starts in
+    /// past the range's first byte, and not one it starts on the first byte of.
     pub fn check(&self, kinds: Kinds, address: usize, length: usize, supervisor: bool) -> Verdict {
-        if length == 0 {
-            return Verdict::Allowed;
-        }
-        let last = address + (length - 1);
+        let last = address as i64 + length as i64 - 1;
         let touches = |kind| match self.range(kind) {
-            Some((start, end)) => kinds.has(kind) && last >= start && address <= end,
+            Some((start, end)) => kinds.has(kind) && last >= start as i64 && address <= end,
             None => false,
         };
         if touches(MemoryRangeKind::Invalid) {

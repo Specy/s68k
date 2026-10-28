@@ -1,9 +1,11 @@
 import {
     Access,
+    AutoIrq,
     Breakpoint,
     CodeWrite,
     Condition,
     Cpu as RawCpu,
+    DeviceEvent,
     Diagnostic,
     DisassembledLine,
     ExecutionStep,
@@ -24,6 +26,7 @@ import {
     KeyStateResult,
     LineSpan,
     Location,
+    MachineState,
     MemoryRange,
     MemoryRangeKind,
     MutationOperation,
@@ -376,6 +379,12 @@ export class Interpreter {
      * Run one instruction and answer the resulting status. If `SIMHALT`
      * paused the program, or the last instruction stopped on a watched write,
      * this resumes at the following instruction.
+     *
+     * An IRQ ready to be taken, a pending level above the interrupt mask or at
+     * level 7, is the step instead: a step of `kind: 'irq'` that pushes the
+     * frame and jumps to the autovector's handler. While the processor is
+     * `Stopped`, waiting, a step runs nothing and answers `Stopped`; a request
+     * that can wake it makes the status `Running`, and the next step takes it.
      */
     step(): InterpreterStatus {
         return this.interpreter.wasm_step()
@@ -517,6 +526,11 @@ export class Interpreter {
         return this.interpreter.wasm_get_pc()
     }
 
+    /**
+     * The top of the stack A7 is on, which the Stack region runs up to from
+     * A7: the highest A7 has been, or where it last jumped to. The USP and the
+     * SSP each keep their own, swapped with them whenever S changes.
+     */
     getStackTop(): number {
         return this.interpreter.wasm_get_stack_top()
     }
@@ -581,6 +595,46 @@ export class Interpreter {
      */
     setSsp(value: number) {
         this.interpreter.wasm_set_ssp(value)
+    }
+
+    /**
+     * The interrupt state: the IRQ levels pending, whether `stop` has stopped the
+     * processor, the timers task 32 set (which the host runs on the program's
+     * time, calling {@link Interpreter.raiseIrq} at each firing), and the levels
+     * tasks 62 and 60 set for the keyboard's and the mouse's events. Read it
+     * after every call that ran the program: a step can change any of it, and
+     * undo puts it back.
+     */
+    getMachineState(): MachineState {
+        return this.interpreter.wasm_get_machine_state() as MachineState
+    }
+
+    /**
+     * Latch an interrupt request at `level`, 1 to 7: what a timer of the
+     * program's does when it fires. It is taken before the next instruction
+     * when it is above the interrupt mask or is level 7, and waits until then.
+     * One that can wake a processor `stop` stopped makes the status `Running`
+     * at once, `getMachineState().stopped` staying true until the next step
+     * takes it. A
+     * request is the host's input, journaled nowhere: undo makes a request a
+     * step took pending again, and leaves one the program has not seen pending.
+     * It does nothing after the program has ended. Throws an `InvalidArgument`
+     * for a level that is not 1 to 7.
+     */
+    raiseIrq(level: number): void {
+        this.interpreter.wasm_raise_irq(level)
+    }
+
+    /**
+     * Report a key or mouse event on the Screen, and latch the interrupt
+     * request the program asked for on it with task 62 or 60, as
+     * {@link Interpreter.raiseIrq} does. Answers the level it latched, or null
+     * when the program asked for none on that event. The event's own data, the
+     * key and the mouse's state, is still read by the program's tasks. Throws an
+     * `InvalidArgument` for a kind that is not a `DeviceEvent`.
+     */
+    deviceEvent(kind: DeviceEvent): number | null {
+        return this.interpreter.wasm_device_event(kind) ?? null
     }
 
     readMemoryBytes(address: number, length: number): Uint8Array {
@@ -690,7 +744,8 @@ export class Interpreter {
     /**
      * Whether the next step ends the program: the program counter is on
      * `$FFFF $FFFF` none of whose bytes the program placed, which is where a
-     * program that does not end itself gets to.
+     * program that does not end itself gets to, and no IRQ is ready to be
+     * taken first.
      */
     hasReachedBottom(): boolean {
         return this.interpreter.wasm_has_reached_bottom()
@@ -698,8 +753,10 @@ export class Interpreter {
 
     /**
      * Run until the program pauses, requests an interrupt, stores into the
-     * watched range, or terminates. It does not stop on a write into code;
-     * {@link Interpreter.runWithBreakpoints} can.
+     * watched range, stops with `stop` and nothing to wake it (`Stopped`), or
+     * terminates. Every IRQ ready on the way is taken, a step of its own, the
+     * one that woke a stopped processor first. It does not stop on a
+     * write into code; {@link Interpreter.runWithBreakpoints} can.
      */
     run(): InterpreterStatus {
         return this.interpreter.wasm_run()
@@ -717,9 +774,11 @@ export class Interpreter {
     }
 
     /**
-     * Like {@link Interpreter.run}, but execute at most `limit` instructions. It
-     * throws an `ExecutionLimit` when they have run and the program would run
-     * on; a stop made by the last of them is answered as that status.
+     * Like {@link Interpreter.run}, but take at most `limit` steps, an IRQ taken
+     * being one of them. It throws an `ExecutionLimit` when they have run and
+     * the program would run on; a stop made by the last of them is answered as
+     * that status, and a processor `stop` stopped answers `Stopped` at once
+     * while nothing wakes it.
      */
     runWithLimit(limit: number): InterpreterStatus {
         return this.interpreter.wasm_run_with_limit(limit)
@@ -752,6 +811,16 @@ export class Interpreter {
      * after it, with `InterpreterStatus.CodeWrite`, and the next call resumes,
      * with `skipBreakpointAtPc: false` like any resume mid-program. A watched
      * write by the same instruction stops it as `WatchedWrite` first.
+     *
+     * An IRQ ready to be taken is taken before the breakpoint on the program
+     * counter is looked at, since the handler's instruction is the next to run:
+     * a breakpoint in the handler stops the run there, and the one it came
+     * before stops it when the handler returns, its instruction being about to
+     * run. `skipBreakpointAtPc` is about the run's first step, which is then the
+     * IRQ, so continuing from a breakpoint with a request pending runs the
+     * handler and stops at the same breakpoint again. A `stop` stops the run
+     * with `Stopped`, and a run of a processor that waits answers `Stopped` at
+     * once.
      */
     runWithBreakpoints(
         breakpoints: Breakpoint[],
@@ -884,7 +953,7 @@ export function ccrToFlagsArray(ccr: number) {
 
 export type ExecutionStepInternal = {
     id: number,
-    /** An instruction the program ran, or a poke the host made between two of them. */
+    /** An instruction the program ran, a poke the host made between two of them, or an IRQ taken. */
     kind: ExecutionStepKind,
     mutations: MutationOperation[],
     /** What a poke wrote, old and new; empty on an instruction. */
@@ -934,9 +1003,11 @@ export {
     RawCpu,
     RawRegister,
     Access,
+    AutoIrq,
     Breakpoint,
     CodeWrite,
     Condition,
+    DeviceEvent,
     Diagnostic,
     DisassembledLine,
     ExecutionStep,
@@ -956,6 +1027,7 @@ export {
     KeyStateResult,
     LineSpan,
     Location,
+    MachineState,
     MemoryRange,
     MemoryRangeKind,
     MutationOperation,

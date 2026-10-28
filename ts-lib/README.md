@@ -288,6 +288,7 @@ interpreter.getTermination()
 // {type: 'TerminatedByHost'} (a Terminate answer),
 // {type: 'Exception', value: {cause: {type: 'DivisionByZero'}, vector: 5}} (vector 5 holds no handler),
 // {type: 'Exception', value: {cause: {type: 'UnsupportedTrapTask', value: {task: 30}}}} (no vector could take it)
+// {type: 'Exception', value: {cause: {type: 'Irq', value: {level: 2}}, vector: 26}} (an IRQ whose autovector holds no handler)
 // or {type: 'Halted', value: {cause, vector}} (a frame pushed on an odd supervisor stack pointer
 // or into memory the memory map refuses, or a vector read from an invalid range)
 ```
@@ -304,8 +305,9 @@ fetched from an odd address, or a jump to one, is an `AddressError`.
 
 Undoing the step that ended the program brings it back, running. The tasks s68k
 does not carry out are the printer (10), the text window's font and contents
-(21, 22, 25), the cycle counter (30, 31), the hardware window (32), the serial
-ports (40 to 43), the interrupt requests (60, 62) and the network (100 to 107).
+(21, 22, 25), the cycle counter (30, 31), the hardware window (32 with 0 to 3 or
+7 in D1.B: there is no hardware window), the serial ports (40 to 43) and the
+network (100 to 107).
 
 Where this departs from EASy68K:
 
@@ -560,12 +562,63 @@ exception taken as `PushException {vector, from, handler}`, `rte` as
 stack pointer as `WriteStackPointers {old: {usp, ssp}, new: {usp, ssp}}`; the
 step's `old_sr` and `new_sr` say which of the two A7 was.
 
+### Interrupts
+
+The 68000's interrupt requests, IRQs, at levels 1 to 7, all autovectored: a
+request is latched until it is taken, between two instructions, the highest
+pending level above the status register's mask first and level 7 whatever the
+mask, through vector 24 plus the level (`$64` to `$7C`). The mask rises to the
+level, and `rte` puts it back. Taking one is a step of its own, `kind: 'irq'`,
+with no `location`; its `PushException` names the vector and its
+`SetMachineState` the request it took. An autovector with no handler ends the
+program with `{type: 'Irq', value: {level}}` as the cause.
+
+The program sets up its sources with `trap #15`: task 32 with 6 in D1.B sets a
+timer per level (D2.B `$81` to `$87` and D3.L milliseconds, 1 to 7 turning
+one off, 0 all of them), task 60 the mouse's levels and task 62 the keyboard's
+(D1 bits 15 to 8 the level, bits 0 to 2 the events). The host runs the timers
+on the program's time and reports what happens:
+
+```ts
+interpreter.getMachineState()
+// {pendingIrqs: [], stopped: true, autoIrqs: [{level: 2, intervalMs: 500}],
+//  keyboardLevels: {keyDown: 5, keyUp: 0}, mouseLevels: {down: 0, up: 0, move: 0}}
+interpreter.raiseIrq(2)               // a timer fired: level 2 is pending
+interpreter.deviceEvent('keyDown')    // 5: the level task 62 set for it, latched; null when none is set
+```
+
+`stop #n` loads the status register and waits: the status
+`InterpreterStatus.Stopped`, with `step()` and every run answering it at once
+and running nothing. A request that can wake the processor makes the status
+`Running` at once, and the next step takes it; `getMachineState().stopped` is
+true until then. A request the program has not taken yet is the host's input:
+undoing the step that took one makes it pending again, but undoing an earlier
+step leaves a later request pending. `reset` is privileged and changes nothing.
+
+A run takes an IRQ that is ready before it looks at the breakpoint on the
+program counter, as the handler's instruction is the next to run, so
+continuing from a breakpoint with a request pending runs the handler and stops
+at that breakpoint again.
+
 ### Memory
 
 `Program` and `Interpreter` hold memory on the WebAssembly side, which garbage
 collection cannot reach. Call `dispose()` on both when a program is done with.
 `S68k.assemble` frees the assembly itself when the source did not build one, so
 live checking on every keystroke leaks nothing.
+
+## Migrating past 4.0.0: interrupts
+
+The release with interrupts (above, "Interrupts") assembles and runs `stop` and
+`reset`, and carries out tasks 60, 62 and the parts 4 and 6 of task 32:
+
+| before | after |
+|---|---|
+| `stop` and `reset` refused by the assembler (`unimplemented_operation`) | assembled and run, privileged |
+| `{type: 'Unimplemented', value}` for a decoded `stop` or `reset` | gone: nothing raises it |
+| `UnsupportedTrapTask` for tasks 60 and 62, and for task 32 but its 5 | 60 and 62 set the mouse's and keyboard's levels; 32 answers the version for 4 and sets the timers for 6, and only 0 to 3 and 7 are refused |
+| `ExecutionStepKind` `'instruction' \| 'poke'` | and `'irq'` |
+| | `InterpreterStatus.Stopped`, numbered 7; `getMachineState()`, `raiseIrq(level)`, `deviceEvent(kind)`; the cause `Irq {level}` and the mutation `SetMachineState {old, new}` |
 
 ## Migrating past 4.0.0: exceptions
 
@@ -672,7 +725,8 @@ text.
 | Binary coded decimal   | abcd, sbcd, nbcd                                                                                                                                                                                                 |
 | Other                  | clr, exg, neg, ext, extb, swap, move, link, unlk, lea, pea, moveq, movea, movem, movep, tas, nop                                                                                                                  |
 | Exceptions             | chk, trapv, illegal, trap #0 to #14, rte, and rtr, which returns and restores the condition codes                                                                                                                  |
-| Interrupt              | trap #15, with the I/O, mouse and graphics tasks of EASy68K                                                                                                                                                      |
+| Interrupts and control | stop and reset                                                                                                                                                                                                   |
+| Interrupt              | trap #15, with the I/O, mouse, graphics and interrupt-request tasks of EASy68K                                                                                                                                   |
 
 ## Supported directives
 `org`, `equ`, `set`, `dc`, `dcb`, `ds`, `end`, `reg`, `fail`, `simhalt`,
@@ -685,7 +739,8 @@ are recognised and refused with a diagnostic naming the feature.
 
 ## Known limitations
 1. Characters are one byte, read and written as Windows-1252, as in EASy68K; a source character with no byte of its own is an assembly error.
-2. There are no interrupts, `stop` or `reset` yet, and no cycle counter.
+2. There is no cycle counter yet.
+3. The timers of task 32 are the host's to run; the interpreter keeps their settings and takes the requests the host raises.
 
 # How to build
 The interpreter was made for WASM in mind, to build it you need [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) installed.
@@ -699,7 +754,12 @@ numbered section, and byte alignment, which is 2 for every instruction. `org` ga
 and zero-length reservations emit no item. `ds` remains reserved even with a fill.
 The existing `Program.labels` supplies the symbols, including qualified locals.
 
-`Interpreter.getStackTop()` starts at the initialized stack pointer. An instruction
-moving A7 by more than 4096 bytes starts a new stack; raising A7 above its top raises
-the top. Undo restores it with the instruction. This internal history field does not
+`Interpreter.getStackTop()` is the top of the stack A7 is on, and each stack
+pointer, the USP and the SSP, keeps its own: they start at EASy68K's stack
+pointers, and a change of S swaps them with the stack pointers, so a handler
+entered from user mode has the supervisor stack's top, and its `rte` finds the
+user stack's where the program left it. An instruction moving A7 by more than
+4096 bytes starts a new stack, as does a `move An,usp` or a poke that moves the
+other stack pointer so; raising A7 above its top raises the top. Undo restores
+both with the step, a poke's included. This internal history field does not
 change the serialized public execution history.

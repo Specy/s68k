@@ -56,16 +56,38 @@ The machine is a 68000 as EASy68K simulates one, and a 68000 where EASy68K is wr
 | 8 | `$020` | a privileged instruction in user mode: `move <ea>,sr`, `andi`/`ori`/`eori #n,sr`, `rte`, `stop`, `reset`, `move usp` | the instruction's |
 | 9 | `$024` | trace: after an instruction that started with T set | the next instruction's, or the handler's of the exception it raised |
 | 10, 11 | `$028`, `$02C` | a line A word `$Axxx` and a line F word `$Fxxx` | the instruction's |
+| 25 to 31 | `$064` to `$07C` | an interrupt request at level 1 to 7, through its autovector (below, "Interrupts") | the instruction it came before |
 | 32 to 46 | `$080` to `$0B8` | `trap #0` to `trap #14` | the next instruction's |
 | 47 | `$0BC` | a `trap #15` task that is none of EASy68K's | the next instruction's |
 
 - **Taking one.** The processor reads the vector, copies the status register, sets S and clears T, pushes the frame on the supervisor stack and jumps to the handler. A frame is the status register then the program counter, 6 bytes, except a bus error's and an address error's, 14: the special status word (bits 15 to 5 of the instruction register, R/W, I/N clear, and the function code of the mode and space of the access), the access address, the instruction register, the status register and the program counter. `rte` pops the six bytes; a bus or address error's handler takes the other eight off itself.
 - **No handler.** A vector holding an odd address has no handler, and the program ends with the error as it did before exceptions were taken, the vector named beside it (`Exception {cause, vector}`). Memory starts as `$FF`, so every vector reads `$FFFFFFFF` until the program writes it, and a program that installs nothing ends exactly as before.
-- **A double fault** halts the processor, the termination `Halted {cause, vector}`: a frame pushed on an odd supervisor stack pointer, or into a range the memory map refuses, and a vector read from an invalid range.
+- **A double fault** halts the processor, the termination `Halted {cause, vector}`: a frame pushed on an odd supervisor stack pointer, or into a range the memory map refuses, a vector read from an invalid range, and a bus or address error whose handler the memory map refuses to fetch. The handler of any other exception is fetched by the next step, whose bus error halts in turn if its own handler cannot be fetched.
 - **Supervisor and user mode.** A program starts in supervisor mode with EASy68K's registers: SR `$2000`, A7 the supervisor stack pointer at `$01000000`, the user stack pointer at `$00FF0000`. A7 is the stack pointer of the mode S names, and every write of SR, every exception and `rte` can swap the two. `getSystem()` answers `{sr, usp, ssp}`, and `setSr`, `setUsp` and `setSsp` write them, journaled inside a poke. `move sr,<ea>` is not privileged on a 68000, and `trap #15` works in user mode, as in EASy68K.
 - **Trace** is T sampled before an instruction: an instruction that started with it set takes the trace exception after it, unless it raised an illegal instruction, a privilege violation, a line A or F word or an address error, which it did not finish. After `trap`, `trapv`, `chk` or a division by zero, the trace frame goes on top of theirs, so the trace handler runs first and returns into theirs, as on a 68000 (EASy68K pushes them the other way round). A `trap #15` task that waits on the host is traced once it is answered.
 - **The address error's program counter and side effects** are the 68000's as MAME's microcode leaves them on the 55,606 address errors of the conformance suite: a jump to an odd address faults in its own prefetch, `bsr` with its return address pushed and `jsr` without; a data access stacks the address the prefetch had reached, which depends on the operands; a word through `(An)+` has moved the register and a long has not; `clr` and `move sr,<ea>` read their destination first, so an odd one faults as a read. `src/machine/exception.rs` holds the rules.
 - **The call stack** gains a frame for each exception taken, `kind: 'exception'` with its `vector`, which `rte` takes off; Undo walks back through all of it, the stack swaps included (`WriteStackPointers`, `PushException` and `PopException` mutations).
+
+## Interrupts
+
+The 68000's interrupt requests, IRQs, are EASy68K's without its hardware window: seven levels, all autovectored, from timers, the keyboard and the mouse (the asm-editor's `docs/design/m68k-machine.md`, decisions 13 and 16 to 22).
+
+- **Latched.** A request at a level from 1 to 7 waits in a latch until it is taken; a second request at a level already pending is the same request.
+- **Taken between two instructions.** Before the next instruction, the highest pending level above the status register's interrupt mask is taken through its autovector, vector 24 plus the level at `$60` plus four times it, and level 7 whatever the mask. Taking one is an exception like the others, a frame of 6 bytes on the supervisor stack, S set and T cleared, and then the mask rises to the level, so a handler is interrupted only by a higher level or by level 7. It is an execution step of its own, `kind: 'irq'`, with no location: the History shows it and Undo takes it back on its own. An autovector with no handler ends the program with `Irq {level}` as the cause, the vector named.
+- **Against the other exceptions**, as on a 68000: an instruction's trace frame and the frame of a `trap`, `chk`, `trapv` or division by zero are pushed first, and the IRQ's handler runs before theirs; an illegal instruction at the program counter has not been fetched yet, and raises its exception after the IRQ handler's `rte`. A request that comes while a `trap #15` task waits on the host is taken after the answer. (EASy68K loses an interrupt taken beside a trap, and runs an illegal instruction twice.)
+- **`stop #n`** is privileged, loads the whole status register, T and S included, and the processor waits for a request above the new mask: the status `Stopped`, the program counter on the next instruction. `step()` and every run return `Stopped` at once while it waits. A request that can wake it makes the status `Running` at once, and the next step takes it; `getMachineState().stopped` is true until then. A `stop` with a request above its new mask already pending does not wait at all, and one that starts with T set takes the trace exception instead of stopping, as on a 68000. With S clear in the immediate, the processor stops in user mode, where EASy68K raises a privilege violation, and EASy68K runs one more instruction before the interrupt that wakes it.
+- **`reset`** is privileged and does nothing but take its time, 132 cycles once cycles are counted: there are no devices behind the reset line. Nothing runs the 68000's reset sequence.
+- **The sources** are the program's to set up and the host's to deliver:
+
+  | Task | `D1` | What it sets |
+  |---|---|---|
+  | 32 | `D1.B` = 6, with `D2.B` and `D3.L` | the timers, EASy68K's `setAutoIRQ`: `D2.B` = 0 turns all off, 1 to 7 turns that level's off, `$81` to `$87` fires that level every `D3.L` milliseconds; any other `D2.B` does nothing |
+  | 60 | level in bits 15 to 8, events in bits 0 to 2 | the mouse's: a button down (bit 0), a button up (bit 1), a move (bit 2), each chosen one set to the level, 0 turning it off; a level above 7 makes the call do nothing |
+  | 62 | the same, bits 0 and 1 | the keyboard's: a key down (bit 0) and a key up (bit 1) |
+
+  Task 32 also answers EASy68K's version, `$00051001`, in `D1.L` for `D1.B` = 4, and accepts 5. Its parts 0 to 3 and 7, the hardware window and its devices' addresses, are refused with `UnsupportedTrapTask {task: 32}`: there is no hardware window. Any other `D1.B` does nothing, as in EASy68K.
+- **The host calls.** `getMachineState()` answers `{pendingIrqs, stopped, autoIrqs: {level, intervalMs}[], keyboardLevels: {keyDown, keyUp}, mouseLevels: {down, up, move}}`, a level of 0 being none. The host runs the timers on the program's time and calls `raiseIrq(level)` at each firing, and reports the Screen's events with `deviceEvent('keyDown' | 'keyUp' | 'mouseDown' | 'mouseUp' | 'mouseMove')`, which latches the level the program set for it and answers it, or `null`. Both are input between two instructions, like a key pressed, and do nothing after the end of the program.
+- **Undo.** What the program set up and whether the processor is stopped are journaled like a register, a `SetMachineState {old, new}` mutation, and undo puts them back. The latch is the host's input as well as the program's: undoing the IRQ step that took a request makes it pending again, so running on takes it again, but a request that came after a step stays pending when the step is undone, since the program never saw it.
 
 ## The memory map
 
@@ -82,7 +104,7 @@ A program declares ranges of EASy68K's memory map with `memory`, one of each kin
 - **A bus error** is vector 2 with the 14-byte frame of an address error, its status word the 68000's: R/W as the access was, I/N clear, and the function code of the processor's real mode, where EASy68K always says "write" and supervisor. With no handler the program ends with `BusError {address, size, access, range}`, the vector named beside it. The instruction aborts there, as a 68000's does; EASy68K finishes it.
 - **Protected reads the processor's S bit**, where EASy68K reads it from its window's SR field. The vector of an exception is read in supervisor mode, so a protected vector table serves user mode.
 - **A ROM store is no store**: it journals nothing, changes no code, is no Code write and is not a watched write.
-- **The `trap #15` tasks check their buffers as EASy68K does**: a string a task reads (tasks 0, 1, 13, 14, 17, 18, 95, and the paths of 51, 52, 57, 59, 70, 71, 73 and 74), from its start to its NUL, against invalid; the bytes task 54 writes a file from against invalid; and the bytes task 53 reads a file into against invalid, read only and ROM, where ROM takes nothing and the task does nothing. None checks protected, and task 2's line and task 58's dialog are written with no check, as in EASy68K.
+- **The `trap #15` tasks check their buffers as EASy68K does**: a string a task reads (tasks 0, 1, 13, 14, 17, 18, 95, and the paths of 51, 52, 57, 59, 70, 71, 73 and 74), from its start to its NUL, against invalid; the bytes task 54 writes a file from against invalid; and the bytes task 53 reads a file into against invalid, read only and ROM, where ROM takes nothing and the task does nothing. None checks protected, and task 2's line and task 58's dialog are written with no check, as in EASy68K. A buffer of no bytes, a string that is only its NUL or a read of none, is refused where it starts inside a range past the range's first byte, and not on that byte, as EASy68K's `loc + bytes - 1 >= start && loc <= end` has it.
 - **The debugger is not the program.** A Poke, a testcase's starting memory, the host's reads and `disassembleAt`, undo, and the program's own initial contents go past the map.
 - With no range declared, an access asks one flag and goes on. The decode cache keeps no instruction a word of which an invalid or protected range reaches, so each fetch of one is decoded and checked in the mode the processor is in then, and a write into one is no Code write.
 
@@ -99,21 +121,21 @@ The interpreter is checked against [SingleStepTests/m68000](https://github.com/S
   ```
 
   It takes a few minutes and prints the counts of every file; `conformance::` leaves out the crate's other ignored tests, which need GNU binutils for m68k. `S68K_M68000_ONLY=ASR.b,ASR.w` runs only the files it names, and `S68K_M68000_TESTS` points at another copy of the suite's `v1` folder. A GitHub Actions workflow runs it weekly.
-- What is not checked yet is in one skip list with a reason per entry (`src/conformance/skips.rs`): `stop` and `reset`, until the interrupts of the asm-editor's `docs/design/m68k-machine-plan.md` arrive, and the length in cycles, until its cycles. `trap #15` stays skipped, as EASy68K's service trap. Every exception the suite takes is checked, its frame included: the address errors, the privilege violations, line A and F, `trap`, `chk`, `trapv` and `rte`, in both modes.
+- What is not checked yet is in one skip list with a reason per entry (`src/conformance/skips.rs`): the length in cycles, until the cycles of the asm-editor's `docs/design/m68k-machine-plan.md`. `trap #15` stays skipped, as EASy68K's service trap. Every exception the suite takes is checked, its frame included: the address errors, the privilege violations, line A and F, `trap`, `chk`, `trapv` and `rte`, in both modes, and so are `stop` and `reset`. A `stop` leaves the processor stopped before it prefetches, so its program counter is compared with the suite's next prefetch itself.
 
 The counts on 2026-10-28, with the suite at its pinned commit:
 
 | | Tests | Run and passed | Failed | Skipped |
 |---|---|---|---|---|
-| The whole suite | 317,500 | 312,340 | 0 | 5,160 |
-| The vendored subset | 6,350 | 6,247 | 0 | 103 |
+| The whole suite | 317,500 | 317,340 | 0 | 160 |
+| The vendored subset | 6,350 | 6,347 | 0 | 3 |
 | Musashi's programs | 60 | 55 | 0 | 5 |
 
-124 of the 127 files run and pass all 2,500 of their tests, and `TRAP` its 2,340 that are not `trap #15`. The skips of the whole suite, by reason: `reset` and `stop` 2,500 each; `trap #15` 160. Of Musashi's programs, `abcd`, `sbcd`, `divs` and `divu` check Musashi's own answers where the 68000's microcode differs (a BCD digit above 9, the flags of a division that overflows), and `move` uses a 68020 form of `cmpi`, so those five stay skipped.
+126 of the 127 files run and pass all 2,500 of their tests, and `TRAP` its 2,340 that are not `trap #15`, the only skip. Of Musashi's programs, `abcd`, `sbcd`, `divs` and `divu` check Musashi's own answers where the 68000's microcode differs (a BCD digit above 9, the flags of a division that overflows), and `move` uses a 68020 form of `cmpi`, so those five stay skipped.
 
 ## Future work
 
-- Interrupts with `stop` and `reset`, and cycles (the asm-editor's `docs/design/m68k-machine.md`)
+- Cycles (the asm-editor's `docs/design/m68k-machine.md`)
 - The rest of the 68010 and the 68020 dialects (below, "Processor dialects")
 - Macros and conditional assembly
 
@@ -129,7 +151,8 @@ The counts on 2026-10-28, with the suite at its pinned commit:
 | Binary coded decimal   | abcd, sbcd, nbcd                                                                                                                                                                                                 |
 | Other                  | clr, exg, neg, ext, swap, move, link, unlk, lea, pea, moveq, movea, movem, movep, tas, nop, and the 68020's extb under `opt p=68020`                                                                               |
 | Exceptions             | chk, trapv, illegal, trap #0 to #14, rte, and rtr, which returns and restores the condition codes (above, "Exceptions")                                                                                            |
-| Interrupt              | trap #15, with the I/O tasks 0-9, 11-20, 23, 24 and 33 in `d0`, the file tasks 50-59, the mouse task 61, the sound tasks 70-77, the graphics tasks 80-96 and task 32 with 5 in `d1.b`, which is accepted and changes nothing (the `Interrupt` enum of `src/instructions.rs` is the list) |
+| Interrupts and control | stop, which waits for an interrupt request, and reset (above, "Interrupts")                                                                                                                                         |
+| Interrupt              | trap #15, with the I/O tasks 0-9, 11-20, 23, 24 and 33 in `d0`, the file tasks 50-59, the mouse task 61, the sound tasks 70-77, the graphics tasks 80-96, the interrupt-request tasks 60 and 62, and task 32 with 4, 5 or 6 in `d1.b` (the `Interrupt` enum of `src/instructions.rs` is the list of those the host answers) |
 
 ## Encodings
 
@@ -264,9 +287,9 @@ The interrupts carry the arguments, and the interpreter plays nothing itself: `P
 
 ### When a task cannot be done, and why a program ended
 
-An error the 68000 has an exception for goes through its vector (above, "Exceptions"), and ends the program only when the vector holds no handler: the status is `TerminatedWithException`, the error is thrown, and `getTermination()` answers it as the cause, with the vector. The trap tasks raise two errors of their own: `UnsupportedTrapTask {task}`, for a number that is none of EASy68K's tasks, which goes through vector 47 as in EASy68K, and for the tasks a page in a browser cannot do faithfully (10, 21, 22, 25, 30 to 32, 40 to 43, 60, 62, 100 to 107), which end the program whatever vector 47 holds; and `InvalidTrapArgument {task, reason}` for a value a task cannot take, the reason naming the register, which ends it too. Undoing the step that failed brings the program back to it, running.
+An error the 68000 has an exception for goes through its vector (above, "Exceptions"), and ends the program only when the vector holds no handler: the status is `TerminatedWithException`, the error is thrown, and `getTermination()` answers it as the cause, with the vector. The trap tasks raise two errors of their own: `UnsupportedTrapTask {task}`, for a number that is none of EASy68K's tasks, which goes through vector 47 as in EASy68K, and for the tasks a page in a browser cannot do faithfully (10, 21, 22, 25, 30, 31, 32 with 0 to 3 or 7 in `D1.B`, 40 to 43, 100 to 107), which end the program whatever vector 47 holds; and `InvalidTrapArgument {task, reason}` for a value a task cannot take, the reason naming the register, which ends it too. Undoing the step that failed brings the program back to it, running.
 
-`getTermination()` is `null` while the program runs, and then says why it ended: `TerminateTask` (task 9), `EndOfProgram {address}` (it ran into `$FFFF $FFFF` it never placed, above), `TerminatedByHost` (an interrupt answered with `Terminate`), `Exception {cause, vector}` with the error and the vector that held no handler, when it had one, or `Halted {cause, vector}`, a double fault.
+`getTermination()` is `null` while the program runs, and then says why it ended: `TerminateTask` (task 9), `EndOfProgram {address}` (it ran into `$FFFF $FFFF` it never placed, above), `TerminatedByHost` (an interrupt answered with `Terminate`), `Exception {cause, vector}` with the error, or `Irq {level}` for an interrupt request, and the vector that held no handler, when it had one, or `Halted {cause, vector}`, a double fault.
 
 An answer is taken only by the interrupt of the same `type`, with a value the task can take, or it is `Terminate`, which answers any task and ends the program. Anything else is refused with a typed error and leaves the interrupt waiting: `NoPendingInterrupt`, `InvalidAnswer {interrupt, reason}` for an answer of another type, a value that is not an answer at all, a key state of the other form, more bytes than a read asked for or a file number past 7, and the `OutOfBounds` of a write that does not fit in memory. Every WebAssembly method throws a `RuntimeError` object and none of them panics, so the interpreter stays usable after a bad call.
 
@@ -283,9 +306,9 @@ Where s68k departs from EASy68K, on purpose:
 - On Windows EASy68K cannot delete a file that is open, and reports 2; whether a file that is open can be deleted is the host's file system's to say.
 
 ## Known limitations
-1. There are no interrupts yet: the interrupt mask of the status register is stored and masks nothing, `stop` and `reset` are refused by the assembler, and a decoded one in supervisor mode ends the program as not implemented (the plan's milestone C8).
-2. No cycles are counted (milestone C9).
-3. Vectored and spurious interrupts, the reset exception and the 68000's HALT pin are left out, as EASy68K leaves them out; nothing reads the vectors at `$0` and `$4`.
+1. No cycles are counted (the plan's milestone C9).
+2. Vectored and spurious interrupts, the reset exception and the 68000's HALT pin are left out, as EASy68K leaves them out; nothing reads the vectors at `$0` and `$4`, and `reset` runs no reset sequence.
+3. The timers of task 32 are the host's to run: the interpreter keeps their settings and takes the requests the host raises. EASy68K's hardware window, its IRQ buttons and its devices are not there.
 
 ## Running the command-line interpreter
 
@@ -293,7 +316,7 @@ Install [Rust](https://www.rust-lang.org/tools/install), clone the repository,
 and run `cargo run` from its root. This assembles and runs `code-to-run.asm`.
 To run another file, pass its path: `cargo run -- my-program.asm`.
 
-The command line answers the text tasks on the terminal, honouring the echo of task 12, and the file tasks on the disk: a path is taken relative to the directory of the file it runs, task 51 opens a file it cannot write for reading only, and the dialog of task 58 asks for a path on the terminal, an empty line cancelling it. The graphics, mouse and sound tasks are reported and end the run, and the last line says why the program ended.
+The command line answers the text tasks on the terminal, honouring the echo of task 12, and the file tasks on the disk: a path is taken relative to the directory of the file it runs, task 51 opens a file it cannot write for reading only, and the dialog of task 58 asks for a path on the terminal, an empty line cancelling it. The graphics, mouse and sound tasks are reported and end the run, and the last line says why the program ended. It raises no interrupt request, so a program that stops with `stop` ends the run there, waiting.
 
 ## Building the WebAssembly package
 
