@@ -287,6 +287,29 @@ impl Program {
         }
     }
 
+    /// A Program that is a raw image and nothing else: `bytes` placed at
+    /// `address`, run from `entry`, with no instruction, no Symbol and no
+    /// source. It is the conformance harness's loader for Musashi's
+    /// self-checking programs (ADR 0010), which are bytes linked at an
+    /// address, and runs through [`Interpreter::from_image`]: an
+    /// [`Interpreter::new`] would end it before it started, as it ends every
+    /// Program with no instruction.
+    ///
+    /// The bytes are placed, as a `dc.b` of them would be, so `$FFFF $FFFF`
+    /// inside the image pauses and past it ends the program (ADR 0009).
+    ///
+    /// [`Interpreter::from_image`]: crate::interpreter::Interpreter::from_image
+    /// [`Interpreter::new`]: crate::interpreter::Interpreter::new
+    #[cfg(any(test, feature = "conformance"))]
+    pub fn from_image(address: usize, bytes: Vec<u8>, entry: usize) -> Program {
+        let run = MemoryRun {
+            address,
+            content: MemoryContent::Bytes { bytes },
+            location: Location::new("image", 0, 0, 0),
+        };
+        Program::new(Vec::new(), vec![run], &SymbolTable::new(), entry)
+    }
+
     /// The Program with the ranges its `memory` lines declared, at most one of
     /// each kind, put in EASy68K's order.
     pub fn with_memory_map(mut self, mut ranges: Vec<MemoryRange>) -> Self {

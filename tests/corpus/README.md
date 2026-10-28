@@ -1128,6 +1128,21 @@ the jump's own step, `terminated` after one step at `$1004`, because the gap is
 memory the program never placed. The `exception` it stood for is a jump to an
 odd address, whose fetch is the address error, two steps.
 
+### What milestone C5 of the machine plan changed in these fixtures, and why
+
+On 2026-10-28, milestone C5 of the asm-editor's
+`docs/design/m68k-machine-plan.md` checked the Interpreter against
+SingleStepTests/m68000 (ADR 0010) and fixed what it found: X and C of an `asr`
+by the size or more, `abcd`, `sbcd` and `nbcd` on digits above 9, N and Z of a
+division that overflows, the flags of `chk` in bounds, and `link a7` and
+`unlk a7`.
+
+**No fixture moved.** Seven programs divide with `divu`, two link and unlink
+through A6 and `flappy-bird` shifts right by 4 with `asr.l`, but none divides
+into an overflow, links through A7 or shifts arithmetically by its operand's
+size or more, and none runs `abcd`, `sbcd`, `nbcd` or `chk`, so no flag or
+value a fixture records depended on an old answer.
+
 ## Execution fixtures
 
 The fixtures above stop where the Assembler stops. Beside each one is the

@@ -22,3 +22,7 @@ Cargo.lock
 # no build of the library can go stale in the repository.
 /pkg/
 ts-lib/src/pkg/
+
+# The whole SingleStepTests/m68000 suite, which scripts/fetch-m68000-tests.sh
+# fetches for the ignored conformance tests; only a subset is committed
+/tests/m68000/fetched/

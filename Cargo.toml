@@ -31,6 +31,12 @@ wasm-opt = [
 
 [features]
 default = ["console_error_panic_hook"]
+# The conformance harness, `src/conformance/`: `Interpreter::from_state`,
+# `Interpreter::from_image`, the reader of the SingleStepTests/m68000 files and
+# the runner with its skip list (ADR 0010). It is for tests and adds nothing to
+# the WebAssembly build. The crate's own tests have it without the feature, so
+# `cargo test` runs the vendored subset; the feature is for outside callers.
+conformance = []
 
 [dev-dependencies]
 # Pinned exactly: the committed snapshots are this version's file format, and

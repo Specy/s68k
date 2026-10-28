@@ -1,0 +1,55 @@
+name: Conformance
+
+# The whole SingleStepTests/m68000 suite, 317,500 tests, once a week and on
+# demand. Every push already runs the vendored subset of 50 tests per file
+# through `cargo test` in ci.yml; this is the rest, which is too big to commit
+# and takes a few minutes in release (ADR 0010).
+on:
+  schedule:
+    # Mondays at 05:17 UTC, off the hour that every other scheduled job picks.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: Run the whole single-step suite
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      # The same download cache as ci.yml, so a week's first run of either
+      # job warms it for the other. The suite itself is not cached: the fetch
+      # script pins its commit, and a shallow fetch of it is quicker than a
+      # cache of 140 MB would be to restore.
+      - name: Cache cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Fetch the suite
+        run: scripts/fetch-m68000-tests.sh
+
+      # Release, because a debug build is several times slower over 317,500
+      # tests. conformance:: and --ignored run the harness's two ignored
+      # tests, the whole suite and the check that tests/m68000 is still the
+      # cut of it, and not the crate's other ignored tests, which need GNU
+      # binutils for m68k.
+      - name: Run the whole suite
+        # A block scalar: written plain, the `: ` in `conformance:: --` would
+        # read as a YAML mapping and GitHub would reject the whole file.
+        run: |
+          cargo test --release --features conformance --lib conformance:: -- --ignored --nocapture

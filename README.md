@@ -41,6 +41,31 @@ The interpreter runs what memory holds, through a cache of decoded instructions:
 - **The source** is read through the program's own map of the lines it laid out, which does not move when bytes change: a changed line keeps its location, its breakpoint and its `getInstructionAt` as assembled, and `disassembleAt(address)` prints what memory holds there now. `getInstructionAt` also says what the line assembled as when the assembler chose something it did not write (`assembledAs`: `add.l #1,d0` is `ADDQ.L #1,D0`, `bra loop` is `BRA.S loop`, `lea $1000,a0` is `LEA $1000.W,A0`).
 - **The end.** `$FFFF $FFFF` is EASy68K's SIMHALT wherever it is. Inside the bytes the program placed, its code and its data, it pauses, as `simhalt` does. Anywhere else it ends the program, `EndOfProgram` with the address: memory starts as `$FF`, so that is where a program that does not end itself ends, one past its last instruction when nothing follows it (ADR 0009). Any other bytes run as what they decode to, so a program that runs on into its data, or jumps there, runs the data, and a word that is no instruction is an illegal instruction. An instruction fetched from an odd address is an address error.
 
+## Conformance
+
+The interpreter is checked against [SingleStepTests/m68000](https://github.com/SingleStepTests/m68000), tests generated from MAME's microcoded 68000 (MIT): each is the state before one instruction and the state after it, and the runner sets the first, runs the instruction and compares the registers, the status register, the program counter and every word of RAM the second lists, and checks that nothing else was written (ADR 0010). Musashi's sixty self-checking 68000 programs run as well, each to the verdict it writes.
+
+- `cargo test` runs the vendored subset, the first 50 tests of each of the 127 files that raise no address error (`tests/m68000/`), and Musashi's programs (`tests/musashi/mc68000/`).
+- The whole suite, 317,500 tests, runs from a fetched copy:
+
+  ```sh
+  scripts/fetch-m68000-tests.sh
+  cargo test --release --features conformance conformance:: -- --ignored --nocapture
+  ```
+
+  It takes a few minutes and prints the counts of every file; `conformance::` leaves out the crate's other ignored tests, which need GNU binutils for m68k. `S68K_M68000_ONLY=ASR.b,ASR.w` runs only the files it names, and `S68K_M68000_TESTS` points at another copy of the suite's `v1` folder. A GitHub Actions workflow runs it weekly.
+- What is not checked yet is in one skip list with a reason per entry (`src/conformance/skips.rs`): every test that takes an exception, raises an address error, changes the S bit or touches the other stack pointer, and `rte`, `move usp`, `trap`, line A and F, `stop` and `reset`, until the exceptions, interrupts and cycles of the asm-editor's `docs/design/m68k-machine-plan.md` arrive. The length in cycles is not compared until then either. `trap #15` stays skipped, as EASy68K's service trap.
+
+The counts on 2026-10-28, with the suite at its pinned commit:
+
+| | Tests | Run and passed | Failed | Skipped |
+|---|---|---|---|---|
+| The whole suite | 317,500 | 233,219 | 0 | 84,281 |
+| The vendored subset | 6,350 | 5,733 | 0 | 617 |
+| Musashi's programs | 60 | 52 | 0 | 8 |
+
+53 of the 127 files run and pass all 2,500 of their tests. The skips of the whole suite, by reason: address error 54,992; privilege violation 5,020; `move usp` 5,000; line A and F 5,000; `reset`, `rte` and `stop` 2,500 each; `trap #0` to `#14` 2,340; mode change 1,693; `chk` out of bounds 1,326; `trapv` with V set 1,250; `trap #15` 160. Of Musashi's programs, `chk`, `trapv` and `move_usp` wait for exceptions; `abcd`, `sbcd`, `divs` and `divu` check Musashi's own answers where the 68000's microcode differs (a BCD digit above 9, the flags of a division that overflows), and `move` uses a 68020 form of `cmpi`, so those five stay skipped.
+
 ## Future work
 
 - Exceptions through the vector table, supervisor and user mode, the memory map's bus errors, interrupts and cycles (the asm-editor's `docs/design/m68k-machine.md`)

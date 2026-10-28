@@ -203,3 +203,11 @@ The assembler and simulator whose dialect s68k follows. Where s68k is more lenie
 **Processor dialect**:
 The processor a Program is written for and its words are decoded for: the 68000, EASy68K's processor and the default, or the 68010 or the 68020, each of which adds instructions, addressing modes and behaviour to the one before it. Every row of the decoder names the first processor that has it, and so will every form of the instruction table; on an earlier processor its words are an illegal instruction: `move ccr,<ea>` is the 68010's and `extb.l` the 68020's. A Program will choose its dialect in its source with `opt p=68010` or `opt p=68020`.
 _Avoid_: CPU type, architecture, target (that is the asm-editor's word for a language and its machine)
+
+**Conformance suite**:
+SingleStepTests/m68000, generated from MAME's microcoded 68000: tests of one instruction each, the state before it, the state after it and its bus cycles. It is the oracle of what the Interpreter does with an instruction (ADR 0010), and a test that disagrees with it is a bug unless the Skip list says why. Musashi's self-checking programs are its second check, whole programs that report their own verdict.
+_Avoid_: test vectors, Harte tests (Tom Harte's set is another suite, at most a local second opinion)
+
+**Skip list**:
+The one list of the Conformance suite's tests the Interpreter is not checked on, and of what it is compared on less, each entry with its reason. An entry that waits for a milestone of the machine says which, and goes when that milestone lands.
+_Avoid_: allow list, expected failures (a known failure is a bug being fixed, not a skip)

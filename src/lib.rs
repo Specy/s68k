@@ -47,6 +47,8 @@ pub mod machine;
 
 mod c_runtime;
 pub mod charset;
+#[cfg(any(test, feature = "conformance"))]
+pub mod conformance;
 pub mod debugger;
 mod math;
 mod ts_types;

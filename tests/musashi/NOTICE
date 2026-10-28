@@ -1,3 +1,7 @@
+This folder holds two things from Musashi, https://github.com/kstenerud/Musashi:
+m68000-valid.hex, a table generated from its disassembler, and mc68000/, its
+self-checking test programs. Both are covered by Musashi's licence, at the end.
+
 m68000-valid.hex
 ================
 
@@ -51,6 +55,21 @@ computed by that code; no part of Musashi's source is in this repository.
     gcc -O1 -I<Musashi> -o valid valid.c <Musashi>/m68kdasm.c && ./valid
 
 sha256 of the file: 639493e058f9e38d304653ef354c8d5c2dcd746e8fab9bf08f4ea43c45381b44
+
+mc68000/
+========
+
+Musashi's sixty self-checking 68000 programs, the prebuilt test/mc68000/*.bin
+of Musashi at commit 313ebf1bd9f4d0d93341eb5ce21fd8a119e9dbdd (2026-03-08),
+copied unchanged. Each is linked at $10000 (test/entry.s), starts there with
+its supervisor stack at $3F0, runs one family of instructions over many
+values, compares checksums of the results and the flags with constants, and
+writes a long to $100004 (TEST_PASS_REG) when they all match or to $100000
+(TEST_FAIL_REG) at the first that does not, then stops with `stop #$2700`.
+They are run by `musashi_programs_pass` in src/test/conformance.rs, through
+Interpreter::from_image, and the ones left out are listed with their reasons
+in src/conformance/skips.rs. Their sources, test/mc68000/*.s, are in
+Musashi's repository and not here.
 
 Musashi's licence
 -----------------

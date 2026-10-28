@@ -35,6 +35,8 @@ use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
 use crate::assembler::program::{AssembledInstruction, MemoryContent, Program};
 use crate::assembler::source::Location;
+#[cfg(any(test, feature = "conformance"))]
+use crate::assembler::symbols::SymbolTable;
 use crate::debugger::PrettyStackFrame;
 use crate::instructions::TargetDirection;
 use crate::machine::cache::{Cleared, DecodeCache, Slot};
@@ -49,7 +51,7 @@ use crate::{
     instructions::{
         Bytes, Condition, FileDialogMode, FileExistence, IndexRegister, InputSettings, Instruction,
         Interrupt, InterruptResult, KeyStateRequest, KeyStateResult, Operand, RegisterOperand,
-        ShiftDirection, Sign, Size, SoundOutcome,
+        Sign, Size, SoundOutcome,
     },
     math::*,
 };
@@ -1147,9 +1149,7 @@ impl Interpreter {
     /// it, or whose Entry point is on `$FFFF $FFFF` the Program did not place,
     /// has [ended](Termination::EndOfProgram) before it starts.
     pub fn new(program: Program, options: Option<InterpreterOptions>) -> Self {
-        let sp = 0x01000000;
         let start = program.entry();
-        let options = options.unwrap_or_default();
         let mut memory = Memory::new();
         if let Err(e) = prepare_memory(&mut memory, &program) {
             //the Layout refuses to place anything past the address space, so this cannot
@@ -1158,6 +1158,22 @@ impl Interpreter {
         }
         memory.load_code(program.instructions());
         let empty = program.is_empty();
+        let mut interpreter = Self::with_memory(program, memory, options);
+        if empty || interpreter.ends_at_pc() {
+            interpreter.terminate(Termination::EndOfProgram {
+                address: start & ADDRESS_MASK,
+            });
+        }
+        interpreter
+    }
+
+    /// An Interpreter over `memory` as it is, about to run `program` from its
+    /// Entry point, with the stack pointer at the top of memory and nothing
+    /// ended yet.
+    fn with_memory(program: Program, memory: Memory, options: Option<InterpreterOptions>) -> Self {
+        let sp = 0x01000000;
+        let start = program.entry();
+        let options = options.unwrap_or_default();
         let mut interpreter = Self {
             stack_top: sp,
             memory,
@@ -1180,11 +1196,6 @@ impl Interpreter {
             program,
         };
         interpreter.cpu.a_reg[7].store_long(sp as u32);
-        if empty || interpreter.ends_at_pc() {
-            interpreter.terminate(Termination::EndOfProgram {
-                address: start & ADDRESS_MASK,
-            });
-        }
         interpreter
     }
 
@@ -2552,17 +2563,10 @@ impl Interpreter {
                     previous_msb = get_sign(value, *size);
                 }
                 self.store_operand_value(dest, value, *size, Used::Twice)?;
-
-                let carry = match direction {
-                    ShiftDirection::Left => msb,
-                    ShiftDirection::Right => {
-                        if amount_value < size.to_bits() as u32 {
-                            msb
-                        } else {
-                            false
-                        }
-                    }
-                };
+                //the carry is the last bit shifted out, whatever the count: an `asr` by the size
+                //or more shifts out copies of the sign, so X and C are the sign (the 68000's
+                //Programmer's Reference Manual, `asl`/`asr`; the suite's ASR files)
+                let carry = msb;
                 self.set_logic_flags(value, *size);
                 self.set_flag(Flags::Overflow, has_overflowed);
                 if amount_value != 0 {
@@ -2758,6 +2762,11 @@ impl Interpreter {
                         Size::Long,
                     );
                 } else {
+                    //an overflow leaves the register as it was, and the flags as MAME's microcode
+                    //leaves them on every overflow of SingleStepTests/m68000: N and V set, Z and C
+                    //clear, X kept. Motorola calls N and Z undefined there
+                    self.set_flag(Flags::Negative, true);
+                    self.set_flag(Flags::Zero, false);
                     self.set_flag(Flags::Carry, false);
                     self.set_flag(Flags::Overflow, true);
                 }
@@ -2851,19 +2860,23 @@ impl Interpreter {
                     }
                 }
             }
+            //the register is read before the stack pointer moves, so `link a7,#n` pushes A7 as it
+            //was, as MAME's microcode does on every `link a7` of SingleStepTests/m68000
             Instruction::LINK(reg, offset) => {
+                let value = self.get_register_value(*reg, Size::Long);
                 let sp = self.get_sp().wrapping_sub(4);
                 self.set_sp(sp);
-                let value = self.get_register_value(*reg, Size::Long);
                 self.set_memory_value(sp, Size::Long, value)?;
                 self.set_register_value(*reg, sp as u32, Size::Long);
                 self.set_sp((sp as i32).wrapping_add(*offset as i32) as usize)
             }
+            //the stack pointer goes past the frame first and the register is loaded last, so
+            //`unlk a7` leaves A7 the long it popped, as on every `unlk a7` of the suite
             Instruction::UNLK(reg) => {
                 let value = self.get_register_value(*reg, Size::Long);
                 let (value, new_sp) = self.memory.pop(Size::Long, value as usize)?;
-                self.set_register_value(*reg, value.get_long(), Size::Long);
                 self.set_sp(new_sp);
+                self.set_register_value(*reg, value.get_long(), Size::Long);
             }
             Instruction::NOP => {}
             // `simhalt` pauses after the instruction and touches no register.
@@ -3009,11 +3022,16 @@ impl Interpreter {
                 );
                 let value =
                     sign_extend_to_long(self.get_register_value(*register, Size::Word), Size::Word);
+                //"N - Set if the data register is less than zero, cleared if the data register is
+                //greater than the higher limit", and the rest undefined. A 68000 sets them in
+                //bounds or not: N from the register's sign, V and C cleared, X kept, on every
+                //test of SingleStepTests/m68000's CHK file; Z is the register's being zero, as
+                //Musashi has it, which none of the suite's tests reaches
+                self.set_flag(Flags::Negative, value < 0);
+                self.set_flag(Flags::Zero, value == 0);
+                self.set_flag(Flags::Overflow, false);
+                self.set_flag(Flags::Carry, false);
                 if value < 0 || value > bound {
-                    //"N - Set if the data register is less than zero, cleared if the data
-                    //register is greater than the higher limit"; the other flags the help
-                    //leaves undefined and s68k leaves alone
-                    self.set_flag(Flags::Negative, value < 0);
                     return Err(
                         self.end_with_an_exception(RuntimeError::ChkOutOfBounds { value, bound })
                     );
@@ -4605,5 +4623,121 @@ impl Interpreter {
             Some(location) => js(location),
             None => JsValue::NULL,
         }
+    }
+}
+
+/// Memory that starts as zeros, for the conformance harness: the
+/// SingleStepTests/m68000 files list only the words a test reads or writes,
+/// and read every other word as zero (`src/conformance/skips.rs`).
+#[cfg(any(test, feature = "conformance"))]
+impl Memory {
+    /// The 16 MB, every byte zero, and an empty decode cache.
+    ///
+    /// The zeros come from the allocator, which maps fresh pages rather than
+    /// writing them, so a harness that makes one of these per test pays only
+    /// for the pages the test touches.
+    pub fn zeroed() -> Self {
+        Self {
+            data: vec![0; MEMORY_SIZE],
+            cache: DecodeCache::new(),
+        }
+    }
+
+    /// Writes `word` at `address`, high byte first, each byte's address
+    /// reduced to the 24 bits of the bus: how a test's RAM is laid down, with
+    /// no address error for an odd address and no wrap refused at the top.
+    pub fn put_word(&mut self, address: usize, word: u16) {
+        let [high, low] = word.to_be_bytes();
+        self.data[address & ADDRESS_MASK] = high;
+        self.data[(address + 1) & ADDRESS_MASK] = low;
+        self.cache.invalidate(address & ADDRESS_MASK, 2);
+        self.cache.take_cleared();
+    }
+}
+
+#[cfg(any(test, feature = "conformance"))]
+impl Cpu {
+    /// The registers of a test's state: the data registers, the address
+    /// registers with A7 the stack pointer of the mode the status register is
+    /// in (there is one A7 until the plan's milestone C6), and the status
+    /// register, reduced to [`SR_IMPLEMENTED_BITS`].
+    pub fn from_registers(data: [u32; 8], address: [u32; 8], sr: u16) -> Self {
+        let mut cpu = Cpu::new();
+        for (register, value) in cpu.d_reg.iter_mut().zip(data) {
+            register.store_long(value);
+        }
+        for (register, value) in cpu.a_reg.iter_mut().zip(address) {
+            register.store_long(value);
+        }
+        cpu.set_sr(sr);
+        cpu
+    }
+}
+
+/// The conformance harness's two ways in (`src/conformance`, ADR 0010): an
+/// Interpreter made from a machine state, to run one instruction of a
+/// single-step test, and one made from a raw image, to run one of Musashi's
+/// self-checking programs. Neither is for the editor, and both are behind the
+/// `conformance` feature.
+#[cfg(any(test, feature = "conformance"))]
+impl Interpreter {
+    /// An Interpreter ready to run the one instruction at `pc` from a state a
+    /// single-step test gives: the registers in `cpu`, the RAM it lists as
+    /// `(address, word)` pairs in `memory_words`, and the processor's two
+    /// prefetched words, which are written at `pc` and `pc + 2` after the RAM
+    /// (a 68000 runs what it prefetched, and an Interpreter runs memory).
+    ///
+    /// Memory is [zeroed](Memory::zeroed) apart from those words. The decode
+    /// cache starts empty, so the instruction is decoded from memory when it is
+    /// fetched, and the Program is an empty one whose Entry point is `pc`,
+    /// which places nothing: the end rule of ADR 0009 holds as it does for
+    /// any memory the program never placed. History is kept, a step deep, so
+    /// that the step's writes can be read back from its mutations.
+    ///
+    /// The Interpreter takes no trace exception, whatever T says: the suite
+    /// records the state a step leaves before trace is taken. It has none to
+    /// take yet; the exceptions of milestone C6 must keep it so.
+    pub fn from_state(
+        cpu: Cpu,
+        pc: usize,
+        memory_words: &[(usize, u16)],
+        prefetch: [u16; 2],
+    ) -> Interpreter {
+        let mut memory = Memory::zeroed();
+        for &(address, word) in memory_words {
+            memory.put_word(address, word);
+        }
+        memory.put_word(pc, prefetch[0]);
+        memory.put_word(pc + 2, prefetch[1]);
+        let program = Program::new(Vec::new(), Vec::new(), &SymbolTable::new(), pc);
+        let options = InterpreterOptions {
+            keep_history: true,
+            history_size: 1,
+        };
+        let mut interpreter = Self::with_memory(program, memory, Some(options));
+        interpreter.cpu = cpu;
+        interpreter.stack_top = cpu.a_reg[7].get_long() as usize;
+        interpreter
+    }
+
+    /// An Interpreter about to run a raw image, a [`Program::from_image`],
+    /// from its Entry point with A7 at `stack_pointer`: memory is zeros, as in
+    /// Musashi's test driver, with the image written over them. The decode
+    /// cache starts empty, since an image holds no assembled instruction, and
+    /// the program has not ended before it starts, whatever it holds.
+    pub fn from_image(
+        program: Program,
+        stack_pointer: u32,
+        options: Option<InterpreterOptions>,
+    ) -> Interpreter {
+        let mut memory = Memory::zeroed();
+        if let Err(e) = prepare_memory(&mut memory, &program) {
+            panic!("the image does not fit in memory: {:?}", e);
+        }
+        memory.cache.take_cleared();
+        let mut interpreter = Self::with_memory(program, memory, options);
+        interpreter.cpu.a_reg[7].store_long(stack_pointer);
+        interpreter.stack_top = stack_pointer as usize;
+        interpreter
     }
 }

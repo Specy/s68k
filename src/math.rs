@@ -167,45 +167,43 @@ pub fn sub_with_extend(op1: u32, op2: u32, extend: bool, size: Size) -> (u32, bo
 /// One byte of binary coded decimal plus another and the extend flag, with the
 /// decimal carry out: the arithmetic of `abcd` (`Reference/68ks8e.htm`).
 ///
-/// This is the 68000's own correction and not a digit-by-digit sum: the low
-/// digits are added and corrected by 6 when they pass 9, which carries a ten
-/// into the high digits, and the byte is corrected by 0xa0 when it passes 99,
-/// which is the carry out. Two well formed BCD bytes therefore give the decimal
-/// answer, and a byte holding a digit above 9 gives what the hardware gives,
-/// which the help says nothing about.
+/// This is the 68000's own correction, which differs from adding digit by
+/// digit once a digit is above 9. The bytes are added in binary first. Each
+/// nibble that carried out in binary, or that came to 10 or more, is corrected
+/// by 6, and the carry out is the binary carry of the high nibble or a carry
+/// out of the correction. Two well formed BCD bytes give the decimal answer;
+/// any other byte gives what the processor gives, which SingleStepTests/m68000
+/// records and these lines match on every test of its `ABCD` file.
 pub fn add_decimal(destination: u32, source: u32, extend: bool) -> (u32, bool) {
-    let mut result = (destination & 0x0f) + (source & 0x0f) + u32::from(extend);
-    if result > 9 {
-        result += 6;
-    }
-    result += (destination & 0xf0) + (source & 0xf0);
-    let carry = result > 0x99;
-    if carry {
-        result -= 0xa0;
-    }
-    (result & 0xff, carry)
+    let (destination, source) = ((destination & 0xff) as i32, (source & 0xff) as i32);
+    let sum = destination + source + i32::from(extend);
+    //the carry out of each nibble's binary addition, at bits 3 and 7
+    let carries = ((destination & source) | (!sum & destination) | (!sum & source)) & 0x88;
+    //each nibble that came to 10 or more, at bits 3 and 7
+    let tens = (((sum + 0x66) ^ sum) & 0x110) >> 1;
+    let corrections = carries | tens;
+    let result = sum + (corrections - (corrections >> 2));
+    let carry = ((carries | (sum & !result)) >> 7) & 1 != 0;
+    ((result & 0xff) as u32, carry)
 }
 
 /// One byte of binary coded decimal less another and the extend flag, with the
 /// decimal borrow out: the arithmetic of `sbcd`, and of `nbcd` from a
 /// destination of zero (`Reference/68ks8g.htm`, `Reference/68ks8f.htm`).
 ///
-/// The corrections are the mirror of [`add_decimal`]'s, and the arithmetic
-/// wraps on purpose: a borrow out of a digit leaves a value far above 9, which
-/// is exactly the test the corrections make.
+/// The mirror of [`add_decimal`]: the bytes are subtracted in binary, each
+/// nibble that borrowed is corrected by 6, and the borrow out is the binary
+/// borrow of the high nibble or one out of the correction. It matches every
+/// test of the suite's `SBCD` and `NBCD` files.
 pub fn subtract_decimal(destination: u32, source: u32, extend: bool) -> (u32, bool) {
-    let mut result = (destination & 0x0f)
-        .wrapping_sub(source & 0x0f)
-        .wrapping_sub(u32::from(extend));
-    if result > 9 {
-        result = result.wrapping_sub(6);
-    }
-    result = result.wrapping_add((destination & 0xf0).wrapping_sub(source & 0xf0));
-    let borrow = result > 0x99;
-    if borrow {
-        result = result.wrapping_add(0xa0);
-    }
-    (result & 0xff, borrow)
+    let (destination, source) = ((destination & 0xff) as i32, (source & 0xff) as i32);
+    let difference = destination - source - i32::from(extend);
+    //the borrow out of each nibble's binary subtraction, at bits 3 and 7
+    let borrows =
+        ((!destination & source) | (difference & !destination) | (difference & source)) & 0x88;
+    let result = difference - (borrows - (borrows >> 2));
+    let borrow = ((borrows | (!difference & result)) >> 7) & 1 != 0;
+    ((result & 0xff) as u32, borrow)
 }
 
 /// One place of a rotation through the extend flag, which answers the rotated
