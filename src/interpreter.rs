@@ -504,6 +504,24 @@ impl Register {
     }
 }
 
+/// How far `-(An)` and `(An)+` move the address register for an access of
+/// `size`: the size itself, except that a byte on A7 moves it by 2, so the
+/// stack pointer stays even, as the 68000 Programmer's Reference Manual says of
+/// both modes (2.2.4 and 2.2.5).
+#[inline(always)]
+fn address_step(register: u8, size: Size) -> u32 {
+    if register == 7 && size == Size::Byte {
+        2
+    } else {
+        size.to_bytes() as u32
+    }
+}
+
+/// The bits of the status register a 68000 has: trace, supervisor, the
+/// interrupt mask and the five condition codes. The others always read as 0,
+/// whatever is written to them, so `move #$FFFF,sr` reads back `$A71F`.
+pub const SR_IMPLEMENTED_BITS: u16 = 0xA71F;
+
 /// The status register a program starts with: `$2700`, EASy68K's own
 /// (`SIMHELP/Exceptions.htm`, "the supervisor bit is set on") — supervisor,
 /// interrupt mask 7, no trace and no condition code set.
@@ -549,6 +567,7 @@ impl Cpu {
 
     /// Sets the whole status register, condition codes included.
     pub fn set_sr(&mut self, value: u16) {
+        let value = value & SR_IMPLEMENTED_BITS;
         self.system_byte = (value >> 8) as u8;
         self.ccr = Flags::from_ccr_byte(value as u8);
     }
@@ -1374,26 +1393,12 @@ impl Interpreter {
                         } => {
                             self.memory.write_bytes(*address, old)?;
                         }
-                        MutationOperation::PopCall { to, from } => {
-                            //try to get the address of the function that popped the call: the
-                            //return address is one past the instruction that called it, and each
-                            //instruction stores how many bytes it takes up
-                            let ins = self.program.instruction_ending_at(*to);
-                            let callee_address = match ins {
-                                Some(ins) => match &ins.instruction {
-                                    Instruction::BSR(address) => *address as usize,
-                                    Instruction::JSR(operand) => {
-                                        self.get_operand_address(&operand.clone())? as usize
-                                    }
-                                    _ => 0,
-                                },
-                                None => 0,
-                            };
-                            self.debugger.push_call(
-                                callee_address,
-                                *from,
-                                self.cpu.get_register_values(),
-                            );
+                        MutationOperation::PopCall { frame, .. } => {
+                            //a return from no call (an `rts` with nothing on the call stack)
+                            //took nothing off it, and puts nothing back
+                            if let Some(frame) = frame {
+                                self.debugger.restore_call(frame.clone());
+                            }
                         }
                         MutationOperation::PushCall { to: _, from: _ } => {
                             self.debugger.pop_call();
@@ -2500,13 +2505,15 @@ impl Interpreter {
                 let dest_value = get_value_sized(dest_value, Size::Long);
                 let (remainder, quotient, has_overflowed) = match sign {
                     Sign::Signed => {
-                        let dest_value = dest_value as i32;
-                        let source_value = sign_extend_to_long(source_value, Size::Word);
+                        //in 64 bits, as `$80000000 / -1` overflows 32 and would panic: it is an
+                        //overflow of the 16 bit quotient like any other
+                        let dest_value = dest_value as i32 as i64;
+                        let source_value = sign_extend_to_long(source_value, Size::Word) as i64;
                         let quotient = dest_value / source_value;
                         (
                             (dest_value % source_value) as u32,
                             quotient as u32,
-                            quotient > i16::MAX as i32 || quotient < i16::MIN as i32,
+                            quotient > i16::MAX as i64 || quotient < i16::MIN as i64,
                         )
                     }
                     Sign::Unsigned => {
@@ -2640,15 +2647,16 @@ impl Interpreter {
             Instruction::SIMHALT => self.set_status(InterpreterStatus::Paused),
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
+                let frame = self.debugger.pop_call();
                 if self.keep_history {
                     self.debugger.add_mutation(MutationOperation::PopCall {
                         to: value.get_long() as usize,
                         from: self.current_instruction_address,
+                        frame,
                     })
                 }
                 self.set_sp(new_sp);
                 self.pc = value.get_long() as usize;
-                self.debugger.pop_call();
             }
             Instruction::TRAP(vector) => match vector {
                 15 => {
@@ -2755,16 +2763,17 @@ impl Interpreter {
                 //address (`Reference/68ks9f.htm`); the stack pointer goes up by six
                 let (status, sp) = self.memory.pop(Size::Word, self.get_sp())?;
                 let (address, sp) = self.memory.pop(Size::Long, sp)?;
+                let frame = self.debugger.pop_call();
                 if self.keep_history {
                     self.debugger.add_mutation(MutationOperation::PopCall {
                         to: address.get_long() as usize,
                         from: self.current_instruction_address,
+                        frame,
                     })
                 }
                 self.cpu.set_ccr_byte(status.get_word() as u8);
                 self.set_sp(sp);
                 self.pc = address.get_long() as usize;
-                self.debugger.pop_call();
             }
             Instruction::CHK(source, register) => {
                 //the low word of the register against the operand, both signed
@@ -2955,7 +2964,8 @@ impl Interpreter {
             if (mask & 0x01) != 0 {
                 let val =
                     sign_extend_to_long(self.memory.read_size(addr as usize, size)?, size) as u32;
-                self.set_register_value(RegisterOperand::Data(i), val, size);
+                //a word fills the whole register, sign extended, as for an address register
+                self.set_register_value(RegisterOperand::Data(i), val, Size::Long);
                 (addr, _) = overflowing_add_sized(addr, size_bytes, Size::Long);
             }
             mask >>= 1;
@@ -3548,7 +3558,7 @@ impl Interpreter {
             }
             Operand::PreIndirect(op) => {
                 let address = self.get_a_reg_sized(*op, Size::Long);
-                let address = (address).wrapping_sub(size.to_bytes() as u32);
+                let address = (address).wrapping_sub(address_step(*op, size));
                 //in this case the read should always decrement the address
                 self.set_a_reg_sized(*op, address, Size::Long);
                 Ok(self.memory.read_size(address as usize, size)?)
@@ -3557,7 +3567,7 @@ impl Interpreter {
                 let address = self.get_a_reg_sized(*op, Size::Long);
                 if used != Used::Twice {
                     //if the value is used twice, give precedence of increment to the setter
-                    let new_address = address.wrapping_add(size.to_bytes() as u32);
+                    let new_address = address.wrapping_add(address_step(*op, size));
                     self.set_a_reg_sized(*op, new_address, Size::Long);
                 }
                 Ok(self.memory.read_size(address as usize, size)?)
@@ -3675,7 +3685,7 @@ impl Interpreter {
                 } else {
                     //if it's not used twice, then decrement the value
                     let a = self.get_a_reg_sized(*op, Size::Long);
-                    let a = (a).wrapping_sub(size.to_bytes() as u32);
+                    let a = (a).wrapping_sub(address_step(*op, size));
                     self.set_a_reg_sized(*op, a, Size::Long);
                     a
                 };
@@ -3684,7 +3694,7 @@ impl Interpreter {
             }
             Operand::PostIndirect(op) => {
                 let address = self.get_a_reg_sized(*op, Size::Long);
-                let new_address = (address).wrapping_add(size.to_bytes() as u32);
+                let new_address = (address).wrapping_add(address_step(*op, size));
                 //give priority to increment to the setter
                 self.set_a_reg_sized(*op, new_address, Size::Long);
                 Ok(self.set_memory_value(address as usize, size, value)?)

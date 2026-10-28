@@ -69,6 +69,11 @@ pub enum MutationOperation {
     PopCall {
         to: usize,
         from: usize,
+        /// The frame the return took off the call stack, which undoing it puts
+        /// back as it was: the callee, the return address and the registers at
+        /// the call, none of which can be read again from the program.
+        #[serde(skip)]
+        frame: Option<CallStackFrame>,
     },
     /// The [`InputSettings`] tasks 12 and 16 replaced, and the ones they left.
     SetInputSettings {
@@ -348,6 +353,7 @@ impl ExecutionStep {
 
 /// One frame of the call stack: a subroutine that has been entered and not yet
 /// returned from.
+#[derive(Debug, Clone)]
 pub struct CallStackFrame {
     address: usize,
     source_address: usize,
@@ -573,6 +579,11 @@ impl Debugger {
     }
     pub fn pop_call(&mut self) -> Option<CallStackFrame> {
         self.call_stack.pop()
+    }
+    /// Puts back a frame [`pop_call`](Self::pop_call) took, as undoing a return
+    /// does.
+    pub fn restore_call(&mut self, frame: CallStackFrame) {
+        self.call_stack.push(frame);
     }
     /// The call stack as the editor shows it: every frame with the name of the
     /// routine it is in and where that name was written.

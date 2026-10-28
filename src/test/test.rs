@@ -59,6 +59,65 @@ and.w d0, -(a0)",
         assert_eq!(mem.read_long(0x2004).unwrap(), expected2);
     }
 
+    /// `divs` of the most negative long by -1 has a quotient of 2^31, which
+    /// overflows the 16 bits of a quotient like any other: V is set and the
+    /// register is left alone. It used to overflow the division itself and
+    /// stop the Interpreter for good.
+    #[test]
+    fn divs_of_the_most_negative_long_by_minus_one_overflows() {
+        let interpreter = assemble_and_run(
+            "move.l #$80000000,d0
+divs #-1,d0",
+        );
+        assert_eq!(
+            interpreter.get_register_value(RegisterOperand::Data(0), Size::Long),
+            0x80000000
+        );
+        assert!(interpreter.get_flag(crate::interpreter::Flags::Overflow));
+    }
+
+    /// A byte pushed on or popped from A7 moves it by 2, so the stack pointer
+    /// stays even; any other address register moves by 1.
+    #[test]
+    fn a_byte_on_a7_moves_it_by_two() {
+        let interpreter = assemble_and_run(
+            "move.l #$2000,a7
+move.b #$41,-(a7)
+move.l a7,d0
+move.b (a7)+,d1
+move.l a7,d2
+move.l #$3000,a1
+move.b #$42,-(a1)
+move.l a1,d3",
+        );
+        let long = |n| interpreter.get_register_value(RegisterOperand::Data(n), Size::Long);
+        assert_eq!(long(0), 0x1ffe, "a push moves A7 down by 2");
+        assert_eq!(
+            interpreter.get_memory().read_byte(0x1ffe).unwrap(),
+            0x41,
+            "the byte goes to the even address"
+        );
+        assert_eq!(long(1) & 0xff, 0x41);
+        assert_eq!(long(2), 0x2000, "a pop moves it back up by 2");
+        assert_eq!(long(3), 0x2fff, "A1 moves by 1");
+    }
+
+    /// `movem.w` into a data register fills the whole register, sign extended,
+    /// as it does an address register.
+    #[test]
+    fn movem_word_sign_extends_into_data_registers() {
+        let interpreter = assemble_and_run(
+            "move.l #$2000,a0
+move.w #$8001,(a0)
+move.l #$12345678,d1
+movem.w (a0),d1",
+        );
+        assert_eq!(
+            interpreter.get_register_value(RegisterOperand::Data(1), Size::Long),
+            0xffff8001
+        );
+    }
+
     #[test]
     fn test_addressing_modes() {
         assemble_and_run(
@@ -752,6 +811,35 @@ routine:
             let stack = interpreter.get_pretty_call_stack();
             assert_eq!(stack.len(), 1);
             assert_eq!(stack[0].label_name, "routine");
+            assert_eq!(
+                stack[0].source_address, 0x1004,
+                "the frame returns where the call left it, not to the `rts`"
+            );
+        }
+
+        #[test]
+        fn undoing_a_return_puts_back_the_registers_of_the_call() {
+            let mut interpreter = with_history(
+                "    org $1000
+start:
+    bsr routine
+    move.b #9,d0
+    trap #15
+routine:
+    moveq #5,d1
+    rts
+",
+            );
+            for _ in 0..3 {
+                interpreter.step().expect("the bsr, the moveq and the rts");
+            }
+            interpreter.undo().expect("the rts to be undone");
+            let stack = interpreter.get_pretty_call_stack();
+            assert_eq!(stack.len(), 1);
+            assert_eq!(
+                stack[0].registers[1], 0,
+                "D1 as it was at the call, before the routine changed it"
+            );
         }
 
         #[test]
@@ -892,6 +980,16 @@ routine:
             // #$f0ff` cleared the interrupt mask and `eori #$2000` flipped the
             // supervisor bit off.
             assert_eq!(interpreter.get_sr(), 0x0018);
+        }
+
+        #[test]
+        fn the_status_register_keeps_only_the_bits_a_68000_has() {
+            let mut interpreter = prepare(
+                "    move.w #$ffff,sr
+",
+            );
+            interpreter.run().expect("the move");
+            assert_eq!(interpreter.get_sr(), 0xa71f);
         }
 
         #[test]

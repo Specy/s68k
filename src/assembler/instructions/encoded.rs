@@ -86,7 +86,7 @@ impl RegisterOperand {
 }
 
 /// The index register of an indexed Operand, with the width it is read at.
-#[derive(Debug, Clone, Serialize, Copy)]
+#[derive(Debug, Clone, Serialize, Copy, PartialEq, Eq)]
 pub struct IndexRegister {
     /// The register itself.
     pub register: RegisterOperand,
@@ -100,7 +100,7 @@ pub struct IndexRegister {
 /// Every Expression has been evaluated by the time an Operand is built, so a
 /// displacement is a number and a Label is the address it stands for
 /// (`tests/corpus/README.md`, "Branch and jump targets").
-#[derive(Debug, Clone, Serialize, Copy)]
+#[derive(Debug, Clone, Serialize, Copy, PartialEq, Eq)]
 pub enum Operand {
     /// `#5`, stored in 32 bits whatever size the instruction carries.
     Immediate(u32),
@@ -266,7 +266,7 @@ pub enum Sign {
 /// "Normalisations stay visible"), so `add #1,d0` is [`Instruction::ADDI`] and
 /// `move.l d0,a0` is [`Instruction::MOVEA`]. [`super::lowering`] is where that
 /// happens and [`super::table::Family`] is what decides it.
-#[derive(Clone, Debug, Serialize, Copy)]
+#[derive(Clone, Debug, Serialize, Copy, PartialEq, Eq)]
 pub enum Instruction {
     /// `adda.<size> <ea>,An`
     ADDA(Operand, RegisterOperand, Size),
