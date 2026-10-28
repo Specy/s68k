@@ -119,8 +119,8 @@ assert.equal(typeof interpreter.undo, 'function', 'undo should be exposed')
 // The status register
 // ---------------------------------------------------------------------------
 
-// $2700 to start with, as in EASy68K: supervisor, interrupt mask 7, no
-// condition code set. The high byte is stored and has no effect.
+// $2000 to start with, as in EASy68K: supervisor, interrupt mask 0, no
+// condition code set.
 const statusRegister = S68k.assemble(`
     ORG $1000
 START:
@@ -130,7 +130,13 @@ START:
 `)
 assert.deepEqual(statusRegister.diagnostics, [], 'the status register instructions assemble')
 const withStatus = new Interpreter(statusRegister.program)
-assert.equal(withStatus.getSr(), 0x2700, 'a program starts at $2700')
+assert.equal(withStatus.getSr(), 0x2000, 'a program starts at $2000')
+assert.deepEqual(
+    withStatus.getSystem(),
+    {sr: 0x2000, usp: 0x00ff0000, ssp: 0x01000000},
+    'EASy68K\'s stack pointers, A7 the SSP'
+)
+assert.equal(withStatus.getSp(), 0x01000000)
 withStatus.step()
 assert.equal(withStatus.getSr(), 0x2705, 'MOVE to SR writes the whole register')
 withStatus.step()
@@ -141,6 +147,8 @@ assert.equal(
 )
 withStatus.step()
 assert.equal(withStatus.getSr(), 0x2700, 'ANDI to CCR clears the condition codes only')
+assert.equal(withStatus.getCpuSnapshot().getSsp(), 0x01000000, 'the snapshot has both stack pointers')
+assert.equal(withStatus.getCpuSnapshot().getUsp(), 0x00ff0000)
 const undone = withStatus.undo()
 assert.equal(typeof undone.old_sr, 'number', 'an undone step carries the status register')
 assert.equal(withStatus.getSr(), 0x2705, 'and undo puts it back')
@@ -408,15 +416,18 @@ assert.equal(S68k.parseLine('    mvoe.w d0,d1').kind, 'unknown', 'parseLine neve
 // The instruction table
 // ---------------------------------------------------------------------------
 
-// Plain data: the forms of each mnemonic, and the one form of `move` the 68000
-// keeps for supervisor mode, which is the one that writes `sr`.
+// Plain data: the forms of each mnemonic, and the three forms of `move` the
+// 68000 keeps for supervisor mode: the one that writes `sr` and the two of
+// `move usp`.
 const table = S68k.instructionTable()
 const moveRow = table.find(({mnemonic}) => mnemonic === 'move')
 assert.notEqual(moveRow, undefined, '`move` is in the table')
 const privilegedMoves = moveRow.forms.filter((form) => form.privileged)
-assert.equal(privilegedMoves.length, 1, '`move <ea>,sr` is the one privileged form of `move`')
+assert.equal(privilegedMoves.length, 3, '`move <ea>,sr` and the two `move usp` are privileged')
 assert.deepEqual(privilegedMoves[0].operands.at(-1), ['sr'])
 assert.deepEqual(privilegedMoves[0].sizes, ['word'])
+assert.deepEqual(privilegedMoves[1].operands, [['usp'], ['An']])
+assert.deepEqual(privilegedMoves[1].sizes, ['long'])
 assert.deepEqual(moveRow.forms[0].sizes, ['byte', 'word', 'long'])
 assert.ok(moveRow.forms[0].operands[0].includes('Dn'))
 assert.deepEqual(
@@ -427,8 +438,9 @@ assert.deepEqual(
 assert.equal(moveRow.forms.find((form) => form.operands[0][0] === 'ccr').processor, '68010')
 assert.equal(table.find(({mnemonic}) => mnemonic === 'extb').forms[0].processor, '68020')
 assert.equal(table.find(({mnemonic}) => mnemonic === 'rtd'), undefined, 'one still to come is not listed')
-assert.equal(table.find(({mnemonic}) => mnemonic === 'rte'), undefined, 'a refused mnemonic is not listed')
-assert.equal(table.flatMap(({forms}) => forms).filter((form) => form.privileged).length, 4)
+assert.equal(table.find(({mnemonic}) => mnemonic === 'stop'), undefined, 'a refused mnemonic is not listed')
+assert.equal(table.find(({mnemonic}) => mnemonic === 'rte').forms[0].privileged, true, '`rte` is listed, privileged')
+assert.equal(table.flatMap(({forms}) => forms).filter((form) => form.privileged).length, 7, 'the four that write sr, the two move usp and rte')
 assert.deepEqual(JSON.parse(JSON.stringify(table)), table, 'the table is plain data')
 
 // ---------------------------------------------------------------------------
@@ -1087,7 +1099,11 @@ assert.throws(
 )
 assert.equal(failer.getStatus(), InterpreterStatus.TerminatedWithException)
 assert.ok(failer.hasTerminated())
-assert.deepEqual(failer.getTermination(), {type: 'Exception', value: {type: 'UnsupportedTrapTask', value: {task: 30}}})
+assert.deepEqual(
+    failer.getTermination(),
+    {type: 'Exception', value: {cause: {type: 'UnsupportedTrapTask', value: {task: 30}}}},
+    'one of EASy68K\'s own tasks, refused, has no vector'
+)
 failer.undo()
 assert.equal(failer.getStatus(), InterpreterStatus.Running, 'undo brings the failed trap back')
 assert.equal(failer.getTermination(), null)
@@ -1226,6 +1242,93 @@ assert.equal(modifier.getCodeWrite(), null, 'undo takes the code write back')
 assert.deepEqual([...modifier.readMemoryBytes(nextLine, 2)], [0x70, 0x01], 'and the bytes')
 modifier.dispose()
 selfModifying.program.dispose()
+
+// ---------------------------------------------------------------------------
+// Exceptions: vectors, frames, rte, user mode, the System register file
+// ---------------------------------------------------------------------------
+
+const withHandler = S68k.assemble(`
+    ORG $1000
+START:
+    MOVE.L  #HANDLER,$14
+    MOVE.L  #$8000,A0
+    MOVE.L  A0,USP
+    ANDI.W  #$DFFF,SR
+    MOVEQ   #0,D1
+    DIVU    D1,D0
+AFTER:
+    SIMHALT
+HANDLER:
+    MOVE.L  2(A7),D6
+    RTE
+`)
+assert.deepEqual(withHandler.diagnostics, [], 'rte and move usp assemble')
+const handled = new Interpreter(withHandler.program)
+const handlerAddress = withHandler.program.getSymbols()['HANDLER'].value
+const afterAddress = withHandler.program.getSymbols()['AFTER'].value
+let handledSteps = 0
+while (handled.getPc() !== handlerAddress && handledSteps++ < 20) handled.step()
+assert.equal(handled.getPc(), handlerAddress, 'the divide by zero went through vector 5')
+assert.deepEqual(handled.getSystem(), {sr: 0x2004, usp: 0x8000, ssp: 0x00fffffa}, 'supervisor mode, a frame on the SSP')
+const [frame] = handled.getCallStack()
+assert.equal(frame.kind, 'exception')
+assert.equal(frame.vector, 5)
+assert.equal(frame.label_name, 'HANDLER')
+assert.equal(frame.source_address, afterAddress, 'the frame returns past the divide')
+const entry = handled.getUndoHistory(1)[0]
+assert.ok(
+    entry.mutations.some(({type, value}) => type === 'PushException' && value.vector === 5 && value.handler === handlerAddress),
+    'the step journals the exception'
+)
+assert.ok(entry.mutations.some(({type}) => type === 'WriteStackPointers'), 'and the swap to the SSP')
+assert.equal(handled.run(), InterpreterStatus.Paused)
+assert.equal(handled.getRegisterValue({type: 'Data', value: 6}), afterAddress)
+assert.deepEqual(handled.getSystem(), {sr: 0x0004, usp: 0x8000, ssp: 0x01000000}, 'rte went back to user mode')
+assert.equal(handled.getSp(), 0x8000, 'A7 is the USP again')
+assert.deepEqual(handled.getCallStack(), [])
+handled.undo()
+handled.undo()
+handled.undo()
+assert.equal(handled.getPc(), handlerAddress, 'undo walks back through the rte')
+assert.equal(handled.getCallStack()[0].vector, 5, 'and puts the exception frame back')
+handled.undo()
+assert.deepEqual(handled.getSystem(), {sr: 0x0004, usp: 0x8000, ssp: 0x01000000}, 'and through the exception')
+// the System file takes pokes, one undo each
+handled.beginPoke()
+handled.setSsp(0x00f00000)
+handled.setUsp(0x9000)
+handled.setSr(0x2700)
+assert.equal(handled.endPoke(), true)
+assert.deepEqual(handled.getSystem(), {sr: 0x2700, usp: 0x9000, ssp: 0x00f00000})
+assert.equal(handled.getSp(), 0x00f00000, 'S set, A7 the poked SSP')
+assert.deepEqual(
+    handled.getUndoHistory(1)[0].writes.map(({name}) => name),
+    ['ssp', 'usp', 'sr']
+)
+handled.undo()
+assert.deepEqual(handled.getSystem(), {sr: 0x0004, usp: 0x8000, ssp: 0x01000000}, 'one undo takes the poke back')
+handled.dispose()
+withHandler.program.dispose()
+
+const noHandler = S68k.assemble('    ORG $1000\nSTART:\n    MOVEQ #0,D1\n    DIVU D1,D0\n')
+const unhandled = new Interpreter(noHandler.program)
+assert.throws(() => unhandled.run(), (error) => error.type === 'DivisionByZero')
+assert.deepEqual(
+    unhandled.getTermination(),
+    {type: 'Exception', value: {cause: {type: 'DivisionByZero'}, vector: 5}},
+    'with no handler the program ends as before, naming the vector'
+)
+unhandled.dispose()
+noHandler.program.dispose()
+
+const oddStack = S68k.assemble('    ORG $1000\nSTART:\n    MOVE.L #START,$80\n    LEA $5001,A7\n    TRAP #0\n')
+const halting = new Interpreter(oddStack.program)
+assert.throws(() => halting.run(), (error) => error.type === 'AddressError' && error.value.access === 'Write')
+assert.equal(halting.getStatus(), InterpreterStatus.TerminatedWithException)
+assert.equal(halting.getTermination().type, 'Halted', 'a frame on an odd stack pointer is a double fault')
+assert.equal(halting.getTermination().value.vector, 32)
+halting.dispose()
+oddStack.program.dispose()
 
 const offTheEnd = S68k.assemble('    ORG $1000\n    NOP\n')
 const ranOff = new Interpreter(offTheEnd.program)

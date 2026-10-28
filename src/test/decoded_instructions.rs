@@ -1,15 +1,15 @@
 //! What the Interpreter does with the instructions only the decoder makes.
 //!
-//! `rte`, `stop`, `reset`, `move usp` and the line A and line F words need
-//! exceptions, supervisor mode or interrupts, which the Interpreter does not
-//! have yet, and the Assembler refuses all of them; a word that is no
-//! instruction is an illegal instruction. None of them can reach the
-//! Interpreter from source, so each is placed in a Program by hand.
+//! `stop` and `reset` need interrupts, which the Interpreter does not have yet
+//! (the plan's milestone C8), and the Assembler refuses both; the line A and
+//! line F words take vectors 10 and 11, and a word that is no instruction is
+//! an illegal instruction, vector 4. None of them can reach the Interpreter
+//! from source, so each is placed in a Program by hand.
 
 use crate::assembler::program::{AssembledInstruction, Program};
 use crate::assembler::source::Location;
 use crate::assembler::symbols::SymbolTable;
-use crate::instructions::{Instruction, RegisterOperand};
+use crate::instructions::Instruction;
 use crate::interpreter::{Interpreter, InterpreterStatus, RuntimeError, Termination};
 use crate::machine::encode;
 
@@ -41,31 +41,40 @@ fn run(instruction: Instruction) -> (Interpreter, RuntimeError) {
     );
     assert_eq!(
         interpreter.get_termination(),
-        Some(&Termination::Exception(error.clone()))
+        Some(&Termination::Exception {
+            cause: error.clone(),
+            vector: crate::machine::exception::vector_of(&error),
+        })
     );
     (interpreter, error)
 }
 
 #[test]
-fn the_instructions_that_need_exceptions_are_not_run_yet() {
+fn stop_and_reset_are_not_run_yet() {
     let cases = [
-        (Instruction::RTE, "`rte`"),
         (Instruction::STOP(0x2700), "`stop`"),
         (Instruction::RESET, "`reset`"),
-        (
-            Instruction::MOVEUSP {
-                to_usp: true,
-                register: RegisterOperand::Address(0),
-            },
-            "`move usp`",
-        ),
-        (Instruction::LINEA(0xA123), "the line A word $A123"),
-        (Instruction::LINEF(0xF000), "the line F word $F000"),
     ];
     for (instruction, named) in cases {
         let (_, error) = run(instruction);
         assert_eq!(error, RuntimeError::Unimplemented(named.to_string()));
     }
+}
+
+#[test]
+fn the_line_a_and_line_f_words_take_their_vectors() {
+    let (interpreter, error) = run(Instruction::LINEA(0xA123));
+    assert_eq!(error, RuntimeError::LineA(0xA123));
+    assert_eq!(
+        interpreter.get_termination(),
+        Some(&Termination::Exception {
+            cause: RuntimeError::LineA(0xA123),
+            vector: Some(10),
+        }),
+        "vector 10 holds no handler"
+    );
+    let (_, error) = run(Instruction::LINEF(0xF000));
+    assert_eq!(error, RuntimeError::LineF(0xF000));
 }
 
 #[test]

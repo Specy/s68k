@@ -2985,7 +2985,7 @@ mod tests {
             // "Later" is the phase order of the design record, not the
             // calendar: the analyzer, the Directives and the Layout all raise
             // Diagnostics of their own, and none of them is the parser's.
-            const LATER_PHASES: [&str; 50] = [
+            const LATER_PHASES: [&str; 49] = [
                 "unknown_mnemonic",
                 "mnemonic_used_as_label",
                 "wrong_operand_count",
@@ -2994,7 +2994,6 @@ mod tests {
                 "invalid_operand_pair",
                 "both_operands_in_memory",
                 "address_register_byte_size",
-                "unimplemented_addressing_mode",
                 "invalid_address_width",
                 "value_out_of_range",
                 "bare_number_as_address",

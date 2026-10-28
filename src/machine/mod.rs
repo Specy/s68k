@@ -11,7 +11,9 @@
 //! * [`disassemble`] prints an [`Instruction`] in EASy68K's syntax, and reads
 //!   and prints a run of bytes;
 //! * [`cache`] keeps the instructions the Interpreter runs, decoded once, by
-//!   the address they start at.
+//!   the address they start at;
+//! * [`exception`] says what an exception pushes and where it goes: the
+//!   vectors, the frames and the program counter the 68000 stacks.
 //!
 //! Both are written for a [`Processor`]. Only the 68000 is decoded in full;
 //! the 68010 and the 68020 are dialects of it, and each row of the decoder's
@@ -24,6 +26,7 @@ pub mod cache;
 pub mod decode;
 pub mod disassemble;
 pub mod encode;
+pub mod exception;
 
 use serde::Serialize;
 

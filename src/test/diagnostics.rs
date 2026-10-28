@@ -292,10 +292,10 @@ buffer: ds.b 8
 /// below, code by code, and not one of them is a syntax error:
 ///
 /// * `unimplemented_operation` — the Macro definition, every invocation of it,
-///   the conditional and structured-control keywords, and `rte`. `simhalt` was
-///   among them until phase 2 implemented it, and `andi.w #$00,SR` raised
+///   and the conditional and structured-control keywords. `simhalt` was among
+///   them until phase 2 implemented it, `andi.w #$00,SR` raised
 ///   `unimplemented_addressing_mode` until phase 3 implemented the status
-///   register;
+///   register, and `rte` was until exceptions (the plan's milestone C6);
 /// * `bare_comment` — the once-a-File suggestion for EASy68K's own comment
 ///   field;
 /// * `entry_point_case_mismatch` — a **warning**: `mouseWindowSize.X68` writes
@@ -338,7 +338,7 @@ fn the_easy68k_originals_raise_only_what_is_not_implemented() {
         vec![
             "clockDigital.X68: bare_comment 1, unimplemented_operation 14",
             "graphicSound.X68: bare_comment 1, unimplemented_operation 2",
-            "mouseWindowSize.X68: entry_point_case_mismatch 1, unimplemented_operation 18",
+            "mouseWindowSize.X68: entry_point_case_mismatch 1, unimplemented_operation 15",
         ]
     );
 }

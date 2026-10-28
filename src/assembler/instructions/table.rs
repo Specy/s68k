@@ -55,11 +55,9 @@ bitflags! {
     /// them with "not implemented yet", and they are ordinary modes now, in
     /// the groups the reference puts them in — data, memory and control, and
     /// never alterable, because nothing is written through the program
-    /// counter. `usp` is still not a mode: `move usp,an` is not implemented
-    /// (the design record, "Scope") and a mode that is allowed nowhere would
-    /// only turn up in "there it takes …" lists as an offer that is a lie.
-    /// `sr` and `ccr` are modes of their own, because an instruction that
-    /// takes one takes nothing else in that position.
+    /// counter. `sr`, `ccr` and `usp` are modes of their own, because an
+    /// instruction that takes one takes nothing else in that position; `usp`
+    /// is `move usp,An` and `move An,usp`'s alone.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Modes: u16 {
         /// `d0` to `d7`.
@@ -90,6 +88,8 @@ bitflags! {
         const PC_DISPLACEMENT = 1 << 12;
         /// `label(pc,d1.w)`
         const PC_INDEX = 1 << 13;
+        /// `usp`, the user stack pointer.
+        const USP = 1 << 14;
     }
 }
 
@@ -153,10 +153,13 @@ impl Modes {
     /// ordinary Addressing mode beside it, which is what
     /// `Analyzer::choose_form` reads.
     pub const STATUS: Modes = Modes::SR.union(Modes::CCR);
+    /// The three special registers: the two halves of the status register and
+    /// the user stack pointer. A position that takes one takes nothing else.
+    pub const SPECIAL: Modes = Modes::STATUS.union(Modes::USP);
 
-    /// The mode one parsed Operand is, or `None` when the Operand is not an
-    /// Addressing mode this table can talk about, which is `usp` alone: the
-    /// analyzer answers that one before it looks at any Form.
+    /// The mode one parsed Operand is. Every Operand of the language is one of
+    /// the table's modes; the `Option` is kept for a mode a later processor
+    /// adds that the table cannot talk about yet.
     pub fn of(operand: &Operand) -> Option<Modes> {
         Some(match operand {
             Operand::Immediate { .. } => Modes::IMMEDIATE,
@@ -177,14 +180,10 @@ impl Modes {
                 register: SpecialRegister::Ccr,
                 ..
             } => Modes::CCR,
-            // `usp` has no mode of its own: `move usp,An` is not implemented
-            // (the design record, "Scope"), the analyzer says so before it
-            // looks at any Form, and offering it as an alternative would be a
-            // lie.
             Operand::SpecialRegister {
                 register: SpecialRegister::Usp,
                 ..
-            } => return None,
+            } => Modes::USP,
             Operand::PcDisplacement { .. } => Modes::PC_DISPLACEMENT,
             Operand::PcIndex { .. } => Modes::PC_INDEX,
         })
@@ -205,7 +204,7 @@ impl Modes {
 
 /// Every mode with the name a message gives it, in the order a message lists
 /// them: registers, then the ways of reaching memory, then an immediate.
-const MODE_NAMES: [(Modes, &str); 14] = [
+const MODE_NAMES: [(Modes, &str); 15] = [
     (Modes::DN, "Dn"),
     (Modes::AN, "An"),
     (Modes::INDIRECT, "(An)"),
@@ -220,6 +219,7 @@ const MODE_NAMES: [(Modes, &str); 14] = [
     (Modes::REGISTER_LIST, "<register list>"),
     (Modes::SR, "sr"),
     (Modes::CCR, "ccr"),
+    (Modes::USP, "usp"),
 ];
 
 /// The sizes a [`Form`] accepts.
@@ -320,13 +320,13 @@ pub struct Form {
     pub sizes: SizeRule,
     /// What the Operands may not be together.
     pub combination: Combination,
-    /// Whether the 68000 runs this shape only in supervisor mode: `move <ea>,sr`
-    /// and `andi`, `ori` and `eori` into `sr`. `move sr,<ea>` is not, on a
-    /// 68000 (the 68010 made it so), and no `ccr` shape ever was.
+    /// Whether the 68000 runs this shape only in supervisor mode: `move <ea>,sr`,
+    /// `andi`, `ori` and `eori` into `sr`, `rte` and `move usp`. `move sr,<ea>`
+    /// is not, on a 68000 (the 68010 made it so), and no `ccr` shape ever was.
     ///
-    /// It records the 68000's rule and nothing s68k enforces: s68k runs every
-    /// program in supervisor mode, as EASy68K does, so a privileged Form
-    /// assembles and runs like any other.
+    /// A privileged Form assembles like any other: a program decides its mode
+    /// as it runs, and the Interpreter raises a privilege violation, vector 8,
+    /// when one runs in user mode (ADR 0008).
     pub privileged: bool,
     /// The first processor that has the shape: the 68000 for all but
     /// `move ccr,<ea>`, the 68010's, and `extb.l`, the 68020's. The analyzer
@@ -553,6 +553,8 @@ pub enum Family {
     Tas,
     /// `rtr`.
     Rtr,
+    /// `rte`.
+    Rte,
     /// `chk`.
     Chk,
     /// `trapv`.
@@ -859,8 +861,10 @@ const BIT_NUMBER: ValueRule = ValueRule {
 /// for the 68010 or the 68020 (ADR 0011). On a 68000, `move sr,<ea>` reads
 /// the condition codes in its low byte.
 ///
-/// `move <ea>,sr` is the one privileged Form: it can clear the supervisor bit.
-/// Reading `sr` is not privileged on a 68000.
+/// `move <ea>,sr` is privileged: it can clear the supervisor bit. Reading `sr`
+/// is not privileged on a 68000. The last two Forms are `move usp,An` and
+/// `move An,usp`, a long between an address register and the user stack
+/// pointer, which only supervisor mode reaches (`Reference/68ks4f.htm`).
 const MOVE_FORMS: &[Form] = &[
     form(&[Modes::ALL, Modes::ALTERABLE], SizeRule::Any),
     form(&[Modes::DATA, Modes::CCR], SizeRule::WordOnly),
@@ -871,6 +875,8 @@ const MOVE_FORMS: &[Form] = &[
         &[Modes::CCR, Modes::DATA_ALTERABLE],
         SizeRule::WordOnly,
     ),
+    privileged_form(&[Modes::USP, Modes::AN], SizeRule::LongOnly),
+    privileged_form(&[Modes::AN, Modes::USP], SizeRule::LongOnly),
 ];
 /// The three Forms of `andi`, `ori` and `eori`: the ordinary one, then the two
 /// the help adds — "Operations that uses the status register (SR) and the flag
@@ -1303,14 +1309,17 @@ pub const TABLE: &[InstructionSpec] = &[
             "the vector of `trap`",
             0,
             15,
-            Some("s68k simulates `trap #15`, the input and output trap"),
+            Some(
+                "`trap #0` to `#14` go through vectors 32 to 46, and `trap #15` is EASy68K's \
+                 input and output",
+            ),
         ),
     ),
     implemented("rtr", Family::Rtr, &[form(&[], SizeRule::Unsized)]),
-    not_implemented(
+    implemented(
         "rte",
-        "s68k runs every program in supervisor mode and keeps no exception frames",
-        Some("`rts`"),
+        Family::Rte,
+        &[privileged_form(&[], SizeRule::Unsized)],
     ),
     implemented(
         "tas",
@@ -1685,17 +1694,17 @@ mod tests {
 
     #[test]
     fn a_refused_instruction_is_in_the_table_with_its_reason() {
-        // The three that are out for good (the design record, "Scope"). The
+        // The two that wait for interrupts (the plan's milestone C8). The
         // extend-flag and binary-coded-decimal group was here until phase 3's
-        // second half implemented it.
-        for mnemonic in ["rte", "stop", "reset"] {
+        // second half implemented it, and `rte` until exceptions (C6).
+        for mnemonic in ["stop", "reset"] {
             let spec = lookup(mnemonic).unwrap_or_else(|| panic!("`{mnemonic}` is in the table"));
             match spec.implementation {
                 Implementation::NotImplemented { reason, .. } => {
                     assert!(!reason.is_empty(), "`{mnemonic}` says why");
                 }
                 Implementation::Implemented(_) | Implementation::NotImplementedYet { .. } => {
-                    panic!("`{mnemonic}` is not implemented, for good")
+                    panic!("`{mnemonic}` is not implemented")
                 }
             }
             assert!(spec.forms.is_empty(), "`{mnemonic}` is never form checked");
@@ -1999,12 +2008,12 @@ mod tests {
         );
     }
 
-    /// The 68000 reserves four shapes for supervisor mode, the ones that write
-    /// `sr`: `move <ea>,sr` and `andi`, `ori` and `eori` into it.
-    /// `move sr,<ea>` became privileged on the 68010, and the `ccr` shapes
-    /// never were.
+    /// The 68000 reserves seven shapes for supervisor mode: the four that
+    /// write `sr` (`move <ea>,sr` and `andi`, `ori` and `eori` into it),
+    /// `rte`, and the two of `move usp`. `move sr,<ea>` became privileged on
+    /// the 68010, and the `ccr` shapes never were.
     #[test]
-    fn only_the_forms_that_write_sr_are_privileged() {
+    fn only_the_forms_that_write_sr_or_reach_the_user_stack_pointer_are_privileged() {
         let privileged: Vec<(&str, usize)> = TABLE
             .iter()
             .flat_map(|spec| {
@@ -2017,14 +2026,25 @@ mod tests {
             .collect();
         assert_eq!(
             privileged,
-            vec![("move", 2), ("andi", 2), ("ori", 2), ("eori", 2)]
+            vec![
+                ("move", 2),
+                ("move", 5),
+                ("move", 6),
+                ("andi", 2),
+                ("ori", 2),
+                ("eori", 2),
+                ("rte", 0)
+            ]
         );
         for spec in TABLE {
             for form in spec.forms {
                 assert_eq!(
                     form.privileged,
-                    form.operands.last() == Some(&Modes::SR),
-                    "`{}`: a form is privileged exactly when it writes `sr`",
+                    form.operands.last() == Some(&Modes::SR)
+                        || form.operands.contains(&Modes::USP)
+                        || spec.mnemonic == "rte",
+                    "`{}`: a form is privileged exactly when it writes `sr`, reaches `usp` or \
+                     is `rte`",
                     spec.mnemonic
                 );
             }
@@ -2098,15 +2118,15 @@ mod tests {
                     spec.mnemonic
                 );
             }
-            // A Form that names `sr` or `ccr` names nothing else in that
-            // position, which is what `Analyzer::choose_form` rests on when it
-            // keeps the Forms that agree with the special register that was
-            // written.
+            // A Form that names `sr`, `ccr` or `usp` names nothing else in
+            // that position, which is what `Analyzer::choose_form` rests on
+            // when it keeps the Forms that agree with the special register
+            // that was written.
             for form in spec.forms {
                 for modes in form.operands {
                     assert!(
-                        !modes.intersects(Modes::STATUS) || Modes::STATUS.contains(*modes),
-                        "`{}` has a position that takes `sr` or `ccr` beside an ordinary \
+                        !modes.intersects(Modes::SPECIAL) || modes.bits().count_ones() == 1,
+                        "`{}` has a position that takes `sr`, `ccr` or `usp` beside another \
                          addressing mode; `Analyzer::choose_form` cannot tell its Forms apart",
                         spec.mnemonic
                     );

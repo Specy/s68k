@@ -547,9 +547,23 @@ fn describe_termination(termination: &Termination) -> String {
         Termination::TerminatedByHost => {
             "The program was ended: the command line cannot do a task it asked for.".to_string()
         }
-        Termination::Exception(error) => {
-            format!("The program ended with an exception: {:?}", error)
-        }
+        Termination::Exception {
+            cause,
+            vector: Some(vector),
+        } => format!(
+            "The program ended with an exception: {:?}; vector {} at ${:06X} holds no handler",
+            cause,
+            vector,
+            *vector as u32 * 4
+        ),
+        Termination::Exception {
+            cause,
+            vector: None,
+        } => format!("The program ended with an exception: {:?}", cause),
+        Termination::Halted { cause, vector } => format!(
+            "The processor halted: {:?} while it pushed the frame of vector {}",
+            cause, vector
+        ),
     }
 }
 

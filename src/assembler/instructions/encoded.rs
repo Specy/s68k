@@ -537,11 +537,11 @@ pub enum Instruction {
     JMP(Operand),
     /// `bsr <address>`, with the size of its displacement.
     BSR(u32, BranchSize),
-    /// `trap #0-15`; only `#15`, the I/O trap, is simulated.
+    /// `trap #0-15`: `#0` to `#14` go through vectors 32 to 46, and `#15` is
+    /// EASy68K's input and output trap.
     TRAP(u8),
     /// `rte`: pop the status register and the program counter an exception
-    /// pushed. Privileged. Not run yet: there are no exceptions to return
-    /// from.
+    /// pushed. Privileged.
     RTE,
     /// `stop #n`: load the status register and wait for an interrupt.
     /// Privileged. Not run yet.
@@ -549,7 +549,7 @@ pub enum Instruction {
     /// `reset`: assert the reset line to the devices. Privileged. Not run yet.
     RESET,
     /// `move usp,An` and `move An,usp`: the user stack pointer, which only
-    /// supervisor mode can reach. Privileged. Not run yet.
+    /// supervisor mode can reach. Privileged.
     MOVEUSP {
         /// `true` for `move An,usp`, `false` for `move usp,An`.
         to_usp: bool,
@@ -558,11 +558,11 @@ pub enum Instruction {
     },
     /// A word of the form `$Axxx`, the line 1010 emulator: it raises an
     /// exception of its own (vector 10), so that software can give it a
-    /// meaning. The whole word is kept. Not run yet.
+    /// meaning. The whole word is kept.
     LINEA(u16),
     /// A word of the form `$Fxxx` other than SIMHALT's `$FFFF $FFFF`, the line
     /// 1111 emulator (vector 11), where the 68020 finds its coprocessors. The
-    /// whole word is kept. Not run yet.
+    /// whole word is kept.
     LINEF(u16),
     /// `movep.<size>`, a byte-interleaved transfer between a data register and
     /// every second byte of memory (`Reference/68ks4g.htm`).
@@ -605,11 +605,13 @@ pub enum Instruction {
     TAS(Operand),
     /// `rtr`: pop the condition codes, then the return address.
     RTR,
-    /// `chk <ea>,Dn`: end the run when the register is outside 0 to `<ea>`.
+    /// `chk <ea>,Dn`: the exception of vector 6 when the register is outside
+    /// 0 to `<ea>`.
     CHK(Operand, RegisterOperand),
-    /// `trapv`: end the run when the overflow flag is set.
+    /// `trapv`: the exception of vector 7 when the overflow flag is set.
     TRAPV,
-    /// `illegal`, `$4AFC`: end the run, always.
+    /// `illegal`, `$4AFC`: the illegal instruction exception, vector 4,
+    /// always.
     ILLEGAL,
     /// A word that is the first word of no instruction of the processor it was
     /// decoded for. The 68000 treats it as [`ILLEGAL`](Instruction::ILLEGAL)

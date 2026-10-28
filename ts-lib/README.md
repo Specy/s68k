@@ -271,19 +271,24 @@ switch (interrupt.type) {
 #### Errors, and why a program ended
 
 Every method throws a `RuntimeError` object, `{type, value}`, and none of them
-panics, so the interpreter stays usable after a bad call. A runtime error an
-instruction raises ends the program: the status is `TerminatedWithException`,
-and `getTermination()` answers the error as the cause. A `trap #15` task adds
-two errors of its own:
+panics, so the interpreter stays usable after a bad call. A runtime error the
+68000 has an exception for goes through its vector into the program's handler
+(below, "Exceptions"), and ends the program only when the vector holds none:
+the status is `TerminatedWithException`, the error is thrown, and
+`getTermination()` answers it as the cause, with the vector. A `trap #15` task
+adds two errors of its own, which end the program:
 
 ```ts
-{type: 'UnsupportedTrapTask', value: {task: 30}}            // the cycle counter, the network, a number that is no task
+{type: 'UnsupportedTrapTask', value: {task: 30}}            // the cycle counter, the network; a number that is no task goes through vector 47 first
 {type: 'InvalidTrapArgument', value: {task: 15, reason: 'D2.B is 37, and a base is 2 to 36'}}
 
 interpreter.getTermination()
 // null while it runs, then {type: 'TerminateTask'} (task 9),
 // {type: 'EndOfProgram', value: {address: 0x1012}} (it ran into memory it never placed),
-// {type: 'TerminatedByHost'} (a Terminate answer) or {type: 'Exception', value: error}
+// {type: 'TerminatedByHost'} (a Terminate answer),
+// {type: 'Exception', value: {cause: {type: 'DivisionByZero'}, vector: 5}} (vector 5 holds no handler),
+// {type: 'Exception', value: {cause: {type: 'UnsupportedTrapTask', value: {task: 30}}}} (no vector could take it)
+// or {type: 'Halted', value: {cause, vector}} (a frame pushed on an odd supervisor stack pointer)
 ```
 
 A program ends where it runs into `$FFFF $FFFF` it never placed: EASy68K's
@@ -293,8 +298,8 @@ nothing follows it, and `EndOfProgram` says where. `$FFFF $FFFF` inside the
 program's own bytes is a `simhalt`, which pauses. Anything else runs as what it
 decodes to: a program that runs on into its data, or jumps there, runs the
 data, a word that is no instruction is `IllegalInstruction`, and an instruction
-fetched from an odd address is an `AddressError`. `hasReachedBottom()` is true
-when the next step ends the program.
+fetched from an odd address, or a jump to one, is an `AddressError`.
+`hasReachedBottom()` is true when the next step ends the program.
 
 Undoing the step that ended the program brings it back, running. The tasks s68k
 does not carry out are the printer (10), the text window's font and contents
@@ -306,8 +311,6 @@ Where this departs from EASy68K:
 - a base outside 2 to 36 for task 15, a D1.B other than 0 to 3 for task 16 and
   a D1.L other than 0 or 1 for task 58 end the program, where EASy68K does
   nothing;
-- a number that is no task ends the program, where EASy68K takes the trap
-  exception;
 - a D1.W of `$8000` or more for tasks 0 and 1 displays up to 255 characters, as
   above 255;
 - overflow in `atoi` wraps, Borland's own being unverified;
@@ -324,7 +327,7 @@ interpreter.runWithBreakpoints([{file: 'lib/io.x68', line: 12}])
 interpreter.getCurrentLocation()      // {file, line, column, endColumn} | null
 interpreter.getNextInstruction()      // {address, size, bytes, location, includeChain, source, assembledAs?} | null
 interpreter.disassembleAt(0x1008)     // {address, size, bytes, text: 'ADD.W D1,D2'}, what memory holds now
-interpreter.getCallStack()            // one frame per subroutine entered
+interpreter.getCallStack()            // one frame per subroutine entered and per exception taken
 interpreter.canUndo() && interpreter.undo()
 ```
 
@@ -514,10 +517,40 @@ S68k.instructionTable().find(({mnemonic}) => mnemonic === 'andi')
 // }
 ```
 
-The privileged forms are `move <ea>,sr` and `andi`, `ori` and `eori` into `sr`.
-s68k runs every program in supervisor mode, as EASy68K does, so they assemble
-and run like any other. `rte`, `stop` and `reset` are not implemented and are
-not listed.
+The privileged forms are `move <ea>,sr`, `andi`, `ori` and `eori` into `sr`,
+`rte`, and `move usp,An` and `move An,usp`. They assemble like any other, and
+raise a privilege violation when they run in user mode. `stop` and `reset` are
+not implemented yet and are not listed.
+
+### Exceptions
+
+Every exception a 68000 takes is taken through the vector table at `$000` to
+`$3FF`: the address error (3), an illegal instruction (4), a division by zero
+(5), `chk` (6), `trapv` (7), a privilege violation (8), trace (9), line A and
+line F (10, 11), `trap #0` to `#14` (32 to 46) and a `trap #15` task that is
+none of EASy68K's (47). The processor pushes the status register and the
+program counter on the supervisor stack, 14 bytes for an address error, sets S,
+clears T and jumps to the handler; `rte` returns. A vector holding an odd
+address has no handler, and the program ends as it would have before, the
+vector named in the termination: memory starts as `$FF`, so every vector is
+unset until the program writes it.
+
+```ts
+interpreter.getSystem()               // {sr: 0x2000, usp: 0x00ff0000, ssp: 0x01000000} at the start
+interpreter.getSp()                   // A7: the SSP in supervisor mode, the USP in user mode
+interpreter.beginPoke()
+interpreter.setSr(0x0000)             // user mode: A7 is the USP now
+interpreter.setUsp(0x8000)
+interpreter.setSsp(0x00f00000)
+interpreter.endPoke()                 // one step, which one undo takes back, the stack swap included
+interpreter.getCallStack()[0]         // {kind: 'exception', vector: 5, address: handler, source_address: the stacked PC, ...}
+```
+
+A call frame is `kind: 'call'` and has no `vector`. The history journals an
+exception taken as `PushException {vector, from, handler}`, `rte` as
+`PopException {to, from}`, and every change of S, `move An,usp` and a poke of a
+stack pointer as `WriteStackPointers {old: {usp, ssp}, new: {usp, ssp}}`; the
+step's `old_sr` and `new_sr` say which of the two A7 was.
 
 ### Memory
 
@@ -525,6 +558,24 @@ not listed.
 collection cannot reach. Call `dispose()` on both when a program is done with.
 `S68k.assemble` frees the assembly itself when the source did not build one, so
 live checking on every keystroke leaks nothing.
+
+## Migrating past 4.0.0: exceptions
+
+The release after 4.0.0 takes the 68000's exceptions (above, "Exceptions"). A
+program that installs no handler ends as it did, and what reads the end of one
+changes:
+
+| 4.0.0 | after |
+|---|---|
+| `{type: 'Exception', value: error}` | `{type: 'Exception', value: {cause: error, vector?}}`, `vector` the one that held no handler |
+| | `{type: 'Halted', value: {cause, vector}}`, a double fault |
+| SR `0x2700` at the start, its high byte of no effect | SR `0x2000`, EASy68K's: S, T and the mask are the processor's, and A7 is the SSP or the USP by S |
+| one stack pointer, A7 at `0x01000000` | the SSP at `0x01000000`, A7 at the start, and the USP at `0x00FF0000`: `getSystem()`, `setSr`, `setUsp`, `setSsp` |
+| `rte`, `move usp` and `trap #0` to `#14` refused by the assembler (`unimplemented_operation`, `unimplemented_addressing_mode`) | assembled and run; the code `unimplemented_addressing_mode` is gone |
+| `{type: 'Unimplemented', value: '`rte`'}` and the line A and F words for decoded words | `rte` runs, `LineA`/`LineF` take vectors 10 and 11; `Unimplemented` is `stop` and `reset` |
+| `AddressError {address, size}`, the address in 24 bits | `AddressError {address, size, access}`, `access` `'Read'`, `'Write'` or `'Program'` and the address all 32 bits; a jump to an odd address raises it in the jump |
+| a call stack of calls | `kind: 'call' \| 'exception'`, and an exception frame's `vector` |
+| | the errors `PrivilegeViolation`, `Trace`, `LineA`, `LineF` and `UnhandledTrap {vector}`, and the mutations `WriteStackPointers`, `PushException` and `PopException` |
 
 ## Migrating to 4.0.0
 
@@ -573,7 +624,7 @@ answers.
 | `answerInterrupt` threw a string | a `RuntimeError` object: `NoPendingInterrupt`, `InvalidAnswer`, `OutOfBounds` |
 | answering `Terminate` left the program running | it ends the program |
 | a task error was `{type: 'Raw', value: 'Unknown interrupt: 30'}` and left the program running | `UnsupportedTrapTask` or `InvalidTrapArgument`, and the program ends |
-| a division by zero or an address error left the program running | every runtime error ends the program, `TerminatedWithException` |
+| a division by zero or an address error left the program running | every runtime error ends the program, `TerminatedWithException`, unless a vector holds a handler for it |
 | a register number past 7 panicked | `InvalidArgument` is thrown |
 | `runWithBreakpoints` threw a string for a malformed list | `InvalidArgument` |
 | no way to ask why a program ended, or how input is shown | `getTermination()`, `getInputSettings()`, and the `SetInputSettings` mutation undo replays |
@@ -606,11 +657,11 @@ text.
 | Arithmetic             | add, sub, suba, adda, divs, divu, muls, mulu, addq, subq, addi, subi, addx, subx, negx                                                                                                                            |
 | Comparison             | tst, cmp, cmpi, cmpa, cmpm                                                                                                                                                                                        |
 | Branching and jumping  | bcc, bcs, beq, bne, blt, ble, bgt, bge, bls, bhi, bpl, bmi, blo, bhs, bvc, bvs, bsr, bra, jmp, jsr, rts, dbcc, dbcs, dbeq, dbne, dbge, dbgt, dble, dbls, dblt, dbhi, dbmi, dbpl, dbvc, dbvs, dbf, dbt, dbhs, dblo, dbra |
-| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st, shs, slo, and `move`/`andi`/`ori`/`eori` with `sr` or `ccr` as an operand                                                           |
+| Accessing the SR       | scc, scs, seq, sne, sge, sgt, sle, sls, slt, shi, smi, spl, svc, svs, sf, st, shs, slo, `move`/`andi`/`ori`/`eori` with `sr` or `ccr` as an operand, and `move usp,an` and `move an,usp`              |
 | Bitwise                | not, or, ori, and, andi, eor, eori, lsl, lsr, asr, asl, rol, ror, roxl, roxr, btst, bclr, bchg, bset                                                                                                              |
 | Binary coded decimal   | abcd, sbcd, nbcd                                                                                                                                                                                                 |
 | Other                  | clr, exg, neg, ext, extb, swap, move, link, unlk, lea, pea, moveq, movea, movem, movep, tas, nop                                                                                                                  |
-| Exceptions             | chk, trapv, illegal, and rtr, which returns and restores the condition codes                                                                                                                                      |
+| Exceptions             | chk, trapv, illegal, trap #0 to #14, rte, and rtr, which returns and restores the condition codes                                                                                                                  |
 | Interrupt              | trap #15, with the I/O, mouse and graphics tasks of EASy68K                                                                                                                                                      |
 
 ## Supported directives
@@ -624,8 +675,7 @@ are recognised and refused with a diagnostic naming the feature.
 
 ## Known limitations
 1. Characters are one byte, read and written as Windows-1252, as in EASy68K; a source character with no byte of its own is an assembly error.
-2. The program runs as supervisor, always.
-3. There are no exception vectors yet: an illegal instruction, an address error and the other exceptions end the program.
+2. There are no interrupts, `stop` or `reset` yet, no bus errors from the memory map, and no cycle counter.
 
 # How to build
 The interpreter was made for WASM in mind, to build it you need [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) installed.

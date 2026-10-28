@@ -25,4 +25,4 @@ Musashi's sixty self-checking 68000 programs (MIT, committed in `tests/musashi/m
 
 - The conformance work of milestone C5 fixed what the suite found in the instruction semantics; each fix has a unit test made from the failing test's data, and a dated note in `tests/corpus/README.md` when a corpus fixture moved.
 - An instruction whose result s68k chooses to differ on is a skip marked `Never`, with the reason, and not a silently wrong test.
-- Milestones C6, C8 and C9 turn their parts of the suite on by deleting lines of the skip list; a test that then fails is theirs to fix.
+- Milestones C6, C8 and C9 turn their parts of the suite on by deleting lines of the skip list; a test that then fails is theirs to fix. *(C6 did, on 2026-10-28, with [ADR 0008](0008-exceptions-are-always-taken-and-a-vector-with-no-handler-ends-the-program.md): every exception the suite takes is checked, and the whole suite runs 312,340 of its tests with none failing; `stop`, `reset` and `trap #15` are what it skips.)*

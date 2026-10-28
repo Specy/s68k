@@ -1859,8 +1859,8 @@ fn a_runtime_error_ends_the_run_with_an_exception() {
     assert_eq!(fixture.status, "exception");
     assert_eq!(fixture.steps, 2);
 
-    // An odd address: the jump runs, then the step that fetches from there
-    // raises the address error and counts.
+    // An odd address: the jump faults in its own prefetch from there, as the
+    // 68000 does, so the jump's step raises the address error and counts.
     let to_an_odd_address = "\
     ORG $1000
     jmp $1005
@@ -1869,7 +1869,7 @@ fn a_runtime_error_ends_the_run_with_an_exception() {
 ";
     let fixture = run("to_an_odd_address", to_an_odd_address, RUN_LIMIT);
     assert_eq!(fixture.status, "exception");
-    assert_eq!(fixture.steps, 2);
+    assert_eq!(fixture.steps, 1);
 
     // A gap between two runs of code is memory the program never placed, so a
     // jump into it ends the program there, in the jump's own step (ADR 0009).

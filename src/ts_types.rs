@@ -296,49 +296,83 @@ export type InterruptResult = { type: "DisplayStringWithCRLF" } |
 { type: "ControlSoundDirectX", value: SoundOutcome }
 "#;
 
-/// [`RuntimeError`](crate::interpreter::RuntimeError) and
-/// [`Termination`](crate::interpreter::Termination): what every method throws,
-/// and why a program ended.
+/// [`RuntimeError`](crate::interpreter::RuntimeError),
+/// [`Termination`](crate::interpreter::Termination) and
+/// [`SystemRegisters`](crate::interpreter::SystemRegisters): what every method
+/// throws, why a program ended, and the System register file.
 #[wasm_bindgen(typescript_custom_section)]
 pub const IRuntimeError: &'static str = r#"
 /**
- * What every method throws, as a plain object. An error an instruction raised
- * ends the program with an exception and is its `Termination`; the others are
- * the host's (an answer refused, a value that is not what a call takes, a call
- * at the wrong time, the run's own limit) and change nothing.
+ * What an access that raised an address error was: a read of data, a write,
+ * or a read in program space (an instruction's word, a jump's target, or an
+ * operand read relative to the program counter).
+ */
+export type Access = "Read" | "Write" | "Program"
+
+/**
+ * What every method throws, as a plain object.
+ *
+ * An error an instruction raised that the 68000 has an exception for is taken
+ * through its vector into the program's handler, and the program goes on; only
+ * a vector that holds no handler, an odd address (every vector until the
+ * program writes it), ends the program, with the error as its `Termination`
+ * and the vector beside it. Those are the address error (3), an illegal
+ * instruction (4), a division by zero (5), `chk` (6), `trapv` (7), a privilege
+ * violation (8), trace (9), line A (10), line F (11), `trap #0` to `#14` (32
+ * to 46) and a `trap #15` task EASy68K does not know (47). The others end the
+ * program with no exception, or are the host's (an answer refused, a value
+ * that is not what a call takes, a call at the wrong time, the run's own
+ * limit) and change nothing.
  */
 export type RuntimeError = { type: "Raw", value: string } |
 { type: "ExecutionLimit", value: number } |
 { type: "OutOfBounds", value: string } |
+/** `divs` or `divu` by zero: vector 5. */
 { type: "DivisionByZero" } |
 { type: "IncorrectAddressingMode", value: string } |
 /**
- * A 68000 instruction s68k does not run yet, named in `value` ("`rte`",
- * "the line A word $A000"): `rte`, `stop`, `reset`, `move usp` and the line A
- * and line F words. The Assembler refuses them, so only a decoded word reaches one.
+ * A 68000 instruction s68k does not run yet, named in `value`: "`stop`" and
+ * "`reset`", which need interrupts. The Assembler refuses them, so only a
+ * decoded word reaches one; in user mode each is a privilege violation first.
  */
 { type: "Unimplemented", value: string } |
 /**
  * A word or a long read or written at an odd address, or an instruction
- * fetched from one: the 68000's address error, which ends the program.
+ * fetched from one, a jump to an odd address included: the 68000's address
+ * error, vector 3. `address` is all 32 bits the program used.
  */
-{ type: "AddressError", value : { address: number, size: Size } } |
-/** `chk` found the register outside 0 to the bound it was given. */
+{ type: "AddressError", value : { address: number, size: Size, access: Access } } |
+/** `chk` found the register outside 0 to the bound it was given: vector 6. */
 { type: "ChkOutOfBounds", value: { value: number, bound: number } } |
-/** `trapv` with the overflow flag set. */
+/** `trapv` with the overflow flag set: vector 7. */
 { type: "OverflowException" } |
 /**
- * The `illegal` instruction, or a word that is no instruction, which always
- * ends the run: what bytes never assembled as code can decode to when the
- * program runs into them.
+ * The `illegal` instruction, or a word that is no instruction, which is what
+ * bytes never assembled as code can decode to when the program runs into
+ * them: vector 4.
  */
 { type: "IllegalInstruction" } |
 /**
- * A `trap #15` task s68k does not carry out, by its number in D0.B: one that
- * is not EASy68K's, or the printer (10), the text window's font and contents
- * (21, 22, 25), the cycle counter (30, 31), the hardware window (32), the
- * serial ports (40 to 43), the interrupt requests (60, 62) and the network
- * (100 to 107). The host says why from the number.
+ * A privileged instruction in user mode: `move <ea>,sr`, `andi`, `ori` and
+ * `eori` to `sr`, `rte`, `stop`, `reset` and `move usp`. Vector 8.
+ */
+{ type: "PrivilegeViolation" } |
+/** The trace exception after an instruction that started with T set: vector 9. */
+{ type: "Trace" } |
+/** A word `$Axxx`, the line 1010 emulator, kept in `value`: vector 10. */
+{ type: "LineA", value: number } |
+/** A word `$Fxxx`, the line 1111 emulator, kept in `value`: vector 11. */
+{ type: "LineF", value: number } |
+/** `trap #0` to `#14`, through `vector`, 32 to 46. */
+{ type: "UnhandledTrap", value: { vector: number } } |
+/**
+ * A `trap #15` task s68k does not carry out, by its number in D0.B. One that is
+ * none of EASy68K's goes through vector 47, as in EASy68K; one of EASy68K's
+ * own that a browser cannot do faithfully ends the program with no exception:
+ * the printer (10), the text window's font and contents (21, 22, 25), the
+ * cycle counter (30, 31), the hardware window (32, but its D1.B of 5, which is
+ * accepted), the serial ports (40 to 43), the interrupt requests (60, 62) and
+ * the network (100 to 107). The host says why from the number.
  */
 { type: "UnsupportedTrapTask", value: { task: number } } |
 /** A `trap #15` task given a value it cannot take; `reason` names the register. */
@@ -365,8 +399,29 @@ export type Termination =
 { type: "EndOfProgram", value: { address: number } } |
 /** The host answered an interrupt with `Terminate`. */
 { type: "TerminatedByHost" } |
-/** A runtime error, and the program ended with an exception. */
-{ type: "Exception", value: RuntimeError }
+/**
+ * An instruction raised `cause` and the program ended with it. `vector` is
+ * the exception's when the 68000 has one and it held no handler (the message
+ * names it: "vector 5 at $000014 holds no handler"); absent for an error no
+ * handler could take, such as a `trap #15` task s68k does not carry out.
+ */
+{ type: "Exception", value: { cause: RuntimeError, vector?: number } } |
+/**
+ * The processor halted, a double fault: pushing the frame of the exception of
+ * `vector` raised `cause`, an address error on an odd supervisor stack
+ * pointer.
+ */
+{ type: "Halted", value: { cause: RuntimeError, vector: number } }
+
+/**
+ * The System register file: the whole status register and both stack
+ * pointers. A7 is the SSP while S is set and the USP while it is not.
+ */
+export type SystemRegisters = {
+    sr: number,
+    usp: number,
+    ssp: number
+}
 "#;
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -662,15 +717,16 @@ export type InstructionForm = {
      * One list per operand position of the addressing modes it takes, by the
      * names a diagnostic gives them: `Dn`, `An`, `(An)`, `(An)+`, `-(An)`,
      * `d(An)`, `d(An,Xn)`, `Ea/<label>`, `d(PC)`, `d(PC,Xn)`, `Im`,
-     * `<register list>`, `sr`, `ccr`. Its length is the operand count.
+     * `<register list>`, `sr`, `ccr`, `usp`. Its length is the operand count.
      */
     operands: string[][],
     /** The sizes it accepts, as `parseLine` writes a size; empty when it carries none. */
     sizes: ("byte" | "word" | "long" | "short")[],
     /**
-     * Whether the 68000 runs it only in supervisor mode: `move <ea>,sr` and
-     * `andi`, `ori` and `eori` into `sr`. s68k runs every program in
-     * supervisor mode, so a privileged form still runs.
+     * Whether the 68000 runs it only in supervisor mode: `move <ea>,sr`,
+     * `andi`, `ori` and `eori` into `sr`, `rte`, and `move usp`. A privileged
+     * form assembles, and raises a privilege violation when it runs in user
+     * mode.
      */
     privileged: boolean,
     /**
@@ -693,17 +749,24 @@ export type InstructionInfo = {
 #[wasm_bindgen(typescript_custom_section)]
 pub const IStackFrame: &'static str = r#"
 export type StackFrame = {
-    /** The address the routine starts at. */
+    /** The address the routine starts at: the handler, for an exception frame. */
     address: number,
-    /** The address the call returns to, not the address of the calling instruction. */
+    /**
+     * The address the frame returns to: after the call, not the calling
+     * instruction, or the program counter the exception stacked.
+     */
     source_address: number,
-    /** The registers as they were when it was called. */
+    /** The registers as they were when it was entered. */
     registers: number[],
     /** The name of the label on `address`, or `Unknown` when it has none. */
     label_name: string,
     label_address: number,
     /** Where that label was written; absent when the address has none. */
-    label_location?: Location
+    label_location?: Location,
+    /** A `bsr` or `jsr`, which `rts` returns from, or an exception, which `rte` returns from. */
+    kind: "call" | "exception",
+    /** The vector of an exception frame; absent for a call. */
+    vector?: number
 }
 "#;
 
@@ -784,7 +847,8 @@ pub const IMutationOperation: &'static str = r#"
  * wrote.
  *
  * Both sides are read where the write happened and never reconstructed
- * afterwards. `PushCall` and `PopCall` write no value and carry neither.
+ * afterwards. `PushCall`, `PopCall`, `PushException` and `PopException` write
+ * no value and carry neither: they are the call stack's.
  */
 export type MutationOperation = {
     type: "WriteRegister",
@@ -833,6 +897,36 @@ export type MutationOperation = {
     value: {
         old: InputSettings,
         new: InputSettings
+    }
+} | {
+    /**
+     * Both stack pointers before and after `move An,usp`, a poke of the USP or
+     * the SSP, or a write of the status register that changed S. A change of S
+     * moves no value: it makes A7 the other one, which the step's `new_sr`
+     * says.
+     */
+    type: "WriteStackPointers",
+    value: {
+        old: { usp: number, ssp: number },
+        new: { usp: number, ssp: number }
+    }
+} | {
+    /**
+     * An exception was taken: a frame pushed on the supervisor stack, and a
+     * jump through `vector` from the instruction at `from` to the handler.
+     */
+    type: "PushException",
+    value: {
+        vector: number,
+        from: number,
+        handler: number
+    }
+} | {
+    /** `rte` at `from` returned from an exception to `to`. */
+    type: "PopException",
+    value: {
+        to: number,
+        from: number
     }
 }
 "#;

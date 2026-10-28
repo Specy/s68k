@@ -458,7 +458,7 @@ data:
 }
 
 #[test]
-fn a_fetch_from_an_odd_address_is_an_address_error() {
+fn a_jump_to_an_odd_address_is_an_address_error_of_the_jump() {
     let mut interpreter = interpreter(
         "    org $1000
 start:
@@ -467,25 +467,22 @@ start:
 ",
     );
     interpreter.step().unwrap();
-    assert_eq!(
-        interpreter.step().unwrap(),
-        InterpreterStatus::Running,
-        "the jmp runs"
-    );
-    let odd = interpreter.get_pc();
+    let odd = interpreter.get_register_value(RegisterOperand::Address(0), Size::Long) as usize;
     assert_eq!(odd & 1, 1);
-    assert!(!interpreter.has_reached_bottom());
+    // the 68000 prefetches from the target in the jump itself, so the jump is
+    // what faults, and vector 3 holds no handler
     assert_eq!(
         interpreter.step(),
         Err(RuntimeError::AddressError {
             address: odd,
-            size: Size::Word
+            size: Size::Word,
+            access: crate::interpreter::Access::Program,
         })
     );
-    // the step that failed is undone, and the program is back on the odd address
+    // the step that failed is undone, and the program is back on the jump
     interpreter.undo().unwrap();
     assert_eq!(*interpreter.get_status(), InterpreterStatus::Running);
-    assert_eq!(interpreter.get_pc(), odd);
+    assert_eq!(interpreter.get_pc(), 0x1004);
 }
 
 mod the_end {

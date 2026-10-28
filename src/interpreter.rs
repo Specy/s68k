@@ -9,7 +9,10 @@
 //! A failure of a running program is a **runtime error** and not a Diagnostic:
 //! it is attributed to the instruction's Location and answered as an
 //! [`InterpreterStatus`], while everything the Assembler found was reported
-//! before the Program was built.
+//! before the Program was built. One the 68000 has a vector for is an
+//! **Exception**, taken into the program's handler as a 68000 takes it, in
+//! supervisor mode on the supervisor stack, and it ends the program only when
+//! the vector holds no handler (ADR 0008, and [`crate::machine::exception`]).
 //!
 //! Much of this module predates the assembler rewrite and its public items are
 //! not all documented yet; everything the rewrite added or changed is.
@@ -37,10 +40,11 @@ use crate::assembler::program::{AssembledInstruction, MemoryContent, Program};
 use crate::assembler::source::Location;
 #[cfg(any(test, feature = "conformance"))]
 use crate::assembler::symbols::SymbolTable;
-use crate::debugger::PrettyStackFrame;
+use crate::debugger::{PrettyStackFrame, SystemRegister};
 use crate::instructions::TargetDirection;
 use crate::machine::cache::{self, DecodeCache, Slot};
 use crate::machine::decode::{self, Decoded};
+use crate::machine::exception::{self, Frame};
 use crate::machine::{disassemble, Processor};
 use crate::{c_runtime, charset};
 use crate::{
@@ -49,9 +53,9 @@ use crate::{
         PokeWrite,
     },
     instructions::{
-        Bytes, Condition, FileDialogMode, FileExistence, IndexRegister, InputSettings, Instruction,
-        Interrupt, InterruptResult, KeyStateRequest, KeyStateResult, Operand, RegisterOperand,
-        Sign, Size, SoundOutcome,
+        AddressWidth, Bytes, Condition, FileDialogMode, FileExistence, IndexRegister,
+        InputSettings, Instruction, Interrupt, InterruptResult, KeyStateRequest, KeyStateResult,
+        Operand, RegisterOperand, Sign, Size, SoundOutcome,
     },
     math::*,
 };
@@ -272,20 +276,20 @@ impl Memory {
         Ok((result, sp))
     }
     pub fn read_long(&self, address: usize) -> RuntimeResult<u32> {
-        let address = self.verify_address(address, Size::Long)?;
+        let address = self.verify_address(address, Size::Long, Access::Read)?;
 
         Ok(u32::from_be_bytes(
             self.data[address..address + 4].try_into().unwrap(),
         ))
     }
     pub fn read_word(&self, address: usize) -> RuntimeResult<u16> {
-        let address = self.verify_address(address, Size::Word)?;
+        let address = self.verify_address(address, Size::Word, Access::Read)?;
         Ok(u16::from_be_bytes(
             self.data[address..address + 2].try_into().unwrap(),
         ))
     }
     pub fn read_byte(&self, address: usize) -> RuntimeResult<u8> {
-        let address = self.verify_address(address, Size::Byte)?;
+        let address = self.verify_address(address, Size::Byte, Access::Read)?;
         Ok(u8::from_be_bytes(
             self.data[address..address + 1].try_into().unwrap(),
         ))
@@ -319,7 +323,7 @@ impl Memory {
     /// value it replaced, read at the same size: a store that journals what it
     /// overwrote, checked once, and as a store.
     pub fn replace_size(&mut self, address: usize, size: Size, data: u32) -> RuntimeResult<u32> {
-        let address = self.verify_address(address, size)?;
+        let address = self.verify_address(address, size, Access::Write)?;
         self.cache.invalidate(address, size.to_bytes());
         let bytes = &mut self.data[address..address + size.to_bytes()];
         let old = bytes.iter().fold(0, |old, byte| (old << 8) | *byte as u32);
@@ -345,29 +349,57 @@ impl Memory {
         }
         Ok(address)
     }
+    /// The address an access of `size` reaches, in the 24 bits of the bus, or
+    /// the 68000's address error for a word or a long at an odd address, which
+    /// names the address as the program wrote it and the `access`.
     #[inline(always)]
-    pub fn verify_address(&self, address: usize, size: Size) -> RuntimeResult<usize> {
-        let address = self.verify_address_bounds(address, size.to_bytes())?;
-        let odd = address & 1 != 0;
+    pub fn verify_address(
+        &self,
+        address: usize,
+        size: Size,
+        access: Access,
+    ) -> RuntimeResult<usize> {
+        let bus = self.verify_address_bounds(address, size.to_bytes())?;
+        let odd = bus & 1 != 0;
         if odd && size != Size::Byte {
-            return Err(RuntimeError::AddressError { address, size });
+            return Err(Self::address_error(address, size, access));
         }
-        Ok(address)
+        Ok(bus)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn address_error(address: usize, size: Size, access: Access) -> RuntimeError {
+        RuntimeError::AddressError {
+            address: address as u32 as usize,
+            size,
+            access,
+        }
+    }
+
+    /// Reads a word or a long as [`read_size`](Self::read_size) does, in
+    /// program space: an operand relative to the program counter, whose
+    /// address error says so.
+    pub fn read_program(&self, address: usize, size: Size) -> RuntimeResult<u32> {
+        if size != Size::Byte && address & 1 != 0 {
+            return Err(Self::address_error(address, size, Access::Program));
+        }
+        self.read_size(address, size)
     }
     pub fn write_long(&mut self, address: usize, value: u32) -> RuntimeResult<()> {
-        let address = self.verify_address(address, Size::Long)?;
+        let address = self.verify_address(address, Size::Long, Access::Write)?;
         self.cache.invalidate(address, 4);
         self.data[address..address + 4].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
     pub fn write_word(&mut self, address: usize, value: u16) -> RuntimeResult<()> {
-        let address = self.verify_address(address, Size::Word)?;
+        let address = self.verify_address(address, Size::Word, Access::Write)?;
         self.cache.invalidate(address, 2);
         self.data[address..address + 2].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
     pub fn write_byte(&mut self, address: usize, value: u8) -> RuntimeResult<()> {
-        let address = self.verify_address(address, Size::Byte)?;
+        let address = self.verify_address(address, Size::Byte, Access::Write)?;
         self.cache.invalidate(address, 1);
         self.data[address] = value;
         Ok(())
@@ -477,16 +509,81 @@ fn address_step(register: u8, size: Size) -> u32 {
     }
 }
 
+/// The address error of a long accessed through `-(An)` a word at a time, its
+/// low word first, as `move.l` and `movem.l` write one and `addx.l` and
+/// `subx.l` read one: the fault is on the low word, two bytes past the long.
+#[cold]
+#[inline(never)]
+fn low_word_first(error: RuntimeError) -> RuntimeError {
+    match error {
+        RuntimeError::AddressError {
+            address,
+            size,
+            access,
+        } => RuntimeError::AddressError {
+            address: (address as u32).wrapping_add(2) as usize,
+            size,
+            access,
+        },
+        other => other,
+    }
+}
+
 /// The bits of the status register a 68000 has: trace, supervisor, the
 /// interrupt mask and the five condition codes. The others always read as 0,
 /// whatever is written to them, so `move #$FFFF,sr` reads back `$A71F`.
 pub const SR_IMPLEMENTED_BITS: u16 = 0xA71F;
 
-/// The status register a program starts with: `$2700`, EASy68K's own
-/// (`SIMHELP/Exceptions.htm`, "the supervisor bit is set on") — supervisor,
-/// interrupt mask 7, no trace and no condition code set.
-pub const INITIAL_STATUS_REGISTER: u16 = 0x2700;
+/// The trace bit of the status register, T: set, the processor takes a trace
+/// exception after every instruction.
+pub const TRACE_BIT: u16 = 0x8000;
 
+/// The supervisor bit of the status register, S: set, the processor is in
+/// supervisor mode and A7 is the supervisor stack pointer.
+pub const SUPERVISOR_BIT: u16 = 0x2000;
+
+/// The status register a program starts with: `$2000`, EASy68K's own
+/// (`STARTSIM.CPP`): supervisor, interrupt mask 0, no trace and no condition
+/// code set (the asm-editor's `docs/design/m68k-machine.md`, decision 2).
+pub const INITIAL_STATUS_REGISTER: u16 = 0x2000;
+
+/// The supervisor stack pointer a program starts with, which is A7 at the
+/// start, since a program starts in supervisor mode: `$01000000`, the end of
+/// memory, so the first push lands at `$00FFFFFC`.
+pub const INITIAL_SUPERVISOR_STACK_POINTER: u32 = 0x0100_0000;
+
+/// The user stack pointer a program starts with: `$00FF0000`, EASy68K's.
+pub const INITIAL_USER_STACK_POINTER: u32 = 0x00FF_0000;
+
+/// The two stack pointers, by the mode each belongs to: what
+/// [`MutationOperation::WriteStackPointers`] journals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct StackPointers {
+    /// The user stack pointer, USP.
+    pub usp: u32,
+    /// The supervisor stack pointer, SSP.
+    pub ssp: u32,
+}
+
+/// The System register file: the status register and both stack pointers,
+/// what `getSystem()` answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SystemRegisters {
+    /// The whole status register.
+    pub sr: u16,
+    /// The user stack pointer.
+    pub usp: u32,
+    /// The supervisor stack pointer.
+    pub ssp: u32,
+}
+
+/// The processor's registers.
+///
+/// A7 is the stack pointer of the mode the status register's S bit names: the
+/// supervisor stack pointer (SSP) when it is set, the user stack pointer (USP)
+/// when it is not. The other one is kept aside, so that every instruction
+/// reads and writes A7 as an address register like any other, and only a
+/// write of S, an exception and `rte` move the two.
 #[derive(Debug, Clone, Copy)]
 #[wasm_bindgen]
 pub struct Cpu {
@@ -494,13 +591,12 @@ pub struct Cpu {
     a_reg: [Register; 8],
     ccr: Flags,
     /// The high byte of the status register: trace, supervisor and the
-    /// interrupt mask.
-    ///
-    /// It is stored and readable and has no effect at all — s68k runs every
-    /// program as supervisor, which is what EASy68K's simulator starts in (the
-    /// design record, "Instructions"). The low byte is [`Cpu::ccr`], so the
-    /// whole register is [`Cpu::get_sr`].
+    /// interrupt mask. The low byte is [`Cpu::ccr`], so the whole register is
+    /// [`Cpu::get_sr`].
     system_byte: u8,
+    /// The stack pointer of the mode the processor is not in: the USP in
+    /// supervisor mode, the SSP in user mode.
+    inactive_stack_pointer: u32,
 }
 
 impl Default for Cpu {
@@ -510,12 +606,19 @@ impl Default for Cpu {
 }
 
 impl Cpu {
+    /// The registers as a program starts with them, EASy68K's: every data and
+    /// address register zero, supervisor mode with A7 the SSP at
+    /// [`INITIAL_SUPERVISOR_STACK_POINTER`], the USP at
+    /// [`INITIAL_USER_STACK_POINTER`] and SR [`INITIAL_STATUS_REGISTER`].
     pub fn new() -> Self {
+        let mut a_reg = [Register::new(); 8];
+        a_reg[7].store_long(INITIAL_SUPERVISOR_STACK_POINTER);
         Self {
             d_reg: [Register::new(); 8],
-            a_reg: [Register::new(); 8],
+            a_reg,
             ccr: Flags::from_ccr_byte(INITIAL_STATUS_REGISTER as u8),
             system_byte: (INITIAL_STATUS_REGISTER >> 8) as u8,
+            inactive_stack_pointer: INITIAL_USER_STACK_POINTER,
         }
     }
 
@@ -525,11 +628,77 @@ impl Cpu {
         ((self.system_byte as u16) << 8) | self.ccr.to_ccr_byte() as u16
     }
 
-    /// Sets the whole status register, condition codes included.
-    pub fn set_sr(&mut self, value: u16) {
+    /// Writes the whole status register as the 68000 does, condition codes
+    /// included: reduced to [`SR_IMPLEMENTED_BITS`], and, when S changes, A7
+    /// becomes the stack pointer of the new mode and the old one is kept
+    /// aside. Answers whether it swapped them.
+    pub fn set_sr(&mut self, value: u16) -> bool {
+        let swaps = (value ^ self.get_sr()) & SUPERVISOR_BIT != 0;
+        if swaps {
+            let active = self.a_reg[7].get_long();
+            self.a_reg[7].store_long(self.inactive_stack_pointer);
+            self.inactive_stack_pointer = active;
+        }
+        self.restore_sr(value);
+        swaps
+    }
+
+    /// Writes the whole status register and leaves the stack pointers where
+    /// they are, even when S changes: what undo does, since it puts the stack
+    /// pointers back itself ([`Cpu::restore_stack_pointers`]).
+    pub fn restore_sr(&mut self, value: u16) {
         let value = value & SR_IMPLEMENTED_BITS;
         self.system_byte = (value >> 8) as u8;
         self.ccr = Flags::from_ccr_byte(value as u8);
+    }
+
+    /// Whether the processor is in supervisor mode: S is set.
+    #[inline(always)]
+    pub fn is_supervisor(&self) -> bool {
+        self.system_byte & (SUPERVISOR_BIT >> 8) as u8 != 0
+    }
+
+    /// Whether T is set, so that a trace exception follows the next
+    /// instruction.
+    #[inline(always)]
+    pub fn is_tracing(&self) -> bool {
+        self.system_byte & (TRACE_BIT >> 8) as u8 != 0
+    }
+
+    /// The user stack pointer: A7 in user mode, the one kept aside in
+    /// supervisor mode.
+    pub fn get_usp(&self) -> u32 {
+        match self.is_supervisor() {
+            true => self.inactive_stack_pointer,
+            false => self.a_reg[7].get_long(),
+        }
+    }
+
+    /// The supervisor stack pointer: A7 in supervisor mode, the one kept aside
+    /// in user mode.
+    pub fn get_ssp(&self) -> u32 {
+        match self.is_supervisor() {
+            true => self.a_reg[7].get_long(),
+            false => self.inactive_stack_pointer,
+        }
+    }
+
+    /// Both stack pointers.
+    pub fn stack_pointers(&self) -> StackPointers {
+        StackPointers {
+            usp: self.get_usp(),
+            ssp: self.get_ssp(),
+        }
+    }
+
+    /// Sets both stack pointers, A7 being the one of the mode S names now.
+    pub fn restore_stack_pointers(&mut self, pointers: StackPointers) {
+        let (active, inactive) = match self.is_supervisor() {
+            true => (pointers.ssp, pointers.usp),
+            false => (pointers.usp, pointers.ssp),
+        };
+        self.a_reg[7].store_long(active);
+        self.inactive_stack_pointer = inactive;
     }
 
     /// The condition codes as the low byte of the status register.
@@ -584,28 +753,43 @@ impl Cpu {
     pub fn wasm_get_ccr(&self) -> Flags {
         self.ccr
     }
-    /// The whole status register, `$2700` before a program has run.
+    /// The whole status register, `$2000` before a program has run.
     pub fn wasm_get_sr(&self) -> u16 {
         self.get_sr()
+    }
+    /// The user stack pointer, which A7 is in user mode.
+    pub fn wasm_get_usp(&self) -> u32 {
+        self.get_usp()
+    }
+    /// The supervisor stack pointer, which A7 is in supervisor mode.
+    pub fn wasm_get_ssp(&self) -> u32 {
+        self.get_ssp()
     }
 }
 
 /// What stopped a running program, or what the host asked of the Interpreter
 /// that it could not do.
 ///
-/// **An error an instruction raised ends the program.** s68k keeps no
-/// exception vectors and no supervisor stack frame, so where a 68000 would jump
-/// through a vector (`SIMHELP/Exceptions.htm`) the run ends with
+/// **An error an instruction raised is an Exception when the 68000 has one
+/// for it** (ADR 0008): the processor pushes a frame and jumps through the
+/// error's vector to the program's handler, and the program goes on. That
+/// covers an address error, an illegal instruction (`illegal`, and a word that
+/// is no instruction), a division by zero, `chk` and `trapv`, a privilege
+/// violation, trace, the line A and line F words, `trap #0` to `#14`, and a
+/// `trap #15` task EASy68K does not know. Only a vector that holds no handler
+/// ends the program: one holding an odd address, which every vector does until
+/// the program writes it, since memory starts as `$FF`. Then the run ends with
 /// [`InterpreterStatus::TerminatedWithException`], the error is the
-/// [`Termination`]'s cause, and undoing the step that raised it brings the
-/// program back to the instruction, running. That covers a memory fault, a
-/// division by zero, `chk`, `trapv`, `illegal` and a word that is no
-/// instruction, an instruction fetched from an odd address, and every `trap #15` task
-/// the Interpreter cannot carry out:
-/// [`UnsupportedTrapTask`](RuntimeError::UnsupportedTrapTask) and
-/// [`InvalidTrapArgument`](RuntimeError::InvalidTrapArgument).
+/// [`Termination`]'s cause with the vector beside it, and undoing the step that
+/// raised it brings the program back to the instruction, running.
 ///
-/// The others are the host's: an answer refused
+/// The others end the program with no exception to take: a `trap #15` task the
+/// Interpreter cannot carry out ([`UnsupportedTrapTask`](RuntimeError::UnsupportedTrapTask)
+/// for one of EASy68K's own tasks) or one given a value it cannot take
+/// ([`InvalidTrapArgument`](RuntimeError::InvalidTrapArgument)), and `stop`
+/// and `reset`, which are not run yet.
+///
+/// The rest are the host's: an answer refused
 /// ([`NoPendingInterrupt`](RuntimeError::NoPendingInterrupt),
 /// [`InvalidAnswer`](RuntimeError::InvalidAnswer)), a value from JavaScript
 /// that is not what a call takes ([`InvalidArgument`](RuntimeError::InvalidArgument)),
@@ -619,37 +803,61 @@ pub enum RuntimeError {
     ExecutionLimit(usize),
     OutOfBounds(String),
     /// A word or a long read or written at an odd address, and an instruction
-    /// fetched from one: the 68000's address error. It ends the program until
-    /// exceptions are taken (the asm-editor's `docs/design/m68k-machine-plan.md`,
-    /// milestone C6).
+    /// fetched from one, a jump to an odd address included: the 68000's
+    /// address error, vector 3.
     AddressError {
+        /// The address the program used, all 32 bits of it, as the 68000
+        /// stacks it; the bus reads its low 24.
         address: usize,
+        /// The size of the access.
         size: Size,
+        /// What the access was.
+        access: Access,
     },
+    /// `divs` or `divu` by zero: vector 5.
     DivisionByZero,
     IncorrectAddressingMode(String),
     /// A 68000 instruction the Interpreter does not run yet, named in the
-    /// text: `rte`, `stop`, `reset`, `move usp`, and the line A and line F
-    /// words. Each needs exceptions, supervisor mode or interrupts. The
-    /// Assembler refuses all of them, so only a decoded word reaches one.
+    /// text: `stop` and `reset`, which need interrupts (the plan's milestone
+    /// C8). The Assembler refuses both, so only a decoded word reaches one.
     Unimplemented(String),
-    /// `chk` found the register outside 0 to the bound it was given.
+    /// `chk` found the register outside 0 to the bound it was given: vector 6.
     ChkOutOfBounds {
         /// The low word of the register, read as a signed number.
         value: i32,
         /// The bound the operand held, read as a signed number.
         bound: i32,
     },
-    /// `trapv` with the overflow flag set.
+    /// `trapv` with the overflow flag set: vector 7.
     OverflowException,
     /// The `illegal` instruction, or a word that is the first word of no
-    /// instruction ([`Instruction::IllegalWord`]), which always ends the run.
+    /// instruction ([`Instruction::IllegalWord`]): vector 4.
     IllegalInstruction,
-    /// A `trap #15` task s68k does not carry out, which is every number in
-    /// D0.B that is not one of EASy68K's tasks and the tasks a page in a
-    /// browser cannot do faithfully: the printer (10), the text window's font
-    /// and contents (21, 22, 25), the cycle counter (30, 31), the hardware
-    /// window (32), the serial ports (40 to 43), the interrupt requests (60,
+    /// A privileged instruction in user mode: `move <ea>,sr`, `andi`, `ori`
+    /// and `eori` to `sr`, `rte`, `stop`, `reset` and `move usp`. Vector 8.
+    PrivilegeViolation,
+    /// The trace exception, after an instruction that started with T set:
+    /// vector 9.
+    Trace,
+    /// A word of the form `$Axxx`, the line 1010 emulator: vector 10. The word
+    /// is kept.
+    LineA(u16),
+    /// A word of the form `$Fxxx`, the line 1111 emulator: vector 11. The word
+    /// is kept.
+    LineF(u16),
+    /// `trap #0` to `#14`, through vectors 32 to 46.
+    UnhandledTrap {
+        /// The vector, 32 and the trap's number.
+        vector: u8,
+    },
+    /// A `trap #15` task s68k does not carry out, by its number in D0.B.
+    ///
+    /// A number that is none of EASy68K's tasks goes through vector 47, as in
+    /// EASy68K, so a program can handle it. One of EASy68K's own tasks that a
+    /// page in a browser cannot do faithfully ends the program with no
+    /// exception: the printer (10), the text window's font and contents (21,
+    /// 22, 25), the cycle counter (30, 31), the hardware window (32 but its
+    /// `D1.B` of 5), the serial ports (40 to 43), the interrupt requests (60,
     /// 62) and the network (100 to 107). The host says why from the number.
     UnsupportedTrapTask {
         /// The task, D0.B.
@@ -680,6 +888,19 @@ pub enum RuntimeError {
     InvalidArgument(String),
 }
 
+/// What an access that raised an [address error](RuntimeError::AddressError)
+/// was, which is what the 68000 writes in the status word of its frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Access {
+    /// A read of data.
+    Read,
+    /// A write.
+    Write,
+    /// A read in program space: an instruction's word, a jump's target, or an
+    /// operand read relative to the program counter.
+    Program,
+}
+
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
 /// Why a program ended: what [`Interpreter::get_termination`] answers once the
@@ -703,9 +924,28 @@ pub enum Termination {
     },
     /// The host answered an interrupt with [`InterruptResult::Terminate`].
     TerminatedByHost,
-    /// An instruction raised a runtime error, and the program ended with an
-    /// exception: [`InterpreterStatus::TerminatedWithException`].
-    Exception(RuntimeError),
+    /// An instruction raised a runtime error and the program ended with it:
+    /// [`InterpreterStatus::TerminatedWithException`].
+    Exception {
+        /// What the instruction raised.
+        cause: RuntimeError,
+        /// The Exception's vector, when the 68000 has one for the error and
+        /// the program could have handled it: the vector held no handler, an
+        /// odd address (ADR 0008). `None` for an error the program cannot
+        /// handle, such as a `trap #15` task s68k does not carry out.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        vector: Option<u8>,
+    },
+    /// The processor halted, as a 68000 does when exception processing itself
+    /// fails: a double fault. Pushing the frame of the exception of vector
+    /// `vector` raised `cause`, an address error on an odd supervisor stack
+    /// pointer. [`InterpreterStatus::TerminatedWithException`] too.
+    Halted {
+        /// What pushing the frame raised.
+        cause: RuntimeError,
+        /// The vector of the exception whose frame it was pushing.
+        vector: u8,
+    },
 }
 
 /// The most characters tasks 0 and 1 display: EASy68K copies the string into a
@@ -1138,6 +1378,13 @@ pub struct Interpreter {
     /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints) for its
     /// duration, and read by [`step`](Interpreter::step).
     stop_on_code_write: bool,
+    /// Whether T takes a trace exception after an instruction. It always does
+    /// but in the conformance harness, whose suite records the state before
+    /// the trace exception ([`Interpreter::from_state`]).
+    takes_trace: bool,
+    /// Whether the instruction waiting on the host started with T set, so
+    /// that the trace exception follows the answer.
+    trace_after_answer: bool,
 }
 
 impl Interpreter {
@@ -1169,13 +1416,13 @@ impl Interpreter {
     }
 
     /// An Interpreter over `memory` as it is, about to run `program` from its
-    /// Entry point, with the stack pointer at the top of memory and nothing
-    /// ended yet.
+    /// Entry point, with the registers as a program starts with them
+    /// ([`Cpu::new`]) and nothing ended yet.
     fn with_memory(program: Program, memory: Memory, options: Option<InterpreterOptions>) -> Self {
-        let sp = 0x01000000;
+        let sp = INITIAL_SUPERVISOR_STACK_POINTER as usize;
         let start = program.entry();
         let options = options.unwrap_or_default();
-        let mut interpreter = Self {
+        let interpreter = Self {
             stack_top: sp,
             memory,
             cpu: Cpu::new(),
@@ -1194,9 +1441,10 @@ impl Interpreter {
             executed_instructions: 0,
             code_write: None,
             stop_on_code_write: false,
+            takes_trace: true,
+            trace_after_answer: false,
             program,
         };
-        interpreter.cpu.a_reg[7].store_long(sp as u32);
         interpreter
     }
 
@@ -1238,16 +1486,11 @@ impl Interpreter {
     }
     /// The whole status register: the system byte, then the condition codes.
     ///
-    /// It is `$2700` before a program has run, as in EASy68K, and its high byte
-    /// has no effect on anything (the design record, "Instructions").
+    /// It is `$2000` before a program has run, as in EASy68K: supervisor mode,
+    /// interrupt mask 0.
     #[inline(always)]
     pub fn get_sr(&self) -> u16 {
         self.cpu.get_sr()
-    }
-
-    /// Sets the whole status register, condition codes included.
-    pub fn set_sr(&mut self, value: u16) {
-        self.cpu.set_sr(value);
     }
 
     /// Ends the program, for `cause`: [`InterpreterStatus::TerminatedWithException`]
@@ -1262,24 +1505,38 @@ impl Interpreter {
             return;
         }
         self.status = match cause {
-            Termination::Exception(_) => InterpreterStatus::TerminatedWithException,
+            Termination::Exception { .. } | Termination::Halted { .. } => {
+                InterpreterStatus::TerminatedWithException
+            }
             _ => InterpreterStatus::Terminated,
         };
         self.termination = Some(cause);
     }
 
-    /// Ends the run with an exception and answers the error that says why.
-    ///
-    /// A 68000 would push a stack frame and jump through the vector of
-    /// `SIMHELP/Exceptions.htm`; s68k has neither, so every error an
-    /// instruction raises — an address error, `chk`, `trapv`, `illegal`, a
-    /// `trap` task it cannot carry out — stops the program:
-    /// [`InterpreterStatus::TerminatedWithException`], with the
-    /// [`RuntimeError`] naming the cause as the [`Termination`], and the
-    /// Location of the line is the one the step recorded.
-    fn end_with_an_exception(&mut self, error: RuntimeError) -> RuntimeError {
-        self.terminate(Termination::Exception(error.clone()));
+    /// Ends the program with the error an instruction raised and answers the
+    /// error: [`InterpreterStatus::TerminatedWithException`], with the error
+    /// and its `vector`, when it had one the program left without a handler,
+    /// as the [`Termination`]. The Location of the line is the one the step
+    /// recorded.
+    fn end_with_an_exception(&mut self, error: RuntimeError, vector: Option<u8>) -> RuntimeError {
+        self.terminate(Termination::Exception {
+            cause: error.clone(),
+            vector,
+        });
         error
+    }
+
+    /// Halts the processor, a double fault: pushing the frame of the
+    /// exception through `vector` raised `fault`. The program ends with
+    /// [`Termination::Halted`].
+    #[cold]
+    #[inline(never)]
+    fn halt(&mut self, fault: RuntimeError, vector: u8) -> RuntimeError {
+        self.terminate(Termination::Halted {
+            cause: fault.clone(),
+            vector,
+        });
+        fault
     }
 
     /// Why the program ended, or `None` while it has not.
@@ -1378,9 +1635,18 @@ impl Interpreter {
     /// The error of a [`fetch`](Interpreter::fetch) from `pc`, which is odd.
     #[cold]
     fn odd_fetch(pc: usize) -> RuntimeError {
+        Self::jump_to_an_odd_address(pc as u32)
+    }
+
+    /// The address error of a jump to `target`, odd, which the 68000 raises in
+    /// the jump's own prefetch from it.
+    #[cold]
+    #[inline(never)]
+    fn jump_to_an_odd_address(target: u32) -> RuntimeError {
         RuntimeError::AddressError {
-            address: pc & ADDRESS_MASK,
+            address: target as usize,
             size: Size::Word,
+            access: Access::Program,
         }
     }
 
@@ -1503,9 +1769,6 @@ impl Interpreter {
         }
         self.current_instruction_address = pc;
         self.code_write = None;
-        if slot.is_empty() {
-            return Err(self.end_with_an_exception(Self::odd_fetch(pc)));
-        }
         if self.keep_history {
             //the line the address map has there, which a change to the bytes does not move;
             //copied into the step's own slot, so a full history copies without allocating
@@ -1522,7 +1785,15 @@ impl Interpreter {
         self.executing = true;
         self.executed_instructions += 1;
         let watched = self.watched_writes.len();
-        let executed = self.execute_instruction(&slot.instruction);
+        //T as it was before the instruction, which is what decides a trace exception after it
+        let traced = self.cpu.is_tracing();
+        let mut executed = match slot.is_empty() {
+            true => Err(Self::odd_fetch(pc)),
+            false => self.execute_instruction(&slot.instruction),
+        };
+        if executed.is_err() || traced {
+            executed = self.take_exceptions(executed, &slot.instruction, pc, traced);
+        }
         let sp = self.get_sp();
         let top = if sp.abs_diff(sp_before) > 4096 || sp > self.stack_top { sp } else { self.stack_top };
         if top != self.stack_top {
@@ -1537,9 +1808,7 @@ impl Interpreter {
             self.debugger.set_new_ccr(self.cpu.ccr);
             self.debugger.set_new_sr(self.cpu.get_sr());
         }
-        if let Err(error) = executed {
-            return Err(self.end_with_an_exception(error));
-        }
+        executed?;
         if self.status == InterpreterStatus::Running {
             //the host takes what the instruction stored before the next one runs, and sees the
             //code write it was asked to stop for; the end of the program, if this was the last
@@ -1564,6 +1833,301 @@ impl Interpreter {
             });
         }
     }
+    /// What follows an instruction that raised an error or started with T
+    /// set: the Exceptions it takes (ADR 0008).
+    ///
+    /// An error the 68000 has a vector for is taken through it
+    /// ([`take_exception`](Interpreter::take_exception)), and one it has none
+    /// for ends the program. After an instruction that started with T set, a
+    /// trace exception follows, unless the instruction raised one of group 0
+    /// or 1, which it did not finish: so after `trap`, `trapv`, `chk` or a
+    /// division by zero, the trace frame is pushed on top of theirs and the
+    /// trace handler runs first, returning into theirs, as on a 68000. An
+    /// instruction that raised an Interrupt is traced when the host has
+    /// answered it, and one that paused or ended the program is not.
+    #[cold]
+    #[inline(never)]
+    fn take_exceptions(
+        &mut self,
+        executed: RuntimeResult<()>,
+        instruction: &Instruction,
+        at: usize,
+        traced: bool,
+    ) -> RuntimeResult<()> {
+        let traced = traced && self.takes_trace;
+        let error = match executed {
+            Ok(()) => {
+                return if traced {
+                    self.trace_after_instruction()
+                } else {
+                    Ok(())
+                }
+            }
+            Err(error) => error,
+        };
+        let Some(vector) = exception::vector_of(&error) else {
+            return Err(self.end_with_an_exception(error, None));
+        };
+        let frame = self.frame_of(&error, vector, instruction, at);
+        self.take_exception(vector, frame, error)?;
+        if traced && exception::group(vector) == exception::Group::Two {
+            self.trace_after_instruction()?;
+        }
+        Ok(())
+    }
+
+    /// The trace exception after an instruction that started with T set, or,
+    /// for one waiting on the host, after its answer.
+    fn trace_after_instruction(&mut self) -> RuntimeResult<()> {
+        match self.status {
+            InterpreterStatus::Running => self.take_exception(
+                exception::TRACE,
+                Frame::Short { pc: self.pc as u32 },
+                RuntimeError::Trace,
+            ),
+            InterpreterStatus::Interrupt => {
+                self.trace_after_answer = true;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The frame `error`, raised by `instruction` at `at`, pushes through
+    /// `vector`: the long one of group 0 for an address error, with the
+    /// program counter [`exception::address_error_pc`] says; the short one
+    /// with the instruction's own address for groups 1, and with the next
+    /// instruction's for group 2.
+    fn frame_of(
+        &self,
+        error: &RuntimeError,
+        vector: u8,
+        instruction: &Instruction,
+        at: usize,
+    ) -> Frame {
+        let at = at as u32;
+        match *error {
+            RuntimeError::AddressError {
+                address, access, ..
+            } => {
+                let address = address as u32;
+                //an instruction fetched from an odd address is no instruction at all
+                let pc = match at & 1 != 0 {
+                    true => at,
+                    false => exception::address_error_pc(
+                        instruction,
+                        at,
+                        self.pc as u32,
+                        access,
+                        address,
+                    ),
+                };
+                let instruction_register = self.memory.word_at(
+                    exception::instruction_register_address(instruction, at, pc, access) as usize,
+                );
+                Frame::Group0 {
+                    pc,
+                    access_address: address,
+                    instruction_register,
+                    status_word: exception::status_word(
+                        instruction_register,
+                        access,
+                        self.cpu.is_supervisor(),
+                    ),
+                }
+            }
+            _ => Frame::Short {
+                pc: match exception::group(vector) {
+                    exception::Group::Two => self.pc as u32,
+                    exception::Group::Zero | exception::Group::One => at,
+                },
+            },
+        }
+    }
+
+    /// Takes the Exception through `vector`, pushing `frame`, which `cause`
+    /// raised: the one frame builder (the design's decision 10), which the
+    /// dialects' frames will extend.
+    ///
+    /// The vector is read first. An odd address there is no handler, which is
+    /// what every vector holds until the program writes it, and the program
+    /// ends with `cause` as it would have before exceptions were taken, the
+    /// vector named beside it. Otherwise the processor copies the status
+    /// register, sets S and clears T, which makes A7 the supervisor stack
+    /// pointer, pushes the frame there with the copy, and jumps to the
+    /// handler. A fault while it pushes the frame, which an odd supervisor
+    /// stack pointer raises, is a double fault, and the processor halts.
+    ///
+    /// The call stack gains an exception frame, which `rte` takes off.
+    fn take_exception(
+        &mut self,
+        vector: u8,
+        frame: Frame,
+        cause: RuntimeError,
+    ) -> RuntimeResult<()> {
+        let handler = match self
+            .memory
+            .read_long(exception::vector_address(vector) as usize)
+        {
+            Ok(handler) => handler,
+            Err(fault) => return Err(self.halt(fault, vector)),
+        };
+        if handler & 1 != 0 {
+            return Err(self.end_with_an_exception(cause, Some(vector)));
+        }
+        let sr = self.cpu.get_sr();
+        self.write_sr((sr | SUPERVISOR_BIT) & !TRACE_BIT);
+        if let Err(fault) = self.push_frame(&frame, sr) {
+            return Err(self.halt(fault, vector));
+        }
+        let from = self.current_instruction_address;
+        self.pc = handler as usize;
+        if self.keep_history {
+            self.debugger
+                .add_mutation(MutationOperation::PushException {
+                    vector,
+                    from,
+                    handler: handler as usize,
+                });
+        }
+        self.debugger.push_exception(
+            handler as usize,
+            frame.pc() as usize,
+            self.cpu.get_register_values(),
+            vector,
+        );
+        Ok(())
+    }
+
+    /// Pushes `frame`, which stacks `sr`, on the supervisor stack, which A7
+    /// is: its words from the top down, as the 68000 pushes them, each a store
+    /// of the program's.
+    fn push_frame(&mut self, frame: &Frame, sr: u16) -> RuntimeResult<()> {
+        let sp = (self.get_sp() as u32).wrapping_sub(frame.size());
+        let words = frame.words(sr);
+        for (index, word) in words.iter().enumerate().rev() {
+            let address = sp.wrapping_add(index as u32 * 2) as usize;
+            self.set_memory_value(address, Size::Word, *word as u32)?;
+        }
+        self.set_sp(sp as usize);
+        Ok(())
+    }
+
+    /// Writes the status register for the program or the host, as the 68000
+    /// does: when S changes, A7 becomes the other stack pointer
+    /// ([`Cpu::set_sr`]), and the swap is journaled
+    /// ([`MutationOperation::WriteStackPointers`]) into the step being executed
+    /// or the open Poke, so that undo, which writes the status register back
+    /// without moving the stack pointers, puts each back where it was.
+    fn write_sr(&mut self, value: u16) {
+        let pointers = self.cpu.stack_pointers();
+        if self.cpu.set_sr(value) {
+            self.journal_stack_pointers(pointers, pointers);
+        }
+    }
+
+    /// Journals a change of the stack pointers into the step being executed,
+    /// or into the open Poke.
+    fn journal_stack_pointers(&mut self, old: StackPointers, new: StackPointers) {
+        let mutation = MutationOperation::WriteStackPointers { old, new };
+        if self.executing {
+            if self.keep_history {
+                self.debugger.add_mutation(mutation);
+            }
+        } else if let Some(poke) = self.poke.as_mut() {
+            poke.add_mutation(mutation);
+        }
+    }
+
+    /// Sets the user stack pointer: A7 in user mode, the one kept aside in
+    /// supervisor mode. Journaled like any write.
+    fn write_usp(&mut self, value: u32) {
+        let old = self.cpu.stack_pointers();
+        let new = StackPointers { usp: value, ..old };
+        self.cpu.restore_stack_pointers(new);
+        if old != new {
+            self.journal_stack_pointers(old, new);
+        }
+    }
+
+    /// The user stack pointer.
+    pub fn get_usp(&self) -> u32 {
+        self.cpu.get_usp()
+    }
+
+    /// The supervisor stack pointer.
+    pub fn get_ssp(&self) -> u32 {
+        self.cpu.get_ssp()
+    }
+
+    /// The status register and the two stack pointers: the System register
+    /// file.
+    pub fn get_system(&self) -> SystemRegisters {
+        SystemRegisters {
+            sr: self.cpu.get_sr(),
+            usp: self.cpu.get_usp(),
+            ssp: self.cpu.get_ssp(),
+        }
+    }
+
+    /// Writes a register of the System file on behalf of the host: inside a
+    /// Poke it is journaled, so that undoing the Poke puts it back, and
+    /// outside one it is direct and records nothing, as
+    /// [`set_register_value`](Interpreter::set_register_value) is.
+    fn poke_system(&mut self, register: SystemRegister, value: u32) {
+        let old = match register {
+            SystemRegister::Sr => self.cpu.get_sr() as u32,
+            SystemRegister::Usp => self.cpu.get_usp(),
+            SystemRegister::Ssp => self.cpu.get_ssp(),
+        };
+        match register {
+            SystemRegister::Sr => self.write_sr(value as u16),
+            SystemRegister::Usp => self.write_usp(value),
+            SystemRegister::Ssp => {
+                let pointers = self.cpu.stack_pointers();
+                let new = StackPointers {
+                    ssp: value,
+                    ..pointers
+                };
+                self.cpu.restore_stack_pointers(new);
+                if pointers != new {
+                    self.journal_stack_pointers(pointers, new);
+                }
+            }
+        }
+        let now = match register {
+            SystemRegister::Sr => self.cpu.get_sr() as u32,
+            SystemRegister::Usp => self.cpu.get_usp(),
+            SystemRegister::Ssp => self.cpu.get_ssp(),
+        };
+        if now != old {
+            if let Some(poke) = self.poke.as_mut() {
+                poke.add_system_target(register, old);
+            }
+        }
+    }
+
+    /// Writes the whole status register for the host, as `move #n,sr` would:
+    /// reduced to [`SR_IMPLEMENTED_BITS`], and a change of S makes A7 the
+    /// other stack pointer. Inside a Poke it is journaled; outside one it is
+    /// direct.
+    pub fn set_sr(&mut self, value: u16) {
+        self.poke_system(SystemRegister::Sr, value as u32);
+    }
+
+    /// Writes the user stack pointer for the host, A7 itself in user mode.
+    /// Inside a Poke it is journaled; outside one it is direct.
+    pub fn set_usp(&mut self, value: u32) {
+        self.poke_system(SystemRegister::Usp, value);
+    }
+
+    /// Writes the supervisor stack pointer for the host, A7 itself in
+    /// supervisor mode. Inside a Poke it is journaled; outside one it is
+    /// direct.
+    pub fn set_ssp(&mut self, value: u32) {
+        self.poke_system(SystemRegister::Ssp, value);
+    }
+
     pub fn get_pretty_call_stack(&self) -> Vec<PrettyStackFrame> {
         self.debugger.to_call_stack()
     }
@@ -1581,8 +2145,10 @@ impl Interpreter {
                 if let Some(top) = step.old_stack_top { self.stack_top = top; }
                 self.pc = step.get_pc();
                 //the whole status register, which is the condition codes and the system byte
-                //`move #n,sr` and its kind can have changed
-                self.cpu.set_sr(step.get_sr());
+                //`move #n,sr`, an exception and `rte` can have changed. It is written back
+                //without moving a stack pointer: every change of S journaled both of them, and
+                //they are put back below, A7 being the one of this mode
+                self.cpu.restore_sr(step.get_sr());
                 //doing from right to left because mutations are added from left to right
                 for mutation in step.get_mutations().iter().rev() {
                     match mutation {
@@ -1628,6 +2194,17 @@ impl Interpreter {
                         MutationOperation::SetInputSettings { old, new: _ } => {
                             self.input_settings = *old;
                         }
+                        MutationOperation::WriteStackPointers { old, new: _ } => {
+                            self.cpu.restore_stack_pointers(*old);
+                        }
+                        MutationOperation::PushException { .. } => {
+                            self.debugger.pop_call();
+                        }
+                        MutationOperation::PopException { frame, .. } => {
+                            if let Some(frame) = frame {
+                                self.debugger.restore_call(frame.clone());
+                            }
+                        }
                     }
                 }
                 //whatever an instruction left behind is gone with it: the interrupt an undone trap
@@ -1639,6 +2216,7 @@ impl Interpreter {
                 if step.get_kind() == ExecutionStepKind::Instruction {
                     self.current_interrupt = None;
                     self.executing = false;
+                    self.trace_after_answer = false;
                 }
                 if !self.has_terminated() {
                     self.termination = None;
@@ -1705,7 +2283,7 @@ impl Interpreter {
                 "Cannot begin a poke while an instruction is executing".to_string(),
             ));
         }
-        self.poke = Some(PokeJournal::new());
+        self.poke = Some(PokeJournal::new(self.cpu.get_sr()));
         Ok(())
     }
 
@@ -1729,6 +2307,7 @@ impl Interpreter {
         if journal.is_empty() || !self.keep_history {
             return Ok(false);
         }
+        let opened_with = journal.sr();
         let (mutations, targets) = journal.into_parts();
         //the new value is what the Poke leaves behind, read now, so that a register written
         //twice reports the value it ends on and not one it passed through
@@ -1748,21 +2327,33 @@ impl Interpreter {
                         .unwrap_or_default();
                     PokeWrite::Memory { address, old, new }
                 }
+                PokeTarget::System { register, old } => PokeWrite::Register {
+                    name: register.name().to_string(),
+                    old,
+                    new: match register {
+                        SystemRegister::Sr => self.cpu.get_sr() as u32,
+                        SystemRegister::Usp => self.cpu.get_usp(),
+                        SystemRegister::Ssp => self.cpu.get_ssp(),
+                    },
+                },
             })
             .collect::<Vec<PokeWrite>>();
-        //no instruction ran, so the step carries the program counter, the condition codes and
-        //the status register as they are: undoing it puts back only what the Poke wrote
+        //no instruction ran, so the step carries the program counter as it is, and the status
+        //register as the Poke found it, which undo writes back: undoing it puts back only what
+        //the Poke wrote
         self.debugger.begin_step(
             ExecutionStepKind::Poke,
             self.pc,
-            self.cpu.ccr,
-            self.cpu.get_sr(),
+            Flags::from_ccr_byte(opened_with as u8),
+            opened_with,
             self.status,
         );
         for mutation in mutations {
             self.debugger.add_mutation(mutation);
         }
         self.debugger.set_writes(writes);
+        self.debugger.set_new_ccr(self.cpu.ccr);
+        self.debugger.set_new_sr(self.cpu.get_sr());
         Ok(true)
     }
 
@@ -1910,6 +2501,24 @@ impl Interpreter {
             return Err(error);
         }
         self.take_code_write();
+        //the instruction is finished now, and one that started with T set is traced: the trace
+        //exception is its step's, and a vector 9 with no handler ends the program there
+        if std::mem::take(&mut self.trace_after_answer) && !terminates {
+            self.status = InterpreterStatus::Running;
+            let traced = self.take_exception(
+                exception::TRACE,
+                Frame::Short { pc: self.pc as u32 },
+                RuntimeError::Trace,
+            );
+            if self.keep_history {
+                self.debugger.set_new_ccr(self.cpu.ccr);
+                self.debugger.set_new_sr(self.cpu.get_sr());
+            }
+            if traced.is_err() {
+                self.executing = false;
+                return Ok(());
+            }
+        }
         self.executing = false;
         //an answer of Terminate ends the program, and so does the answer to an interrupt the
         //last instruction raised; an answer that wrote into the watched range stops first, as
@@ -2147,15 +2756,6 @@ impl Interpreter {
     fn set_file_number(&mut self, number: u32) {
         self.set_register_value(RegisterOperand::Data(1), number, Size::Long);
     }
-    /// Pushes a long onto the stack and moves the stack pointer down to it, as
-    /// `bsr`, `jsr` and `pea` do: a store of the program like any other, which
-    /// the caller has journaled.
-    fn push_long(&mut self, value: u32) -> RuntimeResult<()> {
-        let sp = self.memory.push(&MemoryCell::Long(value), self.get_sp())?;
-        self.watch_store(sp, Size::Long, value);
-        self.set_sp(sp);
-        Ok(())
-    }
     #[inline(always)]
     fn increment_pc(&mut self, amount: usize) {
         self.pc += amount;
@@ -2247,10 +2847,15 @@ impl Interpreter {
     }
     fn execute_instruction(&mut self, ins: &Instruction) -> RuntimeResult<()> {
         match ins {
+            //the flags are set after the store, which reads none of them, so that a store that
+            //faults finds them as they were and sets what MAME's microcode had set by then
             Instruction::MOVE(source, dest, size) => {
                 let source_value = self.get_operand_value(source, *size, Used::Once)?;
+                if let Err(error) = self.store_operand_value(dest, source_value, *size, Used::Once)
+                {
+                    return Err(self.move_write_fault(error, source, dest, *size, source_value));
+                }
                 self.set_logic_flags(source_value, *size);
-                self.store_operand_value(dest, source_value, *size, Used::Once)?;
             }
             Instruction::MOVEA(source, dest, size) => {
                 let source_value = self.get_operand_value(source, *size, Used::Once)?;
@@ -2276,7 +2881,7 @@ impl Interpreter {
                                 "MOVEM to postindirect not allowed".to_string(),
                             ));
                         }
-                        self.move_memory_to_registers(addr as usize, *size, *registers_mask)?
+                        self.move_memory_to_registers(addr as usize, *size, *registers_mask, false)?
                     }
                     Operand::PreIndirect(_) => {
                         if *direction != TargetDirection::ToMemory {
@@ -2294,9 +2899,16 @@ impl Interpreter {
                         TargetDirection::ToMemory => {
                             self.move_registers_to_memory(addr as usize, *size, *registers_mask)?
                         }
-                        TargetDirection::FromMemory => {
-                            self.move_memory_to_registers(addr as usize, *size, *registers_mask)?
-                        }
+                        //relative to the program counter is in program space
+                        TargetDirection::FromMemory => self.move_memory_to_registers(
+                            addr as usize,
+                            *size,
+                            *registers_mask,
+                            matches!(
+                                target,
+                                Operand::PcDisplacement { .. } | Operand::PcIndex { .. }
+                            ),
+                        )?,
                     },
                 };
                 match target {
@@ -2387,8 +2999,7 @@ impl Interpreter {
             // destination, so `addx -(a0),-(a1)` decrements `a0` first, as the
             // 68000 does.
             Instruction::ADDX(source, dest, size) => {
-                let source_value = self.get_operand_value(source, *size, Used::Once)?;
-                let dest_value = self.get_operand_value(dest, *size, Used::Twice)?;
+                let (source_value, dest_value) = self.read_extended_pair(source, dest, *size)?;
                 let extend = self.cpu.ccr.contains(Flags::Extend);
                 let (result, carry) = add_with_extend(dest_value, source_value, extend, *size);
                 let overflow = has_add_overflowed(dest_value, source_value, result, *size);
@@ -2396,8 +3007,7 @@ impl Interpreter {
                 self.set_extended_arithmetic_flags(result, *size, carry, overflow);
             }
             Instruction::SUBX(source, dest, size) => {
-                let source_value = self.get_operand_value(source, *size, Used::Once)?;
-                let dest_value = self.get_operand_value(dest, *size, Used::Twice)?;
+                let (source_value, dest_value) = self.read_extended_pair(source, dest, *size)?;
                 let extend = self.cpu.ccr.contains(Flags::Extend);
                 let (result, borrow) = sub_with_extend(dest_value, source_value, extend, *size);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, *size);
@@ -2474,19 +3084,21 @@ impl Interpreter {
 
             //the target is kept as an address, so the size of the displacement does not matter here
             Instruction::BRA(address, _) => {
+                if *address & 1 != 0 {
+                    return Err(Self::jump_to_an_odd_address(*address));
+                }
                 self.pc = *address as usize;
             }
             Instruction::BSR(address, _) => {
+                //the return address is pushed before the 68000 prefetches from the target, so a
+                //branch to an odd address faults with it pushed
+                let sp = self.get_sp().wrapping_sub(4);
+                self.set_memory_value(sp, Size::Long, self.pc as u32)?;
+                if *address & 1 != 0 {
+                    self.set_sp(sp);
+                    return Err(Self::jump_to_an_odd_address(*address));
+                }
                 if self.keep_history {
-                    let old_address = self.get_sp().wrapping_sub(4);
-                    let old_value = self.memory.read_long(old_address)?;
-                    self.debugger.add_mutation(MutationOperation::WriteMemory {
-                        address: old_address,
-                        old: old_value,
-                        //the return address, which is what the push below stores there
-                        new: self.pc as u32,
-                        size: Size::Long,
-                    });
                     self.debugger.add_mutation(MutationOperation::PushCall {
                         to: *address as usize,
                         //the pc is incremented before the instruction is executed, so the address
@@ -2494,7 +3106,7 @@ impl Interpreter {
                         from: self.current_instruction_address,
                     });
                 }
-                self.push_long(self.pc as u32)?;
+                self.set_sp(sp);
                 let caller_address = self.pc;
                 self.pc = *address as usize;
                 self.debugger
@@ -2502,22 +3114,19 @@ impl Interpreter {
             }
             Instruction::JSR(source) => {
                 let address = self.get_operand_address(source)?;
+                //the 68000 prefetches from the target before it pushes the return address
+                if address & 1 != 0 {
+                    return Err(Self::jump_to_an_odd_address(address));
+                }
+                let sp = self.get_sp().wrapping_sub(4);
+                self.set_memory_value(sp, Size::Long, self.pc as u32)?;
                 if self.keep_history {
-                    let old_address = self.get_sp().wrapping_sub(4);
-                    let old_value = self.memory.read_long(old_address)?;
-                    self.debugger.add_mutation(MutationOperation::WriteMemory {
-                        address: old_address,
-                        old: old_value,
-                        //the return address, which is what the push below stores there
-                        new: self.pc as u32,
-                        size: Size::Long,
-                    });
                     self.debugger.add_mutation(MutationOperation::PushCall {
                         to: address as usize,
                         from: self.current_instruction_address,
                     });
                 }
-                self.push_long(self.pc as u32)?;
+                self.set_sp(sp);
                 let caller_address = self.pc;
                 self.pc = address as usize;
                 self.debugger
@@ -2525,6 +3134,9 @@ impl Interpreter {
             }
             Instruction::JMP(op) => {
                 let addr = self.get_operand_address(op)?;
+                if addr & 1 != 0 {
+                    return Err(Self::jump_to_an_odd_address(addr));
+                }
                 self.pc = addr as usize;
             }
             Instruction::LEA(source, dest) => {
@@ -2533,19 +3145,10 @@ impl Interpreter {
             }
             Instruction::PEA(source) => {
                 let addr = self.get_operand_address(source)?;
-                if self.keep_history {
-                    //the push writes below the stack pointer, so the value it replaces is the
-                    //one at that address and not the one the pointer is on
-                    let old_address = self.get_sp().wrapping_sub(4);
-                    let old_value = self.memory.read_long(old_address)?;
-                    self.debugger.add_mutation(MutationOperation::WriteMemory {
-                        address: old_address,
-                        old: old_value,
-                        new: addr,
-                        size: Size::Long,
-                    })
-                }
-                self.push_long(addr)?;
+                //the push writes below the stack pointer, a store of the program's like any other
+                let sp = self.get_sp().wrapping_sub(4);
+                self.set_memory_value(sp, Size::Long, addr)?;
+                self.set_sp(sp);
             }
             Instruction::BCHG(bit_source, dest) => {
                 let bit = self.get_operand_value(bit_source, Size::Byte, Used::Once)?;
@@ -2871,19 +3474,25 @@ impl Interpreter {
                 self.set_compare_flags(result, *size, carry, overflow);
             }
             Instruction::CMPM(source, dest, size) => {
-                let source_value = self.get_operand_value(source, *size, Used::Once)?;
-                let dest_value = self.get_operand_value(dest, *size, Used::Once)?;
+                let source_value = self.read_compared(source, *size, 2)?;
+                let dest_value = self.read_compared(dest, *size, 0)?;
                 let (result, carry) = overflowing_sub_sized(dest_value, source_value, *size);
                 let overflow = has_sub_overflowed(dest_value, source_value, result, *size);
                 self.set_compare_flags(result, *size, carry, overflow);
             }
             Instruction::Bcc(address, condition, _) => {
                 if self.get_condition_value(condition) {
+                    if *address & 1 != 0 {
+                        return Err(Self::jump_to_an_odd_address(*address));
+                    }
                     self.pc = *address as usize;
                 }
             }
+            //the 68000 reads the destination before it clears it, which is the access an odd address
+            //faults on
             Instruction::CLR(dest, size) => {
-                self.store_operand_value(dest, 0, *size, Used::Once)?;
+                let used = self.read_before_writing(dest, *size)?;
+                self.store_operand_value(dest, 0, *size, used)?;
                 let extend = self.get_flag(Flags::Extend);
                 self.cpu.ccr.clear();
                 self.set_flag(Flags::Zero, true);
@@ -2899,6 +3508,11 @@ impl Interpreter {
             Instruction::DBcc(reg, address, cond) => {
                 if !self.get_condition_value(cond) {
                     let next = (self.get_register_value(*reg, Size::Word) as i16).wrapping_sub(1);
+                    //a branch to an odd address faults before the counter is written, as MAME's
+                    //microcode leaves it on every such DBcc of SingleStepTests/m68000
+                    if next != -1 && *address & 1 != 0 {
+                        return Err(Self::jump_to_an_odd_address(*address));
+                    }
                     self.set_register_value(*reg, next as u32, Size::Word);
                     if next != -1 {
                         self.pc = *address as usize;
@@ -2930,6 +3544,10 @@ impl Interpreter {
             Instruction::SIMHALT => self.set_status(InterpreterStatus::Paused),
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
+                if value.get_long() & 1 != 0 {
+                    self.set_sp(new_sp);
+                    return Err(Self::jump_to_an_odd_address(value.get_long()));
+                }
                 let frame = self.debugger.pop_call();
                 if self.keep_history {
                     self.debugger.add_mutation(MutationOperation::PopCall {
@@ -2955,12 +3573,11 @@ impl Interpreter {
                         self.current_interrupt = Some(interrupt);
                     }
                 }
-                //the Assembler refuses every other vector, as s68k has no exception vectors
+                //`trap #0` to `#14` go through vectors 32 to 46, the program's own services
                 _ => {
-                    return Err(RuntimeError::Raw(format!(
-                        "Unknown trap: {}, only IO with #15 allowed",
-                        vector
-                    )))
+                    return Err(RuntimeError::UnhandledTrap {
+                        vector: exception::TRAP_0 + vector,
+                    })
                 }
             },
             Instruction::MOVEP {
@@ -2998,12 +3615,16 @@ impl Interpreter {
                 self.cpu.set_ccr_byte(value as u8);
             }
             Instruction::MOVEtoSR(source) => {
+                self.check_privilege()?;
                 let value = self.get_operand_value(source, Size::Word, Used::Once)?;
-                self.cpu.set_sr(value as u16);
+                self.write_sr(value as u16);
             }
+            //the 68000 reads the destination before it writes it, which is the access an odd
+            //address faults on
             Instruction::MOVEfromSR(destination) => {
                 let value = self.cpu.get_sr() as u32;
-                self.store_operand_value(destination, value, Size::Word, Used::Once)?;
+                let used = self.read_before_writing(destination, Size::Word)?;
+                self.store_operand_value(destination, value, Size::Word, used)?;
             }
             Instruction::MOVEfromCCR(destination) => {
                 let value = self.cpu.get_ccr_byte() as u32;
@@ -3022,16 +3643,19 @@ impl Interpreter {
                 self.cpu.set_ccr_byte(byte);
             }
             Instruction::ANDItoSR(value) => {
+                self.check_privilege()?;
                 let word = self.cpu.get_sr() & value;
-                self.cpu.set_sr(word);
+                self.write_sr(word);
             }
             Instruction::ORItoSR(value) => {
+                self.check_privilege()?;
                 let word = self.cpu.get_sr() | value;
-                self.cpu.set_sr(word);
+                self.write_sr(word);
             }
             Instruction::EORItoSR(value) => {
+                self.check_privilege()?;
                 let word = self.cpu.get_sr() ^ value;
-                self.cpu.set_sr(word);
+                self.write_sr(word);
             }
             Instruction::TAS(destination) => {
                 //the flags are the byte *before* the operation, and bit 7 is set after
@@ -3046,6 +3670,11 @@ impl Interpreter {
                 //address (`Reference/68ks9f.htm`); the stack pointer goes up by six
                 let (status, sp) = self.memory.pop(Size::Word, self.get_sp())?;
                 let (address, sp) = self.memory.pop(Size::Long, sp)?;
+                if address.get_long() & 1 != 0 {
+                    self.cpu.set_ccr_byte(status.get_word() as u8);
+                    self.set_sp(sp);
+                    return Err(Self::jump_to_an_odd_address(address.get_long()));
+                }
                 let frame = self.debugger.pop_call();
                 if self.keep_history {
                     self.debugger.add_mutation(MutationOperation::PopCall {
@@ -3077,39 +3706,67 @@ impl Interpreter {
                 self.set_flag(Flags::Overflow, false);
                 self.set_flag(Flags::Carry, false);
                 if value < 0 || value > bound {
-                    return Err(
-                        self.end_with_an_exception(RuntimeError::ChkOutOfBounds { value, bound })
-                    );
+                    return Err(RuntimeError::ChkOutOfBounds { value, bound });
                 }
             }
             Instruction::TRAPV => {
                 if self.get_flag(Flags::Overflow) {
-                    return Err(self.end_with_an_exception(RuntimeError::OverflowException));
+                    return Err(RuntimeError::OverflowException);
                 }
             }
             //a word that is no instruction is an illegal instruction on a 68000, as `illegal` is
             Instruction::ILLEGAL | Instruction::IllegalWord(_) => {
-                return Err(self.end_with_an_exception(RuntimeError::IllegalInstruction));
+                return Err(RuntimeError::IllegalInstruction);
             }
-            //the 68000 instructions that need exceptions, supervisor mode or interrupts, which the
-            //Interpreter does not have yet; the Assembler refuses them, so only decoded words reach
-            //these
-            Instruction::RTE => return Err(RuntimeError::Unimplemented("`rte`".to_string())),
-            Instruction::STOP(_) => return Err(RuntimeError::Unimplemented("`stop`".to_string())),
-            Instruction::RESET => return Err(RuntimeError::Unimplemented("`reset`".to_string())),
-            Instruction::MOVEUSP { .. } => {
-                return Err(RuntimeError::Unimplemented("`move usp`".to_string()))
+            //the status register, then the program counter, off the supervisor stack, which A7 is;
+            //an S of 0 in the word popped makes A7 the user stack pointer. A return to an odd
+            //address faults in `rte`'s own prefetch, with the status register restored
+            Instruction::RTE => {
+                self.check_privilege()?;
+                let (status, sp) = self.memory.pop(Size::Word, self.get_sp())?;
+                let (address, sp) = self.memory.pop(Size::Long, sp)?;
+                let target = address.get_long();
+                self.set_sp(sp);
+                self.write_sr(status.get_word());
+                if target & 1 != 0 {
+                    return Err(Self::jump_to_an_odd_address(target));
+                }
+                let frame = self.debugger.pop_exception();
+                if self.keep_history {
+                    self.debugger.add_mutation(MutationOperation::PopException {
+                        to: target as usize,
+                        from: self.current_instruction_address,
+                        frame,
+                    });
+                }
+                self.pc = target as usize;
             }
-            Instruction::LINEA(word) => {
-                return Err(RuntimeError::Unimplemented(format!(
-                    "the line A word ${word:04X}"
-                )))
+            //privileged, and run in the plan's milestone C8, with interrupts; the Assembler refuses
+            //both, so only decoded words reach these
+            Instruction::STOP(_) => {
+                self.check_privilege()?;
+                return Err(RuntimeError::Unimplemented("`stop`".to_string()));
             }
-            Instruction::LINEF(word) => {
-                return Err(RuntimeError::Unimplemented(format!(
-                    "the line F word ${word:04X}"
-                )))
+            Instruction::RESET => {
+                self.check_privilege()?;
+                return Err(RuntimeError::Unimplemented("`reset`".to_string()));
             }
+            //the user stack pointer, which supervisor mode keeps aside
+            Instruction::MOVEUSP { to_usp, register } => {
+                self.check_privilege()?;
+                match to_usp {
+                    true => {
+                        let value = self.get_register_value(*register, Size::Long);
+                        self.write_usp(value);
+                    }
+                    false => {
+                        let value = self.cpu.get_usp();
+                        self.set_register_value(*register, value, Size::Long);
+                    }
+                }
+            }
+            Instruction::LINEA(word) => return Err(RuntimeError::LineA(*word)),
+            Instruction::LINEF(word) => return Err(RuntimeError::LineF(*word)),
         };
         Ok(())
     }
@@ -3135,6 +3792,7 @@ impl Interpreter {
         println!("A7: {:#010X} ({})", self.cpu.a_reg[7].get_long(), self.cpu.a_reg[7].get_long());
         let ccr = self.cpu.ccr.get_status();
         println!("SR: {:#06X}", self.cpu.get_sr());
+        println!("USP: {:#010X} SSP: {:#010X}", self.cpu.get_usp(), self.cpu.get_ssp());
         println!("{}", ccr);
     }
 
@@ -3243,35 +3901,47 @@ impl Interpreter {
         size: Size,
         mut mask: u16,
     ) -> RuntimeResult<u32> {
+        //a long goes low word first, so an odd address faults on the low word
+        let fault = |error| match size {
+            Size::Long => low_word_first(error),
+            Size::Byte | Size::Word => error,
+        };
         for i in (0..8).rev() {
             if (mask & 0x01) != 0 {
                 let value = self.cpu.a_reg[i].get_long();
-                addr -= size.to_bytes();
-                self.set_memory_value(addr, size, value)?;
+                addr = addr.wrapping_sub(size.to_bytes());
+                self.set_memory_value(addr, size, value).map_err(fault)?;
             }
             mask >>= 1;
         }
         for i in (0..8).rev() {
             if (mask & 0x01) != 0 {
-                addr -= size.to_bytes();
-                self.set_memory_value(addr, size, self.cpu.d_reg[i].get_long())?;
+                addr = addr.wrapping_sub(size.to_bytes());
+                self.set_memory_value(addr, size, self.cpu.d_reg[i].get_long())
+                    .map_err(fault)?;
             }
             mask >>= 1;
         }
         Ok(addr as u32)
     }
+    /// `movem` from memory, `program` when the operand is relative to the
+    /// program counter, which reads program space.
     pub fn move_memory_to_registers(
         &mut self,
         addr: usize,
         size: Size,
         mut mask: u16,
+        program: bool,
     ) -> RuntimeResult<u32> {
         let size_bytes = size.to_bytes() as u32;
         let mut addr = addr as u32;
+        let read = |memory: &Memory, address: u32| match program {
+            true => memory.read_program(address as usize, size),
+            false => memory.read_size(address as usize, size),
+        };
         for i in 0..8 {
             if (mask & 0x01) != 0 {
-                let val =
-                    sign_extend_to_long(self.memory.read_size(addr as usize, size)?, size) as u32;
+                let val = sign_extend_to_long(read(&self.memory, addr)?, size) as u32;
                 //a word fills the whole register, sign extended, as for an address register
                 self.set_register_value(RegisterOperand::Data(i), val, Size::Long);
                 (addr, _) = overflowing_add_sized(addr, size_bytes, Size::Long);
@@ -3280,8 +3950,7 @@ impl Interpreter {
         }
         for i in 0..8 {
             if (mask & 0x01) != 0 {
-                let val =
-                    sign_extend_to_long(self.memory.read_size(addr as usize, size)?, size) as u32;
+                let val = sign_extend_to_long(read(&self.memory, addr)?, size) as u32;
                 self.set_register_value(RegisterOperand::Address(i), val, Size::Long);
                 (addr, _) = overflowing_add_sized(addr, size_bytes, Size::Long);
             }
@@ -3411,6 +4080,10 @@ impl Interpreter {
                 Ok(None)
             }
             50..=59 => self.file_task(task),
+            //task 32 with D1.B of 5 turns EASy68K's "Enable exceptions" on; s68k always takes
+            //them (ADR 0008), so it is accepted and changes nothing. Its other parts are the
+            //hardware window's, and stay refused
+            32 if self.cpu.d_reg[1].get_byte() == 5 => Ok(None),
             _ => self.get_trap(task).map(Some),
         }
     }
@@ -3836,6 +4509,146 @@ impl Interpreter {
             _ => Ok(bit % 8),
         }
     }
+    /// Raises a privilege violation in user mode, for an instruction only
+    /// supervisor mode runs.
+    #[inline(always)]
+    fn check_privilege(&self) -> RuntimeResult<()> {
+        match self.cpu.is_supervisor() {
+            true => Ok(()),
+            false => Err(RuntimeError::PrivilegeViolation),
+        }
+    }
+
+    /// Reads `destination` and throws the value away, when it is in memory, for
+    /// the instructions the 68000 reads a destination before it writes it,
+    /// `clr` and `move sr,<ea>`: the read is the access an odd address faults
+    /// on, and the read moves a predecrement. Answers how the write that
+    /// follows uses the operand.
+    fn read_before_writing(&mut self, destination: &Operand, size: Size) -> RuntimeResult<Used> {
+        match destination {
+            Operand::Register(_) => Ok(Used::Once),
+            _ => {
+                self.get_operand_value(destination, size, Used::Twice)?;
+                Ok(Used::Twice)
+            }
+        }
+    }
+
+    /// The two values `addx` and `subx` read, the source first. A long read
+    /// through `-(An)` that faults leaves its register where it was, as MAME's
+    /// microcode does for these two, which decrement by a word at a time.
+    fn read_extended_pair(
+        &mut self,
+        source: &Operand,
+        destination: &Operand,
+        size: Size,
+    ) -> RuntimeResult<(u32, u32)> {
+        let source_value = self.read_extended(source, size, Used::Once)?;
+        let destination_value = self.read_extended(destination, size, Used::Twice)?;
+        Ok((source_value, destination_value))
+    }
+
+    fn read_extended(&mut self, operand: &Operand, size: Size, used: Used) -> RuntimeResult<u32> {
+        match (operand, size) {
+            (Operand::PreIndirect(register), Size::Long) => {
+                let before = self.get_a_reg_sized(*register, Size::Long);
+                self.get_operand_value(operand, size, used)
+                    .map_err(|error| {
+                        self.set_a_reg_sized(*register, before, Size::Long);
+                        low_word_first(error)
+                    })
+            }
+            _ => self.get_operand_value(operand, size, used),
+        }
+    }
+
+    /// The fault of a `move` that read its source and could not write it,
+    /// the flags still as they were: what MAME's microcode has set by then,
+    /// as it sets them as it goes.
+    ///
+    /// A long written through `(An)` or `(An)+` faults with the flags as they
+    /// were when it comes from a register or an immediate, and with N and Z set
+    /// from its low word when it comes from memory, as it does to an absolute
+    /// long address. Through a displacement or an index, one from a register
+    /// or an immediate faults with N and Z set and V and C as they were. Every
+    /// other `move` has set all four from the value.
+    #[cold]
+    #[inline(never)]
+    fn move_write_fault(
+        &mut self,
+        error: RuntimeError,
+        source: &Operand,
+        destination: &Operand,
+        size: Size,
+        value: u32,
+    ) -> RuntimeError {
+        let from_memory = !matches!(source, Operand::Register(_) | Operand::Immediate(_));
+        match (size, destination) {
+            (
+                Size::Long,
+                Operand::Indirect(_)
+                | Operand::PostIndirect(_)
+                | Operand::Absolute {
+                    width: AddressWidth::Long,
+                    ..
+                },
+            ) if from_memory => self.set_logic_flags(value & 0xFFFF, Size::Word),
+            (Size::Long, Operand::Indirect(_) | Operand::PostIndirect(_)) => {}
+            (Size::Long, Operand::IndirectDisplacement { .. } | Operand::IndirectIndex { .. })
+                if !from_memory =>
+            {
+                let kept = self.cpu.ccr & (Flags::Overflow | Flags::Carry);
+                self.set_logic_flags(value, size);
+                self.cpu.ccr |= kept;
+            }
+            _ => self.set_logic_flags(value, size),
+        }
+        error
+    }
+
+    /// One of the two reads of `cmpm`, through `(An)+`: a fault leaves the
+    /// register moved by `moved_on_fault`, a word for the source and nothing
+    /// for the destination, whatever the size, as MAME's microcode leaves them.
+    fn read_compared(
+        &mut self,
+        operand: &Operand,
+        size: Size,
+        moved_on_fault: u32,
+    ) -> RuntimeResult<u32> {
+        let Operand::PostIndirect(register) = operand else {
+            return self.get_operand_value(operand, size, Used::Once);
+        };
+        let before = self.get_a_reg_sized(*register, Size::Long);
+        self.get_operand_value(operand, size, Used::Once)
+            .inspect_err(|_| {
+                let after = before.wrapping_add(moved_on_fault);
+                if self.get_a_reg_sized(*register, Size::Long) != after {
+                    self.set_a_reg_sized(*register, after, Size::Long);
+                }
+            })
+    }
+
+    /// A read through `(An)+` that faulted at `address`: the register has moved
+    /// past a word, and not past a long, as MAME's microcode leaves it.
+    #[cold]
+    #[inline(never)]
+    fn read_fault_after_postincrement(
+        &mut self,
+        error: RuntimeError,
+        register: u8,
+        address: u32,
+        size: Size,
+    ) -> RuntimeError {
+        let after = match size {
+            Size::Long => address,
+            Size::Byte | Size::Word => address.wrapping_add(address_step(register, size)),
+        };
+        if self.get_a_reg_sized(register, Size::Long) != after {
+            self.set_a_reg_sized(register, after, Size::Long);
+        }
+        error
+    }
+
     fn get_a_reg_sized(&self, reg: u8, size: Size) -> u32 {
         self.cpu.a_reg[reg as usize].get_size(size)
     }
@@ -3878,7 +4691,12 @@ impl Interpreter {
                     let new_address = address.wrapping_add(address_step(*op, size));
                     self.set_a_reg_sized(*op, new_address, Size::Long);
                 }
-                Ok(self.memory.read_size(address as usize, size)?)
+                match self.memory.read_size(address as usize, size) {
+                    Ok(value) => Ok(value),
+                    Err(error) => {
+                        Err(self.read_fault_after_postincrement(error, *op, address, size))
+                    }
+                }
             }
             Operand::IndirectDisplacement { offset, base } => {
                 //TODO not sure if this works fine with full 32bits
@@ -3899,13 +4717,14 @@ impl Interpreter {
                 let final_address = base_value.wrapping_add(*offset).wrapping_add(index_value);
                 Ok(self.memory.read_size(final_address as usize, size)?)
             }
+            //relative to the program counter is in program space
             Operand::PcDisplacement { target } => {
                 let address = self.pc_relative_address(*target, None);
-                Ok(self.memory.read_size(address as usize, size)?)
+                Ok(self.memory.read_program(address as usize, size)?)
             }
             Operand::PcIndex { target, index } => {
                 let address = self.pc_relative_address(*target, Some(*index));
-                Ok(self.memory.read_size(address as usize, size)?)
+                Ok(self.memory.read_program(address as usize, size)?)
             }
         }
     }
@@ -3992,15 +4811,31 @@ impl Interpreter {
                     self.set_a_reg_sized(*op, a, Size::Long);
                     a
                 };
-
-                Ok(self.set_memory_value(address as usize, size, value)?)
+                match self.set_memory_value(address as usize, size, value) {
+                    Ok(()) => Ok(()),
+                    //a long written through -(An) at an odd address faults before the register
+                    //moves, as MAME's microcode leaves it; a word after
+                    Err(error) if size == Size::Long && used == Used::Once => {
+                        let before = address.wrapping_add(address_step(*op, size));
+                        self.set_a_reg_sized(*op, before, Size::Long);
+                        Err(low_word_first(error))
+                    }
+                    Err(error) => Err(error),
+                }
             }
             Operand::PostIndirect(op) => {
                 let address = self.get_a_reg_sized(*op, Size::Long);
                 let new_address = (address).wrapping_add(address_step(*op, size));
                 //give priority to increment to the setter
                 self.set_a_reg_sized(*op, new_address, Size::Long);
-                Ok(self.set_memory_value(address as usize, size, value)?)
+                match self.set_memory_value(address as usize, size, value) {
+                    Ok(()) => Ok(()),
+                    //a write through (An)+ at an odd address faults before the register moves
+                    Err(error) => {
+                        self.set_a_reg_sized(*op, address, Size::Long);
+                        Err(error)
+                    }
+                }
             }
             Operand::IndirectDisplacement { offset, base } => {
                 //TODO not sure if this works fine with full 32bits
@@ -4557,7 +5392,7 @@ impl Interpreter {
     pub fn wasm_get_flags_as_number(&self) -> u16 {
         self.cpu.ccr.bits()
     }
-    /// The whole status register, `$2700` before a program has run.
+    /// The whole status register, `$2000` before a program has run.
     ///
     /// Its low byte is the condition codes as the processor numbers them
     /// (extend 16, negative 8, zero 4, overflow 2, carry 1), which is **not**
@@ -4565,6 +5400,25 @@ impl Interpreter {
     /// is this crate's own and the editor has always read it.
     pub fn wasm_get_sr(&self) -> u16 {
         self.get_sr()
+    }
+    /// The System register file, `{sr, usp, ssp}`:
+    /// [`get_system`](Interpreter::get_system).
+    pub fn wasm_get_system(&self) -> JsValue {
+        js(&self.get_system())
+    }
+    /// Writes the status register, into the open Poke if there is one:
+    /// [`set_sr`](Interpreter::set_sr).
+    pub fn wasm_set_sr(&mut self, value: u16) {
+        self.set_sr(value)
+    }
+    /// Writes the user stack pointer, into the open Poke if there is one.
+    pub fn wasm_set_usp(&mut self, value: u32) {
+        self.set_usp(value)
+    }
+    /// Writes the supervisor stack pointer, into the open Poke if there is
+    /// one.
+    pub fn wasm_set_ssp(&mut self, value: u32) {
+        self.set_ssp(value)
     }
     pub fn wasm_undo(&mut self) -> Result<JsValue, JsValue> {
         self.undo().map(|step| js(&step)).map_err(|e| js(&e))
@@ -4711,11 +5565,10 @@ impl Memory {
 
 #[cfg(any(test, feature = "conformance"))]
 impl Cpu {
-    /// The registers of a test's state: the data registers, the address
-    /// registers with A7 the stack pointer of the mode the status register is
-    /// in (there is one A7 until the plan's milestone C6), and the status
-    /// register, reduced to [`SR_IMPLEMENTED_BITS`].
-    pub fn from_registers(data: [u32; 8], address: [u32; 8], sr: u16) -> Self {
+    /// The registers of a test's state: the data registers, A0 to A6, the two
+    /// stack pointers, A7 being the one of the mode the status register is
+    /// in, and the status register, reduced to [`SR_IMPLEMENTED_BITS`].
+    pub fn from_state(data: [u32; 8], address: [u32; 7], usp: u32, ssp: u32, sr: u16) -> Self {
         let mut cpu = Cpu::new();
         for (register, value) in cpu.d_reg.iter_mut().zip(data) {
             register.store_long(value);
@@ -4723,8 +5576,22 @@ impl Cpu {
         for (register, value) in cpu.a_reg.iter_mut().zip(address) {
             register.store_long(value);
         }
-        cpu.set_sr(sr);
+        cpu.restore_sr(sr);
+        cpu.restore_stack_pointers(StackPointers { usp, ssp });
         cpu
+    }
+
+    /// The registers of a test's state with A7 given as the stack pointer of
+    /// the mode the status register is in, and the other stack pointer as a
+    /// program starts with it.
+    pub fn from_registers(data: [u32; 8], address: [u32; 8], sr: u16) -> Self {
+        let (usp, ssp) = match sr & SUPERVISOR_BIT != 0 {
+            true => (INITIAL_USER_STACK_POINTER, address[7]),
+            false => (address[7], INITIAL_SUPERVISOR_STACK_POINTER),
+        };
+        let mut low = [0; 7];
+        low.copy_from_slice(&address[..7]);
+        Cpu::from_state(data, low, usp, ssp, sr)
     }
 }
 
@@ -4749,8 +5616,8 @@ impl Interpreter {
     /// that the step's writes can be read back from its mutations.
     ///
     /// The Interpreter takes no trace exception, whatever T says: the suite
-    /// records the state a step leaves before trace is taken. It has none to
-    /// take yet; the exceptions of milestone C6 must keep it so.
+    /// records the state a step leaves before trace is taken (its issue #2,
+    /// a relaxation of `src/conformance/skips.rs`).
     pub fn from_state(
         cpu: Cpu,
         pc: usize,
@@ -4771,6 +5638,7 @@ impl Interpreter {
         let mut interpreter = Self::with_memory(program, memory, Some(options));
         interpreter.cpu = cpu;
         interpreter.stack_top = cpu.a_reg[7].get_long() as usize;
+        interpreter.takes_trace = false;
         interpreter
     }
 

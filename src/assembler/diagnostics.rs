@@ -362,20 +362,6 @@ pub enum DiagnosticKind {
         /// The instruction that was written.
         mnemonic: String,
     },
-    /// An Operand the parser reads and the Assembler does not assemble.
-    ///
-    /// One is left, `usp`, and it is not an Addressing mode at all: every
-    /// Addressing mode of the language is assembled since phase 3, `sr` and
-    /// `ccr` included. The code is what the asm-editor keys on and does not
-    /// change with the list.
-    UnimplementedAddressingMode {
-        /// The Operand as it was written.
-        operand: String,
-        /// What it is, as a message names it ("the user stack pointer").
-        description: String,
-        /// What to do about it, used as the hint word for word.
-        advice: Option<String>,
-    },
     /// A size suffix on an absolute address that is not `.w` or `.l`.
     ///
     /// `move.l table.b,d0` forces the *address* to a byte, which no address is
@@ -797,7 +783,6 @@ pub const ALL_CODES: &[&str] = &[
     "invalid_operand_pair",
     "both_operands_in_memory",
     "address_register_byte_size",
-    "unimplemented_addressing_mode",
     "invalid_address_width",
     "value_out_of_range",
     "bare_number_as_address",
@@ -886,7 +871,6 @@ impl DiagnosticKind {
             DiagnosticKind::InvalidOperandPair { .. } => "invalid_operand_pair",
             DiagnosticKind::BothOperandsInMemory { .. } => "both_operands_in_memory",
             DiagnosticKind::AddressRegisterByteSize { .. } => "address_register_byte_size",
-            DiagnosticKind::UnimplementedAddressingMode { .. } => "unimplemented_addressing_mode",
             DiagnosticKind::InvalidAddressWidth { .. } => "invalid_address_width",
             DiagnosticKind::ValueOutOfRange { .. } => "value_out_of_range",
             DiagnosticKind::BareNumberAsAddress { .. } => "bare_number_as_address",
@@ -1099,11 +1083,6 @@ impl DiagnosticKind {
             DiagnosticKind::AddressRegisterByteSize { mnemonic } => format!(
                 "`{mnemonic}.b` uses an address register, and an address register is never used one byte at a time."
             ),
-            DiagnosticKind::UnimplementedAddressingMode {
-                operand,
-                description,
-                ..
-            } => format!("`{operand}` is {description}, which s68k does not assemble."),
             DiagnosticKind::InvalidAddressWidth { address, size } => format!(
                 "`{size}` after `{address}` forces the width of the address, and an address is \
                  forced to `.w` or `.l`."
@@ -1424,9 +1403,6 @@ impl DiagnosticKind {
             ),
             DiagnosticKind::AddressRegisterByteSize { .. } => {
                 Some("Use `.w` or `.l`".to_string())
-            }
-            DiagnosticKind::UnimplementedAddressingMode { advice, .. } => {
-                advice.as_ref().map(|a| capitalize_first(a))
             }
             DiagnosticKind::InvalidAddressWidth { address, .. } => Some(format!(
                 "Write `{address}.w` or `{address}.l`, or `{address}` on its own; the size the \
@@ -2116,14 +2092,6 @@ mod tests {
                     mnemonic: "move".to_string(),
                 },
                 "address_register_byte_size",
-            ),
-            (
-                DiagnosticKind::UnimplementedAddressingMode {
-                    operand: "usp".to_string(),
-                    description: "the user stack pointer".to_string(),
-                    advice: Some("s68k has one stack pointer, `a7`".to_string()),
-                },
-                "unimplemented_addressing_mode",
             ),
             (
                 DiagnosticKind::InvalidAddressWidth {

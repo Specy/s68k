@@ -610,7 +610,7 @@ pub struct InstructionForm {
     /// the instruction carries no size.
     pub sizes: Vec<SizeSuffix>,
     /// Whether the 68000 runs it only in supervisor mode
-    /// ([`Form::privileged`]), which s68k records and does not enforce.
+    /// ([`Form::privileged`]); in user mode it raises a privilege violation.
     pub privileged: bool,
     /// The first processor that has it ([`Form::processor`]), `"68000"`,
     /// `"68010"` or `"68020"`: a Program written for an earlier one is refused
@@ -796,14 +796,28 @@ mod api_tests {
                 .find(|row| row["mnemonic"] == mnemonic)
                 .unwrap_or_else(|| panic!("`{mnemonic}` is listed"))
         };
-        for refused in ["rte", "stop", "reset"] {
+        for refused in ["stop", "reset"] {
             assert!(
                 rows.iter().all(|row| row["mnemonic"] != refused),
                 "`{refused}` is not implemented and is not listed"
             );
         }
         let move_forms = find("move")["forms"].as_array().expect("forms");
-        assert_eq!(move_forms.len(), 5);
+        assert_eq!(move_forms.len(), 7);
+        assert_eq!(
+            move_forms[5],
+            json!({
+                "operands": [["usp"], ["An"]],
+                "sizes": ["long"],
+                "privileged": true,
+                "processor": "68000"
+            })
+        );
+        assert_eq!(move_forms[6]["operands"], json!([["An"], ["usp"]]));
+        assert_eq!(
+            find("rte")["forms"],
+            json!([{"operands": [], "sizes": [], "privileged": true, "processor": "68000"}])
+        );
         assert_eq!(
             move_forms[2],
             json!({
@@ -843,7 +857,10 @@ mod api_tests {
             .flat_map(|row| row["forms"].as_array().expect("forms"))
             .filter(|form| form["privileged"] == true)
             .count();
-        assert_eq!(privileged, 4, "`move` and `andi`, `ori`, `eori` into `sr`");
+        assert_eq!(
+            privileged, 7,
+            "`move`, `andi`, `ori` and `eori` into `sr`, the two `move usp` and `rte`"
+        );
         assert_eq!(move_forms[4]["operands"][0], json!(["ccr"]));
         assert_eq!(move_forms[4]["processor"], "68010");
         assert_eq!(find("extb")["forms"][0]["processor"], "68020");

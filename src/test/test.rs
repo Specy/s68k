@@ -858,12 +858,15 @@ routine:
         }
     }
 
-    /// The status register: `$2700` to start with, its low byte the condition
-    /// codes, its high byte stored and of no effect (the design record,
-    /// "Instructions").
+    /// The status register: `$2000` to start with, EASy68K's, its low byte
+    /// the condition codes and its high byte the trace bit, the supervisor bit
+    /// and the interrupt mask.
     mod the_status_register {
         use crate::instructions::{RegisterOperand, Size};
-        use crate::interpreter::{Flags, Interpreter, InterpreterOptions, INITIAL_STATUS_REGISTER};
+        use crate::interpreter::{
+            Flags, Interpreter, InterpreterOptions, INITIAL_STATUS_REGISTER,
+            INITIAL_SUPERVISOR_STACK_POINTER, INITIAL_USER_STACK_POINTER,
+        };
         use crate::test::test::{assemble, prepare};
 
         fn with_history(code: &str) -> Interpreter {
@@ -885,15 +888,22 @@ routine:
             )
         }
 
+        /// EASy68K's reset state (`STARTSIM.CPP`, the asm-editor's
+        /// `docs/design/m68k-machine.md`, decision 2).
         #[test]
-        fn a_program_starts_in_supervisor_mode_with_the_interrupt_mask_at_seven() {
+        fn a_program_starts_in_supervisor_mode_with_the_interrupt_mask_at_zero() {
             let interpreter = prepare(
                 "    nop
 ",
             );
-            assert_eq!(interpreter.get_sr(), 0x2700);
-            assert_eq!(INITIAL_STATUS_REGISTER, 0x2700);
+            assert_eq!(interpreter.get_sr(), 0x2000);
+            assert_eq!(INITIAL_STATUS_REGISTER, 0x2000);
             assert_eq!(flags(&interpreter), "X:0 N:0 Z:0 V:0 C:0");
+            assert_eq!(interpreter.get_ssp(), 0x0100_0000);
+            assert_eq!(interpreter.get_usp(), 0x00FF_0000);
+            assert_eq!(INITIAL_SUPERVISOR_STACK_POINTER, 0x0100_0000);
+            assert_eq!(INITIAL_USER_STACK_POINTER, 0x00FF_0000);
+            assert_eq!(interpreter.get_sp(), 0x0100_0000, "A7 is the SSP");
         }
 
         #[test]
@@ -910,7 +920,7 @@ routine:
             assert_eq!(flags(&interpreter), "X:1 N:1 Z:1 V:1 C:1");
             assert_eq!(
                 interpreter.get_sr(),
-                0x271f,
+                0x201f,
                 "the system byte is where it was"
             );
         }
@@ -982,8 +992,8 @@ routine:
             interpreter.run().expect("the six instructions");
             // $1f & $1a = $1a, ^ $02 = $18: extend and negative.
             assert_eq!(flags(&interpreter), "X:1 N:1 Z:0 V:0 C:0");
-            // The system byte started at $27, `ori` left it there, `andi
-            // #$f0ff` cleared the interrupt mask and `eori #$2000` flipped the
+            // The system byte started at $20, `ori` raised the interrupt mask
+            // to 7, `andi #$f0ff` cleared it and `eori #$2000` flipped the
             // supervisor bit off.
             assert_eq!(interpreter.get_sr(), 0x0018);
         }
@@ -1016,7 +1026,7 @@ routine:
                 "undo restores the system byte and not only the condition codes"
             );
             interpreter.undo().expect("another step to undo");
-            assert_eq!(interpreter.get_sr(), 0x2700, "and back to where it started");
+            assert_eq!(interpreter.get_sr(), 0x2000, "and back to where it started");
         }
 
         #[test]
@@ -2906,7 +2916,10 @@ fn run_expecting_error(code: &str) -> RuntimeError {
             assert!(interpreter.has_terminated());
             assert_eq!(
                 interpreter.get_termination(),
-                Some(&Termination::Exception(error.clone())),
+                Some(&Termination::Exception {
+                    cause: error.clone(),
+                    vector: crate::machine::exception::vector_of(&error),
+                }),
                 "and is the cause it ended for"
             );
             error

@@ -123,7 +123,10 @@ fn assert_ended_with(interpreter: &Interpreter, error: &RuntimeError) {
     assert!(interpreter.has_terminated());
     assert_eq!(
         interpreter.get_termination(),
-        Some(&Termination::Exception(error.clone()))
+        Some(&Termination::Exception {
+            cause: error.clone(),
+            vector: crate::machine::exception::vector_of(&error),
+        })
     );
 }
 

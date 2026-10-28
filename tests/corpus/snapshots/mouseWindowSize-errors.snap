@@ -136,45 +136,6 @@ expression: diagnostics
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames.",
-    "hint": "Write `rts` instead",
-    "location": {
-      "file": "mouseWindowSize.X68",
-      "line": 181,
-      "column": 4,
-      "endColumn": 7
-    },
-    "related": []
-  },
-  {
-    "severity": "error",
-    "code": "unimplemented_operation",
-    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames.",
-    "hint": "Write `rts` instead",
-    "location": {
-      "file": "mouseWindowSize.X68",
-      "line": 192,
-      "column": 4,
-      "endColumn": 7
-    },
-    "related": []
-  },
-  {
-    "severity": "error",
-    "code": "unimplemented_operation",
-    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames.",
-    "hint": "Write `rts` instead",
-    "location": {
-      "file": "mouseWindowSize.X68",
-      "line": 203,
-      "column": 4,
-      "endColumn": 7
-    },
-    "related": []
-  },
-  {
-    "severity": "error",
-    "code": "unimplemented_operation",
     "message": "`for` is not implemented: structured control is not assembled here.",
     "hint": "Write a comparison and a branch, `cmp.w #10,d0` then `bge done` instead",
     "location": {

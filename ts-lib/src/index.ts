@@ -1,4 +1,5 @@
 import {
+    Access,
     Breakpoint,
     CodeWrite,
     Condition,
@@ -47,6 +48,7 @@ import {
     SoundOutcome,
     StackFrame,
     SuggestedFix,
+    SystemRegisters,
     Termination,
     WasmAssembly as RawAssembly,
     wasm_assemble,
@@ -153,6 +155,16 @@ export class Cpu {
      */
     getSr(): number {
         return this.cpu.wasm_get_sr()
+    }
+
+    /** The user stack pointer when the snapshot was taken: A7 in user mode. */
+    getUsp(): number {
+        return this.cpu.wasm_get_usp()
+    }
+
+    /** The supervisor stack pointer when the snapshot was taken: A7 in supervisor mode. */
+    getSsp(): number {
+        return this.cpu.wasm_get_ssp()
     }
 }
 
@@ -341,8 +353,9 @@ export class Interpreter {
     /**
      * Why the program ended, or null while it has not: task 9, running into
      * memory it never placed (`EndOfProgram`, with the address), a `Terminate`
-     * answer, or the runtime error it ended with. Undoing the step that ended
-     * it takes the end back.
+     * answer, the runtime error it ended with (`Exception`, with the vector
+     * that held no handler), or a double fault (`Halted`). Undoing the step that
+     * ended it takes the end back.
      */
     getTermination(): Termination | null {
         return this.interpreter.wasm_get_termination() as Termination | null
@@ -519,17 +532,53 @@ export class Interpreter {
     }
 
     /**
-     * The whole status register, `0x2700` before the program has run.
+     * The whole status register, `0x2000` before the program has run, as in
+     * EASy68K: supervisor mode, interrupt mask 0.
      *
-     * Its high byte — trace, supervisor and the interrupt mask — is stored and
-     * readable and has no effect: s68k runs every program as supervisor, as
-     * EASy68K's simulator does. Its low byte is the condition codes as the
-     * processor numbers them (extend 16, negative 8, zero 4, overflow 2,
-     * carry 1), which is not the bitfield {@link Interpreter.getFlagsAsBitfield}
-     * answers.
+     * Its high byte is trace, supervisor and the interrupt mask: T traces every
+     * instruction, and S chooses the mode and which stack pointer A7 is. Its low
+     * byte is the condition codes as the processor numbers them (extend 16,
+     * negative 8, zero 4, overflow 2, carry 1), which is not the bitfield
+     * {@link Interpreter.getFlagsAsBitfield} answers.
      */
     getSr(): number {
         return this.interpreter.wasm_get_sr()
+    }
+
+    /**
+     * The System register file: the status register and both stack pointers.
+     * A7 is the SSP while S is set and the USP while it is not; a program
+     * starts with SR `0x2000`, the SSP at `0x01000000` and the USP at
+     * `0x00FF0000`.
+     */
+    getSystem(): SystemRegisters {
+        return this.interpreter.wasm_get_system() as SystemRegisters
+    }
+
+    /**
+     * Write the status register, as `move #n,sr` would: reduced to the bits a
+     * 68000 has (`0xA71F`), and a change of S makes A7 the other stack pointer.
+     * Inside a poke ({@link Interpreter.beginPoke}) it is journaled, so one undo
+     * puts it back with the stacks; outside one it is direct and records nothing.
+     */
+    setSr(value: number) {
+        this.interpreter.wasm_set_sr(value)
+    }
+
+    /**
+     * Write the user stack pointer, which is A7 in user mode. Inside a poke it is
+     * journaled; outside one it is direct.
+     */
+    setUsp(value: number) {
+        this.interpreter.wasm_set_usp(value)
+    }
+
+    /**
+     * Write the supervisor stack pointer, which is A7 in supervisor mode. Inside a
+     * poke it is journaled; outside one it is direct.
+     */
+    setSsp(value: number) {
+        this.interpreter.wasm_set_ssp(value)
     }
 
     readMemoryBytes(address: number, length: number): Uint8Array {
@@ -558,6 +607,11 @@ export class Interpreter {
         return this.interpreter.wasm_can_undo()
     }
 
+    /**
+     * The frames entered and not returned from, oldest first: each `bsr` or
+     * `jsr` (`kind: 'call'`, which `rts` returns from) and each exception taken
+     * (`kind: 'exception'` with its `vector`, which `rte` returns from).
+     */
     getCallStack(): StackFrame[] {
         return this.interpreter.wasm_get_call_stack() as StackFrame[]
     }
@@ -875,6 +929,7 @@ export {
     RawInterpreter,
     RawCpu,
     RawRegister,
+    Access,
     Breakpoint,
     CodeWrite,
     Condition,
@@ -920,5 +975,6 @@ export {
     SoundOutcome,
     StackFrame,
     SuggestedFix,
+    SystemRegisters,
     Termination,
 }

@@ -3,8 +3,8 @@
 //! through an [`Interpreter::from_image`].
 //!
 //! A test sets the state, runs one instruction and compares D0–D7, A0–A6,
-//! A7 against the stack pointer of the test's mode, SR, the program counter
-//! and every RAM word the final state lists. It also checks that the step
+//! both stack pointers, SR, the program counter and every RAM word the final
+//! state lists. It also checks that the step
 //! wrote no byte the final state leaves out. The length in cycles is compared
 //! only when [`CHECK_LENGTH`] is on.
 
@@ -94,17 +94,11 @@ pub fn run(file: &str, test: &Test) -> Outcome {
 }
 
 /// The interpreter a test's initial state makes, about to run its
-/// instruction: A7 is the stack pointer of the state's mode, and the program
-/// counter is four before the state's, which is MAME's next prefetch.
+/// instruction: both stack pointers, A7 the one of the state's mode, and the
+/// program counter four before the state's, which is MAME's next prefetch.
 pub fn interpreter_for(test: &Test) -> Interpreter {
     let initial = &test.initial;
-    let mut address = [0; 8];
-    address[..7].copy_from_slice(&initial.a);
-    address[7] = match supervisor(initial.sr) {
-        true => initial.ssp,
-        false => initial.usp,
-    };
-    let cpu = Cpu::from_registers(initial.d, address, initial.sr);
+    let cpu = Cpu::from_state(initial.d, initial.a, initial.usp, initial.ssp, initial.sr);
     let pc = initial.pc.wrapping_sub(4) as usize & ADDRESS_MASK;
     let ram: Vec<(usize, u16)> = initial
         .ram
@@ -112,10 +106,6 @@ pub fn interpreter_for(test: &Test) -> Interpreter {
         .map(|&(address, word)| (address as usize, word))
         .collect();
     Interpreter::from_state(cpu, pc, &ram, initial.prefetch)
-}
-
-fn supervisor(sr: u16) -> bool {
-    sr & 0x2000 != 0
 }
 
 /// Every difference between what the instruction left and the final state.
@@ -150,10 +140,9 @@ fn check(file: &str, test: &Test) -> Vec<String> {
     for (index, &wanted) in expected.a.iter().enumerate() {
         compare(format!("A{index}"), registers[8 + index], wanted);
     }
-    match supervisor(test.initial.sr) {
-        true => compare("A7 (SSP)".to_string(), registers[15], expected.ssp),
-        false => compare("A7 (USP)".to_string(), registers[15], expected.usp),
-    }
+    let cpu = interpreter.get_cpu();
+    compare("USP".to_string(), cpu.get_usp(), expected.usp);
+    compare("SSP".to_string(), cpu.get_ssp(), expected.ssp);
     let mask = !skips::relaxed_flags(file);
     let sr = interpreter.get_sr();
     if sr & mask != expected.sr & mask {

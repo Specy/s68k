@@ -21,7 +21,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use crate::{
     assembler::{program::ProgramSymbol, source::Location, symbols::SymbolKind},
     instructions::{InputSettings, RegisterOperand, Size},
-    interpreter::{CodeWrite, Flags, InterpreterStatus},
+    interpreter::{CodeWrite, Flags, InterpreterStatus, StackPointers},
 };
 
 /// One thing a step changed, with the value it replaced beside the value it
@@ -32,9 +32,14 @@ use crate::{
 /// what the store left behind. A register write reports the whole register on
 /// both sides, because a sized store changes only part of one and the register
 /// is what the panels draw; a memory write reports the value at the width it
-/// was made. `PushCall` and `PopCall` write no value and carry neither.
-/// `SetInputSettings` is tasks 12 and 16, which change how input is shown and
-/// nothing a panel draws.
+/// was made. `PushCall`, `PopCall`, `PushException` and `PopException` write
+/// no value and carry neither: they are the call stack's. `SetInputSettings` is
+/// tasks 12 and 16, which change how input is shown and nothing a panel draws.
+///
+/// The status register is not a mutation: a step carries it whole, before and
+/// after, and undo writes it back first, as it was, without moving a stack
+/// pointer ([`Cpu::restore_sr`](crate::interpreter::Cpu::restore_sr)). What a
+/// change of S does to A7 is journaled as `WriteStackPointers`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "value")]
 pub enum MutationOperation {
@@ -79,6 +84,34 @@ pub enum MutationOperation {
     SetInputSettings {
         old: InputSettings,
         new: InputSettings,
+    },
+    /// The two stack pointers before and after a change of one of them that
+    /// is not a write of A7, or of S: `move An,usp`, a Poke of the USP or the
+    /// SSP, and every write of the status register that changes S, which
+    /// makes A7 the other stack pointer. The values are unchanged by such a
+    /// swap; what moved is which of them A7 is, which the step's status
+    /// register says. Undo puts both back, A7 being the one of the mode
+    /// undo has restored.
+    WriteStackPointers {
+        old: StackPointers,
+        new: StackPointers,
+    },
+    /// An Exception was taken: the processor pushed a frame and jumped
+    /// through `vector` to the handler at `handler`, from the instruction at
+    /// `from`. The call stack gains a frame for it.
+    PushException {
+        vector: u8,
+        from: usize,
+        handler: usize,
+    },
+    /// `rte` returned from an Exception, from the `rte` at `from` to `to`.
+    PopException {
+        to: usize,
+        from: usize,
+        /// The exception frame `rte` took off the call stack, if the frame on
+        /// top was one, which undoing it puts back as it was.
+        #[serde(skip)]
+        frame: Option<CallStackFrame>,
     },
 }
 /// What a step of the history is: an instruction the program ran, or a
@@ -126,6 +159,32 @@ pub enum PokeWrite {
 pub enum PokeTarget {
     Register { register: RegisterOperand, old: u32 },
     Memory { address: usize, old: Vec<u8> },
+    /// The status register or one of the two stack pointers, the System
+    /// register file's.
+    System { register: SystemRegister, old: u32 },
+}
+
+/// The registers of the System register file: the status register and the two
+/// stack pointers, which a Poke can write beside the CPU file's D0 to A7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemRegister {
+    /// The status register.
+    Sr,
+    /// The user stack pointer.
+    Usp,
+    /// The supervisor stack pointer.
+    Ssp,
+}
+
+impl SystemRegister {
+    /// How the editor spells it: `sr`, `usp` or `ssp`.
+    pub fn name(self) -> &'static str {
+        match self {
+            SystemRegister::Sr => "sr",
+            SystemRegister::Usp => "usp",
+            SystemRegister::Ssp => "ssp",
+        }
+    }
 }
 
 /// What an open Poke transaction has collected so far.
@@ -134,20 +193,32 @@ pub enum PokeTarget {
 /// the writes happened; `targets` is one entry per value written, which becomes
 /// the step's [`PokeWrite`] list. A value written twice keeps the old value of
 /// the first write, because that is what undoing the whole Poke puts back.
+///
+/// The status register as the Poke found it is kept too: it is the step's
+/// status register before, which undo writes back as it does an instruction's.
 #[derive(Default)]
 pub struct PokeJournal {
     mutations: Vec<MutationOperation>,
     targets: Vec<PokeTarget>,
+    sr: u16,
 }
 
 impl PokeJournal {
-    pub fn new() -> Self {
-        Self::default()
+    /// An empty journal, opened with the status register at `sr`.
+    pub fn new(sr: u16) -> Self {
+        Self {
+            sr,
+            ..Self::default()
+        }
+    }
+    /// The status register when the Poke was opened.
+    pub fn sr(&self) -> u16 {
+        self.sr
     }
     /// Whether nothing has been written into it, which is a Poke that records
     /// no step.
     pub fn is_empty(&self) -> bool {
-        self.mutations.is_empty()
+        self.mutations.is_empty() && self.targets.is_empty()
     }
     pub fn add_mutation(&mut self, mutation: MutationOperation) {
         self.mutations.push(mutation);
@@ -163,6 +234,19 @@ impl PokeJournal {
         });
         if !already_written {
             self.targets.push(PokeTarget::Register { register, old });
+        }
+    }
+    /// Names a register of the System file the Poke has written, keeping the
+    /// old value of its first write.
+    pub fn add_system_target(&mut self, register: SystemRegister, old: u32) {
+        let already_written = self.targets.iter().any(|target| match target {
+            PokeTarget::System {
+                register: other, ..
+            } => *other == register,
+            _ => false,
+        });
+        if !already_written {
+            self.targets.push(PokeTarget::System { register, old });
         }
     }
     /// Names a run of memory the Poke has written, keeping the old bytes of its
@@ -362,13 +446,26 @@ impl ExecutionStep {
     }
 }
 
+/// What a frame of the call stack was entered by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameKind {
+    /// `bsr` or `jsr`, which `rts` or `rtr` returns from.
+    Call,
+    /// An Exception through a vector, which `rte` returns from.
+    Exception,
+}
+
 /// One frame of the call stack: a subroutine that has been entered and not yet
-/// returned from.
+/// returned from, or an Exception handler that has not executed its `rte`.
 #[derive(Debug, Clone)]
 pub struct CallStackFrame {
     address: usize,
     source_address: usize,
     registers: Vec<u32>,
+    kind: FrameKind,
+    /// The vector of an exception frame.
+    vector: Option<u8>,
 }
 
 impl CallStackFrame {
@@ -377,7 +474,33 @@ impl CallStackFrame {
             address,
             source_address,
             registers,
+            kind: FrameKind::Call,
+            vector: None,
         }
+    }
+    /// The frame of an Exception through `vector` into the handler at
+    /// `address`, which returns to `source_address`.
+    pub fn exception(
+        address: usize,
+        source_address: usize,
+        registers: Vec<u32>,
+        vector: u8,
+    ) -> Self {
+        Self {
+            address,
+            source_address,
+            registers,
+            kind: FrameKind::Exception,
+            vector: Some(vector),
+        }
+    }
+    /// What entered the frame.
+    pub fn get_kind(&self) -> FrameKind {
+        self.kind
+    }
+    /// The vector of an exception frame, `None` for a call.
+    pub fn get_vector(&self) -> Option<u8> {
+        self.vector
     }
     pub fn get_address(&self) -> usize {
         self.address
@@ -617,6 +740,31 @@ impl Debugger {
     pub fn pop_call(&mut self) -> Option<CallStackFrame> {
         self.call_stack.pop()
     }
+    /// Pushes the frame of an Exception through `vector` into the handler at
+    /// `address`, which returns to `source_address`.
+    pub fn push_exception(
+        &mut self,
+        address: usize,
+        source_address: usize,
+        registers: Vec<u32>,
+        vector: u8,
+    ) {
+        self.call_stack.push(CallStackFrame::exception(
+            address,
+            source_address,
+            registers,
+            vector,
+        ));
+    }
+    /// Takes the frame on top of the call stack off when it is an exception
+    /// frame, which is what `rte` returns from; a call frame on top, or none,
+    /// is left as it is.
+    pub fn pop_exception(&mut self) -> Option<CallStackFrame> {
+        match self.call_stack.last() {
+            Some(frame) if frame.kind == FrameKind::Exception => self.call_stack.pop(),
+            _ => None,
+        }
+    }
     /// Puts back a frame [`pop_call`](Self::pop_call) took, as undoing a return
     /// does.
     pub fn restore_call(&mut self, frame: CallStackFrame) {
@@ -635,6 +783,8 @@ impl Debugger {
                     label_name: label.name.clone(),
                     label_address: label.address,
                     label_location: Some(label.location.clone()),
+                    kind: frame.kind,
+                    vector: frame.vector,
                 },
                 None => PrettyStackFrame {
                     address: frame.address,
@@ -643,6 +793,8 @@ impl Debugger {
                     label_name: "Unknown".to_string(),
                     label_address: frame.address,
                     label_location: None,
+                    kind: frame.kind,
+                    vector: frame.vector,
                 },
             })
             .collect()
@@ -653,9 +805,11 @@ impl Debugger {
 /// looked up: what the editor draws.
 #[derive(Debug, Clone, Serialize)]
 pub struct PrettyStackFrame {
-    /// The address the routine starts at.
+    /// The address the routine starts at: the handler, for an exception
+    /// frame.
     pub address: usize,
-    /// The address of the instruction that called it.
+    /// The address the frame returns to: after the call, or the program
+    /// counter the exception stacked.
     pub source_address: usize,
     /// The registers as they were when it was called.
     pub registers: Vec<u32>,
@@ -666,6 +820,11 @@ pub struct PrettyStackFrame {
     pub label_address: usize,
     /// Where that Label was written, or `None` when the address has none.
     pub label_location: Option<Location>,
+    /// A call, or an Exception.
+    pub kind: FrameKind,
+    /// The vector of an exception frame, `None` for a call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector: Option<u8>,
 }
 // The TypeScript declaration of this shape is `IStackFrame` in
 // `src/ts_types.rs`, with every other hand-written one.

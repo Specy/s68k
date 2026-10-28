@@ -1143,6 +1143,44 @@ into an overflow, links through A7 or shifts arithmetically by its operand's
 size or more, and none runs `abcd`, `sbcd`, `nbcd` or `chk`, so no flag or
 value a fixture records depended on an old answer.
 
+### What milestone C6 of the machine plan changed in these fixtures, and why
+
+On 2026-10-28, milestone C6 of the asm-editor's
+`docs/design/m68k-machine-plan.md` took the 68000's exceptions through its
+vector table (ADRs 0007 and 0008): two stack pointers, EASy68K's reset state
+with SR `$2000` where it was `$2700`, privilege, trace, `rte`, `move usp` and
+`trap #0` to `#14`.
+
+**No execution fixture moved.** The reset state changes the system byte of the
+status register, which no fixture records: the run fixtures print the five
+condition codes, which are clear at the start either way, and the memory hash,
+which the stack pointers do not touch until a program pushes. No `editor/`
+program writes `sr`, runs `rte`, `move usp` or a `trap` other than `#15`, or
+raises an error a vector could take, so every one runs as it ran; a program
+whose vector is unset would end as before in any case, with the vector named
+beside its cause.
+
+Three diagnostics fixtures moved, each because something they refused
+assembles now:
+
+* `mouseWindowSize-errors` loses its three `unimplemented_operation` entries for
+  `rte`, at lines 182, 193 and 204, the returns of its three interrupt
+  handlers: **15** entries where there were 18. Its `andi.w #$00,SR`, "put CPU
+  in User mode", was already assembled and now does what it says. The file
+  still does not assemble, for its macros and structured control, so it has no
+  run fixture.
+* `tests/diagnostics/unimplemented_operation.asm` traded `rte` and `trap #3`,
+  which assemble, for `stop #$2700`, which waits for the interrupts of
+  milestone C8 beside `reset`; its snapshot lost the `trap #3` entry and its
+  macro lines moved up one.
+* `tests/diagnostics/unimplemented_addressing_mode.asm` and its snapshot are
+  gone with the diagnostic: `usp`, the last Operand it named, is an Addressing
+  mode of `move`'s now, and `move usp,a0` and `move a0,usp` assemble.
+
+`a_runtime_error_ends_the_run_with_an_exception` changed one row: a `jmp` to an
+odd address now faults in the jump's own step, as the 68000 faults in the
+jump's prefetch, so its `steps` is 1 where it was 2.
+
 ## Execution fixtures
 
 The fixtures above stop where the Assembler stops. Beside each one is the
@@ -1166,7 +1204,7 @@ ends with an exception, or reaches a total of **200 000 executed instructions**.
 | `status` | Meaning |
 | --- | --- |
 | `terminated` | the program stopped on its own, almost always the Terminate task |
-| `exception` | the Interpreter stopped it: an address error, a trap task it cannot carry out, an instruction outside the program, a division by zero |
+| `exception` | the Interpreter stopped it: an exception whose vector holds no handler (an address error, a division by zero, an illegal instruction), a trap task it cannot carry out, a double fault |
 | `limit` | the program was still running after 200 000 instructions |
 
 `steps` is how many instructions were executed, counting the one that raised a

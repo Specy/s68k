@@ -14,20 +14,19 @@
 //!    word gets the Label hint, a real 68000 instruction s68k does not
 //!    assemble gets the reason, and one of a later processor that s68k's
 //!    dialect does not have yet says so;
-//! 2. every Operand is one this phase assembles — `usp` is the only one that is
-//!    not, and it says so;
-//! 3. the number of Operands picks the Form, which has to be one the
-//!    Program's processor has: `extb.l` and `move ccr,<ea>` in a 68000
-//!    Program are refused with the 68000's way of doing the same and the
-//!    `opt p=` line that would let them, as suggested fixes (ADR 0011);
-//! 4. the size suffix against that Form, and the byte rule for address
+//! 2. the number of Operands, and the special registers `sr`, `ccr` and `usp`
+//!    among them, pick the Form, which has to be one the Program's processor
+//!    has: `extb.l` and `move ccr,<ea>` in a 68000 Program are refused with
+//!    the 68000's way of doing the same and the `opt p=` line that would let
+//!    them, as suggested fixes (ADR 0011);
+//! 3. the size suffix against that Form, and the byte rule for address
 //!    registers;
-//! 5. each Operand's mode against its position;
-//! 6. the two Operands together, where the instruction has only one memory
+//! 4. each Operand's mode against its position;
+//! 5. the two Operands together, where the instruction has only one memory
 //!    access, and the two pairs the 68000 has no encoding for although each
 //!    Operand fits its position: an address register added into memory and a
 //!    static bit number on an immediate;
-//! 7. the values it can already work out: the count of a quick form, a shift
+//! 6. the values it can already work out: the count of a quick form, a shift
 //!    count, a bit number, a displacement, how far a PC-relative Operand has to
 //!    reach from its own extension word, the displacement of `link`, the width
 //!    an absolute address is forced to, an immediate against its size, how far
@@ -393,11 +392,6 @@ impl<'a> Analyzer<'a> {
             }
         }
 
-        let unimplemented: Vec<bool> = operands
-            .iter()
-            .map(|operand| self.check_operand_is_implemented(operand))
-            .collect();
-
         let form = match self.choose_form(spec, operands) {
             Some(form) => form,
             None => {
@@ -435,7 +429,7 @@ impl<'a> Analyzer<'a> {
         let judged_as_a_pair = self.check_operand_pair(spec, operands);
         let mut fits = vec![true; operands.len()];
         for (index, operand) in operands.iter().enumerate() {
-            if judged_as_a_pair || unimplemented[index] {
+            if judged_as_a_pair {
                 fits[index] = false;
                 continue;
             }
@@ -591,38 +585,6 @@ impl<'a> Analyzer<'a> {
 
     // -- the operands ------------------------------------------------------
 
-    /// Whether the Operand is one this phase does not assemble, in which case
-    /// it says so and answers `true`.
-    ///
-    /// One is left, and it is not an Addressing mode at all: `usp`. s68k runs
-    /// one program in supervisor mode and has one stack pointer (the design
-    /// record, "Scope"), so a student writing `move usp,a0` is told that and
-    /// what to write instead, rather than that the mode is invalid, which would
-    /// be a lie. There is no "yet" in the sentence, because there is nothing to
-    /// wait for.
-    ///
-    /// `sr` and `ccr` were here until the first half of phase 3 and the
-    /// PC-relative modes until its last: all four are ordinary [`Modes`] now
-    /// and the instruction table says which position takes them.
-    fn check_operand_is_implemented(&mut self, operand: &Operand) -> bool {
-        let Operand::SpecialRegister {
-            register: ast::SpecialRegister::Usp,
-            ..
-        } = operand
-        else {
-            return false;
-        };
-        self.raise(
-            DiagnosticKind::UnimplementedAddressingMode {
-                operand: self.text_of(operand.span()),
-                description: "the user stack pointer".to_string(),
-                advice: Some("s68k runs one program with one stack pointer, `a7`".to_string()),
-            },
-            operand.span(),
-        );
-        true
-    }
-
     /// The Form the Operands were written in: the first one with their number
     /// that they all fit, and, when they fit none, the first one of that
     /// number.
@@ -656,7 +618,7 @@ impl<'a> Analyzer<'a> {
             .collect();
         let agreeing: Vec<&'static Form> = of_that_arity
             .iter()
-            .filter(|form| agrees_about_the_status_register(form, operands))
+            .filter(|form| agrees_about_the_special_registers(form, operands))
             .copied()
             .collect();
         let candidates = if agreeing.is_empty() {
@@ -728,6 +690,12 @@ impl<'a> Analyzer<'a> {
         }
         if found == Modes::REGISTER_LIST && !allowed.contains(Modes::REGISTER_LIST) {
             return Some("only `movem` takes a register list".to_string());
+        }
+        if found == Modes::USP && spec.mnemonic != "move" {
+            return Some(
+                "only `move` reaches the user stack pointer, to or from an address register"
+                    .to_string(),
+            );
         }
         if found.intersects(Modes::STATUS) && !takes_the_status_register(spec) {
             // Only for a Mnemonic that reaches the status register nowhere:
@@ -996,9 +964,7 @@ impl<'a> Analyzer<'a> {
                 },
                 *span,
             );
-            return;
         }
-        self.check_the_only_trap(spec, number, *span);
     }
 
     /// The displacement of `link`, which the 68000 encodes in a word and sign
@@ -1126,22 +1092,6 @@ impl<'a> Analyzer<'a> {
             ),
             _ => {}
         }
-    }
-
-    /// `trap #15` is the input and output trap and the only one s68k answers;
-    /// every other vector assembles on a 68000 and would stop the program here.
-    fn check_the_only_trap(&mut self, spec: &'static InstructionSpec, vector: i64, span: Span) {
-        if spec.mnemonic != "trap" || vector == 15 {
-            return;
-        }
-        self.raise(
-            DiagnosticKind::UnimplementedOperation {
-                name: format!("trap #{vector}"),
-                reason: "s68k simulates one trap, `#15`, which is its input and output".to_string(),
-                alternative: Some("`trap #15`".to_string()),
-            },
-            span,
-        );
     }
 
     /// The displacement of a displaced Operand, which the 68000 encodes in a
@@ -1621,21 +1571,20 @@ fn takes_the_status_register(spec: &'static InstructionSpec) -> bool {
     })
 }
 
-/// Whether a Form names `sr` or `ccr` in exactly the positions the Operands
-/// wrote one, which is what [`Analyzer::choose_form`] narrows the candidates
-/// by.
+/// Whether a Form names `sr`, `ccr` or `usp` in exactly the positions the
+/// Operands wrote one, which is what [`Analyzer::choose_form`] narrows the
+/// candidates by.
 ///
-/// A position that takes a half of the status register takes nothing else, so
-/// "the Form's modes at this position mention one" and "this Operand is one"
-/// answer the same question from the two sides. An Operand that is neither —
-/// an ordinary Addressing mode, and `usp`, whose [`Modes::of`] is `None` —
-/// agrees with a position that names no half of the register, which is every
-/// position of every Form but the four of `move` and the two each of `andi`,
-/// `ori` and `eori`.
-fn agrees_about_the_status_register(form: &Form, operands: &[Operand]) -> bool {
+/// A position that takes a special register takes nothing else, so "the
+/// Form's modes at this position mention one" and "this Operand is one"
+/// answer the same question from the two sides. An Operand that is none of
+/// them, an ordinary Addressing mode, agrees with a position that names none,
+/// which is every position of every Form but the six of `move` and the two
+/// each of `andi`, `ori` and `eori`.
+fn agrees_about_the_special_registers(form: &Form, operands: &[Operand]) -> bool {
     operands.iter().enumerate().all(|(index, operand)| {
-        let allowed = form.operands[index].intersection(Modes::STATUS);
-        match Modes::of(operand).map(|mode| mode.intersection(Modes::STATUS)) {
+        let allowed = form.operands[index].intersection(Modes::SPECIAL);
+        match Modes::of(operand).map(|mode| mode.intersection(Modes::SPECIAL)) {
             Some(written) if !written.is_empty() => allowed == written,
             _ => allowed.is_empty(),
         }
@@ -1849,15 +1798,22 @@ mod tests {
     #[test]
     fn an_instruction_that_is_not_assembled_says_why() {
         assert_eq!(codes("    stop #$2700"), ["unimplemented_operation"]);
-        assert_eq!(
-            messages("    rte"),
-            [
-                "`rte` is not implemented: s68k runs every program in supervisor mode and keeps \
-                 no exception frames. Write `rts` instead"
-            ]
-        );
-        assert_eq!(codes("    trap #3"), ["unimplemented_operation"]);
+        assert_eq!(codes("    reset"), ["unimplemented_operation"]);
         assert_eq!(codes("    trap #16"), ["value_out_of_range"]);
+    }
+
+    /// `rte` and every `trap` are assembled since exceptions are taken (the
+    /// plan's milestone C6).
+    #[test]
+    fn rte_and_every_trap_assemble() {
+        assert!(matches!(analyze("    rte"), (codes, Some(Instruction::RTE)) if codes.is_empty()));
+        for vector in 0..=15 {
+            let line = format!("    trap #{vector}");
+            assert!(
+                matches!(analyze(&line), (codes, Some(Instruction::TRAP(n))) if codes.is_empty() && n == vector),
+                "{line}"
+            );
+        }
     }
 
     /// The extend-flag and binary-coded-decimal group: two shapes, judged
@@ -1934,22 +1890,28 @@ mod tests {
         );
     }
 
-    /// `usp` is the one Operand left that the Assembler does not assemble:
-    /// s68k runs one program with one stack pointer (the design record,
-    /// "Scope"), so `move usp,a0` and `move a0,usp` say so where `sr`, `ccr`
-    /// and the PC-relative modes are all assembled.
+    /// `usp` is `move`'s, to and from an address register, a long, and
+    /// nothing else's (`Reference/68ks4f.htm`).
     #[test]
-    fn the_user_stack_pointer_is_the_one_operand_that_is_not_assembled() {
+    fn the_user_stack_pointer_moves_to_and_from_an_address_register() {
+        for line in ["    move.l usp,a0", "    move a0,usp", "    move.l sp,usp"] {
+            let (codes, instruction) = analyze(line);
+            assert!(codes.is_empty(), "{line} raised {codes:?}");
+            assert!(
+                matches!(instruction, Some(Instruction::MOVEUSP { .. })),
+                "{line} is `move usp`"
+            );
+        }
+        assert_eq!(codes("    move.l d0,usp"), ["invalid_addressing_mode"]);
+        assert_eq!(codes("    move.w a0,usp"), ["invalid_size"]);
         assert_eq!(
-            messages("    move.l usp,a0"),
+            messages("    add.l usp,d0"),
             [
-                "`usp` is the user stack pointer, which s68k does not assemble. S68k runs one \
-                 program with one stack pointer, `a7`"
+                "The first operand of `add` cannot be the user stack pointer. The operand \
+                 should be Dn, An, (An), (An)+, -(An), d(An), d(An,Xn), Ea/<label>, d(PC), \
+                 d(PC,Xn) or Im. Only `move` reaches the user stack pointer, to or from an \
+                 address register"
             ]
-        );
-        assert_eq!(
-            codes("    move.l a0,usp"),
-            ["unimplemented_addressing_mode"]
         );
     }
 

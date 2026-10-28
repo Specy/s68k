@@ -7,13 +7,13 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`rte` is not implemented: s68k runs every program in supervisor mode and keeps no exception frames.",
-    "hint": "Write `rts` instead",
+    "message": "`stop` is not implemented: s68k has no interrupts to wake a stopped processor.",
+    "hint": "Write `simhalt` instead",
     "location": {
       "file": "unimplemented_operation.asm",
       "line": 1,
       "column": 4,
-      "endColumn": 7
+      "endColumn": 8
     },
     "related": []
   },
@@ -33,24 +33,11 @@ input_file: tests/diagnostics/unimplemented_operation.asm
   {
     "severity": "error",
     "code": "unimplemented_operation",
-    "message": "`trap #3` is not implemented: s68k simulates one trap, `#15`, which is its input and output.",
-    "hint": "Write `trap #15` instead",
-    "location": {
-      "file": "unimplemented_operation.asm",
-      "line": 3,
-      "column": 9,
-      "endColumn": 11
-    },
-    "related": []
-  },
-  {
-    "severity": "error",
-    "code": "unimplemented_operation",
     "message": "`macro` is not implemented: macros are not assembled.",
     "hint": "Write the lines of the macro where it is used instead",
     "location": {
       "file": "unimplemented_operation.asm",
-      "line": 7,
+      "line": 6,
       "column": 8,
       "endColumn": 13
     },
@@ -63,7 +50,7 @@ input_file: tests/diagnostics/unimplemented_operation.asm
     "hint": "Write the lines of the macro here instead",
     "location": {
       "file": "unimplemented_operation.asm",
-      "line": 11,
+      "line": 10,
       "column": 4,
       "endColumn": 9
     },
@@ -71,7 +58,7 @@ input_file: tests/diagnostics/unimplemented_operation.asm
       {
         "location": {
           "file": "unimplemented_operation.asm",
-          "line": 7,
+          "line": 6,
           "column": 0,
           "endColumn": 5
         },

@@ -346,15 +346,16 @@ pub fn lower_operation(
     lower(family, size, &lowered, &site)
 }
 
-/// The Operations that read or write `sr` or `ccr`, or `None` when this is not
-/// one of them.
+/// The Operations that read or write `sr`, `ccr` or `usp`, or `None` when
+/// this is not one of them.
 ///
 /// `move <ea>,ccr` and `move <ea>,sr` are a word of which the first takes the
 /// low byte; `move sr,<ea>` and `move ccr,<ea>` write one; `andi`, `ori` and
 /// `eori` take a byte into `ccr` and a word into `sr`
-/// (`Reference/68ks4d.htm`, `Reference/68ks6b.htm`). Every other Mnemonic
-/// answers `None` here and is lowered the ordinary way; so does `usp`, which is
-/// not implemented at all.
+/// (`Reference/68ks4d.htm`, `Reference/68ks6b.htm`); `move usp,An` and
+/// `move An,usp` move a long between an address register and the user stack
+/// pointer (`Reference/68ks4f.htm`). Every other Mnemonic answers `None` here
+/// and is lowered the ordinary way.
 fn lower_status_register(
     family: Family,
     operands: &[ast::Operand],
@@ -364,6 +365,35 @@ fn lower_status_register(
     let [first, second] = operands else {
         return None;
     };
+    if family == Family::Move {
+        match (first, second) {
+            (
+                ast::Operand::SpecialRegister {
+                    register: ast::SpecialRegister::Usp,
+                    ..
+                },
+                ast::Operand::AddressRegisterDirect { register, .. },
+            ) => {
+                return Some(Instruction::MOVEUSP {
+                    to_usp: false,
+                    register: RegisterOperand::Address(register.number),
+                })
+            }
+            (
+                ast::Operand::AddressRegisterDirect { register, .. },
+                ast::Operand::SpecialRegister {
+                    register: ast::SpecialRegister::Usp,
+                    ..
+                },
+            ) => {
+                return Some(Instruction::MOVEUSP {
+                    to_usp: true,
+                    register: RegisterOperand::Address(register.number),
+                })
+            }
+            _ => {}
+        }
+    }
     use ast::SpecialRegister::{Ccr, Sr};
     let lowered =
         |operand| lower_operand(operand, values, extension_word).map(|lowered| lowered.operand);
@@ -404,8 +434,8 @@ fn lower_status_register(
 
 /// The half of the status register an Operand names, when it names one.
 ///
-/// `usp` is not one of them: it is not implemented at all, and the analyzer has
-/// already said so, so it answers `None` and is lowered by nothing.
+/// `usp` is not one of them: it answers `None`, and `move usp` has been lowered
+/// before this is asked.
 fn half_of_the_status_register(operand: &ast::Operand) -> Option<ast::SpecialRegister> {
     match operand {
         ast::Operand::SpecialRegister {
@@ -560,6 +590,7 @@ pub fn lower(
         Family::Movep => lower_movep(size?, operand(0)?, operand(1)?),
         Family::Tas => Some(Instruction::TAS(operand(0)?)),
         Family::Rtr => Some(Instruction::RTR),
+        Family::Rte => Some(Instruction::RTE),
         Family::Chk => Some(Instruction::CHK(
             at_size(operand(0)?, Size::Word),
             register(operand(1))?,

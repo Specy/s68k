@@ -7,6 +7,7 @@ mod corpus;
 mod decoded_instructions;
 mod diagnostics;
 mod encoding;
+mod exceptions;
 mod history;
 mod include;
 mod instruction_semantics;
