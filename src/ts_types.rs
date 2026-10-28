@@ -381,10 +381,9 @@ export type RuntimeError = { type: "Raw", value: string } |
  * none of EASy68K's goes through vector 47, as in EASy68K; one of EASy68K's
  * own that a browser cannot do faithfully ends the program with no exception:
  * the printer (10), the text window's font and contents (21, 22, 25), the
- * cycle counter (30, 31), the hardware window (32 with 0 to 3 or 7 in D1.B,
- * which show it and answer its devices' addresses: there is no hardware
- * window), the serial ports (40 to 43) and the network (100 to 107). The host
- * says why from the number.
+ * hardware window (32 with 0 to 3 or 7 in D1.B, which show it and answer its
+ * devices' addresses: there is no hardware window), the serial ports (40 to
+ * 43) and the network (100 to 107). The host says why from the number.
  */
 { type: "UnsupportedTrapTask", value: { task: number } } |
 /** A `trap #15` task given a value it cannot take; `reason` names the register. */
@@ -900,6 +899,13 @@ export type ExecutionStep = {
     old_sr: number,
     /** The whole status register after the step. */
     new_sr: number,
+    /**
+     * The cycles the step took, with the 68000's timing: an instruction's own,
+     * the exceptions it raised included; 44 for an IRQ; 0 for a poke and for a
+     * trap #15 task. The counter, `getCycles()`, adds them up, and undo takes
+     * them back.
+     */
+    cycles: number,
     /**
      * Where the instruction that ran was written; absent when it ran on no line,
      * in data or in the middle of one, and on a poke and an IRQ. A line whose

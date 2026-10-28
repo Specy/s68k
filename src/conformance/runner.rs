@@ -4,10 +4,10 @@
 //!
 //! A test sets the state, runs one instruction and compares D0–D7, A0–A6,
 //! both stack pointers, SR, the program counter and every RAM word the final
-//! state lists. It also checks that the step
-//! wrote no byte the final state leaves out. The length in cycles is compared
-//! only when [`CHECK_LENGTH`] is on. A `stop` leaves the processor stopped,
-//! which is the one status besides running a test may end in.
+//! state lists, and the test's length with the cycles the step took, as
+//! [`CHECK_LENGTH`] says. It also checks that the step wrote no byte the
+//! final state leaves out. A `stop` leaves the processor stopped, which is
+//! the one status besides running a test may end in.
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -181,11 +181,9 @@ fn check(file: &str, test: &Test) -> Vec<String> {
             problems.push(format!("wrote ${address:06X}, which the final state does not list"));
         }
     }
-    if CHECK_LENGTH && !skips::relaxed_length(file) {
-        problems.push(format!(
-            "the length is {} cycles and s68k counts none",
-            test.length
-        ));
+    let cycles = interpreter.get_cycles();
+    if CHECK_LENGTH && !skips::relaxed_length(file) && cycles != test.length as u64 {
+        problems.push(format!("took {cycles} cycles, expected {}", test.length));
     }
     problems
 }

@@ -377,6 +377,18 @@ pub struct ExecutionStep {
     old_sr: u16,
     /// The whole status register after the step.
     new_sr: u16,
+    /// The cycle counter before the step, which undo puts back.
+    #[serde(skip)]
+    old_cycles: u64,
+    /// What the counter is measured from for [`cycles`](ExecutionStep::cycles):
+    /// `old_cycles`, moved down by what task 30 cleared during the step, so
+    /// that a step that clears the counter costs what it took on either side
+    /// of the clear. It wraps.
+    #[serde(skip)]
+    cycles_from: u64,
+    /// The cycles the step took: an instruction's, with the exceptions it
+    /// raised; an IRQ's 44; nothing for a Poke.
+    cycles: u32,
     /// The [code write](CodeWrite) the instruction made: the first instruction
     /// whose bytes it changed, or `None`. Undoing the step takes it back with
     /// the bytes.
@@ -432,6 +444,7 @@ impl ExecutionStep {
         pc: usize,
         ccr: Flags,
         sr: u16,
+        cycles: u64,
         interpreter_status: InterpreterStatus,
     ) -> Self {
         Self {
@@ -445,6 +458,9 @@ impl ExecutionStep {
             new_ccr: ccr,
             old_sr: sr,
             new_sr: sr,
+            old_cycles: cycles,
+            cycles_from: cycles,
+            cycles: 0,
             location: StepLocation::default(),
             wrote_code: None,
             ran: Ran::default(),
@@ -460,6 +476,7 @@ impl ExecutionStep {
         pc: usize,
         ccr: Flags,
         sr: u16,
+        cycles: u64,
         interpreter_status: InterpreterStatus,
     ) {
         self.old_stack_tops = None;
@@ -471,6 +488,9 @@ impl ExecutionStep {
         self.new_ccr = ccr;
         self.old_sr = sr;
         self.new_sr = sr;
+        self.old_cycles = cycles;
+        self.cycles_from = cycles;
+        self.cycles = 0;
         self.location.present = false;
         self.wrote_code = None;
         self.ran = Ran::Nothing;
@@ -512,6 +532,15 @@ impl ExecutionStep {
     /// The whole status register before the step, which is what undo restores.
     pub fn get_sr(&self) -> u16 {
         self.old_sr
+    }
+    /// The cycle counter before the step, which is what undo restores.
+    pub fn get_old_cycles(&self) -> u64 {
+        self.old_cycles
+    }
+    /// The cycles the step took: an instruction's own and those of the
+    /// exceptions it raised, 44 for an IRQ, and nothing for a Poke.
+    pub fn get_cycles(&self) -> u32 {
+        self.cycles
     }
     /// The Interpreter state before the step, which is what undo restores.
     pub fn get_interpreter_status(&self) -> InterpreterStatus {
@@ -687,16 +716,23 @@ impl Debugger {
         pc: usize,
         ccr: Flags,
         sr: u16,
+        cycles: u64,
         interpreter_status: InterpreterStatus,
     ) {
         let id = self.next_step_id;
         self.next_step_id += 1;
         let index = self.claim_slot();
         if index == self.history.len() {
-            self.history
-                .push(ExecutionStep::new(kind, pc, ccr, sr, interpreter_status));
+            self.history.push(ExecutionStep::new(
+                kind,
+                pc,
+                ccr,
+                sr,
+                cycles,
+                interpreter_status,
+            ));
         } else {
-            self.history[index].reset(kind, pc, ccr, sr, interpreter_status);
+            self.history[index].reset(kind, pc, ccr, sr, cycles, interpreter_status);
         }
         self.history[index].id = id;
     }
@@ -766,15 +802,22 @@ impl Debugger {
             step.old_stack_tops.get_or_insert(old);
         }
     }
-    pub fn set_new_ccr(&mut self, ccr: Flags) {
+    /// Records what the step being recorded left behind: the condition
+    /// codes, the whole status register, and the cycle counter, from which
+    /// the step's own cycles are worked out.
+    pub fn set_new_state(&mut self, ccr: Flags, sr: u16, cycles: u64) {
         if let Some(step) = self.newest_mut() {
             step.new_ccr = ccr;
+            step.new_sr = sr;
+            step.cycles = cycles.wrapping_sub(step.cycles_from) as u32;
         }
     }
-    /// Records the whole status register the step left behind.
-    pub fn set_new_sr(&mut self, sr: u16) {
+    /// Records that task 30 cleared the cycle counter from `cleared` during
+    /// the step being recorded, so that the step's cycles count what it took
+    /// before the clear and after it.
+    pub fn record_cycles_cleared(&mut self, cleared: u64) {
         if let Some(step) = self.newest_mut() {
-            step.new_sr = sr;
+            step.cycles_from = step.cycles_from.wrapping_sub(cleared);
         }
     }
     /// Records the code write of the step being executed.

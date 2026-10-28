@@ -34,19 +34,6 @@ pub const AUTOVECTOR_BASE: u8 = 24;
 /// The level taken whatever the interrupt mask, the 68000's non-maskable one.
 pub const NON_MASKABLE_LEVEL: u8 = 7;
 
-/// The cycles the 68000 takes to acknowledge an interrupt and take it through
-/// its autovector (the 68000 User's Manual, table 8-14), for the cycle counter
-/// of the asm-editor's plan, milestone C9, to count on an IRQ step.
-pub const IRQ_CYCLES: u32 = 44;
-
-/// The cycles `stop` takes before the processor waits, for milestone C9.
-pub const STOP_CYCLES: u32 = 4;
-
-/// The cycles `reset` takes, asserting the reset line for 124 of them: its
-/// only effect, as there are no devices behind the line (decision 13), for
-/// milestone C9. EASy68K adds the same.
-pub const RESET_CYCLES: u32 = 132;
-
 /// The version task 32 with 4 in D1.B answers in D1.L, EASy68K's `VERSION`
 /// (`def.h`): 5.16.1, the simulator s68k follows.
 pub const SIMULATOR_VERSION: u32 = 0x0005_1001;

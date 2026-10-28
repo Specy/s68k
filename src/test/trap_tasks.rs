@@ -900,9 +900,9 @@ mod failures {
 
     #[test]
     fn an_unsupported_task_ends_the_program_with_an_exception() {
-        //the printer, the cycle counter, the hardware window (task 32 with 0 in D1.B), the
+        //the printer, the text window, the hardware window (task 32 with 0 in D1.B), the
         //serial ports, the network, and numbers that are no task at all
-        for number in [10u8, 21, 30, 31, 32, 40, 100, 107, 26, 99, 200] {
+        for number in [10u8, 21, 32, 40, 100, 107, 26, 99, 200] {
             let mut interpreter =
                 prepare(&format!("    move.b #{number},d0\n    trap #15\n    nop"));
             let error = interpreter.run().expect_err("an error");

@@ -764,18 +764,35 @@ export class Interpreter {
 
     /**
      * How many instructions have run since this Interpreter was made, the one
-     * that failed or raised an interrupt included; Undo does not take them
-     * back. A run that stops early, at an interrupt, a pause or a watched
-     * write, says nothing of how far it got: the difference of two readings
-     * does.
+     * that failed or raised an interrupt included; an IRQ taken runs none and
+     * is not counted. Undo does not take them back. A run that stops early, at
+     * an interrupt, a pause or a watched write, says nothing of how far it got:
+     * the difference of two readings does. The `limit` of
+     * {@link Interpreter.runWithLimit} and {@link Interpreter.runWithBreakpoints}
+     * counts the same instructions.
      */
     getExecutedInstructions(): number {
         return this.interpreter.wasm_get_executed_instructions()
     }
 
     /**
-     * Like {@link Interpreter.run}, but take at most `limit` steps, an IRQ taken
-     * being one of them. It throws an `ExecutionLimit` when they have run and
+     * The cycle counter: the clock cycles of a 68000 the program has taken since
+     * it started, or since trap #15 task 30 last cleared it. Each instruction
+     * counts the 68000's own time, its data included (a multiply by its bits, a
+     * shift by its count, a branch taken or not), and so does each exception and
+     * each IRQ (44); trap #15's tasks take none, as in EASy68K. Undo takes a
+     * step's cycles back, and each step of the history says what it took, as
+     * `cycles`. Task 31 reads the counter into D1.L, 0 once it is past 32 bits.
+     */
+    getCycles(): bigint {
+        return this.interpreter.wasm_get_cycles()
+    }
+
+    /**
+     * Like {@link Interpreter.run}, but run at most `limit` instructions, as
+     * {@link Interpreter.getExecutedInstructions} counts them: an IRQ taken on
+     * the way is a step and no instruction, and is not one of them. It throws
+     * an `ExecutionLimit` when they have run and
      * the program would run on; a stop made by the last of them is answered as
      * that status, and a processor `stop` stopped answers `Stopped` at once
      * while nothing wakes it.
@@ -965,6 +982,8 @@ export type ExecutionStepInternal = {
     old_sr: number,
     /** The whole status register after it. */
     new_sr: number,
+    /** The cycles the step took; 0 for a poke. */
+    cycles: number,
     location?: Location,
     /** The code write the instruction made; absent when it made none. */
     wroteCode?: CodeWrite,

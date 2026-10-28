@@ -354,19 +354,63 @@ lowered:
         assert!(pending(&interpreter).is_empty());
     }
 
+    /// The limit counts instructions, as `get_executed_instructions` does: an
+    /// IRQ is a step of the history and no instruction, so a run limited to
+    /// three takes it and runs three.
     #[test]
-    fn a_limited_run_counts_an_irq_as_a_step_and_not_as_an_instruction() {
+    fn a_limited_run_counts_instructions_and_not_the_irqs_taken() {
         let mut interpreter = machine(&program("    simhalt\n    nop\n    nop\n    simhalt", &[]));
         run_to_the_pause(&mut interpreter);
         interpreter.raise_irq(1).unwrap();
         let executed = interpreter.get_executed_instructions();
-        //the IRQ, the handler's `move.b` and `rte`, and one `nop`
+        let steps = interpreter.get_last_step_id();
+        //the IRQ, then the handler's `move.b` and `rte`, and one `nop`
         assert_eq!(
-            interpreter.run_with_limit(4),
-            Err(RuntimeError::ExecutionLimit(4))
+            interpreter.run_with_limit(3),
+            Err(RuntimeError::ExecutionLimit(3))
         );
         assert_eq!(interpreter.get_executed_instructions(), executed + 3);
+        assert_eq!(interpreter.get_last_step_id(), steps + 4, "four steps");
         assert_eq!(log(&interpreter), [1]);
+        //the same with breakpoints that stop nothing
+        let mut interpreter = machine(&program("    simhalt\n    nop\n    nop\n    simhalt", &[]));
+        run_to_the_pause(&mut interpreter);
+        interpreter.raise_irq(1).unwrap();
+        let executed = interpreter.get_executed_instructions();
+        assert_eq!(
+            interpreter.run_with_breakpoints(&[], Some(3), RunOptions::default()),
+            Err(RuntimeError::ExecutionLimit(3))
+        );
+        assert_eq!(interpreter.get_executed_instructions(), executed + 3);
+    }
+
+    /// A host that runs in slices of a budget and measures each by
+    /// `get_executed_instructions`, as the editor does, runs exactly its
+    /// budget whatever the IRQs: before, each IRQ took one instruction off the
+    /// slice it came in.
+    #[test]
+    fn a_host_running_in_slices_runs_its_budget_whatever_the_irqs() {
+        let code = program("loop:\n    addq.l #1,d0\n    bra loop", &[]);
+        let mut interpreter = machine(&code);
+        let budget = 1_000u64;
+        let first = interpreter.get_executed_instructions();
+        let mut slices = 0;
+        while interpreter.get_executed_instructions() - first < budget {
+            //a timer firing between two slices, once the first has installed the handlers
+            if slices > 0 {
+                interpreter.raise_irq(3).unwrap();
+            }
+            let remaining = budget - (interpreter.get_executed_instructions() - first);
+            let slice = remaining.min(97) as usize;
+            assert_eq!(
+                interpreter.run_with_limit(slice),
+                Err(RuntimeError::ExecutionLimit(slice))
+            );
+            slices += 1;
+        }
+        assert_eq!(interpreter.get_executed_instructions() - first, budget);
+        assert_eq!(slices, 11, "ten slices of 97 and one of 30");
+        assert_eq!(log(&interpreter), [3; 10]);
     }
 
     /// The program ends where it runs into memory it never placed, but an IRQ

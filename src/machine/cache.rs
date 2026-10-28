@@ -46,6 +46,7 @@
 use crate::instructions::Instruction;
 
 use super::decode::{Decoded, MAX_68000_SIZE};
+use super::{timing, Processor};
 
 /// The bytes of memory the cache covers: the 68000's 16 MB.
 const MEMORY_SIZE: usize = 0x0100_0000;
@@ -85,6 +86,10 @@ pub struct Slot {
     /// How many bytes the instruction takes up; 0 for a slot that holds
     /// nothing.
     size: u8,
+    /// The cycles of the instruction that do not depend on its data
+    /// ([`timing::base`](super::timing::base)), worked out once, when the
+    /// slot is filled, so that a step adds one number.
+    cycles: u16,
 }
 
 /// A slot that holds nothing.
@@ -92,6 +97,7 @@ pub const EMPTY: Slot = Slot {
     instruction: Instruction::NOP,
     index: DECODED,
     size: 0,
+    cycles: 0,
 };
 
 /// The slot a fetch answers while an interrupt request is ready to be taken:
@@ -103,26 +109,35 @@ pub const NOT_RUN: Slot = Slot {
     instruction: Instruction::NOP,
     index: END,
     size: 0,
+    cycles: 0,
 };
 
 impl Slot {
-    /// The slot of the Program's instruction of index `index`, `size` bytes long.
-    pub fn assembled(instruction: Instruction, size: usize, index: usize) -> Self {
+    /// The slot of the Program's instruction of index `index`, `size` bytes
+    /// long, run by `processor`.
+    pub fn assembled(
+        instruction: Instruction,
+        size: usize,
+        index: usize,
+        processor: Processor,
+    ) -> Self {
         Self {
             instruction,
             index: index as u32,
             size: size as u8,
+            cycles: timing::base(&instruction, processor),
         }
     }
 
-    /// The slot of an instruction decoded from memory at run time; `ends` when
-    /// it is SIMHALT where the program placed nothing, which ends the program
-    /// rather than running.
-    pub fn decoded(decoded: Decoded, ends: bool) -> Self {
+    /// The slot of an instruction decoded from memory at run time for
+    /// `processor`; `ends` when it is SIMHALT where the program placed
+    /// nothing, which ends the program rather than running.
+    pub fn decoded(decoded: Decoded, ends: bool, processor: Processor) -> Self {
         Self {
             instruction: decoded.instruction,
             index: if ends { END } else { DECODED },
             size: decoded.size as u8,
+            cycles: timing::base(&decoded.instruction, processor),
         }
     }
 
@@ -136,6 +151,12 @@ impl Slot {
     #[inline(always)]
     pub fn size(&self) -> usize {
         self.size as usize
+    }
+
+    /// The cycles of the instruction that do not depend on its data.
+    #[inline(always)]
+    pub fn cycles(&self) -> u64 {
+        self.cycles as u64
     }
 
     /// The index of the Program's instruction the slot holds as the Assembler
@@ -307,7 +328,14 @@ mod tests {
     use crate::instructions::Size;
 
     fn slot(size: usize, index: usize) -> Slot {
-        Slot::assembled(Instruction::NOP, size, index)
+        Slot::assembled(Instruction::NOP, size, index, Processor::M68000)
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn a_slot_is_48_bytes_with_its_cycles() {
+        //the cycles fill padding the instruction, its index and its size left
+        assert_eq!(std::mem::size_of::<Slot>(), 48);
     }
 
     #[test]

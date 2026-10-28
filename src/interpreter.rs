@@ -52,6 +52,7 @@ use crate::machine::decode::{self, Decoded};
 use crate::machine::exception::{self, Frame};
 use crate::machine::interrupts::{self, DeviceEvent, MachineState};
 use crate::machine::memory_map::{Kinds, MemoryMap, Verdict};
+use crate::machine::timing;
 use crate::machine::{disassemble, Processor};
 use crate::{c_runtime, charset};
 use crate::{
@@ -60,7 +61,7 @@ use crate::{
         PokeWrite, Ran, MAX_INSTRUCTION_BYTES,
     },
     instructions::{
-        AddressWidth, Bytes, Condition, FileDialogMode, FileExistence, IndexRegister,
+        AddressWidth, BranchSize, Bytes, Condition, FileDialogMode, FileExistence, IndexRegister,
         InputSettings, Instruction, Interrupt, InterruptResult, KeyStateRequest, KeyStateResult,
         Operand, RegisterOperand, Sign, Size, SoundOutcome,
     },
@@ -346,7 +347,7 @@ impl Memory {
     /// [`AssembledInstruction`] the Assembler built, so that assembled code is
     /// never decoded at run time, but for those the memory map checks at every
     /// fetch ([`keeps`](Memory::keeps)). Their bytes are already in memory.
-    pub fn load_code(&mut self, instructions: &[AssembledInstruction]) {
+    pub fn load_code(&mut self, instructions: &[AssembledInstruction], processor: Processor) {
         for (index, instruction) in instructions.iter().enumerate() {
             let address = instruction.address & ADDRESS_MASK;
             if !self.keeps(address, instruction.size) {
@@ -354,7 +355,7 @@ impl Memory {
             }
             self.cache.store(
                 address,
-                Slot::assembled(instruction.instruction, instruction.size, index),
+                Slot::assembled(instruction.instruction, instruction.size, index, processor),
             );
         }
     }
@@ -1095,10 +1096,9 @@ pub enum RuntimeError {
     /// EASy68K, so a program can handle it. One of EASy68K's own tasks that a
     /// page in a browser cannot do faithfully ends the program with no
     /// exception: the printer (10), the text window's font and contents (21,
-    /// 22, 25), the cycle counter (30, 31), the hardware window (32 with 0 to
-    /// 3 or 7 in `D1.B`, which show it and answer its devices' addresses), the
-    /// serial ports (40 to 43) and the network (100 to 107). The host says why
-    /// from the number.
+    /// 22, 25), the hardware window (32 with 0 to 3 or 7 in `D1.B`, which show
+    /// it and answer its devices' addresses), the serial ports (40 to 43) and
+    /// the network (100 to 107). The host says why from the number.
     UnsupportedTrapTask {
         /// The task, D0.B.
         task: u8,
@@ -1650,6 +1650,16 @@ pub struct Interpreter {
     watched_writes: Vec<WatchedWrite>,
     /// How many instructions have run since the Interpreter was made.
     executed_instructions: u64,
+    /// [`executed_instructions`](Interpreter::executed_instructions) when the
+    /// limited run in progress, or the last one, started: what its limit,
+    /// which counts instructions, is measured from once its steps run out
+    /// ([`took_irqs`](Interpreter::took_irqs)). A field and not a local, so
+    /// that the run loops keep no more in registers than their count of steps.
+    limited_run_start: u64,
+    /// The cycle counter: the 68000's clock cycles the program has taken
+    /// since it started, or since task 30 last cleared it
+    /// ([`timing`](crate::machine::timing)). Each step journals it.
+    cycles: u64,
     /// The code write of the instruction that has just run, if it made one.
     code_write: Option<CodeWrite>,
     /// Whether the run in progress stops after a code write: set by
@@ -1694,7 +1704,7 @@ impl Interpreter {
             panic!("Error preparing memory: {:?}", e);
         }
         memory.set_map(program.memory_map());
-        memory.load_code(program.instructions());
+        memory.load_code(program.instructions(), program.processor());
         let mut interpreter = Self::with_memory(program, memory, options);
         if interpreter.ends_at_pc() {
             interpreter.terminate(Termination::EndOfProgram {
@@ -1730,6 +1740,8 @@ impl Interpreter {
             watched: WatchedRange::default(),
             watched_writes: Vec::new(),
             executed_instructions: 0,
+            limited_run_start: 0,
+            cycles: 0,
             code_write: None,
             stop_on_code_write: false,
             takes_trace: true,
@@ -2005,7 +2017,11 @@ impl Interpreter {
         if self.memory.fetch_fault(pc, decoded.size as usize).is_some() {
             return cache::EMPTY;
         }
-        let slot = Slot::decoded(decoded, self.is_an_end(pc, &decoded));
+        let slot = Slot::decoded(
+            decoded,
+            self.is_an_end(pc, &decoded),
+            self.program.processor(),
+        );
         if self.memory.keeps(pc, decoded.size as usize) {
             self.memory.cache.store(pc, slot);
         }
@@ -2143,6 +2159,7 @@ impl Interpreter {
                 pc,
                 self.cpu.ccr,
                 self.cpu.get_sr(),
+                self.cycles,
                 old_status,
             );
         }
@@ -2169,6 +2186,7 @@ impl Interpreter {
         self.increment_pc(slot.size());
         self.executing = true;
         self.executed_instructions += 1;
+        self.cycles += slot.cycles();
         let watched = self.watched_writes.len();
         //T as it was before the instruction, which is what decides a trace exception after it
         let traced = self.cpu.is_tracing();
@@ -2187,8 +2205,8 @@ impl Interpreter {
         self.executing = self.status == InterpreterStatus::Interrupt;
         self.take_code_write();
         if self.keep_history {
-            self.debugger.set_new_ccr(self.cpu.ccr);
-            self.debugger.set_new_sr(self.cpu.get_sr());
+            self.debugger
+                .set_new_state(self.cpu.ccr, self.cpu.get_sr(), self.cycles);
         }
         executed?;
         self.stop_for_the_host(watched);
@@ -2330,11 +2348,14 @@ impl Interpreter {
                 pc,
                 self.cpu.ccr,
                 self.cpu.get_sr(),
+                self.cycles,
                 self.status,
             );
         }
         self.code_write = None;
         self.executing = true;
+        //the acknowledge, the frame and the handler's first fetch, whatever the vector holds
+        self.cycles += timing::IRQ;
         let watched = self.watched_writes.len();
         let vector = interrupts::autovector(level);
         let taken = self.take_exception(
@@ -2354,8 +2375,8 @@ impl Interpreter {
         self.executing = false;
         self.take_code_write();
         if self.keep_history {
-            self.debugger.set_new_ccr(self.cpu.ccr);
-            self.debugger.set_new_sr(self.cpu.get_sr());
+            self.debugger
+                .set_new_state(self.cpu.ccr, self.cpu.get_sr(), self.cycles);
         }
         taken?;
         self.stop_for_the_host(watched);
@@ -2416,6 +2437,7 @@ impl Interpreter {
         let Some(vector) = exception::vector_of(&error) else {
             return Err(self.end_with_an_exception(error, None));
         };
+        self.charge_exception(&error, vector, instruction);
         let frame = self.frame_of(&error, vector, instruction, at);
         self.take_exception(vector, frame, error, at)?;
         if traced && exception::group(vector) == exception::Group::Two {
@@ -2424,16 +2446,49 @@ impl Interpreter {
         Ok(())
     }
 
+    /// The cycles of a step whose instruction raised `error`, the exception
+    /// through `vector`: the time [`timing::exception`] gives replaces the
+    /// instruction's, whose base the step has added. An instruction adds what
+    /// its data costs only once nothing can fault any more, so the base is
+    /// all there is to take back. An instruction that could not be fetched
+    /// added nothing.
+    fn charge_exception(
+        &mut self,
+        error: &RuntimeError,
+        vector: u8,
+        instruction: Option<&Instruction>,
+    ) {
+        let base = instruction.map_or(0, |instruction| {
+            timing::base(instruction, self.program.processor()) as u64
+        });
+        //which of the two operands in memory of `addx`, `subx` or `cmpm` faulted: the source,
+        //read first, when its register is odd, which its decrement or increment of a word or a
+        //long leaves it
+        let source_faulted = match instruction {
+            Some(
+                Instruction::ADDX(Operand::PreIndirect(register), ..)
+                | Instruction::SUBX(Operand::PreIndirect(register), ..)
+                | Instruction::CMPM(Operand::PostIndirect(register), ..),
+            ) => self.get_register_value(RegisterOperand::Address(*register), Size::Long) & 1 != 0,
+            _ => false,
+        };
+        let taken = timing::exception(error, vector, instruction, source_faulted);
+        self.cycles = self.cycles.wrapping_sub(base).wrapping_add(taken);
+    }
+
     /// The trace exception after an instruction that started with T set, or,
     /// for one waiting on the host, after its answer.
     fn trace_after_instruction(&mut self) -> RuntimeResult<()> {
         match self.status {
-            InterpreterStatus::Running => self.take_exception(
-                exception::TRACE,
-                Frame::Short { pc: self.pc as u32 },
-                RuntimeError::Trace,
-                self.current_instruction_address,
-            ),
+            InterpreterStatus::Running => {
+                self.cycles += timing::TRACE;
+                self.take_exception(
+                    exception::TRACE,
+                    Frame::Short { pc: self.pc as u32 },
+                    RuntimeError::Trace,
+                    self.current_instruction_address,
+                )
+            }
             InterpreterStatus::Interrupt => {
                 self.trace_after_answer = true;
                 Ok(())
@@ -2841,6 +2896,7 @@ impl Interpreter {
                     self.inactive_stack_top = inactive;
                 }
                 self.pc = step.get_pc();
+                self.cycles = step.get_old_cycles();
                 //the whole status register, which is the condition codes and the system byte
                 //`move #n,sr`, an exception and `rte` can have changed. It is written back
                 //without moving a stack pointer: every change of S journaled both of them, and
@@ -3052,6 +3108,7 @@ impl Interpreter {
             self.pc,
             Flags::from_ccr_byte(opened_with as u8),
             opened_with,
+            self.cycles,
             opened_in,
         );
         for mutation in mutations {
@@ -3061,8 +3118,8 @@ impl Interpreter {
             self.debugger.record_stack_tops(tops);
         }
         self.debugger.set_writes(writes);
-        self.debugger.set_new_ccr(self.cpu.ccr);
-        self.debugger.set_new_sr(self.cpu.get_sr());
+        self.debugger
+            .set_new_state(self.cpu.ccr, self.cpu.get_sr(), self.cycles);
         Ok(true)
     }
 
@@ -3098,12 +3155,40 @@ impl Interpreter {
 
     /// How many instructions have run since the Interpreter was made, each
     /// counted once as it starts, the one that failed or raised an interrupt
-    /// included. Undo does not take them back: this is the work done, which is
-    /// what a host that splits a run in slices needs, since a run that stops
-    /// early, at an interrupt, a pause or a watched write, says nothing of how
-    /// far it got.
+    /// included. An IRQ taken is a step of the history and no instruction, and
+    /// is not counted, and neither is a Poke. Undo does not take them back:
+    /// this is the work done, which is what a host that splits a run in slices
+    /// needs, since a run that stops early, at an interrupt, a pause or a
+    /// watched write, says nothing of how far it got. The limit of
+    /// [`run_with_limit`](Interpreter::run_with_limit) and
+    /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints) counts the
+    /// same instructions, so the two agree.
     pub fn get_executed_instructions(&self) -> u64 {
         self.executed_instructions
+    }
+
+    /// The cycle counter: the clock cycles of a 68000 the program has taken
+    /// since it started, or since task 30 last cleared it, counted with the
+    /// 68000's timing ([`timing`]): each instruction, each exception and each
+    /// IRQ, `trap #15`'s tasks taking none. Undo takes a step's cycles back,
+    /// as each step journals the counter.
+    pub fn get_cycles(&self) -> u64 {
+        self.cycles
+    }
+
+    /// Sets the cycle counter, for a test that needs it past 32 bits.
+    #[cfg(test)]
+    pub(crate) fn preset_cycles(&mut self, cycles: u64) {
+        self.cycles = cycles;
+    }
+
+    /// Clears the cycle counter, as task 30 does: the step that clears it
+    /// still costs what it took before and after the clear.
+    fn clear_cycles(&mut self) {
+        if self.keep_history {
+            self.debugger.record_cycles_cleared(self.cycles);
+        }
+        self.cycles = 0;
     }
 
     /// Stops watching, and forgets the writes recorded and not taken.
@@ -3214,6 +3299,7 @@ impl Interpreter {
         //exception is its step's, and a vector 9 with no handler ends the program there
         if std::mem::take(&mut self.trace_after_answer) && !terminates {
             self.status = InterpreterStatus::Running;
+            self.cycles += timing::TRACE;
             let traced = self.take_exception(
                 exception::TRACE,
                 Frame::Short { pc: self.pc as u32 },
@@ -3221,8 +3307,8 @@ impl Interpreter {
                 self.current_instruction_address,
             );
             if self.keep_history {
-                self.debugger.set_new_ccr(self.cpu.ccr);
-                self.debugger.set_new_sr(self.cpu.get_sr());
+                self.debugger
+                    .set_new_state(self.cpu.ccr, self.cpu.get_sr(), self.cycles);
             }
             if traced.is_err() {
                 self.executing = false;
@@ -3827,6 +3913,7 @@ impl Interpreter {
                 };
                 self.set_compare_flags(result as u32, Size::Long, false, false);
                 self.set_register_value(*dest, result as u32, Size::Long);
+                self.cycles += timing::multiply(source_value as u16, *sign);
             }
 
             //the target is kept as an address, so the size of the displacement does not matter here
@@ -3908,6 +3995,7 @@ impl Interpreter {
                 let mask = self.set_bit_test_flags(source_value, limited_bit, size);
                 let source_value = (source_value & !mask) | (!(source_value & mask) & mask);
                 self.store_operand_value(dest, source_value, size, Used::Twice)?;
+                self.bit_cycles(dest, limited_bit);
             }
             Instruction::BCLR(bit_source, dest) => {
                 let bit = self.get_operand_value(bit_source, Size::Byte, Used::Once)?;
@@ -3920,6 +4008,7 @@ impl Interpreter {
                 let mask = self.set_bit_test_flags(src_val, limited_bit, size);
                 let src_val = src_val & !mask;
                 self.store_operand_value(dest, src_val, size, Used::Twice)?;
+                self.bit_cycles(dest, limited_bit);
             }
             Instruction::BSET(bit_source, dest) => {
                 let bit = self.get_operand_value(bit_source, Size::Byte, Used::Once)?;
@@ -3932,6 +4021,7 @@ impl Interpreter {
                 let mask = self.set_bit_test_flags(value, limited_bit, size);
                 let value = value | mask;
                 self.store_operand_value(dest, value, size, Used::Twice)?;
+                self.bit_cycles(dest, limited_bit);
             }
 
             Instruction::BTST(bit, op2) => {
@@ -3970,6 +4060,7 @@ impl Interpreter {
                 } else {
                     self.set_flag(Flags::Carry, false);
                 }
+                self.shift_cycles(dest, amount_value);
             }
             Instruction::LSd(amount_source, dest, direction, size) => {
                 let amount = self.get_operand_value(amount_source, *size, Used::Once)? % 64;
@@ -3987,6 +4078,7 @@ impl Interpreter {
                 } else {
                     self.set_flag(Flags::Carry, false);
                 }
+                self.shift_cycles(dest, amount);
             }
             Instruction::ROd(amount, dest, direction, size) => {
                 let count = self.get_operand_value(amount, *size, Used::Once)? % 64;
@@ -4000,6 +4092,7 @@ impl Interpreter {
                 if carry {
                     self.set_flag(Flags::Carry, true);
                 }
+                self.shift_cycles(dest, count);
             }
 
             // A rotation through the extend flag: nine, seventeen or
@@ -4019,6 +4112,7 @@ impl Interpreter {
                 self.set_logic_flags(value, *size);
                 self.set_flag(Flags::Extend, extend);
                 self.set_flag(Flags::Carry, extend);
+                self.shift_cycles(dest, count);
             }
             Instruction::AND(source, dest, size) => {
                 let source_value = self.get_operand_value(source, *size, Used::Once)?;
@@ -4127,6 +4221,7 @@ impl Interpreter {
                 }
                 let dest_value = self.get_register_value(*dest, Size::Long);
                 let dest_value = get_value_sized(dest_value, Size::Long);
+                self.cycles += timing::divide(dest_value, source_value as u16, *sign);
                 let (remainder, quotient, has_overflowed) = match sign {
                     Sign::Signed => {
                         //in 64 bits, as `$80000000 / -1` overflows 32 and would panic: it is an
@@ -4227,12 +4322,17 @@ impl Interpreter {
                 let overflow = has_sub_overflowed(dest_value, source_value, result, *size);
                 self.set_compare_flags(result, *size, carry, overflow);
             }
-            Instruction::Bcc(address, condition, _) => {
-                if self.get_condition_value(condition) {
+            //a short branch takes two cycles more when it branches, a word one when it does not
+            Instruction::Bcc(address, condition, size) => {
+                let taken = self.get_condition_value(condition);
+                if taken {
                     if *address & 1 != 0 {
                         return Err(Self::jump_to_an_odd_address(*address));
                     }
                     self.pc = *address as usize;
+                }
+                if taken == (*size == BranchSize::Short) {
+                    self.cycles += timing::BRANCH_EXTRA;
                 }
             }
             //the 68000 reads the destination before it clears it, which is the access an odd address
@@ -4248,6 +4348,9 @@ impl Interpreter {
             Instruction::Scc(op, condition) => {
                 if self.get_condition_value(condition) {
                     self.store_operand_value(op, 0xFF, Size::Byte, Used::Once)?;
+                    if let Operand::Register(_) = op {
+                        self.cycles += timing::SCC_TRUE;
+                    }
                 } else {
                     self.store_operand_value(op, 0x00, Size::Byte, Used::Once)?;
                 }
@@ -4263,7 +4366,11 @@ impl Interpreter {
                     self.set_register_value(*reg, next as u32, Size::Word);
                     if next != -1 {
                         self.pc = *address as usize;
+                    } else {
+                        self.cycles += timing::DBCC_EXPIRED;
                     }
+                } else {
+                    self.cycles += timing::DBCC_CONDITION_TRUE;
                 }
             }
             //the register is read before the stack pointer moves, so `link a7,#n` pushes A7 as it
@@ -4491,7 +4598,7 @@ impl Interpreter {
             }
             Instruction::STOP(value) => self.stop(*value)?,
             //asserts the reset line, and there are no devices behind it, so its only effect is
-            //its time, `interrupts::RESET_CYCLES`, which the cycle counter will count
+            //its time, `timing::RESET_CYCLES`, which its slot's base time holds
             Instruction::RESET => {
                 self.check_privilege()?;
             }
@@ -4876,6 +4983,17 @@ impl Interpreter {
                 Ok(None)
             }
             50..=59 => self.file_task(task),
+            //the cycle counter: cleared, and read into D1.L, which is 0 once it no longer fits,
+            //as EASy68K reads it (`CODE9.CPP`)
+            30 => {
+                self.clear_cycles();
+                Ok(None)
+            }
+            31 => {
+                let cycles = u32::try_from(self.cycles).unwrap_or(0);
+                self.set_register_value(RegisterOperand::Data(1), cycles, Size::Long);
+                Ok(None)
+            }
             32 => self.hardware_task().map(|()| None),
             60 => {
                 let d1 = self.cpu.d_reg[1].get_long();
@@ -5379,6 +5497,24 @@ impl Interpreter {
         Ok(())
     }
 
+    /// The extra cycles of a shift or a rotate of a data register by `count`
+    /// bits, its count mod 64; one of memory moves one bit in its base time.
+    #[inline(always)]
+    fn shift_cycles(&mut self, operand: &Operand, count: u32) {
+        if let Operand::Register(_) = operand {
+            self.cycles += timing::SHIFT_PER_BIT * count as u64;
+        }
+    }
+
+    /// The extra cycles of `bchg`, `bclr` or `bset` on `bit` of `operand`:
+    /// a bit above 15 of a data register, whose number is taken mod 32.
+    #[inline(always)]
+    fn bit_cycles(&mut self, operand: &Operand, bit: u32) {
+        if matches!(operand, Operand::Register(_)) && bit % 32 >= 16 {
+            self.cycles += timing::HIGH_BIT;
+        }
+    }
+
     /**
     Some instructions limit inputs to 8 bits if the destination is
     not a register.
@@ -5811,7 +5947,8 @@ impl Interpreter {
     /// interrupt, a store into the watched range, a write into code when
     /// `options` asks for it, or `limit` instructions. Calling it while
     /// paused, after a watched write or after a code write, resumes the
-    /// Program.
+    /// Program. The limit counts instructions and not the IRQs taken on the
+    /// way, as [`run_with_limit`](Interpreter::run_with_limit)'s does.
     ///
     /// With [`stop_on_code_write`](RunOptions::stop_on_code_write), the run
     /// stops after an instruction that wrote into code, with
@@ -5876,8 +6013,9 @@ impl Interpreter {
         }
         let addresses = self.get_breakpoint_addresses(breakpoints);
         let limit = limit.unwrap_or(usize::MAX);
-        let mut limit_counter = limit;
+        self.limited_run_start = self.executed_instructions;
         let resuming_after_pause = self.is_resumable_stop();
+        let mut limit_counter = limit;
         let mut iterations = 0;
         while (self.status == InterpreterStatus::Running
             || (resuming_after_pause && iterations == 0))
@@ -5900,31 +6038,90 @@ impl Interpreter {
             limit_counter -= 1;
             iterations += 1;
         }
-        //the end the last step reached, which no next step's fetch has found
-        if iterations > 0 {
-            self.end_if_reached();
+        //a breakpoint leaves steps over, and the run ends there
+        if limit_counter == 0 && self.took_irqs(limit) {
+            return self.run_to_breakpoints_after_irqs(&addresses, limit, iterations);
         }
-        //a stop the last instruction the limit allows made is reported, not the limit: the
-        //host has an interrupt to answer, a pause or a watched write to see, or an end
-        let stopped = iterations > 0 && self.status != InterpreterStatus::Running;
-        if limit_counter == 0 && !stopped {
-            return Err(RuntimeError::ExecutionLimit(limit));
+        self.end_of_a_limited_run(limit, iterations)
+    }
+
+    /// The steps of a run to breakpoints, until it stops, reaches one, or
+    /// has taken `limit_counter` steps, which it counts down while it counts
+    /// `iterations` up: answers the two as they end.
+    #[inline(always)]
+    fn run_to_a_breakpoint(
+        &mut self,
+        addresses: &HashSet<usize>,
+        skip_breakpoint_at_pc: bool,
+        resuming_after_pause: bool,
+        mut limit_counter: usize,
+        mut iterations: usize,
+    ) -> RuntimeResult<(usize, usize)> {
+        while (self.status == InterpreterStatus::Running
+            || (resuming_after_pause && iterations == 0))
+            && limit_counter > 0
+        {
+            let at_starting_pc = iterations == 0;
+            //an IRQ ready is the next step, before the breakpoint here: the next instruction
+            //to run is its handler's
+            if !(at_starting_pc && skip_breakpoint_at_pc)
+                && addresses.contains(&(self.pc & ADDRESS_MASK))
+                && !self.irq_ready
+            {
+                //a run that stops on a breakpoint is running, not paused: the status a
+                //`simhalt` left behind belongs to the halt, not to the breakpoint the resumed
+                //run stopped at
+                self.status = InterpreterStatus::Running;
+                break;
+            }
+            self.run_step()?;
+            limit_counter -= 1;
+            iterations += 1;
         }
-        Ok(self.status)
+        Ok((limit_counter, iterations))
+    }
+
+    /// A run to breakpoints whose steps ran out with IRQs among them, which
+    /// ran no instruction: it goes on in rounds of the instructions left
+    /// ([`took_irqs`](Interpreter::took_irqs)).
+    #[cold]
+    #[inline(never)]
+    fn run_to_breakpoints_after_irqs(
+        &mut self,
+        addresses: &HashSet<usize>,
+        limit: usize,
+        mut iterations: usize,
+    ) -> RuntimeResult<InterpreterStatus> {
+        loop {
+            let left = limit - self.ran_in_limited_run();
+            let limit_counter;
+            (limit_counter, iterations) =
+                self.run_to_a_breakpoint(addresses, false, false, left, iterations)?;
+            //a breakpoint leaves steps over, and the run ends there
+            if limit_counter > 0 || !self.took_irqs(limit) {
+                return self.end_of_a_limited_run(limit, iterations);
+            }
+        }
     }
 
     /// Runs until `simhalt`, the end of the program, an interrupt, a store into
     /// the watched range, a `stop` with no IRQ to wake it or `limit` steps,
     /// which answers the [`ExecutionLimit`](RuntimeError::ExecutionLimit) only
     /// when the last of them stopped nothing, as
-    /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints) does. An IRQ
-    /// taken is one of the `limit` steps, as it is a step of the history, and
-    /// no instruction of [`get_executed_instructions`](Interpreter::get_executed_instructions).
+    /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints) does.
+    ///
+    /// The limit counts instructions, as
+    /// [`get_executed_instructions`](Interpreter::get_executed_instructions)
+    /// does, so that a host that runs in slices and measures each by that count
+    /// gets the slice it asked for: an IRQ taken on the way is a step of the
+    /// history but runs no instruction, and is not one of the `limit`. It
+    /// cannot keep a run from ending, since its handler runs an instruction
+    /// before the same level can be taken again.
+    ///
     /// It never stops for a code write; `run_with_breakpoints` with no
     /// breakpoint and [`RunOptions::stopping_on_code_writes`] is the limited run
     /// that does.
     pub fn run_with_limit(&mut self, limit: usize) -> RuntimeResult<InterpreterStatus> {
-        let mut limit_counter = limit;
         self.verify_can_run()?;
         if self.is_resumable_stop() && self.ends_next() {
             self.terminate(Termination::EndOfProgram {
@@ -5932,8 +6129,10 @@ impl Interpreter {
             });
             return Ok(self.status);
         }
+        self.limited_run_start = self.executed_instructions;
         let resuming_after_pause = self.is_resumable_stop();
         let mut iterations = 0;
+        let mut limit_counter = limit;
         while (self.status == InterpreterStatus::Running
             || (resuming_after_pause && iterations == 0))
             && limit_counter > 0
@@ -5942,6 +6141,65 @@ impl Interpreter {
             limit_counter -= 1;
             iterations += 1;
         }
+        if limit_counter == 0 && self.took_irqs(limit) {
+            return self.run_after_irqs(limit, iterations);
+        }
+        self.end_of_a_limited_run(limit, iterations)
+    }
+
+    /// A limited run whose steps ran out with IRQs among them, which ran no
+    /// instruction: it goes on in rounds of the instructions left
+    /// ([`took_irqs`](Interpreter::took_irqs)).
+    #[cold]
+    #[inline(never)]
+    fn run_after_irqs(
+        &mut self,
+        limit: usize,
+        mut iterations: usize,
+    ) -> RuntimeResult<InterpreterStatus> {
+        loop {
+            let mut limit_counter = limit - self.ran_in_limited_run();
+            while self.status == InterpreterStatus::Running && limit_counter > 0 {
+                self.run_step()?;
+                limit_counter -= 1;
+                iterations += 1;
+            }
+            if limit_counter > 0 || !self.took_irqs(limit) {
+                return self.end_of_a_limited_run(limit, iterations);
+            }
+        }
+    }
+
+    /// Whether a limited run whose steps have run out ran fewer than its
+    /// `limit` instructions, which the IRQs it took did, and so goes on while
+    /// it runs.
+    ///
+    /// The run loops count steps down in a register, as they always have, so
+    /// that a step pays nothing for the limit being one of instructions: it is
+    /// counted in instructions only here, when the steps run out, and an IRQ
+    /// taken, which was a step and no instruction, is given back by another
+    /// round. A run that takes no IRQ has one round.
+    #[inline(always)]
+    fn took_irqs(&self, limit: usize) -> bool {
+        self.status == InterpreterStatus::Running && self.ran_in_limited_run() < limit
+    }
+
+    /// The instructions the limited run in progress has run.
+    #[inline(always)]
+    fn ran_in_limited_run(&self) -> usize {
+        (self.executed_instructions - self.limited_run_start) as usize
+    }
+
+    /// The end of a run limited to `limit` instructions, which took
+    /// `iterations` steps: the end of the
+    /// program the last step reached, and the status, or the
+    /// [`ExecutionLimit`](RuntimeError::ExecutionLimit) when the instructions
+    /// have all run and the program would run on.
+    fn end_of_a_limited_run(
+        &mut self,
+        limit: usize,
+        iterations: usize,
+    ) -> RuntimeResult<InterpreterStatus> {
         //the end the last step reached, which no next step's fetch has found
         if iterations > 0 {
             self.end_if_reached();
@@ -5949,7 +6207,7 @@ impl Interpreter {
         //a stop the last instruction the limit allows made is reported, not the limit: the
         //host has an interrupt to answer, a pause or a watched write to see, or an end
         let stopped = iterations > 0 && self.status != InterpreterStatus::Running;
-        if limit_counter == 0 && !stopped {
+        if self.ran_in_limited_run() >= limit && !stopped {
             return Err(RuntimeError::ExecutionLimit(limit));
         }
         Ok(self.status)
@@ -6276,6 +6534,10 @@ impl Interpreter {
     /// as a number, exact up to 2^53.
     pub fn wasm_get_executed_instructions(&self) -> f64 {
         self.get_executed_instructions() as f64
+    }
+    /// [`get_cycles`](Interpreter::get_cycles), as a `bigint`.
+    pub fn wasm_get_cycles(&self) -> u64 {
+        self.get_cycles()
     }
     pub fn wasm_get_status(&self) -> InterpreterStatus {
         *self.get_status()

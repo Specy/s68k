@@ -2,14 +2,16 @@
 //! reason for every entry (ADR 0010; the asm-editor's
 //! `docs/design/m68k-machine-plan.md`, planning decision 6).
 //!
-//! The machine has no cycle counter yet, so the length of a test is not
-//! compared, and an entry that waits for a milestone of the plan names it
-//! with an [`Until`]: the milestone deletes every line of [`SKIPS`] and
-//! [`MUSASHI`] that names it, and C9 turns [`CHECK_LENGTH`] on. An entry
-//! marked [`Until::Never`] is a choice of s68k's and stays. Milestone C6,
-//! exceptions, deleted its lines: every exception the suite takes, its address
-//! errors among them, is checked. Milestone C8, interrupts, deleted those of
-//! `stop` and `reset`, whose files are checked whole.
+//! An entry that waits for a milestone of the plan names it with an
+//! [`Until`]: the milestone deletes every line of [`SKIPS`] and [`MUSASHI`]
+//! that names it. An entry marked [`Until::Never`] is a choice of s68k's and
+//! stays. Milestone C6, exceptions, deleted its lines: every exception the
+//! suite takes, its address errors among them, is checked. Milestone C8,
+//! interrupts, deleted those of `stop` and `reset`, whose files are checked
+//! whole. Milestone C9, cycles, turned [`CHECK_LENGTH`] on: every test's
+//! length in cycles is compared, those of `tas` and `trapv` included, whose
+//! relaxations it deleted, as the 68000's times agree with the suite's on all
+//! 2,500 of each though the suite does not vouch for them.
 //!
 //! A **skip** leaves a test out. A **relaxation** runs it and compares less,
 //! for the suite's own documented errata; every relaxation is one line of
@@ -20,8 +22,6 @@ use super::suite::{Kind, Test};
 /// The milestone whose work makes a skip unnecessary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Until {
-    /// Cycles.
-    C9,
     /// Never: s68k means to differ here.
     Never,
 }
@@ -57,8 +57,8 @@ pub const SKIPS: &[Skip] = &[
 pub enum Relax {
     /// The SR bits of `mask` are not compared for these files.
     Flags { files: &'static [&'static str], mask: u16 },
-    /// The length in cycles is not compared for these files, when
-    /// [`CHECK_LENGTH`] is on.
+    /// The length in cycles is not compared for these files. No file needs
+    /// it since C9.
     Length { files: &'static [&'static str] },
     /// Memory the test does not list reads as zero: `Memory::zeroed`.
     ZeroMemory,
@@ -79,11 +79,9 @@ const N_AND_V: u16 = 0x000A;
 /// The relaxations, one erratum each.
 #[rustfmt::skip]
 pub const RELAXATIONS: &[Relaxation] = &[
-    Relaxation { relax: Relax::NoTrace, source: "about half the initial states set T, and the final state is the one before the trace exception (suite issue #2); snow masks trace the same way" },
+    Relaxation { relax: Relax::NoTrace, source: "about half the initial states set T, and the final state and the length are the ones before the trace exception (suite issue #2); snow masks trace the same way" },
     Relaxation { relax: Relax::ZeroMemory, source: "MOVE.b and MOVEP list bytes they never wrote, as zeros, in the final RAM (suite issue #1); memory starts as zeros, as in the generator" },
     Relaxation { relax: Relax::Flags { files: &["ABCD", "SBCD", "NBCD"], mask: N_AND_V }, source: "N and V are undefined for the BCD instructions (Programmer's Reference Manual), and s68k leaves them as they were; m68k-rs masks them too" },
-    Relaxation { relax: Relax::Length { files: &["TAS"] }, source: "the suite's README: TAS does not have the 5-cycle read-modify-write timing" },
-    Relaxation { relax: Relax::Length { files: &["TRAPV"] }, source: "the suite's README: its TRAPV tests are not verified; measured on all 2,500, vector 7 is taken exactly when V is set, in either mode, so only the length is distrusted" },
 ];
 
 /// Files with failures the conformance work has found and not fixed yet: a
@@ -94,9 +92,11 @@ pub const RELAXATIONS: &[Relaxation] = &[
 pub const KNOWN_FAILURES: &[(&str, &str)] = &[
 ];
 
-/// Whether a test's length in cycles is compared. s68k counts no cycles
-/// before C9, which turns this on.
-pub const CHECK_LENGTH: bool = false;
+/// Whether a test's length in cycles is compared with the cycles the step
+/// took ([`Interpreter::get_cycles`]), which milestone C9 turned on.
+///
+/// [`Interpreter::get_cycles`]: crate::interpreter::Interpreter::get_cycles
+pub const CHECK_LENGTH: bool = true;
 
 /// Musashi's self-checking programs left out, by the name of their `.s`.
 #[rustfmt::skip]

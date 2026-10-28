@@ -1082,13 +1082,51 @@ setter.dispose()
 setting.program.dispose()
 
 // ---------------------------------------------------------------------------
+// The cycle counter, tasks 30 and 31, and undo
+// ---------------------------------------------------------------------------
+
+const counting = S68k.assemble(`
+    ORG $1000
+START:
+    moveq   #1,d1           ; 4 cycles
+    mulu    d1,d1           ; 38, and 2 for the one bit of its source
+    moveq   #31,d0
+    trap    #15             ; task 31 reads the counter into D1.L, and takes nothing
+    moveq   #30,d0
+    trap    #15             ; task 30 clears it
+    nop
+    SIMHALT
+    END     START
+`)
+const counter = new Interpreter(counting.program)
+assert.equal(counter.getCycles(), 0n, 'a bigint, 0 before the first step')
+counter.step()
+counter.step()
+assert.equal(counter.getCycles(), 44n)
+assert.equal(counter.getUndoHistory(1)[0].cycles, 40, 'each step says what it took')
+counter.step()
+counter.step()
+assert.equal(counter.getRegisterValue({type: 'Data', value: 1}), 48, 'task 31 read the counter')
+assert.equal(counter.getUndoHistory(1)[0].cycles, 0, 'a trap #15 task takes nothing')
+counter.step()
+counter.step()
+assert.equal(counter.getCycles(), 0n, 'task 30 cleared it')
+counter.step()
+assert.equal(counter.getCycles(), 4n)
+counter.undo()
+counter.undo()
+assert.equal(counter.getCycles(), 52n, 'undo puts back what task 30 cleared')
+counter.dispose()
+counting.program.dispose()
+
+// ---------------------------------------------------------------------------
 // Errors are typed, a failing task ends the program, and nothing panics
 // ---------------------------------------------------------------------------
 
 const failing = S68k.assemble(`
     ORG $1000
 START:
-    move.b  #30,d0          ; the cycle counter
+    move.b  #10,d0          ; the printer
     trap    #15
     nop
     END     START
@@ -1096,13 +1134,13 @@ START:
 const failer = new Interpreter(failing.program)
 assert.throws(
     () => failer.run(),
-    (error) => error.type === 'UnsupportedTrapTask' && error.value.task === 30
+    (error) => error.type === 'UnsupportedTrapTask' && error.value.task === 10
 )
 assert.equal(failer.getStatus(), InterpreterStatus.TerminatedWithException)
 assert.ok(failer.hasTerminated())
 assert.deepEqual(
     failer.getTermination(),
-    {type: 'Exception', value: {cause: {type: 'UnsupportedTrapTask', value: {task: 30}}}},
+    {type: 'Exception', value: {cause: {type: 'UnsupportedTrapTask', value: {task: 10}}}},
     'one of EASy68K\'s own tasks, refused, has no vector'
 )
 failer.undo()
@@ -1114,7 +1152,7 @@ assert.throws(() => failer.getRegisterValue({type: 'Data', value: 9}), (error) =
 assert.throws(() => failer.getCpuSnapshot().getRegister(8, RegisterType.Address), (error) => error.type === 'InvalidArgument')
 assert.throws(() => failer.runWithBreakpoints([{line: 'x'}]), (error) => error.type === 'InvalidArgument')
 assert.deepEqual(Array.from(failer.readMemoryBytes(0x10, 0xffffffff)), [], 'a length near 4 GB reads nothing')
-assert.equal(failer.getRegisterValue({type: 'Data', value: 0}) & 0xff, 30, 'and it still answers')
+assert.equal(failer.getRegisterValue({type: 'Data', value: 0}) & 0xff, 10, 'and it still answers')
 failer.dispose()
 failing.program.dispose()
 

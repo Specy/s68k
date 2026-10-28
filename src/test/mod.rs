@@ -4,6 +4,7 @@
 mod assembled_as;
 mod conformance;
 mod corpus;
+mod cycles;
 mod decoded_instructions;
 mod diagnostics;
 mod encoding;

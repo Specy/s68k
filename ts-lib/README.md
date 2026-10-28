@@ -279,7 +279,7 @@ the status is `TerminatedWithException`, the error is thrown, and
 adds two errors of its own, which end the program:
 
 ```ts
-{type: 'UnsupportedTrapTask', value: {task: 30}}            // the cycle counter, the network; a number that is no task goes through vector 47 first
+{type: 'UnsupportedTrapTask', value: {task: 10}}            // the printer, the network; a number that is no task goes through vector 47 first
 {type: 'InvalidTrapArgument', value: {task: 15, reason: 'D2.B is 37, and a base is 2 to 36'}}
 
 interpreter.getTermination()
@@ -287,7 +287,7 @@ interpreter.getTermination()
 // {type: 'EndOfProgram', value: {address: 0x1012}} (it ran into memory it never placed),
 // {type: 'TerminatedByHost'} (a Terminate answer),
 // {type: 'Exception', value: {cause: {type: 'DivisionByZero'}, vector: 5}} (vector 5 holds no handler),
-// {type: 'Exception', value: {cause: {type: 'UnsupportedTrapTask', value: {task: 30}}}} (no vector could take it)
+// {type: 'Exception', value: {cause: {type: 'UnsupportedTrapTask', value: {task: 10}}}} (no vector could take it)
 // {type: 'Exception', value: {cause: {type: 'Irq', value: {level: 2}}, vector: 26}} (an IRQ whose autovector holds no handler)
 // or {type: 'Halted', value: {cause, vector}} (a frame pushed on an odd supervisor stack pointer
 // or into memory the memory map refuses, or a vector read from an invalid range)
@@ -305,9 +305,8 @@ fetched from an odd address, or a jump to one, is an `AddressError`.
 
 Undoing the step that ended the program brings it back, running. The tasks s68k
 does not carry out are the printer (10), the text window's font and contents
-(21, 22, 25), the cycle counter (30, 31), the hardware window (32 with 0 to 3 or
-7 in D1.B: there is no hardware window), the serial ports (40 to 43) and the
-network (100 to 107).
+(21, 22, 25), the hardware window (32 with 0 to 3 or 7 in D1.B: there is no
+hardware window), the serial ports (40 to 43) and the network (100 to 107).
 
 Where this departs from EASy68K:
 
@@ -600,12 +599,50 @@ program counter, as the handler's instruction is the next to run, so
 continuing from a breakpoint with a request pending runs the handler and stops
 at that breakpoint again.
 
+### Cycles
+
+The interpreter counts the clock cycles a 68000 takes: each instruction's own
+time from the 68000 User's Manual, with Yacht's corrections, checked against
+the conformance suite's length for every test, the data included (a multiply by
+the bits of its source, a division by its loop, a shift by its count, a branch
+taken or not, `movem` by its registers); each exception's, which is the step's
+whole time (34 for `trap #0` to `#14`, an illegal instruction or a privilege
+violation, 38 and the source's for a division by zero, an address error 58
+after what the instruction had done); 34 more for a trace exception; and 44
+for an IRQ. `trap #15`'s tasks take none, as in EASy68K, `stop` takes 4 and
+`reset` 132. There are no wait states, and the 68010 and the 68020 count as a
+68000 for now.
+
+```ts
+interpreter.getCycles()               // 1234n: a bigint, since the start or task 30
+interpreter.getUndoHistory(1)[0].cycles // 12: what the newest step took, 0 for a poke
+```
+
+Task 30 clears the counter and task 31 reads it into D1.L, 0 once it is past
+32 bits, as in EASy68K. Undo takes a step's cycles back, so the counter is
+always what the steps in force took. Where EASy68K counts differently, the
+68000 wins: a `trap` is 34 here and 38 there, a division by zero 38 and the
+source's effective address and not 42, `chk` 38 or 40 and the source's and not
+44, an IRQ 44 once and not 34 and 44 more when requested, an address error
+what the instruction had done and 58 and not 50, and `tst` of memory 4 and the
+effective address and not 4.
+
 ### Memory
 
 `Program` and `Interpreter` hold memory on the WebAssembly side, which garbage
 collection cannot reach. Call `dispose()` on both when a program is done with.
 `S68k.assemble` frees the assembly itself when the source did not build one, so
 live checking on every keystroke leaks nothing.
+
+## Migrating past 4.0.0: cycles
+
+The release with cycles (above, "Cycles") counts them, and carries out tasks
+30 and 31:
+
+| before | after |
+|---|---|
+| `UnsupportedTrapTask` for tasks 30 and 31 | 30 clears the counter, 31 reads it into D1.L |
+| | `getCycles(): bigint`, and each step's `cycles` |
 
 ## Migrating past 4.0.0: interrupts
 
@@ -619,6 +656,7 @@ The release with interrupts (above, "Interrupts") assembles and runs `stop` and
 | `UnsupportedTrapTask` for tasks 60 and 62, and for task 32 but its 5 | 60 and 62 set the mouse's and keyboard's levels; 32 answers the version for 4 and sets the timers for 6, and only 0 to 3 and 7 are refused |
 | `ExecutionStepKind` `'instruction' \| 'poke'` | and `'irq'` |
 | | `InterpreterStatus.Stopped`, numbered 7; `getMachineState()`, `raiseIrq(level)`, `deviceEvent(kind)`; the cause `Irq {level}` and the mutation `SetMachineState {old, new}` |
+| | the `limit` of `runWithLimit` and `runWithBreakpoints` counts instructions, as `getExecutedInstructions()` does, and an IRQ taken on the way is not one of them |
 
 ## Migrating past 4.0.0: exceptions
 

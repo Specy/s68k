@@ -138,8 +138,12 @@ What runs a Program: registers, memory, the step, run, undo and interrupt operat
 _Avoid_: emulator (that is the asm-editor's object around it), simulator, CPU
 
 **Execution step**:
-One entry of the Interpreter's history: an instruction that ran, a Poke, or an IRQ taken. It carries an id of its own, the mutations undo replays, the program counter and the status register before it, the Code write an instruction made, the words of the instruction it ran as they were then, so that it says what ran after a write has changed them, and says which of the three kinds it is. An IRQ's step runs no instruction and is on no line.
+One entry of the Interpreter's history: an instruction that ran, a Poke, or an IRQ taken. It carries an id of its own, the mutations undo replays, the program counter, the status register and the cycle counter before it, the Cycles it took, the Code write an instruction made, the words of the instruction it ran as they were then, so that it says what ran after a write has changed them, and says which of the three kinds it is. An IRQ's step runs no instruction and is on no line.
 _Avoid_: history entry, undo record
+
+**Cycle**:
+One clock cycle of the 68000, the unit of the time a program takes. Each instruction takes the 68000's own time, the time its data costs included (a multiply by the bits of its source, a division by its loop, a shift by its count, a branch taken or not), and so does each Exception, whose time replaces that of the instruction that raised it, and each IRQ: section 8 of the 68000 User's Manual with Yacht's corrections, checked against the Conformance suite's lengths. `trap #15`'s tasks take none, as in EASy68K. The cycle counter adds them up in 64 bits since the program started, or since task 30 cleared it; task 31 reads it. Each Execution step journals the counter and says what it took, so undo takes a step's Cycles back. The 68010 and the 68020 count as a 68000 until they have their own tables.
+_Avoid_: clock, tick, T-state (that is the Z80's word), time (a timer's interval is the host's milliseconds)
 
 **Mutation**:
 One thing an Execution step changed: a register write, a memory write at a size, a run of bytes, the two stack pointers, a call pushed or popped, an Exception taken or returned from, or the Machine state. The status register is not one: a step carries it whole, before and after, and undo writes it back first, without moving a stack pointer, so every change of S journals both stack pointers. Every write carries the value it replaced beside the value it wrote, both read where the write happened — a register write reports the whole register on both sides, because a sized store changes only part of one — so nothing about what a step did is reconstructed after the fact.
@@ -241,7 +245,7 @@ The processor a Program is written for and its words are decoded for: the 68000,
 _Avoid_: CPU type, architecture, target (that is the asm-editor's word for a language and its machine)
 
 **Conformance suite**:
-SingleStepTests/m68000, generated from MAME's microcoded 68000: tests of one instruction each, the state before it, the state after it and its bus cycles. It is the oracle of what the Interpreter does with an instruction (ADR 0010), and a test that disagrees with it is a bug unless the Skip list says why. Musashi's self-checking programs are its second check, whole programs that report their own verdict.
+SingleStepTests/m68000, generated from MAME's microcoded 68000: tests of one instruction each, the state before it, the state after it, its bus cycles and its length in Cycles. It is the oracle of what the Interpreter does with an instruction (ADR 0010), and a test that disagrees with it is a bug unless the Skip list says why. Musashi's self-checking programs are its second check, whole programs that report their own verdict.
 _Avoid_: test vectors, Harte tests (Tom Harte's set is another suite, at most a local second opinion)
 
 **Skip list**:
