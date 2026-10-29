@@ -179,6 +179,12 @@ pub enum SpecialRegister {
     Ccr,
     /// The user stack pointer.
     Usp,
+    /// The source function code, a control register of the 68010.
+    Sfc,
+    /// The destination function code, a control register of the 68010.
+    Dfc,
+    /// The vector base register, a control register of the 68010.
+    Vbr,
 }
 
 impl SpecialRegister {
@@ -188,6 +194,9 @@ impl SpecialRegister {
             "sr" => Some(SpecialRegister::Sr),
             "ccr" => Some(SpecialRegister::Ccr),
             "usp" => Some(SpecialRegister::Usp),
+            "sfc" => Some(SpecialRegister::Sfc),
+            "dfc" => Some(SpecialRegister::Dfc),
+            "vbr" => Some(SpecialRegister::Vbr),
             _ => None,
         }
     }
@@ -198,15 +207,20 @@ impl SpecialRegister {
             SpecialRegister::Sr => "sr",
             SpecialRegister::Ccr => "ccr",
             SpecialRegister::Usp => "usp",
+            SpecialRegister::Sfc => "sfc",
+            SpecialRegister::Dfc => "dfc",
+            SpecialRegister::Vbr => "vbr",
         }
     }
 }
 
-/// The twenty-one names no Symbol may carry (`docs/grammar.md` 1.10): the
-/// sixteen general registers, `sp`, `pc`, `sr`, `ccr` and `usp`.
-pub const RESERVED_NAMES: [&str; 21] = [
+/// The twenty-four names no Symbol may carry (`docs/grammar.md` 1.10): the
+/// sixteen general registers, `sp`, `pc`, `sr`, `ccr` and `usp`, and the
+/// 68010's control registers `sfc`, `dfc` and `vbr`, which `movec` names in
+/// every Program, whatever its processor.
+pub const RESERVED_NAMES: [&str; 24] = [
     "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
-    "sp", "pc", "sr", "ccr", "usp",
+    "sp", "pc", "sr", "ccr", "usp", "sfc", "dfc", "vbr",
 ];
 
 /// Whether `name` is one of the [`RESERVED_NAMES`], case insensitively.
@@ -649,6 +663,18 @@ impl Operand {
                 register: SpecialRegister::Usp,
                 ..
             } => "the user stack pointer",
+            Operand::SpecialRegister {
+                register: SpecialRegister::Sfc,
+                ..
+            } => "the source function code",
+            Operand::SpecialRegister {
+                register: SpecialRegister::Dfc,
+                ..
+            } => "the destination function code",
+            Operand::SpecialRegister {
+                register: SpecialRegister::Vbr,
+                ..
+            } => "the vector base register",
             Operand::Indirect { .. } => "an indirect operand",
             Operand::Postincrement { .. } => "a postincrement operand",
             Operand::Predecrement { .. } => "a predecrement operand",
@@ -842,8 +868,8 @@ mod tests {
     }
 
     #[test]
-    fn the_twenty_one_reserved_names_are_reserved() {
-        assert_eq!(RESERVED_NAMES.len(), 21);
+    fn the_twenty_four_reserved_names_are_reserved() {
+        assert_eq!(RESERVED_NAMES.len(), 24);
         for name in RESERVED_NAMES {
             assert!(is_reserved_name(name));
             assert!(is_reserved_name(&name.to_ascii_uppercase()));

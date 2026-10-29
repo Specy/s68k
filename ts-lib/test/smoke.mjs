@@ -432,16 +432,24 @@ assert.deepEqual(moveRow.forms[0].sizes, ['byte', 'word', 'long'])
 assert.ok(moveRow.forms[0].operands[0].includes('Dn'))
 assert.deepEqual(
     table.find(({mnemonic}) => mnemonic === 'andi').forms[2],
-    {operands: [['Im'], ['sr']], sizes: ['word'], privileged: true, processor: '68000'}
+    {operands: [['Im'], ['sr']], sizes: ['word'], privileged: true, privilegedFrom: '68000', processor: '68000'}
 )
+// `move sr,<ea>` is the 68000's in either mode, and privileged from the 68010 on
+const moveFromSr = moveRow.forms.find((form) => form.operands[0][0] === 'sr')
+assert.equal(moveFromSr.privileged, false)
+assert.equal(moveFromSr.privilegedFrom, '68010')
 // Each form names the first processor that has it.
 assert.equal(moveRow.forms.find((form) => form.operands[0][0] === 'ccr').processor, '68010')
 assert.equal(table.find(({mnemonic}) => mnemonic === 'extb').forms[0].processor, '68020')
-assert.equal(table.find(({mnemonic}) => mnemonic === 'rtd'), undefined, 'one still to come is not listed')
+assert.equal(table.find(({mnemonic}) => mnemonic === 'cas'), undefined, 'one still to come is not listed')
+for (const mnemonic of ['rtd', 'bkpt', 'movec', 'moves']) {
+    assert.equal(table.find((row) => row.mnemonic === mnemonic).forms[0].processor, '68010', `\`${mnemonic}\` is the 68010's`)
+}
+assert.deepEqual(table.find(({mnemonic}) => mnemonic === 'movec').forms[0].operands, [['usp', 'Rc'], ['Dn', 'An']])
 assert.equal(table.find(({mnemonic}) => mnemonic === 'callm'), undefined, 'a refused mnemonic is not listed')
 assert.equal(table.find(({mnemonic}) => mnemonic === 'rte').forms[0].privileged, true, '`rte` is listed, privileged')
 assert.deepEqual(table.find(({mnemonic}) => mnemonic === 'stop').forms[0].operands, [['Im']], '`stop #n` is listed')
-assert.equal(table.flatMap(({forms}) => forms).filter((form) => form.privileged).length, 9, 'the four that write sr, the two move usp, rte, stop and reset')
+assert.equal(table.flatMap(({forms}) => forms).filter((form) => form.privileged).length, 13, 'the four that write sr, the two move usp, rte, stop and reset, and movec and moves')
 assert.deepEqual(JSON.parse(JSON.stringify(table)), table, 'the table is plain data')
 
 // ---------------------------------------------------------------------------
@@ -1356,6 +1364,43 @@ assert.deepEqual(
 )
 handled.undo()
 assert.deepEqual(handled.getSystem(), {sr: 0x0004, usp: 0x8000, ssp: 0x01000000}, 'one undo takes the poke back')
+// The 68010: VBR, SFC and DFC in the System file, its eight-byte frames, and
+// `movec`, journaled; a 68000's file has no field for them
+const for68010 = S68k.assemble(`    opt p=68010
+    org $1000
+start:
+    move.l #$8000,d0
+    movec d0,vbr
+    move.l #handler,$8000+32*4
+    moveq #6,d0
+    movec d0,dfc
+    trap #0
+    simhalt
+handler:
+    move.w 6(a7),d1
+    rte`)
+assert.deepEqual(for68010.diagnostics, [])
+const m68010 = new Interpreter(for68010.program, {keep_history: true, history_size: 100})
+assert.deepEqual(m68010.getSystem(), {sr: 0x2000, usp: 0x00ff0000, ssp: 0x01000000, vbr: 0, sfc: 0, dfc: 0})
+assert.equal(m68010.run(), InterpreterStatus.Paused)
+assert.deepEqual(m68010.getSystem(), {sr: 0x2000, usp: 0x00ff0000, ssp: 0x01000000, vbr: 0x8000, sfc: 0, dfc: 6})
+assert.equal(m68010.getRegisterValue({type: 'Data', value: 1}), 0x0080, 'a format 0 frame of vector 32')
+const movecStep = m68010.getUndoHistory(20).find((step) =>
+    step.mutations.some((mutation) => mutation.type === 'WriteControlRegister'))
+assert.deepEqual(
+    movecStep.mutations.find((mutation) => mutation.type === 'WriteControlRegister').value,
+    {register: 'dfc', old: 0, new: 6}
+)
+m68010.beginPoke()
+m68010.setVbr(0x10000)
+m68010.setSfc(0xff)
+assert.equal(m68010.endPoke(), true)
+assert.deepEqual(m68010.getSystem(), {sr: 0x2000, usp: 0x00ff0000, ssp: 0x01000000, vbr: 0x10000, sfc: 7, dfc: 6})
+m68010.undo()
+assert.equal(m68010.getSystem().vbr, 0x8000, 'one undo takes the poke back')
+m68010.dispose()
+for68010.program.dispose()
+assert.throws(() => handled.setVbr(0x8000), (error) => error.type === 'InvalidArgument', 'a 68000 has no VBR')
 handled.dispose()
 withHandler.program.dispose()
 

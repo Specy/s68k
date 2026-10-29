@@ -126,6 +126,20 @@ pub enum MutationOperation {
         old: Box<MachineState>,
         new: Box<MachineState>,
     },
+    /// A control register of the 68010 that is no stack pointer, VBR, SFC or
+    /// DFC, before and after `movec` or a Poke wrote it. Undo puts `old` back.
+    WriteControlRegister {
+        register: SystemRegister,
+        old: u32,
+        new: u32,
+    },
+    /// The 68010's loop mode entered or left: the address of the `DBcc`
+    /// whose loop runs in it, before and after. It changes cycles only, and
+    /// undo puts it back so that a step run again takes what it took.
+    SetLoopMode {
+        old: Option<usize>,
+        new: Option<usize>,
+    },
 }
 /// What a step of the history is: an instruction the program ran, a
 /// [`Poke`](crate::interpreter::Interpreter::begin_poke) the host made between
@@ -183,8 +197,10 @@ pub enum PokeTarget {
 }
 
 /// The registers of the System register file: the status register and the two
-/// stack pointers, which a Poke can write beside the CPU file's D0 to A7.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// stack pointers, and the 68010's control registers VBR, SFC and DFC, which a
+/// Poke can write beside the CPU file's D0 to A7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SystemRegister {
     /// The status register.
     Sr,
@@ -192,16 +208,34 @@ pub enum SystemRegister {
     Usp,
     /// The supervisor stack pointer.
     Ssp,
+    /// The vector base register, the 68010's.
+    Vbr,
+    /// The source function code, the 68010's.
+    Sfc,
+    /// The destination function code, the 68010's.
+    Dfc,
 }
 
 impl SystemRegister {
-    /// How the editor spells it: `sr`, `usp` or `ssp`.
+    /// How the editor spells it: `sr`, `usp`, `ssp`, `vbr`, `sfc` or `dfc`.
     pub fn name(self) -> &'static str {
         match self {
             SystemRegister::Sr => "sr",
             SystemRegister::Usp => "usp",
             SystemRegister::Ssp => "ssp",
+            SystemRegister::Vbr => "vbr",
+            SystemRegister::Sfc => "sfc",
+            SystemRegister::Dfc => "dfc",
         }
+    }
+
+    /// Whether it is one of the 68010's control registers that are no stack
+    /// pointer: VBR, SFC or DFC, which a 68000 does not have.
+    pub fn is_control(self) -> bool {
+        matches!(
+            self,
+            SystemRegister::Vbr | SystemRegister::Sfc | SystemRegister::Dfc
+        )
     }
 }
 

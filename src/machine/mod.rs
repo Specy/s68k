@@ -22,10 +22,11 @@
 //! * [`timing`] says how many cycles an instruction, an exception and an IRQ
 //!   take.
 //!
-//! Both are written for a [`Processor`]. Only the 68000 is decoded in full;
-//! the 68010 and the 68020 are dialects of it, and each row of the decoder's
-//! table names the first processor that has it, so that a word one of them
-//! adds is an illegal instruction on the processors before it.
+//! Both are written for a [`Processor`]. The 68000 and the 68010 are decoded
+//! in full and the 68020 in part; the later two are dialects of the 68000,
+//! and each row of the decoder's table names the first processor that has
+//! it, so that a word one of them adds is an illegal instruction on the
+//! processors before it. The frames and the timing are each processor's.
 //!
 //! [`Instruction`]: crate::instructions::Instruction
 

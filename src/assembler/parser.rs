@@ -1588,7 +1588,7 @@ impl<'a> Parser<'a> {
                 let name = self.text_of(token).to_string();
                 self.bump();
                 if is_reserved_name(&name) {
-                    // `symbol_reference` excludes the twenty-one reserved names
+                    // `symbol_reference` excludes the twenty-four reserved names
                     // (2.7), so `#a0+4` and `4+d0` are this and not a Symbol.
                     self.raise(
                         DiagnosticKind::RegisterInExpression { register: name },

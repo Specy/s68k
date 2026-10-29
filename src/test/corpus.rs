@@ -710,6 +710,38 @@ fn print_instruction(instruction: &Instruction) -> String {
         Instruction::LINEA(word) | Instruction::LINEF(word) | Instruction::IllegalWord(word) => {
             format!("dc.w ${:x}", word)
         }
+        Instruction::RTD(displacement) => format!("rtd #${:x}", displacement),
+        Instruction::BKPT(vector) => format!("bkpt #{vector}"),
+        Instruction::MOVEC {
+            to_control,
+            control,
+            register: general,
+        } => {
+            let control = control.name().unwrap_or("?");
+            match to_control {
+                true => format!("movec {},{control}", register(general)),
+                false => format!("movec {control},{}", register(general)),
+            }
+        }
+        Instruction::MOVES {
+            direction,
+            size,
+            register: general,
+            target,
+        } => match direction {
+            TargetDirection::ToMemory => format!(
+                "moves.{} {},{}",
+                size_suffix(*size),
+                register(general),
+                print_operand(target)
+            ),
+            TargetDirection::FromMemory => format!(
+                "moves.{} {},{}",
+                size_suffix(*size),
+                print_operand(target),
+                register(general)
+            ),
+        },
     }
 }
 

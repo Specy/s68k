@@ -692,9 +692,17 @@ impl<'a> Analyzer<'a> {
         if found == Modes::REGISTER_LIST && !allowed.contains(Modes::REGISTER_LIST) {
             return Some("only `movem` takes a register list".to_string());
         }
-        if found == Modes::USP && spec.mnemonic != "move" {
+        if found == Modes::USP && !["move", "movec"].contains(&spec.mnemonic) {
             return Some(
-                "only `move` reaches the user stack pointer, to or from an address register"
+                "only `move` reaches the user stack pointer, to or from an address register, \
+                 and the 68010's `movec`"
+                    .to_string(),
+            );
+        }
+        if found == Modes::CONTROL_REGISTER && spec.mnemonic != "movec" {
+            return Some(
+                "only `movec` reaches the 68010's control registers, to or from a general \
+                 register"
                     .to_string(),
             );
         }
@@ -891,8 +899,13 @@ impl<'a> Analyzer<'a> {
         }
         let size = lowering::lower_size(operation.size, form.sizes.default_size());
         // Only where a byte was a *choice*: `Scc` writes a byte and `moveq`
-        // writes a long, and neither is a size an author picked.
-        if size == Some(Size::Byte) && form.sizes == table::SizeRule::Any {
+        // writes a long, and neither is a size an author picked. `moves` is
+        // the one instruction whose byte reaches an address register: the low
+        // byte of one is written, and a byte read is sign extended into one.
+        if size == Some(Size::Byte)
+            && form.sizes == table::SizeRule::Any
+            && spec.family() != Some(Family::Moves)
+        {
             if let Some(operand) = operands
                 .iter()
                 .find(|operand| matches!(operand, Operand::AddressRegisterDirect { .. }))
@@ -1630,13 +1643,14 @@ fn takes_the_status_register(spec: &'static InstructionSpec) -> bool {
 /// Form's modes at this position mention one" and "this Operand is one"
 /// answer the same question from the two sides. An Operand that is none of
 /// them, an ordinary Addressing mode, agrees with a position that names none,
-/// which is every position of every Form but the six of `move` and the two
-/// each of `andi`, `ori` and `eori`.
+/// which is every position of every Form but the six of `move`, the two each
+/// of `andi`, `ori` and `eori`, and the control register of `movec`, which
+/// takes `usp` or any of the others.
 fn agrees_about_the_special_registers(form: &Form, operands: &[Operand]) -> bool {
     operands.iter().enumerate().all(|(index, operand)| {
         let allowed = form.operands[index].intersection(Modes::SPECIAL);
         match Modes::of(operand).map(|mode| mode.intersection(Modes::SPECIAL)) {
-            Some(written) if !written.is_empty() => allowed == written,
+            Some(written) if !written.is_empty() => allowed.contains(written),
             _ => allowed.is_empty(),
         }
     })
@@ -1975,7 +1989,7 @@ mod tests {
                 "The first operand of `add` cannot be the user stack pointer. The operand \
                  should be Dn, An, (An), (An)+, -(An), d(An), d(An,Xn), Ea/<label>, d(PC), \
                  d(PC,Xn) or Im. Only `move` reaches the user stack pointer, to or from an \
-                 address register"
+                 address register, and the 68010's `movec`"
             ]
         );
     }
@@ -2442,14 +2456,12 @@ mod tests {
         assert!(found[0].hint().unwrap().contains("add `opt p=68020`"));
     }
 
-    /// The other instructions of the 68010 and the 68020, and the shapes the
-    /// 68020 gives 68000 Mnemonics, are still to come, and say so.
+    /// The other instructions of the 68020, and the shapes it gives 68000
+    /// Mnemonics, are still to come, and say so. The 68010's are all in.
     #[test]
     fn an_instruction_still_to_come_says_so() {
         for (text, processor) in [
-            ("    rtd #4", Processor::M68000),
-            ("    rtd #4", Processor::M68010),
-            ("    movec vbr,d0", Processor::M68020),
+            ("    cas.l d0,d1,(a0)", Processor::M68000),
             ("    cas.l d0,d1,(a0)", Processor::M68020),
             ("    bfextu d0{4:8},d1", Processor::M68000),
             ("    muls.l d0,d1", Processor::M68020),
@@ -2476,14 +2488,25 @@ mod tests {
             analyze_for("    tst.l a0", Processor::M68000, None).0,
             ["invalid_addressing_mode"]
         );
-        assert_eq!(
-            messages("    rtd #4"),
-            [
-                "`rtd` is a 68010 instruction, and is not implemented yet in s68k's 68010 \
-                 dialect. The 68010 dialect is partial so far: of the 68010's instructions s68k \
-                 has `move ccr,<ea>`"
-            ]
-        );
+        for (text, processor) in [
+            ("    rtd #4", Processor::M68000),
+            ("    movec vbr,d0", Processor::M68000),
+        ] {
+            assert_eq!(
+                analyze_for(text, processor, None).0,
+                ["needs_a_later_processor"],
+                "{text}, {processor:?}"
+            );
+        }
+        for (text, processor) in [
+            ("    rtd #4", Processor::M68010),
+            ("    movec vbr,d0", Processor::M68020),
+        ] {
+            assert!(
+                analyze_for(text, processor, None).0.is_empty(),
+                "{text}, {processor:?}"
+            );
+        }
         let (_, _, found) = analyze_for("    muls.l d0,d1", Processor::M68020, None);
         assert_eq!(
             found[0].message(),

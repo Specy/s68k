@@ -352,13 +352,16 @@ register          = data_register | address_register ;
 data_register     = "d0" | "d1" | "d2" | "d3" | "d4" | "d5" | "d6" | "d7" ;
 address_register  = "a0" | "a1" | "a2" | "a3" | "a4" | "a5" | "a6" | "a7" | "sp" ;
 program_counter   = "pc" ;
-special_register  = "sr" | "ccr" | "usp" ;
+special_register  = "sr" | "ccr" | "usp" | "sfc" | "dfc" | "vbr" ;
 ```
 
 Case insensitive. `sp` is `a7` and nothing else — the printer never writes `sp`
 back out (`tests/corpus/README.md`, "Registers"). `pc` is a register only in the
-PC-relative modes. All twenty-one names above are reserved: none of them may be
-a Symbol.
+PC-relative modes. All twenty-four names above are reserved: none of them may be
+a Symbol. `sfc`, `dfc` and `vbr`, the 68010's control registers, which only
+`movec` reaches, are reserved in every Program whatever its processor, as the
+names of the others are, so that a name means the same thing in every dialect
+(ADR 0011).
 
 *Which* diagnostic a reserved name gets depends on what is being done with it,
 and the two are not interchangeable: `reserved_name_as_symbol` where a name is
@@ -370,8 +373,8 @@ earlier draft of this section said that a `pc` outside a PC-relative mode was
 `reserved_name_as_symbol`, which contradicted 2.7 and would have answered a
 misused register with an offer to rename it.
 
-`sr`, `ccr` and `usp` are Operands in their own right, not Addressing modes, and
-the parser accepts them at any position of any Operation.
+`sr`, `ccr`, `usp`, `sfc`, `dfc` and `vbr` are Operands in their own right, not
+Addressing modes, and the parser accepts them at any position of any Operation.
 `tests/corpus/easy68k/mouseWindowSize.X68` writes `andi.w #$00,SR`.
 
 ### 1.11 `size_suffix`
@@ -1063,7 +1066,7 @@ primary_expression        = number
                           | grouped_expression ;
 grouped_expression        = "(" expression ")" ;
 current_address           = "*" ;
-symbol_reference          = ? an identifier that is not one of the twenty-one
+symbol_reference          = ? an identifier that is not one of the twenty-four
                               reserved register names of 1.10 ? ;
 ```
 
@@ -1227,7 +1230,7 @@ All three start with `(` and 2.5's `parenthesised_operand` separates them by the
 two tokens after it: a register or `pc` followed by `)` or `,` is an Addressing
 mode, anything else is an Expression, and an Expression whose `)` is followed by
 a `binary_operator` keeps going. A Symbol named like a register cannot arise —
-the twenty-one register names are reserved (1.10) and `symbol_reference`
+the twenty-four register names are reserved (1.10) and `symbol_reference`
 excludes them (2.7) — so rule 1 never steals a `(label)` that meant an absolute
 address.
 

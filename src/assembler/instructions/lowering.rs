@@ -41,8 +41,8 @@ use crate::assembler::ast::{self, SizeSuffix};
 
 use super::choice;
 use super::encoded::{
-    BranchSize, IndexRegister, Instruction, Operand, RegisterOperand, ShiftDirection, Size,
-    TargetDirection, EXTENSION_WORD_OFFSET,
+    BranchSize, ControlRegister, IndexRegister, Instruction, Operand, RegisterOperand,
+    ShiftDirection, Size, TargetDirection, EXTENSION_WORD_OFFSET,
 };
 use super::table::{BitOperation, Family, ImmediateKind, LogicalKind, ShiftKind, ShiftWay};
 use crate::machine::Processor;
@@ -368,6 +368,9 @@ fn lower_status_register(
     let [first, second] = operands else {
         return None;
     };
+    if family == Family::Movec {
+        return lower_movec(first, second);
+    }
     if family == Family::Move {
         match (first, second) {
             (
@@ -433,6 +436,42 @@ fn lower_status_register(
         }
         _ => None,
     }
+}
+
+/// `movec`, in whichever direction the control register stands: the
+/// control register a special register names, `usp` included, and the
+/// general register on the other side. Anything else the analyzer has
+/// refused.
+fn lower_movec(first: &ast::Operand, second: &ast::Operand) -> Option<Instruction> {
+    let control = |operand: &ast::Operand| match operand {
+        ast::Operand::SpecialRegister { register, .. } => Some(match register {
+            ast::SpecialRegister::Sfc => ControlRegister::SFC,
+            ast::SpecialRegister::Dfc => ControlRegister::DFC,
+            ast::SpecialRegister::Usp => ControlRegister::USP,
+            ast::SpecialRegister::Vbr => ControlRegister::VBR,
+            ast::SpecialRegister::Sr | ast::SpecialRegister::Ccr => return None,
+        }),
+        _ => None,
+    };
+    let general = |operand: &ast::Operand| match operand {
+        ast::Operand::DataRegisterDirect { register, .. } => {
+            Some(RegisterOperand::Data(register.number))
+        }
+        ast::Operand::AddressRegisterDirect { register, .. } => {
+            Some(RegisterOperand::Address(register.number))
+        }
+        _ => None,
+    };
+    let (to_control, control, register) = match (control(first), control(second)) {
+        (Some(control), None) => (false, control, general(second)?),
+        (None, Some(control)) => (true, control, general(first)?),
+        _ => return None,
+    };
+    Some(Instruction::MOVEC {
+        to_control,
+        control,
+        register,
+    })
 }
 
 /// The half of the status register an Operand names, when it names one.
@@ -609,6 +648,34 @@ pub fn lower(
         )),
         Family::Trapv => Some(Instruction::TRAPV),
         Family::Illegal => Some(Instruction::ILLEGAL),
+        // the displacement is kept sign extended, as `link`'s is, and the
+        // analyzer has checked that it fits a word
+        Family::Rtd => Some(Instruction::RTD(
+            immediate(operand(0))? as i32 as i16 as i32 as u32,
+        )),
+        Family::Bkpt => Some(Instruction::BKPT(immediate(operand(0))? as u8)),
+        // `lower_status_register` lowers it, as its Operands are registers
+        // that are no Addressing mode
+        Family::Movec => None,
+        Family::Moves => {
+            let (first, second) = (operand(0)?, operand(1)?);
+            let size = size?;
+            Some(match (first, second) {
+                (Operand::Register(register), target) => Instruction::MOVES {
+                    direction: TargetDirection::ToMemory,
+                    size,
+                    register,
+                    target,
+                },
+                (target, Operand::Register(register)) => Instruction::MOVES {
+                    direction: TargetDirection::FromMemory,
+                    size,
+                    register,
+                    target,
+                },
+                _ => return None,
+            })
+        }
     }
 }
 

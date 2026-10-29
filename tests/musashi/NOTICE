@@ -2,6 +2,15 @@ This folder holds two things from Musashi, https://github.com/kstenerud/Musashi:
 m68000-valid.hex, a table generated from its disassembler, and mc68000/, its
 self-checking test programs. Both are covered by Musashi's licence, at the end.
 
+The `musashi` feature's differential harness of the 68010 dialect
+(src/conformance/musashi.rs, src/test/differential.rs) compiles Musashi's own
+source, which scripts/fetch-musashi.sh fetches into tests/musashi/fetched, which
+git ignores, at the commit below; build.rs compiles it for the host's tests
+only, with M68K_EMULATE_TRACE on, and nothing fetches or compiles it without
+the feature. It runs Musashi as a 68010 beside s68k, one instruction at a time,
+and compares the registers, the memory and the frames, with the places where
+Musashi is not the 68010 listed with their reasons in the harness.
+
 m68000-valid.hex
 ================
 

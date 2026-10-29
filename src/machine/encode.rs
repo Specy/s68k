@@ -33,8 +33,9 @@
 //! The encoder writes what it is given and asks no processor: an instruction
 //! is the 68000's, the 68010's or the 68020's by what it is, and whether a
 //! Program may use it is the analyzer's question. `move ccr,<ea>` is written
-//! as the 68010 has it, `extb.l` and a [`BranchSize::Long`] as the 68020 has
-//! them, and the decoder reads those words back only for those processors.
+//! as the 68010 has it, and so are `rtd`, `bkpt`, `movec` and `moves`;
+//! `extb.l` and a [`BranchSize::Long`] as the 68020 has them, and the decoder
+//! reads those words back only for those processors.
 //!
 //! [`size`] measures an instruction without placing it: the size of an
 //! encoding depends on its Operands' modes and never on their values or its
@@ -145,6 +146,10 @@ pub enum Field {
     LinkDisplacement,
     /// A register number, 0 to 7.
     Register,
+    /// The displacement of `rtd`, a word sign extended.
+    RtdDisplacement,
+    /// The vector of `bkpt`: 0 to 7.
+    BreakpointVector,
 }
 
 impl Field {
@@ -156,13 +161,14 @@ impl Field {
             | Field::PcDisplacement
             | Field::Displacement
             | Field::ShortAddress
-            | Field::LinkDisplacement => (-32768, 32767),
+            | Field::LinkDisplacement
+            | Field::RtdDisplacement => (-32768, 32767),
             Field::LongAddress => (0, u32::MAX as i64),
             Field::Immediate(size) => (0, mask(size) as i64),
             Field::Count => (1, 8),
             Field::TrapVector => (0, 15),
             Field::BitNumber => (0, 255),
-            Field::Register => (0, 7),
+            Field::Register | Field::BreakpointVector => (0, 7),
         }
     }
 
@@ -191,6 +197,8 @@ impl Field {
             Field::BitNumber => "a static bit number",
             Field::LinkDisplacement => "the displacement of `link`",
             Field::Register => "a register number",
+            Field::RtdDisplacement => "the displacement of `rtd`",
+            Field::BreakpointVector => "the vector of `bkpt`",
         }
     }
 }
@@ -292,6 +300,15 @@ impl Encoder {
             RegisterOperand::Address(number) => self.number(number),
             RegisterOperand::Data(_) => no_encoding("the register there is an address register"),
         }
+    }
+
+    /// The general register of the extension word of `movec` and `moves`:
+    /// bit 15 for an address register, and its number in bits 14–12.
+    fn general(&self, register: RegisterOperand) -> Result<u16, EncodeError> {
+        Ok(match register {
+            RegisterOperand::Data(number) => self.number(number)? << 12,
+            RegisterOperand::Address(number) => 0x8000 | self.number(number)? << 12,
+        })
     }
 
     /// A data register given as an Operand.
@@ -626,6 +643,44 @@ impl Encoder {
                 0x4E72
             }
             I::RTE => 0x4E73,
+            I::RTD(displacement) => {
+                self.fits(Field::RtdDisplacement, displacement as i32 as i64)?;
+                self.word(displacement as u16);
+                0x4E74
+            }
+            I::MOVEC {
+                to_control,
+                control,
+                register,
+            } => {
+                let extension = self.general(register)? | (control.0 & 0x0FFF);
+                self.word(extension);
+                0x4E7A | to_control as u16
+            }
+            I::BKPT(vector) => {
+                self.fits(Field::BreakpointVector, vector as i64)?;
+                0x4848 | (vector as u16 & 7)
+            }
+            I::MOVES {
+                direction,
+                size,
+                register,
+                target,
+            } => {
+                let to_memory = match direction {
+                    TargetDirection::ToMemory => 0x0800,
+                    TargetDirection::FromMemory => 0,
+                };
+                self.word(self.general(register)? | to_memory);
+                0x0E00
+                    | standard_size(size) << 6
+                    | self.ea(
+                        target,
+                        size,
+                        MEMORY_ALTERABLE,
+                        "`moves` takes a memory alterable operand",
+                    )?
+            }
             I::RTS => 0x4E75,
             I::TRAPV => 0x4E76,
             I::RTR => 0x4E77,
@@ -1202,9 +1257,14 @@ mod tests {
                         decoded.instruction
                     )
                 });
+                //`moves` ignores the low eleven bits of its extension word, whatever the first
+                let mut expected = words;
+                if let Instruction::MOVES { .. } = decoded.instruction {
+                    expected[1] &= 0xF800;
+                }
                 assert_eq!(
                     encoded,
-                    words[..decoded.size as usize / 2],
+                    expected[..decoded.size as usize / 2],
                     "{first:04X} on the {} is {:?}",
                     processor.name(),
                     decoded.instruction

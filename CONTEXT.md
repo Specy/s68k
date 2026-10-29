@@ -142,7 +142,7 @@ One entry of the Interpreter's history: an instruction that ran, a Poke, or an I
 _Avoid_: history entry, undo record
 
 **Cycle**:
-One clock cycle of the 68000, the unit of the time a program takes. Each instruction takes the 68000's own time, the time its data costs included (a multiply by the bits of its source, a division by its loop, a shift by its count, a branch taken or not), and so does each Exception, whose time replaces that of the instruction that raised it, and each IRQ: section 8 of the 68000 User's Manual with Yacht's corrections, checked against the Conformance suite's lengths. `trap #15`'s tasks take none, as in EASy68K. The cycle counter adds them up in 64 bits since the program started, or since task 30 cleared it; task 31 reads it. Each Execution step journals the counter and says what it took, so undo takes a step's Cycles back. The 68010 and the 68020 count as a 68000 until they have their own tables.
+One clock cycle of the 68000, the unit of the time a program takes. Each instruction takes the 68000's own time, the time its data costs included (a multiply by the bits of its source, a division by its loop, a shift by its count, a branch taken or not), and so does each Exception, whose time replaces that of the instruction that raised it, and each IRQ: section 8 of the 68000 User's Manual with Yacht's corrections, checked against the Conformance suite's lengths. `trap #15`'s tasks take none, as in EASy68K. The cycle counter adds them up in 64 bits since the program started, or since task 30 cleared it; task 31 reads it. Each Execution step journals the counter and says what it took, so undo takes a step's Cycles back. The 68010 counts its own, section 9 of the manual and Moira's 68010 where the manual gives a maximum, with Loop mode; the 68020 counts as a 68010 until it has its own.
 _Avoid_: clock, tick, T-state (that is the Z80's word), time (a timer's interval is the host's milliseconds)
 
 **Mutation**:
@@ -196,11 +196,23 @@ How the read tasks show what is typed: the echo of task 12, and the input prompt
 Why a program ended: task 9, running into `$FFFF $FFFF` in memory the Program never placed (the end of a program that does not end itself, with its address), the host answering Terminate, the Runtime error it ended with, or an IRQ, with the Vector that held no Handler when it had one, or Halted. Undoing the step that ended the program takes it back.
 
 **Exception**:
-The processor saving the status register and the program counter on the supervisor stack and continuing at a Vector's Handler, because an instruction raised an error the 68000 has a vector for, or a `trap`, or trace, or an IRQ came: the bus error of the Memory map, the address error, an illegal instruction, a division by zero, `chk`, `trapv`, a privilege violation, trace, an IRQ through its autovector, the line A and line F words, `trap #0` to `#14`, and a Trap task EASy68K does not know. It sets S and clears T, so it always runs in supervisor mode, and `rte` returns from it. It is always taken (ADR 0008); an Exception whose Vector holds no Handler ends the program instead. Distinct from an Interrupt, which is a Trap task waiting on the host.
+The processor saving the status register and the program counter on the supervisor stack and continuing at a Vector's Handler, because an instruction raised an error the 68000 has a vector for, or a `trap`, or trace, or an IRQ came: the bus error of the Memory map, the address error, an illegal instruction, a division by zero, `chk`, `trapv`, a privilege violation, trace, an IRQ through its autovector, the line A and line F words, `trap #0` to `#14`, and a Trap task EASy68K does not know, and on the 68010 the format error of `rte`, `bkpt` and `movec` of a register it does not have. The 68010's frame begins with a Frame format, and its Vector is read through the VBR. It sets S and clears T, so it always runs in supervisor mode, and `rte` returns from it. It is always taken (ADR 0008); an Exception whose Vector holds no Handler ends the program instead. Distinct from an Interrupt, which is a Trap task waiting on the host.
 _Avoid_: trap (that is one instruction that raises one), interrupt (that is a Trap task's request to the host), fault
 
 **Vector**:
-One of the 256 longs of the table at `$000` to `$3FF`, by number: the address the processor jumps to for one kind of Exception, vector 5 at `$014` for a division by zero. A program fills the vectors it handles by writing them; the others hold `$FFFFFFFF`, as memory starts as `$FF`.
+One of the 256 longs of the table at `$000` to `$3FF`, by number: the address the processor jumps to for one kind of Exception, vector 5 at `$014` for a division by zero. A program fills the vectors it handles by writing them; the others hold `$FFFFFFFF`, as memory starts as `$FF`. On the 68010 the table starts at the VBR.
+
+**VBR**:
+The vector base register of the 68010 and the 68020: where the table of Vectors starts, which every Exception reads its Vector through, at the VBR plus four times the vector. It is 0 until `movec` moves it, so a 68010 program that never writes it has its table where a 68000's is. A 68000 has none.
+_Avoid_: vector table base, vector offset (that is the low twelve bits of a Frame format's word)
+
+**Frame format**:
+What the four high bits of the word an Exception of the 68010 pushes after the program counter say its frame holds, the vector offset, four times the Vector, in the bits below: `$0`, the status register, the program counter and that word, eight bytes, for every Exception but the bus and address errors; `$8`, 29 words, for those two, with the special status word, the fault address, and buffers and internal words s68k writes as zeros. `rte` reads the format first, pops what it says, and takes the format error, vector 14, on any other, or on a format `$8` frame whose version is not 0. The 68000's frames have no format word.
+_Avoid_: stack frame type, exception frame kind (a call stack frame's `kind` is something else)
+
+**Loop mode**:
+The 68010's running of a loop of one instruction without fetching it: a `DBcc` of displacement −4 that branches back to a one-word instruction of the modes `(An)`, `(An)+` and `-(An)` enters it, with T clear, and the loop's next turns take less time, until the counter runs out, the condition is true or an Exception comes. It changes Cycles and nothing else, and is journaled so that undo puts it back.
+_Avoid_: DBcc loop, fast loop
 _Avoid_: interrupt vector (an IRQ's autovector is one kind), exception number
 
 **Handler**:
@@ -213,7 +225,8 @@ _Avoid_: crashed, double bus fault (the bus error of a memory map is one cause, 
 
 **System register file**:
 The status register and the two stack pointers, USP and SSP, beside the data and address registers. A7 is the stack pointer of the mode the status register's S bit names, the SSP in supervisor mode and the USP in user mode, the other kept aside; a write of S, an Exception and `rte` can swap them. A program starts with SR `$2000` and both of EASy68K's stack pointers (ADR 0007). The host reads all three and writes them as Pokes.
-_Avoid_: control registers (the 68010's VBR, SFC and DFC will join it under that name), special registers (that is the Operands `sr`, `ccr` and `usp`)
+From the 68010 on it holds the control registers too, the VBR and SFC and DFC, the function codes, three bits each, which `movec` writes and reads; s68k has one address space, so `moves` reaches the same memory whatever they hold.
+_Avoid_: special registers (that is the Operands `sr`, `ccr`, `usp`, `sfc`, `dfc` and `vbr`)
 
 ### Diagnosis
 
@@ -241,7 +254,7 @@ The part of a Diagnostic or Runtime error that gives the learner a safe next act
 The assembler and simulator whose dialect s68k follows. Where s68k is more lenient than EASy68K it stays so; where it is stricter, that is a deliberate deviation and is recorded as a decision.
 
 **Processor dialect**:
-The processor a Program is written for and its words are decoded for: the 68000, EASy68K's processor and the default, or the 68010 or the 68020, each of which adds instructions, addressing modes and behaviour to the one before it. A Program chooses it in its source with `opt p=68010` or `opt p=68020`, once and before its first instruction, and `opt bit` adds the 68020's bit fields to it (ADR 0011). Every form of the instruction table and every row of the decoder names the first processor that has it; on an earlier processor the form is refused and its words are an illegal instruction: `move ccr,<ea>` is the 68010's and `extb.l` the 68020's. Those two are the whole of the dialects so far; every other instruction of the 68010 and the 68020 is not implemented yet.
+The processor a Program is written for and its words are decoded for: the 68000, EASy68K's processor and the default, or the 68010 or the 68020, each of which adds instructions, addressing modes and behaviour to the one before it. A Program chooses it in its source with `opt p=68010` or `opt p=68020`, once and before its first instruction, and `opt bit` adds the 68020's bit fields to it (ADR 0011). Every form of the instruction table and every row of the decoder names the first processor that has it; on an earlier processor the form is refused and its words are an illegal instruction: `move ccr,<ea>` is the 68010's and `extb.l` the 68020's. The 68010 is complete: its instructions, `move sr,<ea>` made privileged, the VBR, its Frame formats and Loop mode, and its Cycles. Of the 68020 only `extb.l` and the long branches are in; its other instructions are not implemented yet, and until they are it runs as a 68010.
 _Avoid_: CPU type, architecture, target (that is the asm-editor's word for a language and its machine)
 
 **Conformance suite**:

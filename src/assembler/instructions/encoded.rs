@@ -631,4 +631,84 @@ pub enum Instruction {
     /// after it without modifying a register and resumes at the following
     /// instruction when it is run or stepped again.
     SIMHALT,
+    /// `rtd #d`, the 68010's: pop the return address, as `rts` does, then add
+    /// the displacement to the stack pointer, so that a subroutine takes its
+    /// arguments off the stack as it returns. The displacement is kept sign
+    /// extended, as `link`'s is.
+    RTD(u32),
+    /// `bkpt #n`, the 68010's breakpoint, `n` from 0 to 7: the processor runs
+    /// a breakpoint acknowledge cycle, which nothing answers here, and takes
+    /// the illegal instruction exception, vector 4, as the 68010 does whatever
+    /// answers the cycle.
+    BKPT(u8),
+    /// `movec Rc,Rn` and `movec Rn,Rc`, the 68010's: a long between a general
+    /// register and a control register. Privileged. A control register the
+    /// processor does not have is an illegal instruction when it runs, so the
+    /// code is kept as it is encoded, whatever it is.
+    MOVEC {
+        /// `true` for `movec Rn,Rc`, which writes the control register.
+        to_control: bool,
+        /// The control register, by its twelve-bit code.
+        control: ControlRegister,
+        /// The general register on the other side.
+        register: RegisterOperand,
+    },
+    /// `moves.<size>`, the 68010's: a move between a general register and
+    /// memory in the address space SFC or DFC names. Privileged.
+    MOVES {
+        /// `ToMemory` is `moves Rn,<ea>`, which writes through DFC;
+        /// `FromMemory` is `moves <ea>,Rn`, which reads through SFC.
+        direction: TargetDirection,
+        /// `.b`, `.w` or `.l`.
+        size: Size,
+        /// The general register, a data or an address register.
+        register: RegisterOperand,
+        /// The memory operand, memory alterable.
+        target: Operand,
+    },
+}
+
+/// A control register of the 68010 and the 68020, as `movec` names it by the
+/// twelve-bit code of its extension word.
+///
+/// Every code is kept, the ones no processor has included, since `movec` with
+/// one is an instruction that raises the illegal instruction exception when it
+/// runs, and its words decode and print like any other. The 68010 has four:
+/// SFC and DFC, the function codes `moves` reads and writes through, the
+/// user stack pointer, and VBR, the vector base register.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+pub struct ControlRegister(pub u16);
+
+impl ControlRegister {
+    /// The source function code, `$000`.
+    pub const SFC: ControlRegister = ControlRegister(0x000);
+    /// The destination function code, `$001`.
+    pub const DFC: ControlRegister = ControlRegister(0x001);
+    /// The user stack pointer, `$800`.
+    pub const USP: ControlRegister = ControlRegister(0x800);
+    /// The vector base register, `$801`.
+    pub const VBR: ControlRegister = ControlRegister(0x801);
+
+    /// The control register of the low twelve bits of `code`.
+    pub fn from_code(code: u16) -> ControlRegister {
+        ControlRegister(code & 0x0FFF)
+    }
+
+    /// Its name as `movec` writes it, `sfc`, `dfc`, `usp` or `vbr`, or `None`
+    /// for a code no processor s68k has gives a register.
+    pub fn name(self) -> Option<&'static str> {
+        Some(match self {
+            ControlRegister::SFC => "sfc",
+            ControlRegister::DFC => "dfc",
+            ControlRegister::USP => "usp",
+            ControlRegister::VBR => "vbr",
+            _ => return None,
+        })
+    }
+
+    /// Whether the 68010 has it, which is whether `movec` reaches it there
+    /// and on the 68020; every other code is an illegal instruction.
+    pub fn is_the_68010s(self) -> bool {
+        self.name().is_some()
+    }
 }

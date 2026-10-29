@@ -609,9 +609,15 @@ pub struct InstructionForm {
     /// `word`, `long`, `short`), in the order a message lists them. Empty when
     /// the instruction carries no size.
     pub sizes: Vec<SizeSuffix>,
-    /// Whether the 68000 runs it only in supervisor mode
-    /// ([`Form::privileged`]); in user mode it raises a privilege violation.
+    /// Whether its first processor runs it only in supervisor mode; in user
+    /// mode it raises a privilege violation.
     pub privileged: bool,
+    /// The first processor that runs it only in supervisor mode
+    /// ([`Form::privileged`]), or `None` when every processor runs it in
+    /// either, which leaves the field out: `"68010"` for `move sr,<ea>`,
+    /// which the 68000 runs in user mode too.
+    #[serde(rename = "privilegedFrom", skip_serializing_if = "Option::is_none")]
+    pub privileged_from: Option<Processor>,
     /// The first processor that has it ([`Form::processor`]), `"68000"`,
     /// `"68010"` or `"68020"`: a Program written for an earlier one is refused
     /// it.
@@ -643,7 +649,8 @@ impl InstructionForm {
         Self {
             operands: form.operands.iter().map(|modes| modes.names()).collect(),
             sizes: form.sizes.allowed().to_vec(),
-            privileged: form.privileged,
+            privileged: form.is_privileged_on(form.processor),
+            privileged_from: form.privileged,
             processor: form.processor,
         }
     }
@@ -810,13 +817,20 @@ mod api_tests {
                 "operands": [["usp"], ["An"]],
                 "sizes": ["long"],
                 "privileged": true,
+                "privilegedFrom": "68000",
                 "processor": "68000"
             })
         );
         assert_eq!(move_forms[6]["operands"], json!([["An"], ["usp"]]));
         assert_eq!(
             find("rte")["forms"],
-            json!([{"operands": [], "sizes": [], "privileged": true, "processor": "68000"}])
+            json!([{
+                "operands": [],
+                "sizes": [],
+                "privileged": true,
+                "privilegedFrom": "68000",
+                "processor": "68000"
+            }])
         );
         assert_eq!(
             move_forms[2],
@@ -828,6 +842,7 @@ mod api_tests {
                 ],
                 "sizes": ["word"],
                 "privileged": true,
+                "privilegedFrom": "68000",
                 "processor": "68000"
             })
         );
@@ -835,18 +850,28 @@ mod api_tests {
         assert_eq!(move_forms[3]["operands"][0], json!(["sr"]));
         assert_eq!(move_forms[3]["privileged"], false);
         assert_eq!(
+            move_forms[3]["privilegedFrom"], "68010",
+            "the 68010 made reading `sr` privileged"
+        );
+        assert_eq!(
             find("andi")["forms"][2],
             json!({
                 "operands": [["Im"], ["sr"]],
                 "sizes": ["word"],
                 "privileged": true,
+                "privilegedFrom": "68000",
                 "processor": "68000"
             })
         );
         assert_eq!(find("andi")["forms"][1]["privileged"], false);
         assert_eq!(
             find("rts")["forms"],
-            json!([{"operands": [], "sizes": [], "privileged": false, "processor": "68000"}])
+            json!([{
+                "operands": [],
+                "sizes": [],
+                "privileged": false,
+                "processor": "68000"
+            }])
         );
         assert_eq!(
             find("bra")["forms"][0]["sizes"],
@@ -858,14 +883,27 @@ mod api_tests {
             .filter(|form| form["privileged"] == true)
             .count();
         assert_eq!(
-            privileged, 9,
+            privileged, 13,
             "`move`, `andi`, `ori` and `eori` into `sr`, the two `move usp`, `rte`, `stop` and \
-             `reset`"
+             `reset`, and the two each of `movec` and `moves`"
         );
         assert_eq!(move_forms[4]["operands"][0], json!(["ccr"]));
         assert_eq!(move_forms[4]["processor"], "68010");
         assert_eq!(find("extb")["forms"][0]["processor"], "68020");
-        for later in ["rtd", "movec", "cas", "bfextu"] {
+        assert_eq!(
+            find("movec")["forms"][0],
+            json!({
+                "operands": [["usp", "Rc"], ["Dn", "An"]],
+                "sizes": ["long"],
+                "privileged": true,
+                "privilegedFrom": "68010",
+                "processor": "68010"
+            })
+        );
+        for mnemonic in ["rtd", "bkpt", "moves"] {
+            assert_eq!(find(mnemonic)["forms"][0]["processor"], "68010");
+        }
+        for later in ["cas", "bfextu"] {
             assert!(
                 rows.iter().all(|row| row["mnemonic"] != later),
                 "`{later}` is not implemented yet and is not listed"

@@ -1,0 +1,50 @@
+This folder holds shim.cpp, s68k's own C interface to Moira,
+https://github.com/dirkwhoffmann/Moira, for the `moira` feature's differential
+harness (src/conformance/moira.rs, src/test/differential.rs). No part of
+Moira's source is in this repository: scripts/fetch-moira.sh fetches it into
+tests/moira/fetched, which git ignores, at commit
+ce28239b0507ebfe1bf2ad2b9c9252dc2f2cc031 (2026-09-23), and build.rs copies its
+core, Moira/, into the build's own folder, sets its configuration for a 68010
+that counts its cycles as the hardware does (MOIRA_PRECISE_TIMING true,
+MOIRA_MIMIC_MUSASHI false, MOIRA_EMULATE_ADDRESS_ERROR true) and compiles it
+with the shim, for the host's tests only. Nothing fetches or compiles it
+without the feature.
+
+What it is used for
+-------------------
+
+Moira's 68010 counts its cycles bus access by bus access and is checked
+against Toni Wilen's cputester on the hardware, loop mode included. It is the
+reference of the 68010 dialect's cycles: every first word s68k decodes as a
+68010 instruction is run from random states by both, one instruction each, and
+the registers, memory and cycles compared, and every one-word instruction in a
+one-instruction `dbf` loop, step by step, for loop mode. The 68010's timing
+table in src/machine/timing.rs takes Moira's values where the 68000 User's
+Manual gives a maximum or departs from it, and says which.
+
+Moira's licence
+---------------
+
+The notice of Moira/LICENSE, which covers its core:
+
+MIT License
+
+Copyright (c) 2019 - 2023 Dirk W. Hoffmann
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

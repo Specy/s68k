@@ -159,6 +159,12 @@ impl Slot {
         self.cycles as u64
     }
 
+    /// Changes them, for the 68010's loop mode, which times the two
+    /// instructions of a loop differently while it lasts.
+    pub fn set_cycles(&mut self, cycles: u16) {
+        self.cycles = cycles;
+    }
+
     /// The index of the Program's instruction the slot holds as the Assembler
     /// built it, or `None` when it was decoded at run time.
     #[inline(always)]
@@ -236,6 +242,15 @@ impl DecodeCache {
     pub fn get(&self, address: usize) -> Option<&Slot> {
         let page = self.pages[(address >> PAGE_SHIFT) & (PAGES - 1)].as_deref()?;
         let slot = &page[(address & (PAGE_BYTES - 1)) >> 1];
+        (slot.size != 0).then_some(slot)
+    }
+
+    /// The slot of the instruction that starts at `address`, to change its
+    /// cycles: the 68010's loop mode times the two instructions of a loop
+    /// differently while it lasts.
+    pub fn get_mut(&mut self, address: usize) -> Option<&mut Slot> {
+        let page = self.pages[(address >> PAGE_SHIFT) & (PAGES - 1)].as_deref_mut()?;
+        let slot = &mut page[(address & (PAGE_BYTES - 1)) >> 1];
         (slot.size != 0).then_some(slot)
     }
 

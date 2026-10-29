@@ -27,13 +27,16 @@
 //!
 //! Every [`Form`] names the first [`Processor`] that has it
 //! ([`Form::processor`]), and the analyzer refuses one above the Program's
-//! processor, which `opt p=` chooses (ADR 0011). The 68000's are all but two:
-//! `move ccr,<ea>` is the 68010's and `extb.l` the 68020's, the first members
-//! of their dialects. The other instructions of the 68010 and the 68020 are
-//! rows marked [`Implementation::NotImplementedYet`], and the shapes the
-//! 68020 gives a 68000 Mnemonic, `muls.l` and the like, are
-//! [`LATER_SHAPES`], so that each is answered as an instruction still to come
-//! and never as an unknown one.
+//! processor, which `opt p=` chooses (ADR 0011). The 68010's are complete:
+//! `move ccr,<ea>`, `rtd`, `bkpt`, `movec` and `moves`. Of the 68020's only
+//! `extb.l` is in; its other instructions are rows marked
+//! [`Implementation::NotImplementedYet`], and the shapes the 68020 gives a
+//! 68000 Mnemonic, `muls.l` and the like, are [`LATER_SHAPES`], so that each
+//! is answered as an instruction still to come and never as an unknown one.
+//!
+//! A Form also names the first processor that runs it only in supervisor
+//! mode ([`Form::privileged`]): `move sr,<ea>` is the 68000's in either mode
+//! and privileged from the 68010 on.
 
 use bitflags::bitflags;
 
@@ -90,6 +93,9 @@ bitflags! {
         const PC_INDEX = 1 << 13;
         /// `usp`, the user stack pointer.
         const USP = 1 << 14;
+        /// `sfc`, `dfc` or `vbr`, a control register of the 68010 that is no
+        /// stack pointer, which only `movec` reaches; it reaches `usp` too.
+        const CONTROL_REGISTER = 1 << 15;
     }
 }
 
@@ -153,9 +159,15 @@ impl Modes {
     /// ordinary Addressing mode beside it, which is what
     /// `Analyzer::choose_form` reads.
     pub const STATUS: Modes = Modes::SR.union(Modes::CCR);
-    /// The three special registers: the two halves of the status register and
-    /// the user stack pointer. A position that takes one takes nothing else.
-    pub const SPECIAL: Modes = Modes::STATUS.union(Modes::USP);
+    /// The special registers: the two halves of the status register, the
+    /// user stack pointer and the 68010's other control registers. A position
+    /// that takes one takes nothing else but another of them.
+    pub const SPECIAL: Modes = Modes::STATUS
+        .union(Modes::USP)
+        .union(Modes::CONTROL_REGISTER);
+    /// What `movec` reads or writes beside a general register: a control
+    /// register, the user stack pointer among them.
+    pub const MOVEC_CONTROL: Modes = Modes::USP.union(Modes::CONTROL_REGISTER);
 
     /// The mode one parsed Operand is. Every Operand of the language is one of
     /// the table's modes; the `Option` is kept for a mode a later processor
@@ -184,6 +196,10 @@ impl Modes {
                 register: SpecialRegister::Usp,
                 ..
             } => Modes::USP,
+            Operand::SpecialRegister {
+                register: SpecialRegister::Sfc | SpecialRegister::Dfc | SpecialRegister::Vbr,
+                ..
+            } => Modes::CONTROL_REGISTER,
             Operand::PcDisplacement { .. } => Modes::PC_DISPLACEMENT,
             Operand::PcIndex { .. } => Modes::PC_INDEX,
         })
@@ -204,7 +220,7 @@ impl Modes {
 
 /// Every mode with the name a message gives it, in the order a message lists
 /// them: registers, then the ways of reaching memory, then an immediate.
-const MODE_NAMES: [(Modes, &str); 15] = [
+const MODE_NAMES: [(Modes, &str); 16] = [
     (Modes::DN, "Dn"),
     (Modes::AN, "An"),
     (Modes::INDIRECT, "(An)"),
@@ -220,6 +236,7 @@ const MODE_NAMES: [(Modes, &str); 15] = [
     (Modes::SR, "sr"),
     (Modes::CCR, "ccr"),
     (Modes::USP, "usp"),
+    (Modes::CONTROL_REGISTER, "Rc"),
 ];
 
 /// The sizes a [`Form`] accepts.
@@ -320,15 +337,17 @@ pub struct Form {
     pub sizes: SizeRule,
     /// What the Operands may not be together.
     pub combination: Combination,
-    /// Whether the 68000 runs this shape only in supervisor mode: `move <ea>,sr`,
-    /// `andi`, `ori` and `eori` into `sr`, `rte`, `stop`, `reset` and
-    /// `move usp`. `move sr,<ea>` is not, on a 68000 (the 68010 made it so),
-    /// and no `ccr` shape ever was.
+    /// The first processor that runs this shape only in supervisor mode, or
+    /// `None` when every processor runs it in either: the 68000 for
+    /// `move <ea>,sr`, `andi`, `ori` and `eori` into `sr`, `rte`, `stop`,
+    /// `reset` and `move usp`, and the 68010 for `move sr,<ea>`, which the
+    /// 68010 made privileged, and for its own `movec` and `moves`. No `ccr`
+    /// shape ever was.
     ///
     /// A privileged Form assembles like any other: a program decides its mode
     /// as it runs, and the Interpreter raises a privilege violation, vector 8,
     /// when one runs in user mode (ADR 0008).
-    pub privileged: bool,
+    pub privileged: Option<Processor>,
     /// The first processor that has the shape: the 68000 for all but
     /// `move ccr,<ea>`, the 68010's, and `extb.l`, the 68020's. The analyzer
     /// refuses a Form above the Program's processor.
@@ -336,6 +355,12 @@ pub struct Form {
 }
 
 impl Form {
+    /// Whether `processor` runs the shape only in supervisor mode.
+    pub fn is_privileged_on(&self, processor: Processor) -> bool {
+        self.privileged
+            .is_some_and(|first| processor.has(first) && processor.has(self.processor))
+    }
+
     /// How many Operands the shape takes.
     pub fn arity(&self) -> usize {
         self.operands.len()
@@ -368,7 +393,22 @@ const fn dialect_form(processor: Processor, operands: &'static [Modes], sizes: S
         operands,
         sizes,
         combination: Combination::None,
-        privileged: false,
+        privileged: None,
+        processor,
+    }
+}
+
+/// A form a later processor introduced and runs only in supervisor mode.
+const fn privileged_dialect_form(
+    processor: Processor,
+    operands: &'static [Modes],
+    sizes: SizeRule,
+) -> Form {
+    Form {
+        operands,
+        sizes,
+        combination: Combination::None,
+        privileged: Some(processor),
         processor,
     }
 }
@@ -379,7 +419,7 @@ const fn register_form(operands: &'static [Modes], sizes: SizeRule) -> Form {
         operands,
         sizes,
         combination: Combination::AtMostOneMemoryOperand,
-        privileged: false,
+        privileged: None,
         processor: Processor::M68000,
     }
 }
@@ -390,7 +430,7 @@ const fn privileged_form(operands: &'static [Modes], sizes: SizeRule) -> Form {
         operands,
         sizes,
         combination: Combination::None,
-        privileged: true,
+        privileged: Some(Processor::M68000),
         processor: Processor::M68000,
     }
 }
@@ -562,6 +602,14 @@ pub enum Family {
     Trapv,
     /// `illegal`.
     Illegal,
+    /// `rtd #d`, the 68010's.
+    Rtd,
+    /// `bkpt #n`, the 68010's.
+    Bkpt,
+    /// `movec`, either direction, the 68010's.
+    Movec,
+    /// `moves`, either direction, the 68010's.
+    Moves,
 }
 
 /// Which of the six immediate instructions a [`Family::Immediate`] is.
@@ -854,14 +902,21 @@ const BIT_WRITE_FORM: &[Form] = &[form(
 /// the condition codes in its low byte.
 ///
 /// `move <ea>,sr` is privileged: it can clear the supervisor bit. Reading `sr`
-/// is not privileged on a 68000. The last two Forms are `move usp,An` and
+/// is not privileged on a 68000, and is from the 68010 on, which gave
+/// `move ccr,<ea>` to user mode instead. The last two Forms are `move usp,An` and
 /// `move An,usp`, a long between an address register and the user stack
 /// pointer, which only supervisor mode reaches (`Reference/68ks4f.htm`).
 const MOVE_FORMS: &[Form] = &[
     form(&[Modes::ALL, Modes::ALTERABLE], SizeRule::Any),
     form(&[Modes::DATA, Modes::CCR], SizeRule::WordOnly),
     privileged_form(&[Modes::DATA, Modes::SR], SizeRule::WordOnly),
-    form(&[Modes::SR, Modes::DATA_ALTERABLE], SizeRule::WordOnly),
+    Form {
+        operands: &[Modes::SR, Modes::DATA_ALTERABLE],
+        sizes: SizeRule::WordOnly,
+        combination: Combination::None,
+        privileged: Some(Processor::M68010),
+        processor: Processor::M68000,
+    },
     dialect_form(
         Processor::M68010,
         &[Modes::CCR, Modes::DATA_ALTERABLE],
@@ -1401,11 +1456,67 @@ pub const TABLE: &[InstructionSpec] = &[
     set_conditionally("svs", Condition::OverflowSet),
     set_conditionally("st", Condition::True),
     set_conditionally("sf", Condition::False),
-    // ---- the 68010's, not implemented yet (batch 4) ----
-    not_implemented_yet("rtd", Processor::M68010),
-    not_implemented_yet("bkpt", Processor::M68010),
-    not_implemented_yet("movec", Processor::M68010),
-    not_implemented_yet("moves", Processor::M68010),
+    // ---- the 68010's ----
+    implemented_with_value(
+        "rtd",
+        Family::Rtd,
+        &[dialect_form(
+            Processor::M68010,
+            &[Modes::IMMEDIATE],
+            SizeRule::Unsized,
+        )],
+        value(
+            "the displacement of `rtd`",
+            -32768,
+            32767,
+            Some("it is a word, sign extended, added to the stack pointer after the return"),
+        ),
+    ),
+    implemented_with_value(
+        "bkpt",
+        Family::Bkpt,
+        &[dialect_form(
+            Processor::M68010,
+            &[Modes::IMMEDIATE],
+            SizeRule::Unsized,
+        )],
+        value("the vector of `bkpt`", 0, 7, None),
+    ),
+    // a long between a general register and a control register, `usp`
+    // included, in either direction
+    implemented(
+        "movec",
+        Family::Movec,
+        &[
+            privileged_dialect_form(
+                Processor::M68010,
+                &[Modes::MOVEC_CONTROL, Modes::ANY_REGISTER],
+                SizeRule::LongOnly,
+            ),
+            privileged_dialect_form(
+                Processor::M68010,
+                &[Modes::ANY_REGISTER, Modes::MOVEC_CONTROL],
+                SizeRule::LongOnly,
+            ),
+        ],
+    ),
+    // a general register to memory or back, through the function codes
+    implemented(
+        "moves",
+        Family::Moves,
+        &[
+            privileged_dialect_form(
+                Processor::M68010,
+                &[Modes::ANY_REGISTER, Modes::MEMORY_ALTERABLE],
+                SizeRule::Any,
+            ),
+            privileged_dialect_form(
+                Processor::M68010,
+                &[Modes::MEMORY_ALTERABLE, Modes::ANY_REGISTER],
+                SizeRule::Any,
+            ),
+        ],
+    ),
     // ---- the 68020's, not implemented yet (batch 5) ----
     not_implemented_yet("chk2", Processor::M68020),
     not_implemented_yet("cmp2", Processor::M68020),
@@ -1737,7 +1848,13 @@ mod tests {
             later,
             vec![
                 ("move", 4, Processor::M68010),
-                ("extb", 0, Processor::M68020)
+                ("extb", 0, Processor::M68020),
+                ("rtd", 0, Processor::M68010),
+                ("bkpt", 0, Processor::M68010),
+                ("movec", 0, Processor::M68010),
+                ("movec", 1, Processor::M68010),
+                ("moves", 0, Processor::M68010),
+                ("moves", 1, Processor::M68010),
             ]
         );
         assert_eq!(
@@ -1746,16 +1863,20 @@ mod tests {
         );
     }
 
-    /// Every other instruction of the 68010 and the 68020 is a row of its own,
-    /// so that it is answered as one still to come and not as a word nobody
-    /// has heard of; the module call is left out for good.
+    /// Every other instruction of the 68020 is a row of its own, so that it
+    /// is answered as one still to come and not as a word nobody has heard
+    /// of; the module call is left out for good. The 68010's are all in.
     #[test]
     fn the_later_instructions_are_rows_still_to_come() {
+        for mnemonic in ["rtd", "bkpt", "movec", "moves"] {
+            let spec = lookup(mnemonic).expect("a row");
+            assert!(spec.is_implemented(), "`{mnemonic}`");
+            assert!(spec
+                .forms
+                .iter()
+                .all(|form| form.processor == Processor::M68010));
+        }
         for (mnemonic, processor, bit_field) in [
-            ("rtd", Processor::M68010, false),
-            ("bkpt", Processor::M68010, false),
-            ("movec", Processor::M68010, false),
-            ("moves", Processor::M68010, false),
             ("cas2", Processor::M68020, false),
             ("trapeq", Processor::M68020, false),
             ("divul", Processor::M68020, false),
@@ -2018,49 +2139,60 @@ mod tests {
     /// The 68000 reserves nine shapes for supervisor mode: the four that
     /// write `sr` (`move <ea>,sr` and `andi`, `ori` and `eori` into it),
     /// `rte`, `stop`, `reset`, and the two of `move usp`. `move sr,<ea>`
-    /// became privileged on the 68010, and the `ccr` shapes never were.
+    /// became privileged on the 68010, whose `movec` and `moves` are too, and
+    /// the `ccr` shapes never were.
     #[test]
     fn only_the_forms_that_write_sr_or_reach_the_user_stack_pointer_are_privileged() {
-        let privileged: Vec<(&str, usize)> = TABLE
+        let privileged: Vec<(&str, usize, Processor)> = TABLE
             .iter()
             .flat_map(|spec| {
-                spec.forms
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, form)| form.privileged)
-                    .map(|(index, _)| (spec.mnemonic, index))
+                spec.forms.iter().enumerate().filter_map(|(index, form)| {
+                    form.privileged.map(|first| (spec.mnemonic, index, first))
+                })
             })
             .collect();
+        let m68000 = Processor::M68000;
+        let m68010 = Processor::M68010;
         assert_eq!(
             privileged,
             vec![
-                ("move", 2),
-                ("move", 5),
-                ("move", 6),
-                ("andi", 2),
-                ("ori", 2),
-                ("eori", 2),
-                ("rte", 0),
-                ("stop", 0),
-                ("reset", 0)
+                ("move", 2, m68000),
+                ("move", 3, m68010),
+                ("move", 5, m68000),
+                ("move", 6, m68000),
+                ("andi", 2, m68000),
+                ("ori", 2, m68000),
+                ("eori", 2, m68000),
+                ("rte", 0, m68000),
+                ("stop", 0, m68000),
+                ("reset", 0, m68000),
+                ("movec", 0, m68010),
+                ("movec", 1, m68010),
+                ("moves", 0, m68010),
+                ("moves", 1, m68010),
             ]
         );
         for spec in TABLE {
             for form in spec.forms {
                 assert_eq!(
-                    form.privileged,
+                    form.is_privileged_on(Processor::M68000),
                     form.operands.last() == Some(&Modes::SR)
                         || form.operands.contains(&Modes::USP)
                         || ["rte", "stop", "reset"].contains(&spec.mnemonic),
-                    "`{}`: a form is privileged exactly when it writes `sr`, reaches `usp` or \
-                     is `rte`, `stop` or `reset`",
+                    "`{}`: a form is privileged on the 68000 exactly when it writes `sr`, \
+                     reaches `usp` or is `rte`, `stop` or `reset`",
                     spec.mnemonic
                 );
             }
         }
         let move_from_sr = lookup("move").expect("a row").forms[3];
         assert_eq!(move_from_sr.operands, &[Modes::SR, Modes::DATA_ALTERABLE]);
-        assert!(!move_from_sr.privileged, "a 68000 reads `sr` in user mode");
+        assert!(
+            !move_from_sr.is_privileged_on(Processor::M68000),
+            "a 68000 reads `sr` in user mode"
+        );
+        assert!(move_from_sr.is_privileged_on(Processor::M68010));
+        assert!(move_from_sr.is_privileged_on(Processor::M68020));
     }
 
     #[test]
@@ -2120,6 +2252,8 @@ mod tests {
                             | "subx"
                             | "abcd"
                             | "sbcd"
+                            | "movec"
+                            | "moves"
                     ),
                     "`{}` has two forms of one arity; `Analyzer::choose_form` picks the \
                      first that fits and falls back to the first, so the order has to be \
@@ -2127,15 +2261,15 @@ mod tests {
                     spec.mnemonic
                 );
             }
-            // A Form that names `sr`, `ccr` or `usp` names nothing else in
-            // that position, which is what `Analyzer::choose_form` rests on
-            // when it keeps the Forms that agree with the special register
-            // that was written.
+            // A Form that names `sr`, `ccr`, `usp` or a control register names
+            // no ordinary Addressing mode in that position, which is what
+            // `Analyzer::choose_form` rests on when it keeps the Forms that
+            // agree with the special register that was written.
             for form in spec.forms {
                 for modes in form.operands {
                     assert!(
-                        !modes.intersects(Modes::SPECIAL) || modes.bits().count_ones() == 1,
-                        "`{}` has a position that takes `sr`, `ccr` or `usp` beside another \
+                        !modes.intersects(Modes::SPECIAL) || Modes::SPECIAL.contains(*modes),
+                        "`{}` has a position that takes a special register beside an \
                          addressing mode; `Analyzer::choose_form` cannot tell its Forms apart",
                         spec.mnemonic
                     );

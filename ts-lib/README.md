@@ -519,17 +519,23 @@ S68k.instructionTable().find(({mnemonic}) => mnemonic === 'andi')
 // {
 //   mnemonic: "andi",
 //   forms: [
-//     {operands: [["Im"], ["Dn", "(An)", "(An)+", "-(An)", "d(An)", "d(An,Xn)", "Ea/<label>"]], sizes: ["byte", "word", "long"], privileged: false},
-//     {operands: [["Im"], ["ccr"]], sizes: ["byte"], privileged: false},
-//     {operands: [["Im"], ["sr"]], sizes: ["word"], privileged: true}
+//     {operands: [["Im"], ["Dn", "(An)", "(An)+", "-(An)", "d(An)", "d(An,Xn)", "Ea/<label>"]], sizes: ["byte", "word", "long"], privileged: false, processor: "68000"},
+//     {operands: [["Im"], ["ccr"]], sizes: ["byte"], privileged: false, processor: "68000"},
+//     {operands: [["Im"], ["sr"]], sizes: ["word"], privileged: true, privilegedFrom: "68000", processor: "68000"}
 //   ]
 // }
 ```
 
 The privileged forms are `move <ea>,sr`, `andi`, `ori` and `eori` into `sr`,
-`rte`, and `move usp,An` and `move An,usp`. They assemble like any other, and
-raise a privilege violation when they run in user mode. `stop` and `reset` are
-not implemented yet and are not listed.
+`rte`, `stop`, `reset`, and `move usp,An` and `move An,usp`, and the 68010's
+`movec` and `moves`. They assemble like any other, and raise a privilege
+violation when they run in user mode. `privilegedFrom` names the first
+processor that runs a form only in supervisor mode, and is absent when none
+does: it is `'68010'` for `move sr,<ea>`, which a 68000 runs in user mode and
+the 68010 made privileged, where `privileged`, which is about the form's own
+first processor, is `false`. `processor` is the first processor that has the
+form: `'68010'` for `move ccr,<ea>`, `rtd`, `bkpt`, `movec` and `moves`, whose
+control registers are the operand mode `Rc`.
 
 ### Exceptions
 
@@ -554,6 +560,37 @@ interpreter.setSsp(0x00f00000)
 interpreter.endPoke()                 // one step, which one undo takes back, the stack swap included
 interpreter.getCallStack()[0]         // {kind: 'exception', vector: 5, address: handler, source_address: the stacked PC, ...}
 ```
+
+In a program for the 68010 (`opt p=68010`), and for the 68020 until its
+batch, the System file has the control registers too, and the frames are the
+68010's:
+
+```ts
+interpreter.getSystem()               // {sr: 0x2000, usp: 0x00ff0000, ssp: 0x01000000, vbr: 0, sfc: 0, dfc: 0}
+interpreter.beginPoke()
+interpreter.setVbr(0x8000)            // the vector table: every exception reads its vector at VBR + 4 * vector
+interpreter.setSfc(1)                 // three bits; s68k has one address space, so `moves` reaches the same memory
+interpreter.setDfc(5)
+interpreter.endPoke()                 // one step, which one undo takes back; on a 68000 these throw InvalidArgument
+```
+
+- **Format `$0`**, every exception but the bus and address errors: eight
+  bytes, the status register, the program counter, and the format/vector-offset
+  word, `0x0000` plus four times the vector. A handler that pops the frame by
+  hand pops eight bytes, not six.
+- **Format `$8`**, the bus and address errors: 58 bytes. Above the format word
+  `0x8000` plus the offset, the special status word (bit 13 an instruction
+  fetch, bit 12 a data read, bit 9 a byte, bit 8 a read, and the function code
+  in bits 2 to 0), the fault address, then the three buffers and the sixteen
+  internal words as zeros, the version among them, and three reserved words
+  that are not written. The program counter is the faulting instruction's, and
+  `rte` runs it again.
+- **`rte`** pops the frame its format word says, and a format other than `$0`
+  and `$8`, or a format `$8` frame whose version is not 0, is the format error,
+  vector 14, `{type: 'FormatError', value: {format}}` when it has no handler.
+- `movec` journals `WriteControlRegister {register: 'vbr' | 'sfc' | 'dfc', old,
+  new}`, and `movec An,usp` the stack pointers, as `move An,usp` does.
+- `move sr,<ea>` is privileged.
 
 A call frame is `kind: 'call'` and has no `vector`. The history journals an
 exception taken as `PushException {vector, from, handler}`, `rte` as
@@ -610,8 +647,13 @@ whole time (34 for `trap #0` to `#14`, an illegal instruction or a privilege
 violation, 38 and the source's for a division by zero, an address error 58
 after what the instruction had done); 34 more for a trace exception; and 44
 for an IRQ. `trap #15`'s tasks take none, as in EASy68K, `stop` takes 4 and
-`reset` 132. There are no wait states, and the 68010 and the 68020 count as a
-68000 for now.
+`reset` 132. There are no wait states. A program for the 68010 counts the
+68010's own time, section 9 of the manual and Moira's where the manual gives a
+maximum (an exception 38, an IRQ 46, `rte` 24, `mulu` 40), with its loop mode:
+a `DBcc` that branches back by −4 to a one-word instruction the 68010 can loop
+makes the loop's next turns fetch nothing, `move.w (a0)+,(a1)+` taking 8 and
+`dbra` 6 where they took 12 and 10, which the history journals as
+`SetLoopMode {old, new}`. A program for the 68020 counts as a 68010 for now.
 
 ```ts
 interpreter.getCycles()               // 1234n: a bigint, since the start or task 30
@@ -633,6 +675,22 @@ effective address and not 4.
 collection cannot reach. Call `dispose()` on both when a program is done with.
 `S68k.assemble` frees the assembly itself when the source did not build one, so
 live checking on every keystroke leaks nothing.
+
+## Migrating past 4.0.0: the 68010
+
+The release with the complete 68010 dialect (the README's "Processor
+dialects") changes only what a program for the 68010 or the 68020 does, and
+what the instruction table and the history can say:
+
+| before | after |
+|---|---|
+| `rtd`, `bkpt`, `movec` and `moves` refused, `unimplemented_in_dialect` | assembled under `opt p=68010` and `p=68020`, `needs_a_later_processor` on a 68000 |
+| the 68010's frames were the 68000's | format `$0`, eight bytes, and format `$8`, 58, for the bus and address errors; `rte` checks the format, and the cause `FormatError {format}`, vector 14 |
+| `getSystem()` `{sr, usp, ssp}` | and `vbr`, `sfc` and `dfc` in a program for the 68010 or the 68020; `setVbr`, `setSfc`, `setDfc` |
+| `move sr,<ea>` ran in user mode on every processor | privileged from the 68010 on; the table's `privilegedFrom` |
+| `sfc`, `dfc` and `vbr` were names a symbol could take | reserved, as `usp` is |
+| the 68010 and the 68020 counted as a 68000 | the 68010's own cycles, with loop mode; the 68020 counts as a 68010 |
+| | the mutations `WriteControlRegister` and `SetLoopMode` |
 
 ## Migrating past 4.0.0: cycles
 

@@ -29,7 +29,7 @@ The library has three parts:
 
 - **Interpreter** (`src/interpreter.rs`): runs a program from memory using registers and the status register. It supports stepping, running to the end, undo history, breakpoints, a call stack, and a watched range of memory whose every store ends the run, for a device mapped into memory.
 
-- **Machine** (`src/machine/`): the 68000's encoding. A decoder reads the words of an instruction for a 68000, a 68010 or a 68020, an encoder writes them, a disassembler prints an instruction in EASy68K's syntax, and the decode cache keeps the instructions the interpreter runs.
+- **Machine** (`src/machine/`): the 68000's encoding. A decoder reads the words of an instruction for a 68000, a 68010 or a 68020, an encoder writes them, a disassembler prints an instruction in EASy68K's syntax, the decode cache keeps the instructions the interpreter runs, and the exceptions' frames and the cycles are each processor's.
 
 The assembler chooses each instruction's 68000 encoding as EASy68K does (below) and writes it into the program's memory at its real size, so every address is the one a 68000 and EASy68K's listing give. The interpreter runs those bytes (below, "Code is memory").
 
@@ -59,6 +59,8 @@ The machine is a 68000 as EASy68K simulates one, and a 68000 where EASy68K is wr
 | 25 to 31 | `$064` to `$07C` | an interrupt request at level 1 to 7, through its autovector (below, "Interrupts") | the instruction it came before |
 | 32 to 46 | `$080` to `$0B8` | `trap #0` to `trap #14` | the next instruction's |
 | 47 | `$0BC` | a `trap #15` task that is none of EASy68K's | the next instruction's |
+
+A program for the 68010 has the same table and two more causes, `bkpt` and `movec` of a register it does not have, both vector 4, and the format error of `rte`, vector 14 at `$038`; it reads the vectors through VBR, pushes the 68010's frames, and its address and bus errors stack the instruction that faulted (below, "The 68010").
 
 - **Taking one.** The processor reads the vector, copies the status register, sets S and clears T, pushes the frame on the supervisor stack and jumps to the handler. A frame is the status register then the program counter, 6 bytes, except a bus error's and an address error's, 14: the special status word (bits 15 to 5 of the instruction register, R/W, I/N clear, and the function code of the mode and space of the access), the access address, the instruction register, the status register and the program counter. `rte` pops the six bytes; a bus or address error's handler takes the other eight off itself.
 - **No handler.** A vector holding an odd address has no handler, and the program ends with the error as it did before exceptions were taken, the vector named beside it (`Exception {cause, vector}`). Memory starts as `$FF`, so every vector reads `$FFFFFFFF` until the program writes it, and a program that installs nothing ends exactly as before.
@@ -117,7 +119,7 @@ The interpreter counts the clock cycles a 68000 takes, with the 68000's own time
 - **An exception** takes the 68000's time, which is the step's whole time: 34 for `trap #0` to `#14`, `trapv`, an illegal instruction, a privilege violation and the line A and F words; 38 and its source's effective address for a division by zero; 38 for `chk` above its bound and 40 below zero, with its source's; and 58 for an address error or a bus error from the access it aborted, after the time the instruction had taken until then. A trace exception adds 34 after the instruction, and an IRQ, a step of its own, takes 44. `stop` takes 4 and `reset` 132.
 - **`trap #15`'s tasks take no time**, as in EASy68K. A number that is none of EASy68K's tasks is a `trap` through vector 47, 34.
 - **The counter** is 64 bits. `getCycles()` reads it, a `bigint` (`get_cycles()` in Rust); each step of the history says what it took, `cycles`, and undo takes it back. Task 30 clears the counter and task 31 reads it into `D1.L`, 0 once it is past 32 bits, as in EASy68K; a step that clears it still says what it took.
-- **The 68010 and the 68020** count as a 68000 until their own tables come with their batches.
+- **The 68010** counts its own time (below, "The 68010"), and the 68020 counts as a 68010 until its batch gives it the cache case.
 
 Where EASy68K's counts differ from the 68000's, s68k counts the 68000's:
 
@@ -157,9 +159,33 @@ The counts on 2026-10-28, with the suite at its pinned commit, the lengths compa
 
 126 of the 127 files run and pass all 2,500 of their tests, length included, and `TRAP` its 2,340 that are not `trap #15`, the only skip. Of Musashi's programs, `abcd`, `sbcd`, `divs` and `divu` check Musashi's own answers where the 68000's microcode differs (a BCD digit above 9, the flags of a division that overflows), and `move` uses a 68020 form of `cmpi`, so those five stay skipped.
 
+### The 68010
+
+No single-step suite covers the 68010, so it is checked by a differential harness that runs a reference 68010 beside s68k, instruction by instruction (the asm-editor's `docs/design/m68k-machine.md`, decision 3; `src/test/differential.rs`). Every first word the decoder takes as a 68010 instruction is run from random states, one in eight of them traced under Musashi, by s68k and the reference, and the registers, both stack pointers, the status register, the program counter, VBR, SFC, DFC, every byte either wrote, which is where the frames are, and the cycles compared. Both references are MIT and fetched, never vendored, and compiled by `build.rs` with the `cc` crate only under their feature, for the host's tests:
+
+```sh
+scripts/fetch-musashi.sh
+cargo test --release --features musashi differential -- --ignored --nocapture
+scripts/fetch-moira.sh
+cargo test --release --features moira differential -- --ignored --nocapture
+```
+
+- **Musashi** checks behaviour. Where it is not the 68010 the case is not compared, by one list with a reason per line (`RELAXATIONS`): it has no address errors in 68010 mode, forgets a pending trace when an instruction takes an exception, lets a 68010 `movec` CACR, runs the 68040's `move16`, pushes `link a7`'s A7 four lower, sets the flags the manual leaves undefined otherwise than MAME's 68000 does, and does not check `rte`'s version. Its cycles are a table of maxima with no loop mode, so they are reported and not compared.
+- **Moira** checks behaviour and cycles. Its 68010 counts its cycles bus access by bus access and is checked against cputester on the hardware, loop mode included; the harness compiles it with precise timing and without its mimicry of Musashi. Every one-word instruction also runs in a loop of a `dbf` back to it, step by step, against Moira's loop mode. Only the flags the manual leaves undefined after the decimal instructions and a division by zero, and the cycles of `divs` of `$80000000`, which Moira takes the absolute value of in 32 bits, are left out.
+- **GNU `as -m68010`** encodes every form of the 68010's instructions the same, in the crate's opt-in check against GNU `as`, which compares every form of the table with `as -m68000` and the 68010's with `as -m68010`: `S68K_BINUTILS_PREFIX=/usr/bin/m68k-linux-gnu- cargo test --release gnu_as -- --ignored`.
+
+The counts on 2026-10-29, two cases of each first word, four against Moira:
+
+| | Cases | Agree | Left out |
+|---|---|---|---|
+| Musashi, behaviour | 102,543 | 102,543 | 5,847, by the list |
+| Moira, behaviour and cycles | 216,536 | 216,536 | 244 |
+| Moira, loop mode, step by step | 28,064 loops, 10,786 of them in loop mode | 28,064 | 9,813, which take an exception |
+| GNU `as -m68010` | 134 lines | 134 | |
+
 ## Future work
 
-- The rest of the 68010 and the 68020 dialects (below, "Processor dialects")
+- The rest of the 68020 dialect (below, "Processor dialects")
 - Macros and conditional assembly
 
 
@@ -173,6 +199,7 @@ The counts on 2026-10-28, with the suite at its pinned commit, the lengths compa
 | Bitwise                | not, or, ori, and, andi, eor, eori, lsl, lsr, asr, asl, rol, ror, roxl, roxr, btst, bclr, bchg, bset                                                                                                              |
 | Binary coded decimal   | abcd, sbcd, nbcd                                                                                                                                                                                                 |
 | Other                  | clr, exg, neg, ext, swap, move, link, unlk, lea, pea, moveq, movea, movem, movep, tas, nop, and the 68020's extb under `opt p=68020`                                                                               |
+| The 68010's            | rtd, bkpt, movec, moves and `move ccr,<ea>`, under `opt p=68010` or `opt p=68020`                                                                                                                                 |
 | Exceptions             | chk, trapv, illegal, trap #0 to #14, rte, and rtr, which returns and restores the condition codes (above, "Exceptions")                                                                                            |
 | Interrupts and control | stop, which waits for an interrupt request, and reset (above, "Interrupts")                                                                                                                                         |
 | Interrupt              | trap #15, with the I/O tasks 0-9, 11-20, 23, 24 and 33 in `d0`, the file tasks 50-59, the mouse task 61, the sound tasks 70-77, the graphics tasks 80-96, the interrupt-request tasks 60 and 62, and task 32 with 4, 5 or 6 in `d1.b` (the `Interrupt` enum of `src/instructions.rs` is the list of those the host answers) |
@@ -196,7 +223,20 @@ A program is written for the 68000 unless it says otherwise, with `opt p=68010` 
 
 - **Once, before the first instruction.** Every instruction is judged and measured for the processor in force, so an `opt p=` or `opt bit` after one is an error (`processor_chosen_after_code`) and chooses nothing. Saying the same processor again is harmless and naming another is an error (`processor_chosen_twice`), whichever file of the project either is in; a processor that is none of the three is `unknown_processor`.
 - **One machine with gates.** Every form of the instruction table names the first processor that has it, `processor` in `S68k.instructionTable()`, and a form of a later processor is refused: `needs_a_later_processor`, whose hint gives the 68000's way of doing the same and the `opt p=` line to add. The diagnostic carries both as suggested fixes, `fixes` in TypeScript, the `opt p=` line first: each a title, a location and the text that replaces what the location covers, where a location with no columns inserts.
-- **The dialects are partial until their batches.** The 68010 has `move ccr,<ea>` so far and the 68020 has `extb.l` and the long branches `bra.l`, `bsr.l` and `b<cc>.l`. Every other 68010 and 68020 instruction (`rtd`, `bkpt`, `movec`, `moves`, `chk2`, `cmp2`, `cas`, `cas2`, `pack`, `unpk`, `divsl`, `divul`, the `trapcc` family and the eight bit-field instructions) says it is not implemented yet in its dialect (`unimplemented_in_dialect`), and so does a shape the 68020 gives a 68000 instruction (`muls.l`, `divs.l`, `chk.l`, `link.l`, `tst` of an address register, a PC-relative operand or an immediate, `cmpi` against the program counter) under `opt p=68020`, which the 68000 and the 68010 refuse as a size or an addressing mode they do not have. `callm` and `rtm` are left out for good. The rest of the 68010 (VBR, its frames and loop mode) and of the 68020 (its addressing modes, frames and stack pointers) arrive with their instructions.
+- **The 68010 is complete** (below).
+- **The 68020 is partial until its batch.** It has the 68010 and `extb.l` and the long branches `bra.l`, `bsr.l` and `b<cc>.l`. Every other 68020 instruction (`chk2`, `cmp2`, `cas`, `cas2`, `pack`, `unpk`, `divsl`, `divul`, the `trapcc` family and the eight bit-field instructions) says it is not implemented yet in its dialect (`unimplemented_in_dialect`), and so does a shape the 68020 gives a 68000 instruction (`muls.l`, `divs.l`, `chk.l`, `link.l`, `tst` of an address register, a PC-relative operand or an immediate, `cmpi` against the program counter) under `opt p=68020`, which the 68000 and the 68010 refuse as a size or an addressing mode they do not have. `callm` and `rtm` are left out for good. Until its batch a 68020 program runs as a 68010 does, its frames, VBR and timing included, without loop mode; its addressing modes, frames, stack pointers and cache-case cycles come with it.
+
+### The 68010
+
+`opt p=68010` gives a program the whole 68010 of the 68000 User's Manual (its sections 6 and 9 and appendix A) and the Programmer's Reference Manual:
+
+- **Its instructions**: `move ccr,<ea>`, the user mode's way to read the condition codes; `rtd #d`, a return that adds the displacement to the stack pointer; `bkpt #n`, which takes the illegal instruction exception, as a 68010 does when no debugger answers its breakpoint cycle; `movec` between a general register and `sfc`, `dfc`, `usp` or `vbr`, privileged, any other control register an illegal instruction; and `moves`, privileged. s68k has one address space, so `moves` reaches the memory `move` does, as a supervisor data access, whatever SFC and DFC hold: they are three bits each that `movec` writes and reads back. `sfc`, `dfc` and `vbr` are reserved names in every program, as `usp` is.
+- **`move sr,<ea>` is privileged**, the one change a user-mode program sees; `clr` and `move sr` no longer read before they write.
+- **VBR.** Every exception, IRQs included, reads its vector at VBR plus four times the vector; VBR is 0 until `movec` moves it.
+- **Frames.** Every exception but the two of group 0 pushes the format `$0` frame, eight bytes: the status register, the program counter and the format/vector-offset word, four times the vector. The bus and address errors push the format `$8` frame, 29 words, of which the three reserved words are not written: the status register, the program counter of the instruction that faulted, `$8` and the vector offset, the special status word (IF, DF, BY, R/W and the function code), the fault address, and the three buffers and the sixteen internal words as zeros, version 0 among them.
+- **`rte`** reads the format word first: format `$0` pops eight bytes and format `$8` 58, and returns to the stacked program counter, where the instruction that faulted runs again; s68k keeps no internal state to continue it. Any other format, or a version that is not 0, is the format error, vector 14, which leaves the frame where it is, stacks the `rte`'s address and, for a format it does not have, sets N to the format's high bit and clears Z and V, as a 68010 does.
+- **Cycles** are the manual's section 9, and Moira's where the manual gives a maximum or departs from it (`src/machine/timing.rs`): `mulu` 40 and `muls` 40 or 42 with the source, `divu` 78 and two per step without a carry, `divs` 118 or 120, 8 and 16 for an overflow; an exception 38, an IRQ 46, `chk` 42 or 44, a division by zero 42, `trapv` 40, `bkpt` 42, `rte` 24, and an address or bus error 134 from the access, after the 68010's own lead; `Bcc.s` 6 not taken and 10 taken, `DBcc` 10, or 16 when its counter runs out.
+- **Loop mode.** A `DBcc` with a displacement of −4 that branches back to a one-word instruction the 68010 can loop, with T clear, enters loop mode, and the loop's next turns fetch nothing: `move.w (a0)+,(a1)+` takes 8 and `dbra` 6 where they took 12 and 10. It ends when the counter runs out or the condition is true, at the time of its own the instruction gives it, and on any exception, an IRQ's included; undo puts it back. It changes the cycles and nothing else.
 
 ## The S-record
 
@@ -333,7 +373,9 @@ Where s68k departs from EASy68K, on purpose:
 - On Windows EASy68K cannot delete a file that is open, and reports 2; whether a file that is open can be deleted is the host's file system's to say.
 
 ## Known limitations
-1. Cycles are counted with a bus that answers at once: no wait states, and the 68010 and the 68020 count as a 68000 (above, "Cycles").
+1. Cycles are counted with a bus that answers at once: no wait states, and the 68020 counts as a 68010 (above, "Cycles").
+4. The 68010's bus and address errors are restarted by `rte` from the instruction's start, not continued from the internal state the 68010 writes, which s68k writes as zeros; loop mode changes cycles only, so an IRQ is still taken between the looped instruction and its `DBcc`, where a 68010 takes it after the `DBcc`; and SFC and DFC name no address space.
+5. A word or a long that straddles the end of the 16 MB, at `$FFFFFF` and `$000000`, ends the program out of bounds, where the 68000's 24-bit bus wraps round to `$000000`. The differential harness found it; it is the same on every processor.
 2. Vectored and spurious interrupts, the reset exception and the 68000's HALT pin are left out, as EASy68K leaves them out; nothing reads the vectors at `$0` and `$4`, and `reset` runs no reset sequence.
 3. The timers of task 32 are the host's to run: the interpreter keeps their settings and takes the requests the host raises. EASy68K's hardware window, its IRQ buttons and its devices are not there.
 

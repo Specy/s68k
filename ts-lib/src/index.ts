@@ -562,10 +562,12 @@ export class Interpreter {
     }
 
     /**
-     * The System register file: the status register and both stack pointers.
-     * A7 is the SSP while S is set and the USP while it is not; a program
-     * starts with SR `0x2000`, the SSP at `0x01000000` and the USP at
-     * `0x00FF0000`.
+     * The System register file: the status register and both stack pointers,
+     * and in a program for the 68010 or the 68020 the control registers VBR,
+     * SFC and DFC, which a 68000 program's has no field for. A7 is the SSP
+     * while S is set and the USP while it is not; a program starts with SR
+     * `0x2000`, the SSP at `0x01000000`, the USP at `0x00FF0000` and the
+     * control registers 0.
      */
     getSystem(): SystemRegisters {
         return this.interpreter.wasm_get_system() as SystemRegisters
@@ -595,6 +597,35 @@ export class Interpreter {
      */
     setSsp(value: number) {
         this.interpreter.wasm_set_ssp(value)
+    }
+
+    /**
+     * Write the vector base register, where the vector table starts, which
+     * every exception reads its vector through: the 68010's, as `movec d0,vbr`
+     * would. Inside a poke it is journaled; outside one it is direct. It throws
+     * an `InvalidArgument` in a program for the 68000, which has none.
+     */
+    setVbr(value: number) {
+        this.interpreter.wasm_set_vbr(value)
+    }
+
+    /**
+     * Write the source function code, its three low bits, as `movec d0,sfc`
+     * would: the 68010's. Inside a poke it is journaled; outside one it is
+     * direct. It throws an `InvalidArgument` in a program for the 68000.
+     */
+    setSfc(value: number) {
+        this.interpreter.wasm_set_sfc(value)
+    }
+
+    /**
+     * Write the destination function code, its three low bits, as
+     * `movec d0,dfc` would: the 68010's. Inside a poke it is journaled;
+     * outside one it is direct. It throws an `InvalidArgument` in a program for
+     * the 68000.
+     */
+    setDfc(value: number) {
+        this.interpreter.wasm_set_dfc(value)
     }
 
     /**
@@ -776,11 +807,13 @@ export class Interpreter {
     }
 
     /**
-     * The cycle counter: the clock cycles of a 68000 the program has taken since
-     * it started, or since trap #15 task 30 last cleared it. Each instruction
-     * counts the 68000's own time, its data included (a multiply by its bits, a
-     * shift by its count, a branch taken or not), and so does each exception and
-     * each IRQ (44); trap #15's tasks take none, as in EASy68K. Undo takes a
+     * The cycle counter: the clock cycles the program has taken since it
+     * started, or since trap #15 task 30 last cleared it. Each instruction
+     * counts its processor's own time, its data included (a multiply by its
+     * bits, a shift by its count, a branch taken or not), and so does each
+     * exception and each IRQ (44 on a 68000, 46 on a 68010); the 68010's loop
+     * mode included, and a 68020 counting as a 68010 for now; trap #15's
+     * tasks take none, as in EASy68K. Undo takes a
      * step's cycles back, and each step of the history says what it took, as
      * `cycles`. Task 31 reads the counter into D1.L, 0 once it is past 32 bits.
      */

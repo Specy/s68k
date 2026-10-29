@@ -37,6 +37,17 @@ default = ["console_error_panic_hook"]
 # the WebAssembly build. The crate's own tests have it without the feature, so
 # `cargo test` runs the vendored subset; the feature is for outside callers.
 conformance = []
+# The differential harness of the 68010 dialect, `src/conformance/musashi.rs`:
+# Musashi (MIT), fetched by scripts/fetch-musashi.sh and compiled by build.rs
+# with the `cc` crate, runs beside the Interpreter instruction by instruction.
+# For the host's tests only: it compiles C, which the WebAssembly build never
+# needs, and nothing fetches or compiles Musashi without it.
+musashi = ["conformance", "dep:cc"]
+# The cycles of the same harness, `src/conformance/moira.rs`: Moira (MIT), a
+# 68010 that counts its cycles access by access and is checked against
+# cputester, fetched by scripts/fetch-moira.sh and compiled by build.rs as
+# C++20. For the host's tests only, as `musashi` is.
+moira = ["conformance", "dep:cc"]
 
 [dev-dependencies]
 # Pinned exactly: the committed snapshots are this version's file format, and
@@ -46,3 +57,7 @@ insta = { version = "=1.48.0", features = ["json"] }
 # Assembler's Diagnostics are serialised for the TypeScript side, and their
 # shape is asserted as data rather than as a snapshot.
 serde_json = "1.0"
+
+[build-dependencies]
+# The build script of the `musashi` and `moira` features only.
+cc = { version = "1.2", optional = true }

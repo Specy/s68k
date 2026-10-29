@@ -7,12 +7,15 @@ mod corpus;
 mod cycles;
 mod decoded_instructions;
 mod diagnostics;
+#[cfg(any(feature = "musashi", feature = "moira"))]
+mod differential;
 mod encoding;
 mod exceptions;
 mod history;
 mod include;
 mod instruction_semantics;
 mod interrupts;
+mod m68010;
 mod memory_map;
 mod mutations;
 mod pokes;

@@ -184,7 +184,7 @@ pub enum DiagnosticKind {
         /// The name as it was written, dot included.
         name: String,
     },
-    /// A Symbol named like one of the twenty-one reserved register names.
+    /// A Symbol named like one of the twenty-four reserved register names.
     ReservedNameAsSymbol {
         /// The name that was written.
         name: String,
@@ -734,9 +734,9 @@ pub enum DiagnosticKind {
         /// then the line to change rather than one to add.
         chosen: bool,
     },
-    /// A 68010 or 68020 instruction, or a shape a later processor gave a
-    /// 68000 one, that s68k's dialect does not implement yet: `rtd`,
-    /// `muls.l`, `bfextu`.
+    /// A 68020 instruction, or a shape the 68020 gave a 68000 one, that
+    /// s68k's dialect does not implement yet: `cas`, `muls.l`, `bfextu`. The
+    /// 68010's dialect is complete.
     UnimplementedInDialect {
         /// What was written, as the message quotes it: `rtd`, `muls.l d0,d1`.
         name: String,
@@ -753,9 +753,7 @@ pub enum DiagnosticKind {
 fn partial_dialect(processor: Processor, bit_field: bool) -> String {
     match (processor, bit_field) {
         (_, true) => "s68k reads `opt bit` and has no bit-field instruction yet".to_string(),
-        (Processor::M68010, _) => "The 68010 dialect is partial so far: of the 68010's \
-                                   instructions s68k has `move ccr,<ea>`"
-            .to_string(),
+        //the 68010 dialect is complete, so every instruction still to come is the 68020's
         _ => "The 68020 dialect is partial so far: of the 68020's instructions s68k has \
               `extb.l` and the long branches `bra.l`, `bsr.l` and `b<cc>.l`"
             .to_string(),

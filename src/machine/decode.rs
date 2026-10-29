@@ -28,10 +28,10 @@
 //!
 //! Every row is gated on its first processor, so a word the 68010 or the 68020
 //! adds is illegal on the processors before it: `move ccr,<ea>` (`$42C0` to
-//! `$42F9`) on the 68000, `extb.l` (`$49C0` to `$49C7`) on both the 68000 and
-//! the 68010. Only the 68000 is decoded in full; the other instructions and the
-//! addressing modes of the later processors are not read yet, and decode as
-//! illegal for every processor.
+//! `$42F9`), `rtd`, `movec`, `moves` and `bkpt` on the 68000, `extb.l`
+//! (`$49C0` to `$49C7`) on both the 68000 and the 68010. The 68000 and the
+//! 68010 are decoded in full; the 68020's other instructions and addressing
+//! modes are not read yet, and decode as illegal for every processor.
 //!
 //! Two readings differ by processor (`docs/research/m68k-cpu-variants.md`
 //! §2.1 in the asm-editor):
@@ -49,8 +49,8 @@
 //! processor. It is recognised before line F, which `$FFFF` alone would be.
 
 use crate::instructions::{
-    AddressWidth, BranchSize, Condition, IndexRegister, Instruction, Operand, RegisterOperand,
-    ShiftDirection, Sign, Size, TargetDirection,
+    AddressWidth, BranchSize, Condition, ControlRegister, IndexRegister, Instruction, Operand,
+    RegisterOperand, ShiftDirection, Sign, Size, TargetDirection,
 };
 
 use super::Processor;
@@ -488,6 +488,13 @@ static LINE_0: &[Row] = &[
     row(0xFF00, 0x0600, sized_ea::<DATA_ALTERABLE>, immediate),
     row(0xFF00, 0x0A00, sized_ea::<DATA_ALTERABLE>, immediate),
     row(0xFF00, 0x0C00, sized_ea::<DATA_ALTERABLE>, immediate),
+    gated(
+        Processor::M68010,
+        0xFF00,
+        0x0E00,
+        sized_ea::<MEMORY_ALTERABLE>,
+        moves,
+    ),
 ];
 
 /// Line 1: `move.b`.
@@ -517,6 +524,13 @@ static LINE_4: &[Row] = &[
     row(0xFFFF, 0x4E75, any, |_, _| Some(Instruction::RTS)),
     row(0xFFFF, 0x4E76, any, |_, _| Some(Instruction::TRAPV)),
     row(0xFFFF, 0x4E77, any, |_, _| Some(Instruction::RTR)),
+    gated(Processor::M68010, 0xFFFF, 0x4E74, any, |words, _| {
+        Some(Instruction::RTD(words.word()? as i16 as i32 as u32))
+    }),
+    gated(Processor::M68010, 0xFFFE, 0x4E7A, any, movec),
+    gated(Processor::M68010, 0xFFF8, 0x4848, any, |_, word| {
+        Some(Instruction::BKPT((word & 7) as u8))
+    }),
     row(0xFFF0, 0x4E40, any, |_, word| {
         Some(Instruction::TRAP((word & 0xF) as u8))
     }),
@@ -1010,6 +1024,47 @@ fn movem(words: &mut Words, word: u16) -> Option<Instruction> {
         },
         size,
         registers_mask,
+        target,
+    })
+}
+
+/// The general register of the extension word of `movec` and `moves`: bit
+/// 15 picks the address registers, bits 14–12 the register.
+fn general_register(extension: u16) -> RegisterOperand {
+    let number = ((extension >> 12) & 7) as u8;
+    match extension & 0x8000 {
+        0 => RegisterOperand::Data(number),
+        _ => RegisterOperand::Address(number),
+    }
+}
+
+/// `movec`: bit 0 of the operation word says the control register is
+/// written, and the extension word names the general register and, in bits
+/// 11–0, the control register, whatever its code.
+fn movec(words: &mut Words, word: u16) -> Option<Instruction> {
+    let extension = words.word()?;
+    Some(Instruction::MOVEC {
+        to_control: word & 1 != 0,
+        control: ControlRegister::from_code(extension),
+        register: general_register(extension),
+    })
+}
+
+/// `moves`: the size in bits 7–6, then an extension word whose bit 11 says the
+/// register is written to memory. Bits 10–0 of it are zero in every
+/// encoding, and are not read.
+fn moves(words: &mut Words, word: u16) -> Option<Instruction> {
+    let size = standard_size(word);
+    let extension = words.word()?;
+    let target = words.ea(word, size)?;
+    Some(Instruction::MOVES {
+        direction: if extension & 0x0800 != 0 {
+            TargetDirection::ToMemory
+        } else {
+            TargetDirection::FromMemory
+        },
+        size,
+        register: general_register(extension),
         target,
     })
 }
@@ -1745,8 +1800,15 @@ pub(crate) mod tests {
         assert_eq!(first_processor(0x42C0), Some(Processor::M68010));
         assert_eq!(first_processor(0x49C7), Some(Processor::M68020));
         assert_eq!(first_processor(0x60FF), Some(Processor::M68000));
-        // `rtd` is the 68010's, but not decoded yet.
-        assert_eq!(first_processor(0x4E74), None);
+        assert_eq!(first_processor(0x4E74), Some(Processor::M68010), "rtd");
+        assert_eq!(first_processor(0x4E7B), Some(Processor::M68010), "movec");
+        assert_eq!(
+            first_processor(0x0E50),
+            Some(Processor::M68010),
+            "moves.w (a0)"
+        );
+        assert_eq!(first_processor(0x484F), Some(Processor::M68010), "bkpt #7");
+        assert_eq!(first_processor(0x0E40), None, "moves has no data register");
         assert_eq!(first_processor(0x4AFB), None);
     }
 

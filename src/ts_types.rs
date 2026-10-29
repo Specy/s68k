@@ -393,7 +393,14 @@ export type RuntimeError = { type: "Raw", value: string } |
 /** An answer the pending interrupt cannot take; it still waits. */
 { type: "InvalidAnswer", value: { interrupt: string, reason: string } } |
 /** A value that is not what the call takes: a register that does not exist, a breakpoint that is not `{file, line}`. */
-{ type: "InvalidArgument", value: string }
+{ type: "InvalidArgument", value: string } |
+/**
+ * The 68010's format error, vector 14: `rte` found a frame whose format is
+ * neither `$0` nor `$8`, or a format `$8` frame with a version number other
+ * than 0, the one s68k writes. `format` is the frame's, its format word's high
+ * four bits.
+ */
+{ type: "FormatError", value: { format: number } }
 
 /** Why a program ended. */
 export type Termination =
@@ -428,12 +435,26 @@ export type Termination =
 
 /**
  * The System register file: the whole status register and both stack
- * pointers. A7 is the SSP while S is set and the USP while it is not.
+ * pointers, and from the 68010 on its control registers VBR, SFC and DFC. A7
+ * is the SSP while S is set and the USP while it is not.
  */
 export type SystemRegisters = {
     sr: number,
     usp: number,
-    ssp: number
+    ssp: number,
+    /**
+     * The vector base register, where the vector table starts, which every
+     * exception reads its vector through: from the 68010 on, absent on a
+     * 68000, whose table is at `$000`. 0 at the start.
+     */
+    vbr?: number,
+    /**
+     * The source and destination function codes, three bits each, which
+     * `movec` writes and reads: from the 68010 on, absent on a 68000. s68k has
+     * one address space, so `moves` reaches the same memory whatever they are.
+     */
+    sfc?: number,
+    dfc?: number
 }
 "#;
 
@@ -778,22 +799,30 @@ export type InstructionForm = {
      * One list per operand position of the addressing modes it takes, by the
      * names a diagnostic gives them: `Dn`, `An`, `(An)`, `(An)+`, `-(An)`,
      * `d(An)`, `d(An,Xn)`, `Ea/<label>`, `d(PC)`, `d(PC,Xn)`, `Im`,
-     * `<register list>`, `sr`, `ccr`, `usp`. Its length is the operand count.
+     * `<register list>`, `sr`, `ccr`, `usp`, and `Rc` for `sfc`, `dfc` or
+     * `vbr`, which only `movec` takes. Its length is the operand count.
      */
     operands: string[][],
     /** The sizes it accepts, as `parseLine` writes a size; empty when it carries none. */
     sizes: ("byte" | "word" | "long" | "short")[],
     /**
-     * Whether the 68000 runs it only in supervisor mode: `move <ea>,sr`,
-     * `andi`, `ori` and `eori` into `sr`, `rte`, and `move usp`. A privileged
+     * Whether its first processor runs it only in supervisor mode:
+     * `move <ea>,sr`, `andi`, `ori` and `eori` into `sr`, `rte`, `stop`,
+     * `reset`, `move usp`, and the 68010's `movec` and `moves`. A privileged
      * form assembles, and raises a privilege violation when it runs in user
      * mode.
      */
     privileged: boolean,
     /**
-     * The first processor that has it: `move ccr,<ea>` is the 68010's and
-     * `extb.l` the 68020's; every other form is the 68000's. A program written
-     * for an earlier processor is refused it.
+     * The first processor that runs it only in supervisor mode, absent when
+     * every processor runs it in either: `'68010'` for `move sr,<ea>`, which a
+     * 68000 runs in user mode and the 68010 made privileged.
+     */
+    privilegedFrom?: Processor,
+    /**
+     * The first processor that has it: `move ccr,<ea>`, `rtd`, `bkpt`, `movec`
+     * and `moves` are the 68010's and `extb.l` the 68020's; every other form is
+     * the 68000's. A program written for an earlier processor is refused it.
      */
     processor: Processor
 }
@@ -1021,6 +1050,28 @@ export type MutationOperation = {
     value: {
         old: MachineState,
         new: MachineState
+    }
+} | {
+    /**
+     * A control register of the 68010 that is no stack pointer before and
+     * after `movec` or a poke wrote it: a function code is its three bits.
+     */
+    type: "WriteControlRegister",
+    value: {
+        register: "vbr" | "sfc" | "dfc",
+        old: number,
+        new: number
+    }
+} | {
+    /**
+     * The 68010's loop mode entered or left: the address of the `DBcc` whose
+     * one-instruction loop runs without fetching, before and after, `null` out
+     * of it. It changes cycles only.
+     */
+    type: "SetLoopMode",
+    value: {
+        old: number | null,
+        new: number | null
     }
 }
 "#;

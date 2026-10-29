@@ -3,18 +3,21 @@
 //!
 //! The Interpreter raises an Exception for every error the 68000 has one
 //! for: it reads the vector, pushes the frame this module describes on the
-//! supervisor stack, and jumps to the handler. Everything here is the 68000's;
-//! the 68010 and the 68020 have frames of their own, a format word and a
-//! vector base register, which extend [`Frame`] when their batches land
-//! (ADR 0011).
+//! supervisor stack, and jumps to the handler. The 68010 reads the vector
+//! through its vector base register and pushes frames of its own, which
+//! begin with a format word (ADR 0011); the 68020 has the 68010's until its
+//! batch gives it its own.
 //!
 //! **What the frames hold.**
 //!
 //! * Groups 1 and 2, every exception but the two of group 0: the status
-//!   register, then the program counter, six bytes.
+//!   register, then the program counter, six bytes. The 68010 adds the
+//!   format/vector-offset word, format `$0` and four times the vector, eight
+//!   bytes ([`Frame::Format0`]).
 //! * Group 0, the bus error and the address error: the special status word,
 //!   the access address, the instruction register, the status register and
-//!   the program counter, fourteen bytes.
+//!   the program counter, fourteen bytes. The 68010 pushes its format `$8`
+//!   frame of 29 words instead ([`Frame::Format8`]).
 //!
 //! **The program counter stacked.** An illegal instruction, a privilege
 //! violation and the line A and line F words stack the address of the
@@ -53,6 +56,9 @@ pub const TRACE: u8 = 9;
 pub const LINE_A: u8 = 10;
 /// The vector of a line F word, `$Fxxx`.
 pub const LINE_F: u8 = 11;
+/// The vector of the format error, the 68010's: `rte` found a frame whose
+/// format it does not know.
+pub const FORMAT_ERROR: u8 = 14;
 /// The vector of `trap #0`; `trap #n` is this plus `n`.
 pub const TRAP_0: u8 = 32;
 /// The vector of `trap #15`, which a `trap #15` task EASy68K does not know
@@ -83,6 +89,7 @@ pub fn vector_name(vector: u8) -> String {
         TRACE => "Trace".to_string(),
         LINE_A => "Line A".to_string(),
         LINE_F => "Line F".to_string(),
+        FORMAT_ERROR => "Format error".to_string(),
         TRAP_0..=TRAP_15 => format!("TRAP #{}", vector - TRAP_0),
         FIRST_AUTOVECTOR..=LAST_AUTOVECTOR => {
             format!("IRQ {}", vector - interrupts::AUTOVECTOR_BASE)
@@ -114,6 +121,7 @@ pub fn vector_of(error: &RuntimeError) -> Option<u8> {
         RuntimeError::Trace => Some(TRACE),
         RuntimeError::LineA(_) => Some(LINE_A),
         RuntimeError::LineF(_) => Some(LINE_F),
+        RuntimeError::FormatError { .. } => Some(FORMAT_ERROR),
         RuntimeError::UnhandledTrap { vector } => Some(*vector),
         RuntimeError::Irq { level } => Some(interrupts::autovector(*level)),
         RuntimeError::UnsupportedTrapTask { task } if !is_easy68k_task(*task) => Some(TRAP_15),
@@ -128,9 +136,10 @@ pub enum Group {
     /// The address and bus errors, which abort the instruction and push the
     /// long frame.
     Zero,
-    /// An illegal instruction, a privilege violation, trace, an IRQ and the
-    /// line A and F words: the instruction did not run, and is not traced. An
-    /// IRQ is taken between two instructions, as a step of its own.
+    /// An illegal instruction, a privilege violation, trace, an IRQ, the
+    /// line A and F words and the 68010's format error: the instruction did
+    /// not run, and is not traced. An IRQ is taken between two instructions,
+    /// as a step of its own.
     One,
     /// `trap`, `trapv`, `chk` and a division by zero, which an instruction
     /// raises as it runs: it has run, and a trace exception follows it when T
@@ -149,6 +158,11 @@ pub fn group(vector: u8) -> Group {
 
 /// The frame an Exception pushes on the supervisor stack, the status register
 /// aside, which is always the one from before the exception.
+///
+/// The 68000's are [`Short`](Frame::Short) and [`Group0`](Frame::Group0);
+/// the 68010's begin with a format/vector-offset word, the format in its
+/// four high bits and four times the vector below, which `rte` reads to know
+/// what to pop: [`Format0`](Frame::Format0) and [`Format8`](Frame::Format8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frame {
     /// The frame of groups 1 and 2: the status register at the stack
@@ -170,6 +184,49 @@ pub enum Frame {
         /// [`status_word`]'s.
         status_word: u16,
     },
+    /// The 68010's frame of every exception but the two of group 0, format
+    /// `$0`: the status register, the program counter and the
+    /// format/vector-offset word, eight bytes.
+    Format0 {
+        /// The program counter stacked.
+        pc: u32,
+        /// The vector, whose offset, four times it, the format word holds.
+        vector: u8,
+    },
+    /// The 68010's frame of the bus error and the address error, format
+    /// `$8`, 29 words: the status register, the program counter, the
+    /// format/vector-offset word, the special status word, the fault address,
+    /// the data output, data input and instruction input buffers, each after
+    /// a word that is not written, and sixteen words of internal information,
+    /// the first of which holds a version number.
+    ///
+    /// The internal words and the three buffers are written as zeros, the
+    /// version number 0 among them: s68k does not continue an instruction
+    /// from them, and `rte` restarts the instruction the frame stacks the
+    /// address of (the asm-editor's `docs/design/m68k-machine.md`, decision
+    /// 3, as Musashi does).
+    Format8 {
+        /// The program counter stacked: the address of the instruction that
+        /// faulted.
+        pc: u32,
+        /// The vector, 2 or 3.
+        vector: u8,
+        /// The address the access that faulted was made to, all 32 bits.
+        fault_address: u32,
+        /// [`special_status_word`]'s.
+        special_status_word: u16,
+    },
+}
+
+/// The words of a [`Frame::Format8`] that are not written: the stack pointer
+/// goes down by 29 words, and only 26 are written, the three words before
+/// each buffer being "unused, reserved" (the 68000 User's Manual, figure 6-8).
+const FORMAT_8_UNWRITTEN: [usize; 3] = [7, 9, 11];
+
+/// The format/vector-offset word of a 68010 frame of `format` through
+/// `vector`.
+pub const fn format_word(format: u16, vector: u8) -> u16 {
+    (format << 12) | (vector as u16 * 4)
 }
 
 impl Frame {
@@ -194,23 +251,79 @@ impl Frame {
                 high(pc),
                 low(pc),
             ],
+            Frame::Format0 { pc, vector } => vec![sr, high(pc), low(pc), format_word(0, vector)],
+            Frame::Format8 {
+                pc,
+                vector,
+                fault_address,
+                special_status_word,
+            } => {
+                let mut words = vec![
+                    sr,
+                    high(pc),
+                    low(pc),
+                    format_word(8, vector),
+                    special_status_word,
+                    high(fault_address),
+                    low(fault_address),
+                ];
+                //the three buffers, each after a reserved word, and the internal information
+                words.resize(29, 0);
+                words
+            }
         }
     }
 
-    /// How many bytes the frame takes on the stack: 6 or 14.
+    /// Whether the word at `index` of [`words`](Frame::words) is written: all
+    /// but the three reserved words of a [`Frame::Format8`], whose memory is
+    /// left as it was.
+    pub fn is_written(&self, index: usize) -> bool {
+        !matches!(self, Frame::Format8 { .. }) || !FORMAT_8_UNWRITTEN.contains(&index)
+    }
+
+    /// How many bytes the frame takes on the stack: 6 or 14 on a 68000, 8 or
+    /// 58 on a 68010.
     pub fn size(&self) -> u32 {
         match self {
             Frame::Short { .. } => 6,
             Frame::Group0 { .. } => 14,
+            Frame::Format0 { .. } => 8,
+            Frame::Format8 { .. } => 58,
         }
     }
 
     /// The program counter the frame stacks, where `rte` returns to.
     pub fn pc(&self) -> u32 {
         match *self {
-            Frame::Short { pc } | Frame::Group0 { pc, .. } => pc,
+            Frame::Short { pc }
+            | Frame::Group0 { pc, .. }
+            | Frame::Format0 { pc, .. }
+            | Frame::Format8 { pc, .. } => pc,
         }
     }
+}
+
+/// The special status word of a 68010 [`Frame::Format8`] (the 68000 User's
+/// Manual, figure 6-9): RR, bit 15, clear, as the processor would rerun the
+/// access; IF, bit 13, for an instruction fetch, and DF, bit 12, for a data
+/// read; BY, bit 9, for a byte; RW, bit 8, set for a read; and in bits 2 to 0
+/// the function code of the access, as [`status_word`]'s. RM and HB are
+/// clear: s68k does not say which accesses are a read-modify-write.
+pub fn special_status_word(access: Access, size: Size, supervisor: bool) -> u16 {
+    let fetch = match access {
+        Access::Program => 0x2000,
+        Access::Read => 0x1000,
+        Access::Write => 0,
+    };
+    let byte = match size {
+        Size::Byte => 0x0200,
+        Size::Word | Size::Long => 0,
+    };
+    let read = match access {
+        Access::Write => 0,
+        Access::Read | Access::Program => 0x0100,
+    };
+    fetch | byte | read | (status_word(0, access, supervisor) & 7)
 }
 
 /// The special status word of a group 0 frame: bits 15 to 5 are the

@@ -30,10 +30,20 @@
 //! a `trap` like any other.
 //!
 //! **The dialects.** Each [`Processor`] has its own table: [`base`] takes the
-//! one to count for. Only the 68000's is filled. The 68010 and the 68020 count
-//! as a 68000 until their batches give them their own (the asm-editor's
-//! `docs/design/m68k-machine-plan.md`, C12 and C13); the extra each
-//! instruction's data costs is the 68000's too.
+//! one to count for, and [`Extras`] says what the data of an instruction adds
+//! on it, so that a step asks nothing of the processor.
+//!
+//! * The 68010's is section 9 of the manual where it gives exact times, and
+//!   Moira's 68010 where the manual gives a maximum or is wrong: Moira counts
+//!   its cycles access by access and is checked against cputester on the
+//!   hardware. The differential harness (`src/test/differential.rs`, the
+//!   `moira` feature) checks every 68010 instruction against it, address
+//!   errors and loop mode included ([`loop_mode`]). Its multiplications and
+//!   divisions take Moira's models ([`multiply`], [`divide`]), and
+//!   [`m68010`] holds its exceptions' times.
+//! * The 68020 counts as a 68010 until its batch gives it the cache case (the
+//!   asm-editor's `docs/design/m68k-machine-plan.md`, C13), without loop
+//!   mode, which it does not have.
 
 use super::Processor;
 use crate::instructions::{
@@ -118,8 +128,61 @@ pub const RESET_CYCLES: u16 = 132;
 /// ones take at least. The decode cache keeps it beside the instruction.
 pub fn base(instruction: &Instruction, processor: Processor) -> u16 {
     match processor {
-        //the 68010's and the 68020's own tables come with their batches
-        Processor::M68000 | Processor::M68010 | Processor::M68020 => m68000(instruction),
+        Processor::M68000 => m68000(instruction),
+        //the 68020 counts as a 68010 until its batch gives it the cache case
+        Processor::M68010 | Processor::M68020 => m68010(instruction),
+    }
+}
+
+/// What the data of an instruction adds to its base on one processor, where
+/// the processors differ, and the times of the exceptions that are steps or
+/// parts of steps of their own: the Interpreter keeps the one of its
+/// Program's processor, so that a step adds a number and asks nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Extras {
+    /// A `Bcc.s` that branches, over one that does not.
+    pub short_branch_taken: u64,
+    /// A `Bcc.w` that does not branch, over one that does.
+    pub word_branch_not_taken: u64,
+    /// A `DBcc` whose condition is true, over one that branches back.
+    pub dbcc_condition_true: u64,
+    /// A `DBcc` whose counter runs out, over one that branches back.
+    pub dbcc_expired: u64,
+    /// An `Scc` to a data register whose condition is true.
+    pub scc_true: u64,
+    /// An IRQ taken.
+    pub irq: u64,
+    /// A trace exception, after the instruction it follows.
+    pub trace: u64,
+    /// Whether the processor has the 68010's loop mode: only the 68010 does.
+    pub loop_mode: bool,
+}
+
+impl Extras {
+    /// The extras of `processor`.
+    pub const fn of(processor: Processor) -> Extras {
+        match processor {
+            Processor::M68000 => Extras {
+                short_branch_taken: BRANCH_EXTRA,
+                word_branch_not_taken: BRANCH_EXTRA,
+                dbcc_condition_true: DBCC_CONDITION_TRUE,
+                dbcc_expired: DBCC_EXPIRED,
+                scc_true: SCC_TRUE,
+                irq: IRQ,
+                trace: TRACE,
+                loop_mode: false,
+            },
+            Processor::M68010 | Processor::M68020 => Extras {
+                short_branch_taken: 4,
+                word_branch_not_taken: 0,
+                dbcc_condition_true: 0,
+                dbcc_expired: 6,
+                scc_true: 0,
+                irq: m68010::IRQ,
+                trace: m68010::TRACE,
+                loop_mode: matches!(processor, Processor::M68010),
+            },
+        }
     }
 }
 
@@ -364,14 +427,310 @@ fn m68000(instruction: &Instruction) -> u16 {
         ILLEGAL | IllegalWord(_) | LINEA(_) | LINEF(_) => 0,
         //EASy68K's pause, which is no instruction of the 68000's
         SIMHALT => 0,
+        //the 68010's, which the 68000 never decodes; their times are `m68010`'s
+        RTD(_) | BKPT(_) | MOVEC { .. } | MOVES { .. } => 0,
     }
 }
 
-/// The extra cycles of `mulu` or `muls` by `source`, the word read: two for
-/// each bit set of an unsigned one, and for each change between two bits of
-/// a signed one, a zero below its lowest bit (the 68000 User's Manual,
-/// section 8.3, with Yacht's reading of it).
-pub fn multiply(source: u16, sign: Sign) -> u64 {
+/// The 68010's own constants (the 68000 User's Manual, section 9).
+pub mod m68010 {
+    /// The cycles of an IRQ taken.
+    pub const IRQ: u64 = 46;
+    /// The cycles of a trace exception.
+    pub const TRACE: u64 = 38;
+    /// The cycles of an illegal instruction, a privilege violation and the
+    /// line A and F words.
+    pub const GROUP_ONE: u32 = 38;
+    /// The cycles of `bkpt`: an illegal instruction after a breakpoint
+    /// acknowledge cycle. The manual counts that cycle as 4 and gives 45;
+    /// Moira, which cputester checks, 42.
+    pub const BREAKPOINT: u32 = 42;
+    /// The cycles of `movec` of a control register the 68010 does not have:
+    /// the manual's 46 when it is read, and 44 when it is written, as Moira
+    /// has them.
+    pub const ILLEGAL_CONTROL_REGISTER: u32 = 46;
+    /// The same, for a `movec` that writes the control register.
+    pub const ILLEGAL_CONTROL_REGISTER_WRITTEN: u32 = 44;
+    /// The cycles of `trap #0` to `#14`.
+    pub const TRAP: u32 = 38;
+    /// The cycles of `trapv` with V set: the manual's 38, Moira's 40.
+    pub const TRAPV: u32 = 40;
+    /// The cycles of a division by zero, besides its source's effective
+    /// address.
+    pub const DIVISION_BY_ZERO: u32 = 42;
+    /// The cycles of `chk` out of bounds above the bound, besides its
+    /// source's effective address.
+    pub const CHK_ABOVE: u32 = 42;
+    /// The cycles of `chk` out of bounds below zero, besides its source's
+    /// effective address: the manual's 44, a maximum.
+    pub const CHK_BELOW: u32 = 44;
+    /// The cycles of `rte` of a frame whose format is not the 68010's.
+    pub const FORMAT_ERROR: u32 = 50;
+    /// The cycles of `rte` of a format `$8` frame whose version is not the
+    /// one s68k writes.
+    pub const ILLEGAL_REVISION: u32 = 70;
+    /// The cycles of an address error or a bus error from the start of the
+    /// access it aborted: the manual's 126, and the eight of the aborted
+    /// access the 68000's [`GROUP_ZERO`](super::GROUP_ZERO) counts as well.
+    pub const GROUP_ZERO: u32 = 134;
+    /// The cycles of `reset`.
+    pub const RESET_CYCLES: u16 = 130;
+}
+
+/// The cycles of a `DBcc` that branches back in the 68010's loop mode: it
+/// fetches nothing.
+pub const LOOP_CONTINUE: u16 = 6;
+
+/// The cycles of a `DBcc` in loop mode whose condition is true, which ends
+/// the loop and fetches the instructions after it.
+pub const LOOP_CONDITION_TRUE: u64 = 12;
+
+/// What the 68010's loop mode does to an instruction it can loop (the 68000
+/// User's Manual, appendix A): one of one word, with its memory operands
+/// `(An)`, `(An)+` or `-(An)`, and a `DBcc` of displacement −4 after it.
+///
+/// In loop mode the processor fetches neither the instruction nor the `DBcc`
+/// again: the instruction takes its time and [`change`](LoopMode::change),
+/// the `DBcc` that branches back [`LOOP_CONTINUE`], and the one whose counter
+/// runs out [`exit`](LoopMode::exit), which depends on the instruction it
+/// ends the loop of. The values are Moira's, measured on every form, whose
+/// 68010 is checked against cputester, and its sums are the manual's tables
+/// 9-3 to 9-17 where those agree with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopMode {
+    /// What the instruction takes in loop mode beside its time out of it:
+    /// the fetch it does not make, and what the loop's own microcode adds.
+    pub change: i16,
+    /// The cycles of the `DBcc` whose counter runs out after it.
+    pub exit: u16,
+}
+
+/// The loop mode of `instruction`, or `None` when the 68010 cannot loop it.
+pub fn loop_mode(instruction: &Instruction) -> Option<LoopMode> {
+    use Instruction::*;
+    //the three modes of a loop, and an operand that is a register
+    let looped = |operand: &Operand| {
+        matches!(
+            operand,
+            Operand::Indirect(_) | Operand::PostIndirect(_) | Operand::PreIndirect(_)
+        )
+    };
+    let register = |operand: &Operand| matches!(operand, Operand::Register(_));
+    let mode = |change: i16, exit: u16| Some(LoopMode { change, exit });
+    match *instruction {
+        MOVE(ref source, ref destination, size)
+            if (looped(source) || register(source)) && looped(destination) =>
+        {
+            let change = match destination {
+                Operand::PreIndirect(_) => -2,
+                _ => -4,
+            };
+            let exit = match (size, source, destination) {
+                (
+                    Size::Long,
+                    Operand::Register(_),
+                    Operand::Indirect(_) | Operand::PostIndirect(_),
+                ) => 10,
+                (Size::Long, ..) => 8,
+                _ => 10,
+            };
+            mode(change, exit)
+        }
+        CLR(ref operand, _) if looped(operand) => mode(-4, 12),
+        NEG(ref operand, _) | NEGX(ref operand, _) | NOT(ref operand, _) if looped(operand) => {
+            mode(-2, 10)
+        }
+        NBCD(ref operand) if looped(operand) => mode(0, 10),
+        TST(ref operand, size) if looped(operand) => match size {
+            Size::Long => mode(0, 8),
+            _ => mode(-2, 10),
+        },
+        ADD(ref source, Operand::Register(_), _)
+        | SUB(ref source, Operand::Register(_), _)
+        | AND(ref source, Operand::Register(_), _)
+        | OR(ref source, Operand::Register(_), _)
+            if looped(source) =>
+        {
+            mode(2, 10)
+        }
+        ADD(Operand::Register(_), ref destination, _)
+        | SUB(Operand::Register(_), ref destination, _)
+        | AND(Operand::Register(_), ref destination, _)
+        | OR(Operand::Register(_), ref destination, _)
+        | EOR(Operand::Register(_), ref destination, _)
+            if looped(destination) =>
+        {
+            mode(-2, 10)
+        }
+        CMP(ref source, _, size) if looped(source) => match size {
+            Size::Long => mode(0, 10),
+            _ => mode(-2, 10),
+        },
+        ADDA(ref source, _, size) | SUBA(ref source, _, size) if looped(source) => match size {
+            Size::Long => mode(2, 10),
+            _ => mode(0, 10),
+        },
+        CMPA(ref source, ..) if looped(source) => mode(-2, 10),
+        ADDX(Operand::PreIndirect(_), _, size) | SUBX(Operand::PreIndirect(_), _, size) => {
+            match size {
+                Size::Long => mode(-4, 10),
+                _ => mode(-2, 10),
+            }
+        }
+        ABCD(Operand::PreIndirect(_), _) | SBCD(Operand::PreIndirect(_), _) => mode(0, 10),
+        CMPM(_, _, size) => match size {
+            Size::Long => mode(-2, 10),
+            _ => mode(-4, 10),
+        },
+        ASd(_, ref operand, ..)
+        | LSd(_, ref operand, ..)
+        | ROd(_, ref operand, ..)
+        | ROXd(_, ref operand, ..)
+            if looped(operand) =>
+        {
+            mode(0, 10)
+        }
+        _ => None,
+    }
+}
+
+/// The effective address time of `operand` when the instruction does not
+/// read it, only works its address out, for `clr`, `Scc`, `tas` and
+/// `move sr,<ea>` on the 68010 (table 9-1, "no fetch"), the same at every
+/// size.
+fn no_fetch(operand: &Operand) -> u16 {
+    match operand {
+        Operand::Register(_) => 0,
+        Operand::Indirect(_) => 2,
+        Operand::PostIndirect(_)
+        | Operand::PreIndirect(_)
+        | Operand::IndirectDisplacement { .. }
+        | Operand::PcDisplacement { .. }
+        | Operand::Absolute {
+            width: AddressWidth::Word,
+            ..
+        } => 4,
+        Operand::IndirectIndex { .. }
+        | Operand::PcIndex { .. }
+        | Operand::Absolute {
+            width: AddressWidth::Long,
+            ..
+        } => 8,
+        Operand::Immediate(_) => 0,
+    }
+}
+
+/// The 68010's table: the base time of every instruction, where it differs
+/// from the 68000's, which every other row keeps (the 68000 User's Manual,
+/// section 9).
+fn m68010(instruction: &Instruction) -> u16 {
+    use Instruction::*;
+    let ea = effective_address;
+    let by = |size: Size, short: u16, long: u16| if is_long(size) { long } else { short };
+    let memory = |operand: &Operand| !register_or_immediate(operand);
+    match *instruction {
+        //no two cycles more for a register or an immediate, which `adda` and `suba` keep
+        ADD(ref source, Operand::Register(_), size)
+        | SUB(ref source, Operand::Register(_), size)
+        | AND(ref source, Operand::Register(_), size)
+        | OR(ref source, Operand::Register(_), size) => by(size, 4, 6) + ea(source, size),
+        //a long from memory takes two less
+        CMP(ref source, _, Size::Long) if memory(source) => 4 + ea(source, Size::Long),
+        EOR(_, Operand::Register(_), size) => by(size, 4, 6),
+        ADDI(_, Operand::Register(_), Size::Long)
+        | SUBI(_, Operand::Register(_), Size::Long)
+        | ANDI(_, Operand::Register(_), Size::Long)
+        | ORI(_, Operand::Register(_), Size::Long)
+        | EORI(_, Operand::Register(_), Size::Long) => 14,
+        CMPI(_, Operand::Register(_), Size::Long) => 12,
+        ADDX(Operand::Register(_), _, Size::Long) | SUBX(Operand::Register(_), _, Size::Long) => 6,
+        //what the data costs is the Interpreter's to add: [`multiply`] and [`divide`]
+        MULx(ref source, ..) => 40 + ea(source, Size::Word),
+        //no read before the write (table 9-10); a long of a data register is 4, as Moira has it
+        CLR(Operand::Register(_), _) => 4,
+        CLR(ref operand, size) => {
+            by(size, 4, 6)
+                + match operand {
+                    Operand::Register(_) => 0,
+                    Operand::Indirect(_) | Operand::PostIndirect(_) => 4,
+                    Operand::PreIndirect(_) => 6,
+                    Operand::IndirectIndex { .. }
+                    | Operand::PcIndex { .. }
+                    | Operand::Absolute {
+                        width: AddressWidth::Long,
+                        ..
+                    } => 12,
+                    _ => 8,
+                }
+                + is_long(size) as u16 * (!register_or_immediate(operand)) as u16 * 2
+        }
+        Scc(ref operand, _) => match operand {
+            Operand::Register(_) => 4,
+            _ => 8 + no_fetch(operand),
+        },
+        TAS(ref operand) => match operand {
+            Operand::Register(_) => 4,
+            _ => 14 + no_fetch(operand),
+        },
+        MOVEfromSR(ref destination) | MOVEfromCCR(ref destination) => match destination {
+            Operand::Register(_) => 4,
+            Operand::IndirectIndex { .. } => 14,
+            _ => 8 + no_fetch(destination),
+        },
+        MOVEUSP { .. } => 6,
+        ANDItoCCR(_) | ORItoCCR(_) | EORItoCCR(_) | ANDItoSR(_) | ORItoSR(_) | EORItoSR(_) => 16,
+        CHK(ref source, _) => 8 + ea(source, Size::Word),
+        //a short branch not taken, which [`Extras::short_branch_taken`] makes one taken
+        Bcc(_, _, BranchSize::Short) => 6,
+        //a bit of an immediate takes the time of one of memory
+        BTST(Operand::Register(_), Operand::Immediate(_)) => 8,
+        //a bit cleared in memory by a register's number takes two more; by an immediate's, not
+        BCLR(Operand::Register(_), ref operand) if memory(operand) => 10 + ea(operand, Size::Byte),
+        RTE => 24,
+        RESET => m68010::RESET_CYCLES,
+        RTD(_) => 16,
+        //always an illegal instruction, whose time is the step's
+        BKPT(_) => 0,
+        //the control register into the general one, then the other way
+        MOVEC { to_control, .. } => match to_control {
+            false => 10,
+            true => 12,
+        },
+        MOVES {
+            size, ref target, ..
+        } => {
+            let long = is_long(size) as u16 * 4;
+            18 + long
+                + match target {
+                    Operand::Indirect(_) => 0,
+                    Operand::IndirectIndex { .. }
+                    | Operand::Absolute {
+                        width: AddressWidth::Long,
+                        ..
+                    } => 6,
+                    _ => 2,
+                }
+        }
+        _ => m68000(instruction),
+    }
+}
+
+/// The extra cycles of `mulu` or `muls` by `source`, the word read, on
+/// `processor`.
+///
+/// On a 68000, two for each bit set of an unsigned one, and for each change
+/// between two bits of a signed one, a zero below its lowest bit (the 68000
+/// User's Manual, section 8.3, with Yacht's reading of it). On a 68010 an
+/// unsigned one takes none, and a signed one two when the source is negative:
+/// the manual gives only the maxima, 40 and 42, and Moira's model, which
+/// cputester checks, the rest.
+pub fn multiply(source: u16, sign: Sign, processor: Processor) -> u64 {
+    if processor.has(Processor::M68010) {
+        return match sign {
+            Sign::Unsigned => 0,
+            Sign::Signed => 2 * (source >> 15) as u64,
+        };
+    }
     let changes = match sign {
         Sign::Unsigned => source.count_ones(),
         Sign::Signed => {
@@ -401,10 +760,58 @@ pub fn multiply(source: u16, sign: Sign) -> u64 {
 ///   negative dividend; by a positive divisor, two less for a positive
 ///   dividend and two more for a negative one; and two more for each zero
 ///   among the fifteen high bits of the absolute quotient's word: 120 to 156.
-pub fn divide(dividend: u32, divisor: u16, sign: Sign) -> u64 {
+///
+/// The 68010 divides faster: Moira's model, which cputester checks, of the
+/// 68010's microcode, the manual giving only the maxima, 108 and 122 with the
+/// source.
+///
+/// * `divu` overflows in 8, and otherwise takes 78 and two more for each of
+///   its fifteen steps that shifts no one out of the top: 108 at most.
+/// * `divs` overflows in 16, and otherwise takes 118, or 120 for a negative
+///   dividend.
+pub fn divide(dividend: u32, divisor: u16, sign: Sign, processor: Processor) -> u64 {
+    if processor.has(Processor::M68010) {
+        return match sign {
+            Sign::Unsigned => divide_unsigned_68010(dividend, divisor),
+            Sign::Signed => divide_signed_68010(dividend as i32, divisor as i16),
+        };
+    }
     match sign {
         Sign::Unsigned => divide_unsigned(dividend, divisor),
         Sign::Signed => divide_signed(dividend as i32, divisor as i16),
+    }
+}
+
+fn divide_unsigned_68010(dividend: u32, divisor: u16) -> u64 {
+    let divisor = divisor as u32;
+    if dividend >> 16 >= divisor {
+        return 8;
+    }
+    let shifted = divisor << 16;
+    let mut remainder = dividend;
+    let mut cycles = 78;
+    for _ in 0..15 {
+        let carried = remainder & 0x8000_0000 != 0;
+        remainder <<= 1;
+        if carried {
+            remainder = remainder.wrapping_sub(shifted);
+        } else {
+            if remainder >= shifted {
+                remainder -= shifted;
+            }
+            cycles += 2;
+        }
+    }
+    cycles
+}
+
+fn divide_signed_68010(dividend: i32, divisor: i16) -> u64 {
+    if dividend.unsigned_abs() >> 16 >= divisor.unsigned_abs() as u32 {
+        return 16;
+    }
+    match dividend < 0 {
+        true => 120,
+        false => 118,
     }
 }
 
@@ -469,7 +876,11 @@ pub fn exception(
     vector: u8,
     instruction: Option<&Instruction>,
     source_faulted: bool,
+    processor: Processor,
 ) -> u64 {
+    if processor.has(Processor::M68010) {
+        return exception_68010(error, vector, instruction, source_faulted);
+    }
     let source_time = |instruction: Option<&Instruction>| match instruction {
         Some(Instruction::CHK(source, _) | Instruction::DIVx(source, ..)) => {
             effective_address(source, Size::Word) as u32
@@ -491,6 +902,57 @@ pub fn exception(
         _ => match exception::group(vector) {
             exception::Group::Two => TRAP,
             exception::Group::Zero | exception::Group::One => GROUP_ONE,
+        },
+    };
+    cycles as u64
+}
+
+/// [`exception()`] on a 68010 (table 9-19): what the 68000's take, but for
+/// the longer frames, and `bkpt`, `movec` of a control register the 68010
+/// does not have and `rte` of a frame it cannot return from.
+fn exception_68010(
+    error: &RuntimeError,
+    vector: u8,
+    instruction: Option<&Instruction>,
+    source_faulted: bool,
+) -> u64 {
+    let source_time = |instruction: Option<&Instruction>| match instruction {
+        Some(Instruction::CHK(source, _) | Instruction::DIVx(source, ..)) => {
+            effective_address(source, Size::Word) as u32
+        }
+        _ => 0,
+    };
+    let cycles = match *error {
+        RuntimeError::AddressError { access, .. } | RuntimeError::BusError { access, .. } => {
+            let lead = instruction.map_or(0, |instruction| {
+                address_error_lead_68010(instruction, access, source_faulted)
+            });
+            lead + m68010::GROUP_ZERO
+        }
+        RuntimeError::DivisionByZero => m68010::DIVISION_BY_ZERO + source_time(instruction),
+        //the 68010 compares the register with the bound first, and with zero after, as
+        //numbers: no overflow of the 68000's subtraction moves a case from one to the other
+        RuntimeError::ChkOutOfBounds { value, bound } => {
+            let time = match value > bound {
+                true => m68010::CHK_ABOVE,
+                false => m68010::CHK_BELOW,
+            };
+            time + source_time(instruction)
+        }
+        RuntimeError::OverflowException => m68010::TRAPV,
+        RuntimeError::FormatError { format: 8 } => m68010::ILLEGAL_REVISION,
+        RuntimeError::FormatError { .. } => m68010::FORMAT_ERROR,
+        RuntimeError::IllegalInstruction => match instruction {
+            Some(Instruction::BKPT(_)) => m68010::BREAKPOINT,
+            Some(Instruction::MOVEC {
+                to_control: false, ..
+            }) => m68010::ILLEGAL_CONTROL_REGISTER,
+            Some(Instruction::MOVEC { .. }) => m68010::ILLEGAL_CONTROL_REGISTER_WRITTEN,
+            _ => m68010::GROUP_ONE,
+        },
+        _ => match exception::group(vector) {
+            exception::Group::Two => m68010::TRAP,
+            exception::Group::Zero | exception::Group::One => m68010::GROUP_ONE,
         },
     };
     cycles as u64
@@ -575,6 +1037,78 @@ pub fn address_error_lead(instruction: &Instruction, access: Access, source_faul
     }
 }
 
+/// [`address_error_lead`] on a 68010, whose microcode reaches some of its
+/// accesses at another time than the 68000's: Moira's, which cputester
+/// checks, measured on every address error of the differential harness.
+///
+/// * a jump to an odd address faults in the jump's own prefetch, as on the
+///   68000, but a branch, `bsr` and `DBcc` have worked out nothing before it,
+///   `rts` and `rtd` have popped for six cycles, `rtr` and `rte` for ten,
+///   and `jmp` and `jsr` through an extension word for two cycles less;
+/// * `chk` and a division read an operand of an extension word six cycles
+///   later, `clr`, which writes without reading, four later, or six through
+///   an index, and `move sr` and `move ccr` two later;
+/// * `move` to an absolute long address after a source in memory, and `movem`
+///   through an extension word, two earlier;
+/// * `moves` faults after working out its address and the bus cycle of the
+///   function codes: twelve cycles through a displacement or a short
+///   address, sixteen through an index or a long address.
+pub fn address_error_lead_68010(
+    instruction: &Instruction,
+    access: Access,
+    source_faulted: bool,
+) -> u32 {
+    use Instruction::*;
+    let lead = address_error_lead(instruction, access, source_faulted);
+    let extension = |operand: &Operand| {
+        !matches!(
+            operand,
+            Operand::Register(_)
+                | Operand::Immediate(_)
+                | Operand::Indirect(_)
+                | Operand::PostIndirect(_)
+                | Operand::PreIndirect(_)
+        )
+    };
+    let indexed_or_long = |operand: &Operand| {
+        matches!(
+            operand,
+            Operand::IndirectIndex { .. }
+                | Operand::PcIndex { .. }
+                | Operand::Absolute {
+                    width: AddressWidth::Long,
+                    ..
+                }
+        )
+    };
+    match *instruction {
+        BRA(..) | Bcc(..) | BSR(..) | DBcc(..) if access == Access::Program => 0,
+        RTS | RTD(_) => 6,
+        RTR | RTE => 10,
+        JMP(ref target) | JSR(ref target) if extension(target) => lead - 2,
+        CHK(ref source, _) | DIVx(ref source, ..) if extension(source) => lead + 6,
+        CLR(ref operand, _) if extension(operand) => match operand {
+            Operand::IndirectIndex { .. } => lead + 6,
+            _ => lead + 4,
+        },
+        MOVEfromSR(ref operand) | MOVEfromCCR(ref operand) if extension(operand) => lead + 2,
+        MOVE(
+            ref source,
+            Operand::Absolute {
+                width: AddressWidth::Long,
+                ..
+            },
+            _,
+        ) if access == Access::Write && !register_or_immediate(source) => lead - 2,
+        MOVEM { ref target, .. } if extension(target) => lead - 2,
+        MOVES { ref target, .. } if extension(target) => match indexed_or_long(target) {
+            true => 16,
+            false => 12,
+        },
+        _ => lead,
+    }
+}
+
 /// The time before the first access to `operand`, in memory: the time of
 /// its addressing mode without the access, which is four cycles.
 fn lead_of(operand: &Operand) -> u32 {
@@ -655,55 +1189,78 @@ mod tests {
     #[test]
     fn a_multiply_takes_two_cycles_a_bit_set_or_a_change_of_bits() {
         //the extra over 38 of register forms of the suite's MULU and MULS files
-        assert_eq!(multiply(0xBC95, Sign::Unsigned), 56 - 38);
-        assert_eq!(multiply(0x6C8A, Sign::Unsigned), 52 - 38);
-        assert_eq!(multiply(0x4CA4, Sign::Unsigned), 50 - 38);
-        assert_eq!(multiply(0xCBE0, Sign::Signed), 48 - 38);
-        assert_eq!(multiply(0x9633, Sign::Signed), 56 - 38);
-        assert_eq!(multiply(0x7C7C, Sign::Signed), 46 - 38);
+        assert_eq!(multiply(0xBC95, Sign::Unsigned, Processor::M68000), 56 - 38);
+        assert_eq!(multiply(0x6C8A, Sign::Unsigned, Processor::M68000), 52 - 38);
+        assert_eq!(multiply(0x4CA4, Sign::Unsigned, Processor::M68000), 50 - 38);
+        assert_eq!(multiply(0xCBE0, Sign::Signed, Processor::M68000), 48 - 38);
+        assert_eq!(multiply(0x9633, Sign::Signed, Processor::M68000), 56 - 38);
+        assert_eq!(multiply(0x7C7C, Sign::Signed, Processor::M68000), 46 - 38);
         //the ends: no bit and every bit, no change and a change at every bit
-        assert_eq!(multiply(0, Sign::Unsigned), 0);
-        assert_eq!(multiply(0xFFFF, Sign::Unsigned), 32);
-        assert_eq!(multiply(0, Sign::Signed), 0);
+        assert_eq!(multiply(0, Sign::Unsigned, Processor::M68000), 0);
+        assert_eq!(multiply(0xFFFF, Sign::Unsigned, Processor::M68000), 32);
+        assert_eq!(multiply(0, Sign::Signed, Processor::M68000), 0);
         assert_eq!(
-            multiply(0xFFFF, Sign::Signed),
+            multiply(0xFFFF, Sign::Signed, Processor::M68000),
             2,
             "one change, below the lowest bit"
         );
-        assert_eq!(multiply(0x5555, Sign::Signed), 32);
+        assert_eq!(multiply(0x5555, Sign::Signed, Processor::M68000), 32);
     }
 
     #[test]
     fn a_division_takes_the_time_of_the_microcodes_loop() {
         //register forms of the suite's DIVU and DIVS files, whose source takes no time
         assert_eq!(
-            divide(0x6BE8_1EC0, 0x451D, Sign::Unsigned),
+            divide(0x6BE8_1EC0, 0x451D, Sign::Unsigned, Processor::M68000),
             10,
             "an overflow"
         );
-        assert_eq!(divide(0x52C8_434E, 0x64B2, Sign::Unsigned), 120);
-        assert_eq!(divide(0x321F_5C5D, 0x76DD, Sign::Unsigned), 116);
-        assert_eq!(divide(0xD49D_15DC, 0xDB39, Sign::Unsigned), 114);
-        assert_eq!(divide(0x7C82_59CF, 0xEE80, Sign::Signed), 16, "an overflow");
         assert_eq!(
-            divide(0x906F_D3AB, 0x4078, Sign::Signed),
+            divide(0x52C8_434E, 0x64B2, Sign::Unsigned, Processor::M68000),
+            120
+        );
+        assert_eq!(
+            divide(0x321F_5C5D, 0x76DD, Sign::Unsigned, Processor::M68000),
+            116
+        );
+        assert_eq!(
+            divide(0xD49D_15DC, 0xDB39, Sign::Unsigned, Processor::M68000),
+            114
+        );
+        assert_eq!(
+            divide(0x7C82_59CF, 0xEE80, Sign::Signed, Processor::M68000),
+            16,
+            "an overflow"
+        );
+        assert_eq!(
+            divide(0x906F_D3AB, 0x4078, Sign::Signed, Processor::M68000),
             18,
             "a negative one"
         );
-        assert_eq!(divide(0x0647_0657, 0x869F, Sign::Signed), 138);
-        assert_eq!(divide(0x462A_588A, 0x5925, Sign::Signed), 130);
+        assert_eq!(
+            divide(0x0647_0657, 0x869F, Sign::Signed, Processor::M68000),
+            138
+        );
+        assert_eq!(
+            divide(0x462A_588A, 0x5925, Sign::Signed, Processor::M68000),
+            130
+        );
         //the ends of the two ranges
         assert_eq!(
-            divide(0, 1, Sign::Unsigned),
+            divide(0, 1, Sign::Unsigned, Processor::M68000),
             136,
             "every step without a subtraction"
         );
         assert_eq!(
-            divide(0, 1, Sign::Signed),
+            divide(0, 1, Sign::Signed, Processor::M68000),
             150,
             "a quotient of fifteen zeros"
         );
-        assert_eq!(divide(0xFFFF_8000, 0x7FFF, Sign::Signed), 156, "the most");
+        assert_eq!(
+            divide(0xFFFF_8000, 0x7FFF, Sign::Signed, Processor::M68000),
+            156,
+            "the most"
+        );
     }
 
     #[test]
@@ -783,12 +1340,114 @@ mod tests {
             12
         );
         for processor in Processor::ALL {
-            assert_eq!(
-                base(&MOVEQ(1, RegisterOperand::Data(0)), processor),
-                4,
-                "the 68000's until the dialects have their own"
-            );
+            assert_eq!(base(&MOVEQ(1, RegisterOperand::Data(0)), processor), 4);
         }
+    }
+
+    /// The 68010's own times, Moira's where the manual gives maxima.
+    #[test]
+    fn the_68010_has_its_own_table() {
+        use Instruction::*;
+        let time = |instruction: Instruction| base(&instruction, Processor::M68010);
+        let a0 = Operand::Indirect(0);
+        assert_eq!(time(MOVEfromSR(d(0))), 4, "6 on a 68000");
+        assert_eq!(time(MOVEfromSR(a0)), 10, "no read before the write");
+        assert_eq!(time(CLR(d(0), Size::Long)), 4);
+        assert_eq!(time(CLR(a0, Size::Word)), 8, "12 on a 68000");
+        assert_eq!(time(ADD(d(0), d(1), Size::Long)), 6, "8 on a 68000");
+        assert_eq!(time(ADDA(d(0), RegisterOperand::Address(1), Size::Long)), 8);
+        assert_eq!(time(CMP(a0, RegisterOperand::Data(0), Size::Long)), 12);
+        assert_eq!(time(ANDItoSR(0)), 16, "20 on a 68000");
+        assert_eq!(
+            time(MOVEUSP {
+                to_usp: true,
+                register: RegisterOperand::Address(0)
+            }),
+            6
+        );
+        assert_eq!(time(RTE), 24);
+        assert_eq!(time(RESET), 130);
+        assert_eq!(
+            time(Bcc(0x1000, Condition::Equal, BranchSize::Short)),
+            6,
+            "not taken"
+        );
+        assert_eq!(
+            time(MULx(d(0), RegisterOperand::Data(1), Sign::Unsigned)),
+            40
+        );
+        //the data: a flat `mulu`, a `muls` of a negative source two more, `divu` by its steps
+        assert_eq!(multiply(0xFFFF, Sign::Unsigned, Processor::M68010), 0);
+        assert_eq!(multiply(0x8000, Sign::Signed, Processor::M68010), 2);
+        assert_eq!(divide(0, 1, Sign::Unsigned, Processor::M68010), 108);
+        assert_eq!(
+            divide(0x0001_0000, 1, Sign::Unsigned, Processor::M68010),
+            8,
+            "overflow"
+        );
+        assert_eq!(
+            divide(-7i32 as u32, 2, Sign::Signed, Processor::M68010),
+            120
+        );
+        assert_eq!(divide(7, 2, Sign::Signed, Processor::M68010), 118);
+        let extras = Extras::of(Processor::M68010);
+        assert_eq!((extras.irq, extras.trace, extras.loop_mode), (46, 38, true));
+        assert!(
+            !Extras::of(Processor::M68020).loop_mode,
+            "the 68020 has no loop mode"
+        );
+    }
+
+    /// Loop mode, Moira's: the instruction's change and the `DBcc` that ends
+    /// it by its count.
+    #[test]
+    fn loop_mode_is_for_one_word_instructions_of_the_three_modes() {
+        use Instruction::*;
+        let post = |register| Operand::PostIndirect(register);
+        assert_eq!(
+            loop_mode(&MOVE(post(0), post(1), Size::Word)),
+            Some(LoopMode {
+                change: -4,
+                exit: 10
+            })
+        );
+        assert_eq!(
+            loop_mode(&MOVE(post(0), Operand::PreIndirect(1), Size::Long)),
+            Some(LoopMode {
+                change: -2,
+                exit: 8
+            })
+        );
+        assert_eq!(
+            loop_mode(&CLR(post(0), Size::Byte)),
+            Some(LoopMode {
+                change: -4,
+                exit: 12
+            })
+        );
+        assert_eq!(
+            loop_mode(&ADD(post(0), d(0), Size::Long)),
+            Some(LoopMode {
+                change: 2,
+                exit: 10
+            })
+        );
+        assert_eq!(
+            loop_mode(&MOVE(post(0), d(1), Size::Word)),
+            None,
+            "a register"
+        );
+        assert_eq!(
+            loop_mode(&TST(
+                Operand::IndirectDisplacement {
+                    offset: 2,
+                    base: RegisterOperand::Address(0)
+                },
+                Size::Word
+            )),
+            None,
+            "two words"
+        );
     }
 
     #[test]
@@ -802,6 +1461,7 @@ mod tests {
                 exception::CHK,
                 Some(&chk),
                 false,
+                Processor::M68000,
             )
         };
         assert_eq!(out(5, 4), 38 + 4, "above the bound");
@@ -817,7 +1477,8 @@ mod tests {
                 &RuntimeError::DivisionByZero,
                 exception::DIVISION_BY_ZERO,
                 Some(&divu),
-                false
+                false,
+                Processor::M68000
             ),
             38 + 4
         );
@@ -825,7 +1486,13 @@ mod tests {
             vector: exception::TRAP_0,
         };
         assert_eq!(
-            exception(&trap, exception::TRAP_0, Some(&TRAP(0)), false),
+            exception(
+                &trap,
+                exception::TRAP_0,
+                Some(&TRAP(0)),
+                false,
+                Processor::M68000
+            ),
             34,
             "EASy68K's 38"
         );
@@ -834,7 +1501,8 @@ mod tests {
                 &RuntimeError::PrivilegeViolation,
                 exception::PRIVILEGE_VIOLATION,
                 Some(&RESET),
-                false
+                false,
+                Processor::M68000
             ),
             34
         );
@@ -843,7 +1511,8 @@ mod tests {
                 &RuntimeError::IllegalInstruction,
                 exception::ILLEGAL_INSTRUCTION,
                 Some(&ILLEGAL),
-                false
+                false,
+                Processor::M68000
             ),
             34
         );
@@ -853,7 +1522,13 @@ mod tests {
                 size: Size::Word,
                 access,
             };
-            exception(&error, exception::ADDRESS_ERROR, Some(instruction), false)
+            exception(
+                &error,
+                exception::ADDRESS_ERROR,
+                Some(instruction),
+                false,
+                Processor::M68000,
+            )
         };
         assert_eq!(fault(&TST(a0, Size::Word), Access::Read), 58);
         assert_eq!(

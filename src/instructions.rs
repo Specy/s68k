@@ -22,8 +22,8 @@
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 pub use crate::assembler::instructions::encoded::{
-    AddressWidth, BranchSize, Condition, IndexRegister, Instruction, Operand, RegisterOperand,
-    ShiftDirection, Sign, Size, TargetDirection, EXTENSION_WORD_OFFSET,
+    AddressWidth, BranchSize, Condition, ControlRegister, IndexRegister, Instruction, Operand,
+    RegisterOperand, ShiftDirection, Sign, Size, TargetDirection, EXTENSION_WORD_OFFSET,
 };
 
 /// Which form of task 19 the program asked for, decided by D1.L: EASy68K reads

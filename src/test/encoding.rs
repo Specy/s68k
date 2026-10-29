@@ -21,7 +21,8 @@
 //!
 //! `the_encodings_are_gnu_as_encodings` is the opt-in half: each line's
 //! Instruction, written out with an explicit mnemonic in GNU `as`'s Motorola
-//! syntax, is assembled by `as -m68000` and the bytes compared.
+//! syntax, is assembled by `as -m68000`, or `as -m68010` for the 68010's
+//! Forms, and the bytes compared.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -91,6 +92,8 @@ const REPRESENTATIVES: &[(Modes, &[&str])] = &[
     (Modes::REGISTER_LIST, &["d0-d2/a0"]),
     (Modes::SR, &["sr"]),
     (Modes::CCR, &["ccr"]),
+    (Modes::USP, &["usp"]),
+    (Modes::CONTROL_REGISTER, &["sfc", "dfc", "vbr"]),
 ];
 
 /// The representatives of every mode a position takes.
@@ -203,6 +206,7 @@ fn refusals(line: &Line, processor: Processor) -> BTreeSet<&'static str> {
     if line.written == Some(SizeSuffix::Byte)
         && line.form.sizes == SizeRule::Any
         && modes.contains(&Modes::AN)
+        && line.spec.family() != Some(Family::Moves)
     {
         codes.insert("address_register_byte_size");
     }
@@ -247,6 +251,7 @@ fn expected_variant(line: &Line) -> Option<String> {
     };
     let variant = match mnemonic {
         "move" => match (*first, *second) {
+            (Modes::USP, _) | (_, Modes::USP) => "MOVEUSP",
             (_, Modes::AN) => "MOVEA",
             (Modes::IMMEDIATE, Modes::DN)
                 if line.written == Some(SizeSuffix::Long)
@@ -652,11 +657,12 @@ fn gnu_list(mask: u16, target: Operand) -> String {
         .join("/")
 }
 
-/// The line GNU `as -m68000` assembles to the encoding of `instruction` at
+/// The line GNU `as` assembles to the encoding of `instruction` at
 /// `address`, with an explicit mnemonic, or `None` where it has none: `as`
 /// writes `cmp #n,dn` and `and #n,dn` as `cmpi` and `andi`, and a `move.l`
 /// of a byte as `moveq`, whatever is written; SIMHALT is EASy68K's; and the
-/// 68010's and the 68020's instructions are not the 68000's.
+/// 68020's instructions are left to its batch. The 68010's are written as
+/// `as -m68010` reads them.
 fn gnu_line(instruction: &Instruction, address: u32, pc_index_zero: bool) -> Option<String> {
     use Instruction as I;
     let operand = |operand: Operand| gnu_operand(operand, address, pc_index_zero);
@@ -686,8 +692,30 @@ fn gnu_line(instruction: &Instruction, address: u32, pc_index_zero: bool) -> Opt
         | I::IllegalWord(_)
         | I::LINEA(_)
         | I::LINEF(_)
-        | I::MOVEfromCCR(_)
         | I::EXT(_, Size::Byte, Size::Long) => return None,
+        I::MOVEfromCCR(target) => format!("move.w ccr,{}", operand(target)),
+        I::RTD(displacement) => format!("rtd #{}", displacement as i32),
+        I::BKPT(vector) => format!("bkpt #{vector}"),
+        I::MOVEC {
+            to_control,
+            control,
+            register,
+        } => {
+            let control = control.name()?;
+            match to_control {
+                true => format!("movec {},{control}", gnu_register(register)),
+                false => format!("movec {control},{}", gnu_register(register)),
+            }
+        }
+        I::MOVES {
+            direction,
+            size,
+            register,
+            target,
+        } => match direction {
+            TargetDirection::ToMemory => two("moves", size, Operand::Register(register), target),
+            TargetDirection::FromMemory => two("moves", size, target, Operand::Register(register)),
+        },
         I::Bcc(_, _, BranchSize::Long)
         | I::BRA(_, BranchSize::Long)
         | I::BSR(_, BranchSize::Long) => return None,
@@ -857,10 +885,13 @@ fn gnu_line(instruction: &Instruction, address: u32, pc_index_zero: bool) -> Opt
     })
 }
 
-/// What GNU `as -m68000` makes of one line: its bytes, or its complaint.
+/// What GNU `as` makes of one line for a processor, `-m68000` or
+/// `-m68010`: its bytes, or its complaint.
 struct Gnu {
     prefix: String,
     directory: std::path::PathBuf,
+    /// The option that names the processor.
+    processor: &'static str,
 }
 
 impl Gnu {
@@ -873,7 +904,7 @@ impl Gnu {
         );
         std::fs::write(&source, format!("{line}\n")).unwrap();
         let assembled = Command::new(format!("{}as", self.prefix))
-            .args(["-m68000", "--register-prefix-optional", "-o"])
+            .args([self.processor, "--register-prefix-optional", "-o"])
             .arg(&object)
             .arg(&source)
             .output()
@@ -894,7 +925,8 @@ impl Gnu {
 
 /// The opt-in comparison with GNU `as`: every line the generator assembles,
 /// lowered and encoded by s68k, against the same encoding written with an
-/// explicit mnemonic and assembled by `as -m68000`, one line at a time.
+/// explicit mnemonic and assembled by `as -m68000`, one line at a time, and
+/// every line of the 68010's Forms by `as -m68010`.
 ///
 /// `S68K_BINUTILS_PREFIX` names the m68k binutils as the decoder's own
 /// opt-in test says (`machine::decode`, `the_hand_assembled_words_are_gnu_as_words`).
@@ -903,20 +935,51 @@ impl Gnu {
 #[test]
 #[ignore = "needs GNU as for m68k, named by S68K_BINUTILS_PREFIX"]
 fn the_encodings_are_gnu_as_encodings() {
+    let checked = encodings_are_gnu_as_encodings_for(Processor::M68000, "-m68000");
+    assert!(checked > 1000, "only {checked} lines were checked");
+    let for_68010 = encodings_are_gnu_as_encodings_for(Processor::M68010, "-m68010");
+    assert!(
+        for_68010 > 100,
+        "only {for_68010} lines of the 68010's were checked"
+    );
+    println!("{checked} lines checked with -m68000, and {for_68010} of the 68010's with -m68010");
+}
+
+/// The lines of a Program written for `processor`, by `as` with the option
+/// that names it: for a later processor, the lines of its own Forms. Answers
+/// how many lines were compared.
+fn encodings_are_gnu_as_encodings_for(processor: Processor, option: &'static str) -> usize {
     let prefix = std::env::var("S68K_BINUTILS_PREFIX")
         .expect("S68K_BINUTILS_PREFIX names the m68k binutils, e.g. /usr/bin/m68k-linux-gnu-");
-    let directory = std::env::temp_dir().join(format!("s68k-gnu-as-encode-{}", std::process::id()));
+    let directory = std::env::temp_dir().join(format!(
+        "s68k-gnu-as-encode-{}-{}",
+        processor.name(),
+        std::process::id()
+    ));
     std::fs::create_dir_all(&directory).unwrap();
-    let gnu = Gnu { prefix, directory };
-    // `as -m68000` reads the 68000's instructions, so the Program is written
-    // for it and the later Forms are left out.
-    let generated = generate(Processor::M68000);
+    let gnu = Gnu {
+        prefix,
+        directory,
+        processor: option,
+    };
+    let generated = generate(processor);
     // One line per distinct GNU line and placement-free encoding: the same
     // instruction at another address is the same comparison.
     let mut seen = BTreeSet::new();
     let mut checked = 0;
     let mut mismatches = Vec::new();
+    let lines: BTreeMap<usize, &Line> = generated
+        .source_lines
+        .iter()
+        .zip(&generated.lines)
+        .map(|(source_line, line)| (*source_line, line))
+        .collect();
     for assembled in generated.program.instructions() {
+        //a later processor's Program also holds the branches, which are the 68020's question
+        let form = lines[&assembled.location.line].form;
+        if processor != Processor::M68000 && form.processor != processor {
+            continue;
+        }
         let (instruction, address) = (assembled.instruction, assembled.address as u32);
         let Some(line) = gnu_line(&instruction, address, false) else {
             continue;
@@ -950,11 +1013,11 @@ fn the_encodings_are_gnu_as_encodings() {
     std::fs::remove_dir_all(&gnu.directory).ok();
     assert!(
         mismatches.is_empty(),
-        "{} of {checked} lines differ:\n{}",
+        "{} of {checked} lines differ for {option}:\n{}",
         mismatches.len(),
         mismatches.join("\n")
     );
-    assert!(checked > 1000, "only {checked} lines were checked");
+    checked
 }
 
 /// EASy68K's back-reference rule over a whole program: a value known above

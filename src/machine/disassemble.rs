@@ -499,6 +499,26 @@ impl Printer<'_> {
             I::TRAP(vector) => format!("TRAP #{vector}"),
             I::STOP(value) => format!("STOP #${value:X}"),
             I::RTE => "RTE".to_string(),
+            I::RTD(displacement) => format!("RTD #{}", *displacement as i32),
+            I::BKPT(vector) => format!("BKPT #{vector}"),
+            I::MOVEC {
+                to_control,
+                control,
+                register,
+            } => {
+                //a code no processor has is not written, and printed as its words above
+                let control = control.name().unwrap_or_default().to_uppercase();
+                match to_control {
+                    true => format!("MOVEC {},{control}", name(register)),
+                    false => format!("MOVEC {control},{}", name(register)),
+                }
+            }
+            I::MOVES {
+                direction,
+                size,
+                register,
+                target,
+            } => self.transfer("MOVES", *size, direction, name(register), target),
             I::RESET => "RESET".to_string(),
             I::RTR => "RTR".to_string(),
             I::RTS => "RTS".to_string(),
@@ -513,15 +533,17 @@ impl Printer<'_> {
 
 /// Whether a line can write `instruction`: all but a `MOVEM` of no register,
 /// which the 68000 runs, transferring nothing, and EASy68K cannot assemble,
-/// as its register list is never empty.
+/// as its register list is never empty, and a `MOVEC` of a control register
+/// no processor s68k has, which has no name to write and raises an illegal
+/// instruction exception.
 fn is_written(instruction: &Instruction) -> bool {
-    !matches!(
-        instruction,
+    match instruction {
         Instruction::MOVEM {
-            registers_mask: 0,
-            ..
-        }
-    )
+            registers_mask: 0, ..
+        } => false,
+        Instruction::MOVEC { control, .. } => control.is_the_68010s(),
+        _ => true,
+    }
 }
 
 /// The bits an immediate of `size` keeps.

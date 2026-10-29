@@ -26,3 +26,12 @@ ts-lib/src/pkg/
 # The whole SingleStepTests/m68000 suite, which scripts/fetch-m68000-tests.sh
 # fetches for the ignored conformance tests; only a subset is committed
 /tests/m68000/fetched/
+
+# Musashi's sources, which scripts/fetch-musashi.sh fetches for the `musashi`
+# feature's differential harness; only its notice and two tables of facts are
+# committed, in tests/musashi
+/tests/musashi/fetched/
+
+# Moira's sources, which scripts/fetch-moira.sh fetches for the `moira`
+# feature; only the shim and its notice are committed, in tests/moira
+/tests/moira/fetched/
