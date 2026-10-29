@@ -28,11 +28,12 @@
 //! Every [`Form`] names the first [`Processor`] that has it
 //! ([`Form::processor`]), and the analyzer refuses one above the Program's
 //! processor, which `opt p=` chooses (ADR 0011). The 68010's are complete:
-//! `move ccr,<ea>`, `rtd`, `bkpt`, `movec` and `moves`. Of the 68020's only
-//! `extb.l` is in; its other instructions are rows marked
-//! [`Implementation::NotImplementedYet`], and the shapes the 68020 gives a
-//! 68000 Mnemonic, `muls.l` and the like, are [`LATER_SHAPES`], so that each
-//! is answered as an instruction still to come and never as an unknown one.
+//! `move ccr,<ea>`, `rtd`, `bkpt`, `movec` and `moves`. So are the 68020's:
+//! its own instructions and the shapes it gave a 68000 Mnemonic, `muls.l`,
+//! `chk.l` and `tst a0` among them, as Forms of their own, but `callm` and
+//! `rtm`, which are [`Implementation::NotImplemented`]. Its eight bit-field
+//! instructions are [`Form::is_bit_field`], which EASy68K's `opt bit` gives a
+//! 68000 or a 68010 Program too.
 //!
 //! A Form also names the first processor that runs it only in supervisor
 //! mode ([`Form::privileged`]): `move sr,<ea>` is the 68000's in either mode
@@ -40,7 +41,7 @@
 
 use bitflags::bitflags;
 
-use super::encoded::{Condition, Sign, Size};
+use super::encoded::{BitFieldOperation, Condition, Sign, Size};
 use crate::assembler::ast::{Operand, SizeSuffix, SpecialRegister};
 use crate::machine::Processor;
 
@@ -62,7 +63,7 @@ bitflags! {
     /// instruction that takes one takes nothing else in that position; `usp`
     /// is `move usp,An` and `move An,usp`'s alone.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Modes: u16 {
+    pub struct Modes: u32 {
         /// `d0` to `d7`.
         const DN = 1 << 0;
         /// `a0` to `a7`, `sp` included.
@@ -94,8 +95,19 @@ bitflags! {
         /// `usp`, the user stack pointer.
         const USP = 1 << 14;
         /// `sfc`, `dfc` or `vbr`, a control register of the 68010 that is no
-        /// stack pointer, which only `movec` reaches; it reaches `usp` too.
+        /// stack pointer, or one of the 68020's, `cacr`, `caar`, `msp` or
+        /// `isp`, which only `movec` reaches; it reaches `usp` too.
         const CONTROL_REGISTER = 1 << 15;
+        /// `d1:d2`, two data registers, the 68020's: `Dh:Dl` of a long
+        /// multiply, `Dr:Dq` of a long divide, `cas2`'s compare and update
+        /// pairs.
+        const REGISTER_PAIR = 1 << 16;
+        /// `(a0):(d1)`, `cas2`'s two addresses.
+        const INDIRECT_PAIR = 1 << 17;
+        /// The `{offset:width}` of a 68020 bit field, after its Operand: a
+        /// position that takes one takes it with the modes beside it, and an
+        /// Operand written with one is of its target's mode and this.
+        const BIT_FIELD = 1 << 18;
     }
 }
 
@@ -197,11 +209,29 @@ impl Modes {
                 ..
             } => Modes::USP,
             Operand::SpecialRegister {
-                register: SpecialRegister::Sfc | SpecialRegister::Dfc | SpecialRegister::Vbr,
+                register:
+                    SpecialRegister::Sfc
+                    | SpecialRegister::Dfc
+                    | SpecialRegister::Vbr
+                    | SpecialRegister::Cacr
+                    | SpecialRegister::Caar
+                    | SpecialRegister::Msp
+                    | SpecialRegister::Isp,
                 ..
             } => Modes::CONTROL_REGISTER,
             Operand::PcDisplacement { .. } => Modes::PC_DISPLACEMENT,
             Operand::PcIndex { .. } => Modes::PC_INDEX,
+            Operand::RegisterPair { .. } => Modes::REGISTER_PAIR,
+            Operand::IndirectPair { .. } => Modes::INDIRECT_PAIR,
+            Operand::BitField { target, .. } => {
+                return Modes::of(target).map(|mode| mode | Modes::BIT_FIELD)
+            }
+            // The 68020's forms are encoded in the modes of `d8(An,Xn)` and
+            // `d8(PC,Xn)`, so the positions that take one take them all.
+            Operand::FullIndex { base, .. } => match base.is_program_counter() {
+                true => Modes::PC_INDEX,
+                false => Modes::INDEX,
+            },
         })
     }
 
@@ -220,7 +250,7 @@ impl Modes {
 
 /// Every mode with the name a message gives it, in the order a message lists
 /// them: registers, then the ways of reaching memory, then an immediate.
-const MODE_NAMES: [(Modes, &str); 16] = [
+const MODE_NAMES: [(Modes, &str); 19] = [
     (Modes::DN, "Dn"),
     (Modes::AN, "An"),
     (Modes::INDIRECT, "(An)"),
@@ -237,6 +267,9 @@ const MODE_NAMES: [(Modes, &str); 16] = [
     (Modes::CCR, "ccr"),
     (Modes::USP, "usp"),
     (Modes::CONTROL_REGISTER, "Rc"),
+    (Modes::REGISTER_PAIR, "Dx:Dy"),
+    (Modes::INDIRECT_PAIR, "(Rx):(Ry)"),
+    (Modes::BIT_FIELD, "{offset:width}"),
 ];
 
 /// The sizes a [`Form`] accepts.
@@ -366,7 +399,9 @@ impl Form {
         self.operands.len()
     }
 
-    /// Whether these Operands fit the shape, position by position.
+    /// Whether these Operands fit the shape, position by position: each of
+    /// a mode the position takes, with a bit field exactly where it takes
+    /// one.
     ///
     /// A mode this phase does not assemble ([`Modes::of`] answers `None` for
     /// one) decides nothing here: the analyzer has already reported it.
@@ -376,9 +411,21 @@ impl Form {
                 .iter()
                 .enumerate()
                 .all(|(index, operand)| match Modes::of(operand) {
-                    Some(mode) => self.operands[index].contains(mode),
+                    Some(mode) => {
+                        let allowed = self.operands[index];
+                        allowed.contains(mode)
+                            && allowed.contains(Modes::BIT_FIELD) == mode.contains(Modes::BIT_FIELD)
+                    }
                     None => true,
                 })
+    }
+
+    /// Whether it is one of the 68020's bit-field instructions', which
+    /// `opt bit` gives a 68000 Program.
+    pub fn is_bit_field(&self) -> bool {
+        self.operands
+            .iter()
+            .any(|modes| modes.contains(Modes::BIT_FIELD))
     }
 }
 
@@ -530,8 +577,10 @@ pub enum Family {
     Logical(LogicalKind),
     /// `divs` and `divu`.
     Divide(Sign),
-    /// `muls` and `mulu`.
+    /// `muls` and `mulu`, and their long forms, the 68020's.
     Multiply(Sign),
+    /// `divsl` and `divul`, the 68020's: 32 bits by 32 into `Dr:Dq`.
+    DivideLong(Sign),
     /// `clr`.
     Clr,
     /// `neg`.
@@ -608,6 +657,25 @@ pub enum Family {
     Bkpt,
     /// `movec`, either direction, the 68010's.
     Movec,
+    /// Every `trapcc`, the 68020's, with the condition it tests.
+    TrapCc(Condition),
+    /// `pack` and `unpk`, the 68020's.
+    Pack {
+        /// `true` for `unpk`.
+        unpack: bool,
+    },
+    /// `chk2` and `cmp2`, the 68020's.
+    BoundsCheck {
+        /// `true` for `chk2`, which traps out of bounds.
+        trap: bool,
+    },
+    /// `cas`, the 68020's.
+    Cas,
+    /// `cas2`, the 68020's.
+    Cas2,
+    /// The 68020's eight bit-field instructions, which `opt bit` gives a
+    /// 68000 Program.
+    BitField(BitFieldOperation),
     /// `moves`, either direction, the 68010's.
     Moves,
 }
@@ -693,18 +761,6 @@ pub enum Implementation {
         /// What to write instead, when there is something.
         alternative: Option<&'static str>,
     },
-    /// An instruction of a later processor that s68k's dialect of it does not
-    /// implement yet: writing it is `unimplemented_in_dialect`, whatever the
-    /// Program's processor, since no `opt p=` would make it assemble. Each
-    /// arrives with the rest of its dialect (the asm-editor's
-    /// `docs/design/m68k-machine-plan.md`, batches 4 and 5).
-    NotImplementedYet {
-        /// The first processor that has it.
-        processor: Processor,
-        /// Whether it is one of the 68020's eight bit-field instructions,
-        /// which EASy68K's `opt bit` gives a 68000 program.
-        bit_field: bool,
-    },
 }
 
 /// One row of the table: everything that is known about one Mnemonic.
@@ -727,9 +783,7 @@ impl InstructionSpec {
     pub fn family(&self) -> Option<Family> {
         match self.implementation {
             Implementation::Implemented(family) => Some(family),
-            Implementation::NotImplemented { .. } | Implementation::NotImplementedYet { .. } => {
-                None
-            }
+            Implementation::NotImplemented { .. } => None,
         }
     }
 
@@ -839,34 +893,6 @@ const fn not_implemented(
     }
 }
 
-/// A row for an instruction of a later processor that s68k does not implement
-/// yet ([`Implementation::NotImplementedYet`]).
-const fn not_implemented_yet(mnemonic: &'static str, processor: Processor) -> InstructionSpec {
-    InstructionSpec {
-        mnemonic,
-        implementation: Implementation::NotImplementedYet {
-            processor,
-            bit_field: false,
-        },
-        forms: &[],
-        value_rule: None,
-    }
-}
-
-/// A row for one of the 68020's bit-field instructions, which s68k does not
-/// implement yet.
-const fn bit_field_not_implemented_yet(mnemonic: &'static str) -> InstructionSpec {
-    InstructionSpec {
-        mnemonic,
-        implementation: Implementation::NotImplementedYet {
-            processor: Processor::M68020,
-            bit_field: true,
-        },
-        forms: &[],
-        value_rule: None,
-    }
-}
-
 /// The one form every `Bcc`, `bra` and `bsr` shares: a Label, and a branch
 /// size suffix that is accepted and not range checked.
 const BRANCH_FORM: &[Form] = &[form(&[Modes::ABSOLUTE], SizeRule::Branch)];
@@ -968,12 +994,95 @@ const MOVEP_FORMS: &[Form] = &[
     form(&[MOVEP_MEMORY, Modes::DN], SizeRule::WordOrLong),
 ];
 
+/// The Forms of `muls` and `mulu`: a word by a word into a long, the 68000's,
+/// and the 68020's long, into `Dl` or into `Dh:Dl`.
+const LONG_MULTIPLY_FORMS: &[Form] = &[
+    form(&[Modes::DATA, Modes::DN], SizeRule::WordOnly),
+    dialect_form(
+        Processor::M68020,
+        &[Modes::DATA, Modes::DN.union(Modes::REGISTER_PAIR)],
+        SizeRule::LongOnly,
+    ),
+];
+/// The Forms of `divs` and `divu`: a long by a word, the 68000's, and the
+/// 68020's long, into `Dq` or of 64 bits in `Dr:Dq`.
+const LONG_DIVIDE_FORMS: &[Form] = LONG_MULTIPLY_FORMS;
+/// The one Form of `divsl` and `divul`, the 68020's: 32 bits by 32, the
+/// remainder into `Dr` and the quotient into `Dq`.
+const DIVIDE_WITH_REMAINDER_FORM: &[Form] = &[dialect_form(
+    Processor::M68020,
+    &[Modes::DATA, Modes::REGISTER_PAIR],
+    SizeRule::LongOnly,
+)];
+
+/// The two Forms of `pack` and `unpk`, the 68020's: two data registers, or
+/// two predecrements, and the adjustment, a word, as an immediate.
+const PACK_FORMS: &[Form] = &[
+    dialect_form(
+        Processor::M68020,
+        &[Modes::DN, Modes::DN, Modes::IMMEDIATE],
+        SizeRule::Unsized,
+    ),
+    dialect_form(
+        Processor::M68020,
+        &[Modes::PREDECREMENT, Modes::PREDECREMENT, Modes::IMMEDIATE],
+        SizeRule::Unsized,
+    ),
+];
+
+/// The bit field a bit-field instruction reads: in a data register or in a
+/// control mode, the PC-relative pair included.
+const BIT_FIELD_READ: Modes = Modes::DN.union(Modes::CONTROL).union(Modes::BIT_FIELD);
+/// The bit field one writes: in a data register or a control alterable mode.
+const BIT_FIELD_WRITTEN: Modes = Modes::DN
+    .union(Modes::CONTROL_ALTERABLE)
+    .union(Modes::BIT_FIELD);
+
+/// A bit-field instruction's row, the 68020's.
+const fn bit_field(
+    mnemonic: &'static str,
+    operation: BitFieldOperation,
+    forms: &'static [Form],
+) -> InstructionSpec {
+    implemented(mnemonic, Family::BitField(operation), forms)
+}
+
+/// The Form of `bfextu`, `bfexts` and `bfffo`: a bit field read, and the
+/// data register written.
+const BIT_FIELD_INTO_A_REGISTER: &[Form] = &[dialect_form(
+    Processor::M68020,
+    &[BIT_FIELD_READ, Modes::DN],
+    SizeRule::Unsized,
+)];
+/// The Form of `bfchg`, `bfclr` and `bfset`: a bit field written.
+const BIT_FIELD_CHANGED: &[Form] = &[dialect_form(
+    Processor::M68020,
+    &[BIT_FIELD_WRITTEN],
+    SizeRule::Unsized,
+)];
+
 /// The memory Operand of `movep`: `d(An)`, and `(An)` as `0(An)`.
 const MOVEP_MEMORY: Modes = Modes::DISPLACEMENT.union(Modes::INDIRECT);
 
 /// A `Bcc` row.
 const fn branch(mnemonic: &'static str, condition: Condition) -> InstructionSpec {
     implemented(mnemonic, Family::Bcc(condition), BRANCH_FORM)
+}
+
+/// The two Forms every `trapcc` shares, the 68020's: no operand, or an
+/// immediate of a word or a long, which only the handler reads.
+const TRAP_CONDITIONALLY_FORMS: &[Form] = &[
+    dialect_form(Processor::M68020, &[], SizeRule::Unsized),
+    dialect_form(Processor::M68020, &[Modes::IMMEDIATE], SizeRule::WordOrLong),
+];
+
+/// A `trapcc` row.
+const fn trap_conditionally(mnemonic: &'static str, condition: Condition) -> InstructionSpec {
+    implemented(
+        mnemonic,
+        Family::TrapCc(condition),
+        TRAP_CONDITIONALLY_FORMS,
+    )
 }
 
 /// A `DBcc` row.
@@ -1071,10 +1180,18 @@ pub const TABLE: &[InstructionSpec] = &[
         Family::Pea,
         &[form(&[Modes::CONTROL], SizeRule::LongOnly)],
     ),
+    // `link.l`, a long displacement, is the 68020's
     implemented(
         "link",
         Family::Link,
-        &[form(&[Modes::AN, Modes::IMMEDIATE], SizeRule::Unsized)],
+        &[
+            form(&[Modes::AN, Modes::IMMEDIATE], SizeRule::Unsized),
+            dialect_form(
+                Processor::M68020,
+                &[Modes::AN, Modes::IMMEDIATE],
+                SizeRule::LongOnly,
+            ),
+        ],
     ),
     implemented(
         "unlk",
@@ -1185,6 +1302,11 @@ pub const TABLE: &[InstructionSpec] = &[
             form(&[Modes::ALL, Modes::ANY_REGISTER], SizeRule::Any),
             form(&[Modes::POSTINCREMENT, Modes::POSTINCREMENT], SizeRule::Any),
             form(&[Modes::IMMEDIATE, Modes::DATA_ALTERABLE], SizeRule::Any),
+            dialect_form(
+                Processor::M68020,
+                &[Modes::IMMEDIATE, Modes::PC_RELATIVE],
+                SizeRule::Any,
+            ),
         ],
     ),
     implemented(
@@ -1192,13 +1314,18 @@ pub const TABLE: &[InstructionSpec] = &[
         Family::Cmpa,
         &[form(&[Modes::ALL, Modes::AN], SizeRule::WordOrLong)],
     ),
+    // against the program counter on the 68020
     implemented(
         "cmpi",
         Family::Immediate(ImmediateKind::Cmp),
-        &[form(
-            &[Modes::IMMEDIATE, Modes::DATA_ALTERABLE],
-            SizeRule::Any,
-        )],
+        &[
+            form(&[Modes::IMMEDIATE, Modes::DATA_ALTERABLE], SizeRule::Any),
+            dialect_form(
+                Processor::M68020,
+                &[Modes::IMMEDIATE, Modes::PC_RELATIVE],
+                SizeRule::Any,
+            ),
+        ],
     ),
     implemented(
         "cmpm",
@@ -1208,25 +1335,23 @@ pub const TABLE: &[InstructionSpec] = &[
             SizeRule::Any,
         )],
     ),
-    implemented(
-        "divs",
-        Family::Divide(Sign::Signed),
-        &[form(&[Modes::DATA, Modes::DN], SizeRule::WordOnly)],
-    ),
-    implemented(
-        "divu",
-        Family::Divide(Sign::Unsigned),
-        &[form(&[Modes::DATA, Modes::DN], SizeRule::WordOnly)],
-    ),
-    implemented(
-        "muls",
-        Family::Multiply(Sign::Signed),
-        &[form(&[Modes::DATA, Modes::DN], SizeRule::WordOnly)],
-    ),
+    implemented("divs", Family::Divide(Sign::Signed), LONG_DIVIDE_FORMS),
+    implemented("divu", Family::Divide(Sign::Unsigned), LONG_DIVIDE_FORMS),
+    implemented("muls", Family::Multiply(Sign::Signed), LONG_MULTIPLY_FORMS),
     implemented(
         "mulu",
         Family::Multiply(Sign::Unsigned),
-        &[form(&[Modes::DATA, Modes::DN], SizeRule::WordOnly)],
+        LONG_MULTIPLY_FORMS,
+    ),
+    implemented(
+        "divsl",
+        Family::DivideLong(Sign::Signed),
+        DIVIDE_WITH_REMAINDER_FORM,
+    ),
+    implemented(
+        "divul",
+        Family::DivideLong(Sign::Unsigned),
+        DIVIDE_WITH_REMAINDER_FORM,
     ),
     implemented(
         "ext",
@@ -1248,10 +1373,15 @@ pub const TABLE: &[InstructionSpec] = &[
         Family::Neg,
         &[form(&[Modes::DATA_ALTERABLE], SizeRule::Any)],
     ),
+    // the 68020 tests an address register, a word or a long, a PC-relative
+    // operand and an immediate too
     implemented(
         "tst",
         Family::Tst,
-        &[form(&[Modes::DATA_ALTERABLE], SizeRule::Any)],
+        &[
+            form(&[Modes::DATA_ALTERABLE], SizeRule::Any),
+            dialect_form(Processor::M68020, &[Modes::ALL], SizeRule::Any),
+        ],
     ),
     // ---- binary coded decimal ----
     implemented(
@@ -1381,10 +1511,18 @@ pub const TABLE: &[InstructionSpec] = &[
         &[form(&[Modes::DATA_ALTERABLE], SizeRule::ByteOnly)],
     ),
     implemented("trapv", Family::Trapv, &[form(&[], SizeRule::Unsized)]),
+    // `chk.l` is the 68020's
     implemented(
         "chk",
         Family::Chk,
-        &[form(&[Modes::DATA, Modes::DN], SizeRule::WordOnly)],
+        &[
+            form(&[Modes::DATA, Modes::DN], SizeRule::WordOnly),
+            dialect_form(
+                Processor::M68020,
+                &[Modes::DATA, Modes::DN],
+                SizeRule::LongOnly,
+            ),
+        ],
     ),
     implemented("illegal", Family::Illegal, &[form(&[], SizeRule::Unsized)]),
     // `stop #n` loads the whole status register from its immediate word and
@@ -1517,41 +1655,105 @@ pub const TABLE: &[InstructionSpec] = &[
             ),
         ],
     ),
-    // ---- the 68020's, not implemented yet (batch 5) ----
-    not_implemented_yet("chk2", Processor::M68020),
-    not_implemented_yet("cmp2", Processor::M68020),
-    not_implemented_yet("cas", Processor::M68020),
-    not_implemented_yet("cas2", Processor::M68020),
-    not_implemented_yet("pack", Processor::M68020),
-    not_implemented_yet("unpk", Processor::M68020),
-    not_implemented_yet("divsl", Processor::M68020),
-    not_implemented_yet("divul", Processor::M68020),
-    not_implemented_yet("trapt", Processor::M68020),
-    not_implemented_yet("trapf", Processor::M68020),
-    not_implemented_yet("traphi", Processor::M68020),
-    not_implemented_yet("trapls", Processor::M68020),
-    not_implemented_yet("trapcc", Processor::M68020),
-    not_implemented_yet("traphs", Processor::M68020),
-    not_implemented_yet("trapcs", Processor::M68020),
-    not_implemented_yet("traplo", Processor::M68020),
-    not_implemented_yet("trapne", Processor::M68020),
-    not_implemented_yet("trapeq", Processor::M68020),
-    not_implemented_yet("trapvc", Processor::M68020),
-    not_implemented_yet("trapvs", Processor::M68020),
-    not_implemented_yet("trappl", Processor::M68020),
-    not_implemented_yet("trapmi", Processor::M68020),
-    not_implemented_yet("trapge", Processor::M68020),
-    not_implemented_yet("traplt", Processor::M68020),
-    not_implemented_yet("trapgt", Processor::M68020),
-    not_implemented_yet("traple", Processor::M68020),
-    bit_field_not_implemented_yet("bftst"),
-    bit_field_not_implemented_yet("bfextu"),
-    bit_field_not_implemented_yet("bfchg"),
-    bit_field_not_implemented_yet("bfexts"),
-    bit_field_not_implemented_yet("bfclr"),
-    bit_field_not_implemented_yet("bfffo"),
-    bit_field_not_implemented_yet("bfset"),
-    bit_field_not_implemented_yet("bfins"),
+    // ---- the 68020's ----
+    implemented("pack", Family::Pack { unpack: false }, PACK_FORMS),
+    implemented("unpk", Family::Pack { unpack: true }, PACK_FORMS),
+    // the bounds pair in memory, against a data or an address register
+    implemented(
+        "chk2",
+        Family::BoundsCheck { trap: true },
+        &[dialect_form(
+            Processor::M68020,
+            &[Modes::CONTROL, Modes::ANY_REGISTER],
+            SizeRule::Any,
+        )],
+    ),
+    implemented(
+        "cmp2",
+        Family::BoundsCheck { trap: false },
+        &[dialect_form(
+            Processor::M68020,
+            &[Modes::CONTROL, Modes::ANY_REGISTER],
+            SizeRule::Any,
+        )],
+    ),
+    implemented(
+        "cas",
+        Family::Cas,
+        &[dialect_form(
+            Processor::M68020,
+            &[Modes::DN, Modes::DN, Modes::MEMORY_ALTERABLE],
+            SizeRule::Any,
+        )],
+    ),
+    implemented(
+        "cas2",
+        Family::Cas2,
+        &[dialect_form(
+            Processor::M68020,
+            &[
+                Modes::REGISTER_PAIR,
+                Modes::REGISTER_PAIR,
+                Modes::INDIRECT_PAIR,
+            ],
+            SizeRule::WordOrLong,
+        )],
+    ),
+    trap_conditionally("trapt", Condition::True),
+    trap_conditionally("trapf", Condition::False),
+    trap_conditionally("traphi", Condition::High),
+    trap_conditionally("trapls", Condition::LowOrSame),
+    trap_conditionally("trapcc", Condition::CarryClear),
+    trap_conditionally("traphs", Condition::CarryClear),
+    trap_conditionally("trapcs", Condition::CarrySet),
+    trap_conditionally("traplo", Condition::CarrySet),
+    trap_conditionally("trapne", Condition::NotEqual),
+    trap_conditionally("trapeq", Condition::Equal),
+    trap_conditionally("trapvc", Condition::OverflowClear),
+    trap_conditionally("trapvs", Condition::OverflowSet),
+    trap_conditionally("trappl", Condition::Plus),
+    trap_conditionally("trapmi", Condition::Minus),
+    trap_conditionally("trapge", Condition::GreaterThanOrEqual),
+    trap_conditionally("traplt", Condition::LessThan),
+    trap_conditionally("trapgt", Condition::GreaterThan),
+    trap_conditionally("traple", Condition::LessThanOrEqual),
+    // ---- the 68020's bit fields, which `opt bit` gives a 68000 Program ----
+    bit_field(
+        "bftst",
+        BitFieldOperation::Test,
+        &[dialect_form(
+            Processor::M68020,
+            &[BIT_FIELD_READ],
+            SizeRule::Unsized,
+        )],
+    ),
+    bit_field(
+        "bfextu",
+        BitFieldOperation::ExtractUnsigned,
+        BIT_FIELD_INTO_A_REGISTER,
+    ),
+    bit_field("bfchg", BitFieldOperation::Change, BIT_FIELD_CHANGED),
+    bit_field(
+        "bfexts",
+        BitFieldOperation::ExtractSigned,
+        BIT_FIELD_INTO_A_REGISTER,
+    ),
+    bit_field("bfclr", BitFieldOperation::Clear, BIT_FIELD_CHANGED),
+    bit_field(
+        "bfffo",
+        BitFieldOperation::FindFirstOne,
+        BIT_FIELD_INTO_A_REGISTER,
+    ),
+    bit_field("bfset", BitFieldOperation::Set, BIT_FIELD_CHANGED),
+    bit_field(
+        "bfins",
+        BitFieldOperation::Insert,
+        &[dialect_form(
+            Processor::M68020,
+            &[Modes::DN, BIT_FIELD_WRITTEN],
+            SizeRule::Unsized,
+        )],
+    ),
     // The module call of the 68020 alone, which s68k's 68020, a 68EC020,
     // leaves out for good (the asm-editor's `docs/design/m68k-machine.md`,
     // decision 3).
@@ -1566,108 +1768,6 @@ pub const TABLE: &[InstructionSpec] = &[
         Some("`rts`"),
     ),
 ];
-
-/// A shape a later processor gives a Mnemonic the 68000 has, which s68k does
-/// not implement yet: `muls.l`, `link.l`, `tst a0`.
-///
-/// In a Program written for that processor, a line in the shape is
-/// `unimplemented_in_dialect`; in one written for an earlier processor it is
-/// judged as the 68000 would judge it, an invalid size or addressing mode.
-#[derive(Debug, Clone, Copy)]
-pub struct LaterShape {
-    /// The Mnemonic the shape belongs to.
-    pub mnemonic: &'static str,
-    /// The first processor that has the shape.
-    pub processor: Processor,
-    /// Whether a line written with this size suffix and these Operands is in
-    /// the shape.
-    pub matches: fn(Option<SizeSuffix>, &[Operand]) -> bool,
-}
-
-/// Whether the line is written `.l`.
-fn written_long(size: Option<SizeSuffix>, _: &[Operand]) -> bool {
-    size == Some(SizeSuffix::Long)
-}
-
-/// Whether `tst` reads what only the 68020's reads: an address register, a
-/// PC-relative operand or an immediate.
-fn tests_beyond_the_68000(_: Option<SizeSuffix>, operands: &[Operand]) -> bool {
-    operands.iter().any(|operand| {
-        Modes::of(operand)
-            .is_some_and(|mode| mode.intersects(Modes::AN | Modes::PC_RELATIVE | Modes::IMMEDIATE))
-    })
-}
-
-/// Whether an immediate is compared with a PC-relative operand, the 68020's
-/// `cmpi`.
-fn compares_an_immediate_with_the_program(_: Option<SizeSuffix>, operands: &[Operand]) -> bool {
-    matches!(operands, [first, second]
-        if Modes::of(first) == Some(Modes::IMMEDIATE)
-            && Modes::of(second).is_some_and(|mode| mode.intersects(Modes::PC_RELATIVE)))
-}
-
-/// The 68020's shapes of 68000 Mnemonics (`docs/research/m68k-cpu-variants.md`
-/// §2.2 in the asm-editor): the 32-bit multiplies and divides, `chk.l`,
-/// `link.l`, `tst` of what the 68000 cannot test, and `cmpi` against the
-/// program counter.
-pub const LATER_SHAPES: &[LaterShape] = &[
-    LaterShape {
-        mnemonic: "muls",
-        processor: Processor::M68020,
-        matches: written_long,
-    },
-    LaterShape {
-        mnemonic: "mulu",
-        processor: Processor::M68020,
-        matches: written_long,
-    },
-    LaterShape {
-        mnemonic: "divs",
-        processor: Processor::M68020,
-        matches: written_long,
-    },
-    LaterShape {
-        mnemonic: "divu",
-        processor: Processor::M68020,
-        matches: written_long,
-    },
-    LaterShape {
-        mnemonic: "chk",
-        processor: Processor::M68020,
-        matches: written_long,
-    },
-    LaterShape {
-        mnemonic: "link",
-        processor: Processor::M68020,
-        matches: written_long,
-    },
-    LaterShape {
-        mnemonic: "tst",
-        processor: Processor::M68020,
-        matches: tests_beyond_the_68000,
-    },
-    LaterShape {
-        mnemonic: "cmpi",
-        processor: Processor::M68020,
-        matches: compares_an_immediate_with_the_program,
-    },
-    LaterShape {
-        mnemonic: "cmp",
-        processor: Processor::M68020,
-        matches: compares_an_immediate_with_the_program,
-    },
-];
-
-/// The later shape a line of `mnemonic` is written in, if it is in one.
-pub fn later_shape(
-    mnemonic: &str,
-    size: Option<SizeSuffix>,
-    operands: &[Operand],
-) -> Option<&'static LaterShape> {
-    LATER_SHAPES
-        .iter()
-        .find(|shape| shape.mnemonic == mnemonic && (shape.matches)(size, operands))
-}
 
 /// The row for `mnemonic`, case insensitively, or `None` when no Mnemonic has
 /// that name.
@@ -1685,37 +1785,14 @@ pub fn is_mnemonic(name: &str) -> bool {
     lookup(name).is_some()
 }
 
-/// Whether `name` is an instruction of a later processor that s68k does not
-/// implement yet ([`Implementation::NotImplementedYet`]), whose line the parser
-/// reads as raw text: its Operands are refused whole, and the bit fields'
-/// `d0{4:8}` or `cas2`'s `d0:d1` are no syntax s68k reads yet.
-pub fn is_still_to_come(name: &str) -> bool {
-    lookup(name).is_some_and(|spec| {
-        matches!(
-            spec.implementation,
-            Implementation::NotImplementedYet { .. }
-        )
-    })
-}
-
 /// Every Mnemonic in the table, in the table's order.
 pub fn mnemonics() -> impl Iterator<Item = &'static str> {
     TABLE.iter().map(|spec| spec.mnemonic)
 }
 
-/// The Mnemonics worth offering as a "did you mean": every one but those of a
-/// later processor that s68k does not implement yet, which would only lead to
-/// another error.
+/// The Mnemonics worth offering as a "did you mean": every one.
 pub fn suggestible_mnemonics() -> impl Iterator<Item = &'static str> {
-    TABLE
-        .iter()
-        .filter(|spec| {
-            !matches!(
-                spec.implementation,
-                Implementation::NotImplementedYet { .. }
-            )
-        })
-        .map(|spec| spec.mnemonic)
+    mnemonics()
 }
 
 /// The name in `candidates` closest to `name`, when one is close enough to be
@@ -1821,7 +1898,7 @@ mod tests {
                 Implementation::NotImplemented { reason, .. } => {
                     assert!(!reason.is_empty(), "`{mnemonic}` says why");
                 }
-                Implementation::Implemented(_) | Implementation::NotImplementedYet { .. } => {
+                Implementation::Implemented(_) => {
                     panic!("`{mnemonic}` is not implemented")
                 }
             }
@@ -1829,13 +1906,16 @@ mod tests {
         }
     }
 
-    /// The 68000's Forms are the 68000's but two, the first members of the
-    /// dialects (ADR 0011): `move ccr,<ea>`, the 68010's, and `extb.l`, the
-    /// 68020's.
+    /// The Forms of a later processor are its own instructions and the
+    /// shapes it gave a 68000 Mnemonic (ADR 0011): the 68010's `move ccr,<ea>`,
+    /// `rtd`, `bkpt`, `movec` and `moves`; the 68020's `extb.l`, `chk.l`,
+    /// `link.l`, `tst` and `cmpi` of what the 68000 cannot read, and every
+    /// `trapcc`, of no operand or one.
     #[test]
     fn every_form_names_its_first_processor() {
         let later: Vec<(&str, usize, Processor)> = TABLE
             .iter()
+            .filter(|spec| !matches!(spec.family(), Some(Family::TrapCc(_))))
             .flat_map(|spec| {
                 spec.forms
                     .iter()
@@ -1848,26 +1928,60 @@ mod tests {
             later,
             vec![
                 ("move", 4, Processor::M68010),
+                ("link", 1, Processor::M68020),
+                ("cmp", 3, Processor::M68020),
+                ("cmpi", 1, Processor::M68020),
+                ("divs", 1, Processor::M68020),
+                ("divu", 1, Processor::M68020),
+                ("muls", 1, Processor::M68020),
+                ("mulu", 1, Processor::M68020),
+                ("divsl", 0, Processor::M68020),
+                ("divul", 0, Processor::M68020),
                 ("extb", 0, Processor::M68020),
+                ("tst", 1, Processor::M68020),
+                ("chk", 1, Processor::M68020),
                 ("rtd", 0, Processor::M68010),
                 ("bkpt", 0, Processor::M68010),
                 ("movec", 0, Processor::M68010),
                 ("movec", 1, Processor::M68010),
                 ("moves", 0, Processor::M68010),
                 ("moves", 1, Processor::M68010),
+                ("pack", 0, Processor::M68020),
+                ("pack", 1, Processor::M68020),
+                ("unpk", 0, Processor::M68020),
+                ("unpk", 1, Processor::M68020),
+                ("chk2", 0, Processor::M68020),
+                ("cmp2", 0, Processor::M68020),
+                ("cas", 0, Processor::M68020),
+                ("cas2", 0, Processor::M68020),
+                ("bftst", 0, Processor::M68020),
+                ("bfextu", 0, Processor::M68020),
+                ("bfchg", 0, Processor::M68020),
+                ("bfexts", 0, Processor::M68020),
+                ("bfclr", 0, Processor::M68020),
+                ("bfffo", 0, Processor::M68020),
+                ("bfset", 0, Processor::M68020),
+                ("bfins", 0, Processor::M68020),
             ]
         );
         assert_eq!(
             lookup("move").expect("a row").forms[4].operands,
             &[Modes::CCR, Modes::DATA_ALTERABLE]
         );
+        let traps: Vec<&InstructionSpec> = TABLE
+            .iter()
+            .filter(|spec| matches!(spec.family(), Some(Family::TrapCc(_))))
+            .collect();
+        assert_eq!(traps.len(), 18, "sixteen conditions, `hs` and `lo`");
+        for spec in traps {
+            assert_eq!(spec.forms, TRAP_CONDITIONALLY_FORMS, "`{}`", spec.mnemonic);
+        }
     }
 
-    /// Every other instruction of the 68020 is a row of its own, so that it
-    /// is answered as one still to come and not as a word nobody has heard
-    /// of; the module call is left out for good. The 68010's are all in.
+    /// Every instruction of the 68010 and the 68020 is in, the bit fields
+    /// as the 68020's Forms; the module call is left out for good.
     #[test]
-    fn the_later_instructions_are_rows_still_to_come() {
+    fn the_later_instructions_are_all_in() {
         for mnemonic in ["rtd", "bkpt", "movec", "moves"] {
             let spec = lookup(mnemonic).expect("a row");
             assert!(spec.is_implemented(), "`{mnemonic}`");
@@ -1876,73 +1990,30 @@ mod tests {
                 .iter()
                 .all(|form| form.processor == Processor::M68010));
         }
-        for (mnemonic, processor, bit_field) in [
-            ("cas2", Processor::M68020, false),
-            ("trapeq", Processor::M68020, false),
-            ("divul", Processor::M68020, false),
-            ("bfextu", Processor::M68020, true),
-            ("bfins", Processor::M68020, true),
-        ] {
-            let spec = lookup(mnemonic).unwrap_or_else(|| panic!("`{mnemonic}` is in the table"));
-            assert_eq!(
-                spec.implementation,
-                Implementation::NotImplementedYet {
-                    processor,
-                    bit_field
-                },
-                "`{mnemonic}`"
-            );
-            assert!(spec.forms.is_empty());
-        }
+        let bit_fields: Vec<&str> = TABLE
+            .iter()
+            .filter(|spec| spec.forms.iter().any(Form::is_bit_field))
+            .map(|spec| spec.mnemonic)
+            .collect();
         assert_eq!(
-            TABLE
-                .iter()
-                .filter(|spec| matches!(
-                    spec.implementation,
-                    Implementation::NotImplementedYet {
-                        bit_field: true,
-                        ..
-                    }
-                ))
-                .count(),
-            8,
-            "the eight bit-field instructions"
+            bit_fields,
+            ["bftst", "bfextu", "bfchg", "bfexts", "bfclr", "bfffo", "bfset", "bfins"]
         );
+        for spec in TABLE {
+            assert!(
+                spec.is_implemented() || ["callm", "rtm"].contains(&spec.mnemonic),
+                "`{}`",
+                spec.mnemonic
+            );
+        }
         for mnemonic in ["callm", "rtm"] {
             assert!(matches!(
                 lookup(mnemonic).expect("a row").implementation,
                 Implementation::NotImplemented { .. }
             ));
         }
-        assert!(!suggestible_mnemonics().any(|name| name == "cas"));
+        assert!(suggestible_mnemonics().any(|name| name == "bftst"));
         assert!(suggestible_mnemonics().any(|name| name == "callm"));
-    }
-
-    #[test]
-    fn a_later_shape_is_told_by_its_size_or_its_operands() {
-        use crate::assembler::parser;
-        let shape = |text: &str| {
-            let (line, _) = parser::parse_line(text, "main.m68k", 0);
-            let operation = line.operation.expect("an operation");
-            later_shape(
-                &operation.lowercase_name(),
-                operation.size,
-                &operation.operands,
-            )
-            .map(|shape| shape.mnemonic)
-        };
-        assert_eq!(shape("    muls.l d0,d1"), Some("muls"));
-        assert_eq!(shape("    muls.w d0,d1"), None);
-        assert_eq!(shape("    divu.l (a0),d1"), Some("divu"));
-        assert_eq!(shape("    link.l a6,#-8"), Some("link"));
-        assert_eq!(shape("    chk.l d0,d1"), Some("chk"));
-        assert_eq!(shape("    tst.w a0"), Some("tst"));
-        assert_eq!(shape("    tst.l #5"), Some("tst"));
-        assert_eq!(shape("    tst.b label(pc)"), Some("tst"));
-        assert_eq!(shape("    tst.b (a0)"), None);
-        assert_eq!(shape("    cmpi.w #1,label(pc)"), Some("cmpi"));
-        assert_eq!(shape("    cmp.w #1,label(pc)"), Some("cmp"));
-        assert_eq!(shape("    cmp.w label(pc),d0"), None);
     }
 
     /// The shapes of the extend-flag and binary-coded-decimal group, read
@@ -2026,7 +2097,8 @@ mod tests {
             ("exg", SizeSuffix::Long, true),
             ("swap", SizeSuffix::Word, true),
             ("divu", SizeSuffix::Word, true),
-            ("divu", SizeSuffix::Long, false),
+            ("divu", SizeSuffix::Long, true),
+            ("divu", SizeSuffix::Byte, false),
             ("dbra", SizeSuffix::Word, true),
             ("seq", SizeSuffix::Byte, true),
             ("btst", SizeSuffix::Byte, true),
@@ -2217,8 +2289,8 @@ mod tests {
             );
             for form in spec.forms {
                 assert!(
-                    form.operands.len() <= 2,
-                    "`{}` has no instruction of more than two operands",
+                    form.operands.len() <= 3,
+                    "`{}` has no instruction of more than three operands, as `cas` has",
                     spec.mnemonic
                 );
                 if form.combination == Combination::AtMostOneMemoryOperand {
@@ -2241,6 +2313,14 @@ mod tests {
                     matches!(
                         spec.mnemonic,
                         "cmp"
+                            | "cmpi"
+                            | "divs"
+                            | "divu"
+                            | "muls"
+                            | "mulu"
+                            | "tst"
+                            | "chk"
+                            | "link"
                             | "eor"
                             | "movem"
                             | "move"
@@ -2254,6 +2334,8 @@ mod tests {
                             | "sbcd"
                             | "movec"
                             | "moves"
+                            | "pack"
+                            | "unpk"
                     ),
                     "`{}` has two forms of one arity; `Analyzer::choose_form` picks the \
                      first that fits and falls back to the first, so the order has to be \

@@ -161,18 +161,18 @@ Scanning from the first non-blank character after the operation field:
 3. `line_end` ends the field.
 4. A run of whitespace ends the field **unless** the parenthesis depth is
    greater than zero, or the character immediately before the run is `,`, or the
-   first non-blank character after the run is `,`.
+   first non-blank character after the run is `,`. A bit field's `{` and `}`
+   count as parentheses here.
 
 Every Operation's Operand field is read this way except those named in
-`text_operation` (2.6) — `fail`, `include`, `incbin`, `opt`, the refused
-keywords and the instructions still to come — whose Operand field is text and
-is not tokenized at all.
+`text_operation` (2.6) — `fail`, `include`, `incbin`, `opt` and the refused
+keywords — whose Operand field is text and is not tokenized at all.
 
 `include`, `incbin` and `opt` end their field exactly where this section ends
 it, rules 1 to 4 and all — rule 1 is how `include 'input output macros.x68'`
 keeps its spaces — and only what is inside is read differently, as one raw
-filename or a list of options rather than as a list of Operands. `fail`, the
-refused keywords and the instructions still to come end theirs at a `;` (rule
+filename or a list of options rather than as a list of Operands. `fail` and
+the refused keywords end theirs at a `;` (rule
 2) or at the `line_end` (rule 3) and at nothing else: whitespace never ends
 such a field, and a quote inside it is an ordinary character, so
 `FAIL don't call foo without an argument` is one message and
@@ -352,16 +352,20 @@ register          = data_register | address_register ;
 data_register     = "d0" | "d1" | "d2" | "d3" | "d4" | "d5" | "d6" | "d7" ;
 address_register  = "a0" | "a1" | "a2" | "a3" | "a4" | "a5" | "a6" | "a7" | "sp" ;
 program_counter   = "pc" ;
-special_register  = "sr" | "ccr" | "usp" | "sfc" | "dfc" | "vbr" ;
+special_register  = "sr" | "ccr" | "usp" | "sfc" | "dfc" | "vbr"
+                  | "cacr" | "caar" | "msp" | "isp" ;
+suppressed_register = "zd0" | … | "zd7" | "za0" | … | "za7" | "zpc" ;
 ```
 
 Case insensitive. `sp` is `a7` and nothing else — the printer never writes `sp`
 back out (`tests/corpus/README.md`, "Registers"). `pc` is a register only in the
-PC-relative modes. All twenty-four names above are reserved: none of them may be
-a Symbol. `sfc`, `dfc` and `vbr`, the 68010's control registers, which only
-`movec` reaches, are reserved in every Program whatever its processor, as the
-names of the others are, so that a name means the same thing in every dialect
-(ADR 0011).
+PC-relative modes. All twenty-eight names above are reserved: none of them may be
+a Symbol. `sfc`, `dfc` and `vbr`, the 68010's control registers, and `cacr`,
+`caar`, `msp` and `isp`, the 68020's, which only `movec` reaches, are reserved
+in every Program whatever its processor, as the names of the others are, so that
+a name means the same thing in every dialect (ADR 0011). A Program for an
+earlier processor that names one of the 68020's is told so
+(`needs_a_later_processor`).
 
 *Which* diagnostic a reserved name gets depends on what is being done with it,
 and the two are not interchangeable: `reserved_name_as_symbol` where a name is
@@ -373,7 +377,14 @@ earlier draft of this section said that a `pc` outside a PC-relative mode was
 `reserved_name_as_symbol`, which contradicted 2.7 and would have answered a
 misused register with an offer to rename it.
 
-`sr`, `ccr`, `usp`, `sfc`, `dfc` and `vbr` are Operands in their own right, not
+`suppressed_register` names the 68020's suppressed registers, an index or a
+base whose place is kept in the encoding and whose value is not added
+(`zd0`, `za3`, `zpc`). Like `pc` they are registers only inside the
+parentheses of an indexed Operand (2.5), where `pc` is one too, and they are not
+reserved: a Symbol may be called `zd0`, and is read as the register only
+there.
+
+The special registers are Operands in their own right, not
 Addressing modes, and the parser accepts them at any position of any Operation.
 `tests/corpus/easy68k/mouseWindowSize.X68` writes `andi.w #$00,SR`.
 
@@ -454,8 +465,13 @@ parser cannot know, and does not guess.
 ```
 unary_operator  = "-" | "~" ;
 binary_operator = "+" | "-" | "*" | "/" | "\" | "&" | "!" | "|" | "^" | "<<" | ">>" ;
-punctuation     = "#" | "," | "(" | ")" | "/" | ":" | "." | "-" | "+" ;
+punctuation     = "#" | "," | "(" | ")" | "/" | ":" | "." | "-" | "+"
+                | "[" | "]" | "{" | "}" ;
 ```
+
+`[` and `]` are the 68020's memory indirection, `{` and `}` its bit fields,
+and `:` between two Operands its register pairs (2.5), beside the colon that
+ends a Label (1.4).
 
 The set is EASy68K's `Directives/operators.htm`, verbatim. There is **no** `**`:
 assemblers that have one spell exponentiation with it and EASy68K does not, its
@@ -483,7 +499,8 @@ Expression.
 The tokenizer of one line produces, for `src/assembler/token.rs`:
 
 `Identifier`, `LocalIdentifier`, `Number`, `StringLiteral`, `SizeSuffix`,
-`Hash`, `Comma`, `LeftParen`, `RightParen`, `Colon`, `Plus`, `Minus`, `Star`,
+`Hash`, `Comma`, `LeftParen`, `RightParen`, `LeftBracket`, `RightBracket`,
+`LeftBrace`, `RightBrace`, `Colon`, `Plus`, `Minus`, `Star`,
 `Slash`, `Backslash`, `Ampersand`, `Bang`, `Pipe`, `Caret`, `Tilde`,
 `ShiftLeft`, `ShiftRight`, `Whitespace`, `Comment`, `EndOfLine`, `Error`.
 
@@ -577,17 +594,18 @@ Directive name?", and nothing else (ADR 0003). The Operand field asks a second,
 *closed* list — `text_operation` (2.6), written out in this document and not in
 the instruction table — "does this Operation take its Operand field as text
 instead of as an `operand_list`?", because the answer decides whether that text
-is tokenized at all and no later phase can undo the tokenizing. The list names
-one group by a mark the table carries rather than by name: the instructions of
-the 68010 and the 68020 that s68k does not implement yet (`still_to_come`,
-2.6). Neither question reaches the operand rules, the sizes or the value ranges
-of the instruction table: those stay the analyzer's.
+is tokenized at all and no later phase can undo the tokenizing. Neither
+question reaches the operand rules, the sizes or the value ranges of the
+instruction table: those stay the analyzer's. Every instruction of the three
+processors is read as an `operand_list`, the 68020's pairs and bit fields
+included (2.5).
 
 ### 2.5 `operand_field` and the Addressing modes
 
 ```
 operand_field      = operand_list | text_operand_field ;
 operand_list       = operand { "," operand } ;
+operand            = single_operand [ ":" single_operand ] [ bit_field ] ;
 text_operand_field = file_specification | message_text | option_list
                    | raw_operand_field ;
 ```
@@ -596,7 +614,7 @@ Which of the two alternatives applies is decided by the Operation's name and by
 nothing else: an Operation named in `text_operation` (2.6) takes the text form
 that production gives it — `file_specification` for `include` and `incbin`,
 `message_text` for `fail`, `option_list` for `opt`, `raw_operand_field` for the
-refused keywords and the instructions still to come — and
+refused keywords — and
 every other Operation, known or unknown, takes an `operand_list`. This is the
 parser's second table question (2.4), and it has to be the parser's because a
 text Operand field is never tokenized: read as an `operand_list`,
@@ -604,7 +622,7 @@ text Operand field is never tokenized: read as an `operand_list`,
 and `fail ERROR, Argument missing` would split at its comma.
 
 ```
-operand = immediate
+single_operand = immediate
         | register_list
         | data_register_direct
         | address_register_direct
@@ -616,6 +634,7 @@ operand = immediate
         | index
         | pc_displacement
         | pc_index
+        | full_index
         | absolute ;
 
 immediate               = "#" expression [ ".l" ] ;
@@ -637,8 +656,87 @@ pc_index        = expression "(" program_counter "," index_register ")"
                 | "(" program_counter "," index_register ")" ;
 
 absolute        = expression [ size_suffix ] ;
-index_register  = register [ size_suffix ] ;
+index_register  = ( register | suppressed_register ) [ size_suffix ] [ "*" scale ] ;
+scale           = "1" | "2" | "4" | "8" ;
 ```
+
+The 68020's indexed forms (the M68000 Programmer's Reference Manual, 2.2.7 to
+2.2.10 and 2.2.13 to 2.2.15) are one more alternative of `operand`, written as
+vasm and GNU `as` write them in Motorola syntax:
+
+```
+full_index  = "(" displacement "," base_part [ "," index_register ] ")"
+            | "(" [ displacement "," ] index_register ")"
+            | "(" [ displacement "," ] suppressed_base [ "," index_register ] ")"
+            | "(" address_register "," suppressed_index ")"
+            | "(" expression "," ( address_register | program_counter ) "," suppressed_index ")"
+            | "(" "[" [ inner ] "]" [ "," outer ] ")" ;
+inner       = [ displacement "," ] [ base_part [ "," index_register ] | index_register ]
+            | displacement ;
+outer       = index_register [ "," displacement ] | displacement ;
+displacement = expression [ size_suffix ] ;
+base_part   = address_register | program_counter | suppressed_base ;
+suppressed_base  = "za0" | … | "za7" | "zpc" ;
+suppressed_index = "zd0" | … | "zd7" | "za0" | … | "za7" ;
+```
+
+* **A scale** after an index register, `(4,a0,d1.w*4)`, is the 68020's brief
+  extension word; `*1` is the 68000's word, written out. It belongs to `index`
+  and `pc_index`, and to every `full_index`.
+* **The full extension word** is everything else: a base displacement written
+  with its width, `(1000.w,a0,d1.l)`, which forces the full format, and
+  `.l` a long one; a base suppressed or left out, `(d0.l*4)`, `(4,za0,d1)`,
+  `(zpc,d0)`; an index suppressed, `(a0,zd0)`; and memory indirection, the
+  brackets around what is added before the long at that address is read:
+  `([4,a0],d1.w*4,8)` adds the index after the read (postindexed),
+  `([4,a0,d1.w*4],8)` before it (preindexed), and the last displacement, the
+  outer one, after either. Any part may be left out, as in `([a0])` and
+  `([label,pc],d0)`.
+* **Which register is which.** Inside the parentheses or the brackets, an
+  address register, `pc`, `za0` to `za7` or `zpc` with no size or scale after
+  it is the base; a data register, or an address register with a size or a
+  scale, is an index, the base left out. `(a0)` stays `indirect` and
+  `(a0,d1)` stays `index`. `(d0)` is the 68020's data register indirect,
+  `(d0.w)`, and is answered with its processor in a 68000 Program; `(d0,d1)`
+  and `4(d0)` are `malformed_operand` as before, a base that is not an address
+  register.
+* **An index register with no size is `.w`**, on the 68020 as on the 68000,
+  where GNU `as` makes it a long; write `.l` for a long.
+* **The widths.** A displacement written without one is chosen as EASy68K
+  chooses an absolute address's width, by the back-reference rule (CONTEXT.md,
+  "Back reference"): see the README's "Encodings". `(d,An)` and `(d,PC)`
+  written `.w` are the 68000's `d(An)` and `d(PC)`, as vasm and GNU `as`
+  assemble them.
+* From the program counter, the displacement written is the address reached,
+  as in `pc_displacement`; written nowhere in brackets or with a suppressed
+  index, it is null, and reaches the extension word.
+* A Program for the 68000 or the 68010 refuses all of these, and a scale other
+  than 1, with `needs_a_later_processor` (ADR 0011).
+
+Two more of the 68020's shapes follow an Operand, a pair and a bit field:
+
+```
+register_pair = data_register ":" data_register ;
+indirect_pair = "(" register ")" ":" "(" register ")" ;
+bit_field     = "{" field_value ":" field_value "}" ;
+field_value   = data_register | [ "#" ] expression ;
+```
+
+* **A register pair** is two data registers apart by a `:`: `Dh:Dl`, the 64
+  bits of `muls.l <ea>,d1:d2`, `Dr:Dq` of `divs.l <ea>,d1:d2` and
+  `divsl.l`, and `cas2`'s two compare and two update registers. **An
+  indirect pair** is `cas2`'s two addresses, each register, a data or an
+  address one, in parentheses: `(a0):(d1)`. A `:` between any other two
+  Operands, `d1:a2` or `(a0):d1`, is `malformed_operand`.
+* **A bit field** is written straight after the Operand it is in, with no
+  space: `d0{4:8}`, `(a0){d1:d2}`, `([4,a0]){0:32}`; its offset and its width
+  are each a number, with a `#` or without, as GNU `as` reads them, or a data
+  register. A number is an offset of 0 to 31 and a width of 1 to 32, else
+  `value_out_of_range`; a data register holds an offset of any size and a
+  width modulo 32, 0 being 32. A `{` with no `:` or `}`, or an address
+  register in a field, is `malformed_operand`. The Operand is the mode of
+  what it is in, with the field: only the bit-field instructions take one, and
+  they take nothing without one (`invalid_addressing_mode`).
 
 A lone register is `data_register_direct` or `address_register_direct`;
 `register_list` is taken only when a `-` or a `/` follows the first register
@@ -672,16 +770,25 @@ Short Addressing").
 that starts with `(`, and it is where a recursive-descent parser has to be told
 what to do. Having consumed the `(`:
 
+0. if the next token is `[`, the Operand is a memory indirect `full_index`;
+   if it is a `suppressed_register`, a data register followed by `)`, a size
+   or a `*`, or an address register followed by a size or a `*`, it is a
+   `full_index` whose base is suppressed or left out (2.5, the 68020's);
 1. if the next token is a `register` or `pc` **and** the one after it is
    `)`, `,`, or the end of the Operand field, the Operand is `indirect`,
    `postincrement`, `index`, or the `pc_index` form. A *data* register matches
    this rule although no mode takes one as its base: what follows is
-   `malformed_operand` naming the shape (below), because `(d0)` is a mistake
-   with a name and reading it as a `grouped_expression` would answer
-   `register_in_expression`, which describes a program nobody wrote;
+   `malformed_operand` naming the shape (below), because `(d0,d1)` is a
+   mistake with a name and reading it as a `grouped_expression` would answer
+   `register_in_expression`, which describes a program nobody wrote. `(d0)`
+   on its own is rule 0's, the 68020's data register indirect;
 2. otherwise parse an `expression`, and then
    * `,` follows — the Operand is `(d,An)`, `(d,An,Xn)`, `(d,PC)` or
-     `(d,PC,Xn)`; an `address_register` or `pc` is required after the comma;
+     `(d,PC,Xn)`; an `address_register` or `pc` is required after the comma,
+     but for the 68020's `full_index` that rule 0 would have taken,
+     `(4,d0.l)` and `(4,za0,d1)`;
+   * a `size_suffix` and a `,` follow — the Operand is a `full_index` whose
+     base displacement is written with its width, `(1000.w,a0,d1)`;
    * `)` follows and the token after it is a `binary_operator` — the `( … )` was
      a `grouped_expression`, so the Pratt loop continues with it as its left
      term and the Operand is an `absolute`;
@@ -716,10 +823,12 @@ naming the shape rather than the token:
 * **`(pc)`** — a PC-relative Operand carries a displacement (`pc_displacement`,
   above), so this is "this looks like a PC-relative operand, `label(pc)`, but
   the displacement is missing".
-* **the register is a data register** — `move.l (d0),d1`, `move.l (d0,d1),d2` —
-  "this looks like an indirect operand, `(a0)`, but `d0` is not an address
+* **the register is a data register followed by a `,`** — `move.l (d0,d1),d2`
+  — "this looks like an indirect operand, `(a0)`, but `d0` is not an address
   register". It is the same sentence `4(d0)` already produced through
-  `base_and_index`, and it is the one that says what to write.
+  `base_and_index`, and it is the one that says what to write. `move.l (d0),d1`
+  is the 68020's `(d0.w)`, and a Program for an earlier processor is told that
+  it needs the 68020, with `(a0)` as the 68000's way of writing it.
 
 A leading `-` is `predecrement` only when a `(` and a `register` follow it;
 otherwise it is a unary minus opening an `expression`, so `-4(a6)`, `-(4)` and
@@ -811,13 +920,7 @@ listing_option     = [ "no" ] ( "cre" | "mex" | "sex" | "war" | "cex" ) ;
 raw_operand_field  = ? the same text as message_text, under the name it carries
                        on a refused Operation ? ;
 
-text_operation     = "fail" | "include" | "incbin" | "opt" | refused_operation
-                   | still_to_come ;
-still_to_come      = ? a Mnemonic of the 68010 or the 68020 the instruction
-                       table marks as not implemented yet: rtd, bkpt, movec,
-                       moves, chk2, cmp2, cas, cas2, pack, unpk, divsl, divul,
-                       the eighteen trapcc, and the eight bit-field
-                       instructions ? ;
+text_operation     = "fail" | "include" | "incbin" | "opt" | refused_operation ;
 refused_operation  = "macro" | "endm" | "mexit"
                    | "ifeq" | "ifne" | "iflt" | "ifle" | "ifgt" | "ifge"
                    | "ifc" | "ifnc" | "ifarg" | "endc"
@@ -1004,10 +1107,6 @@ Notes the shapes do not carry:
       syntax error, made a warning because the word changes nothing either
       way, and said because a misspelt `p=` would otherwise leave the program
       on the 68000 in silence.
-* The instructions still to come — `still_to_come` above — parse as
-  `unimplemented_operation` too: one `unimplemented_in_dialect` about the name,
-  and no syntax error about the bit fields' `d0{4:8}` or `cas2`'s `d0:d1`,
-  which s68k does not read yet. They arrive with their dialects.
 * The refused Directives — `refused_operation` above — parse as
   `unimplemented_operation`, an `operation` followed by a `raw_operand_field`
   that is **not** tokenized. That is what keeps one "not implemented" diagnostic
@@ -1066,7 +1165,7 @@ primary_expression        = number
                           | grouped_expression ;
 grouped_expression        = "(" expression ")" ;
 current_address           = "*" ;
-symbol_reference          = ? an identifier that is not one of the twenty-four
+symbol_reference          = ? an identifier that is not one of the twenty-eight
                               reserved register names of 1.10 ? ;
 ```
 
@@ -1230,7 +1329,7 @@ All three start with `(` and 2.5's `parenthesised_operand` separates them by the
 two tokens after it: a register or `pc` followed by `)` or `,` is an Addressing
 mode, anything else is an Expression, and an Expression whose `)` is followed by
 a `binary_operator` keeps going. A Symbol named like a register cannot arise —
-the twenty-four register names are reserved (1.10) and `symbol_reference`
+the twenty-eight register names are reserved (1.10) and `symbol_reference`
 excludes them (2.7) — so rule 1 never steals a `(label)` that meant an absolute
 address.
 
@@ -1354,7 +1453,8 @@ tests carry these names.
 `decimal_number`, `hex_digit`, `octal_digit`, `string_literal`, `single_quoted`,
 `double_quoted`, `character_except_quote`, `character_except_double_quote`,
 `character_literal`, `character`, `register`, `data_register`,
-`address_register`, `program_counter`, `special_register`, `size_suffix`,
+`address_register`, `program_counter`, `special_register`,
+`suppressed_register`, `size_suffix`,
 `register_list`, `register_list_item`, `register_range`, `unary_operator`,
 `binary_operator`, `punctuation`.
 
@@ -1366,7 +1466,10 @@ tests carry these names.
 **Operands** — `operand_field`, `operand_list`, `text_operand_field`, `operand`,
 `immediate`, `data_register_direct`, `address_register_direct`, `indirect`,
 `postincrement`, `predecrement`, `displacement`, `index`, `pc_displacement`,
-`pc_index`, `absolute`, `index_register`, `parenthesised_operand`.
+`pc_index`, `full_index`, `absolute`, `index_register`, `scale`, `inner`,
+`outer`, `displacement`, `base_part`, `suppressed_base`, `suppressed_index`,
+`single_operand`, `register_pair`, `indirect_pair`, `bit_field`, `field_value`,
+`parenthesised_operand`.
 
 **Directives** — `org_directive`, `equ_directive`, `set_directive`,
 `dc_directive`, `dc_item`, `ds_directive`, `dcb_directive`, `end_directive`,
@@ -1375,7 +1478,7 @@ tests carry these names.
 `offset_directive`, `section_directive`, `file_specification`, `bare_file_name`,
 `message_text`, `option_list`, `option`, `processor_option`, `processor`,
 `listing_option`, `raw_operand_field`, `unimplemented_operation`,
-`quoted_file_name`, `text_operation`, `refused_operation`, `still_to_come`,
+`quoted_file_name`, `text_operation`, `refused_operation`,
 `macro_definition`.
 
 The Directive rules are the one group whose tests are not named after them:
@@ -1394,7 +1497,6 @@ decides. The map, so that a rule can be found from its name:
 | `end_directive` | `the_entry_point_is_end_then_start_then_the_first_instruction`, `end_without_an_address_warns_and_falls_back`, `end_finds_a_label_that_differs_only_in_case_and_warns`, `a_line_after_end_is_not_assembled_and_says_so_once`, `a_comment_after_end_is_what_every_easy68k_program_has` |
 | `opt_directive`, `option_list`, `option`, `processor_option`, `listing_option` | `opt_chooses_the_processor_and_the_bit_fields`, `opt_comes_before_the_first_instruction_and_names_one_processor`, `opt_in_an_included_file_chooses_for_the_whole_program`, `the_processor_fix_edits_the_line_that_chooses_the_processor`, `the_ignored_directives_are_ignored_in_silence` |
 | `list_directive`, `page_directive` | `the_ignored_directives_are_ignored_in_silence` |
-| `still_to_come` | `text_operation_is_a_closed_list` in `src/assembler/names.rs`, `an_instruction_still_to_come_says_so` in `src/assembler/analyzer.rs` |
 | `reg_directive` | `reg_names_a_register_list_and_movem_reads_it_in_both_directions`, `reg_takes_a_single_register_as_a_list_of_one`, `reg_without_a_name_says_so`, `reg_takes_a_register_list_and_nothing_else`, `a_register_list_in_an_expression_is_refused`, `a_register_list_has_to_be_defined_above_the_movem_that_reads_it`, `a_name_that_is_not_a_register_list_says_so`, `a_name_that_is_defined_nowhere_keeps_its_own_message` |
 | `fail_directive` | `fail_reports_its_message_word_for_word_and_the_assembly_carries_on`, `fail_without_a_message_uses_easy68ks_default`, `a_label_on_a_fail_names_the_address_of_the_line` |
 | `simhalt_directive` | `simhalt_is_an_instruction_of_four_bytes`, `simhalt_ignores_the_rest_of_its_line`, and `simhalt_pauses_after_itself_and_step_resumes` in `src/test/test.rs` |

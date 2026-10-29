@@ -463,10 +463,11 @@ fn a_store_on_the_last_instruction_of_a_limit_is_still_reported() {
 
 #[test]
 fn a_failure_after_a_store_ends_the_program_with_the_write_kept() {
-    // the second long of the movem runs past the last byte of memory
+    // the second long of the movem is refused by the memory map
     let mut interpreter = Interpreter::new(
         assemble(
-            "    org $1000
+            "    memory invalid $FFFFFE,$FFFFFF
+    org $1000
     lea $FFFFFA,a0
     movem.l d0-d1,(a0)
 ",
@@ -479,7 +480,7 @@ fn a_failure_after_a_store_ends_the_program_with_the_write_kept() {
     interpreter.watch_memory(0xFFFF00, 0x1000000).unwrap();
     assert!(matches!(
         interpreter.run(),
-        Err(RuntimeError::OutOfBounds(_))
+        Err(RuntimeError::BusError { address: 0xFFFFFE, .. })
     ));
     assert_eq!(
         *interpreter.get_status(),

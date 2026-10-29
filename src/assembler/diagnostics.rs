@@ -78,12 +78,18 @@ pub enum OperandShape {
     PcDisplacement,
     /// `label(pc,d1.w)`
     PcIndex,
+    /// `([4,a0],d1.w*4,8)`, the 68020's
+    MemoryIndirect,
     /// `$1000`
     Absolute,
     /// `d0-d3/a0-a2`
     RegisterList,
     /// `(640-2)/2`
     GroupedExpression,
+    /// `d1:d2` and `(a0):(a1)`, the 68020's
+    RegisterPair,
+    /// `d0{4:8}`, the 68020's bit field
+    BitField,
 }
 
 impl OperandShape {
@@ -98,9 +104,12 @@ impl OperandShape {
             OperandShape::Index => "an indexed operand",
             OperandShape::PcDisplacement => "a PC-relative operand",
             OperandShape::PcIndex => "a PC-relative indexed operand",
+            OperandShape::MemoryIndirect => "a memory indirect operand",
             OperandShape::Absolute => "an absolute operand",
             OperandShape::RegisterList => "a register list",
             OperandShape::GroupedExpression => "a parenthesised expression",
+            OperandShape::RegisterPair => "a register pair",
+            OperandShape::BitField => "a bit field",
         }
     }
 
@@ -116,9 +125,12 @@ impl OperandShape {
             OperandShape::Index => "4(a0,d1.w)",
             OperandShape::PcDisplacement => "label(pc)",
             OperandShape::PcIndex => "label(pc,d1.w)",
+            OperandShape::MemoryIndirect => "([4,a0],d1.w*4,8)",
             OperandShape::Absolute => "$1000",
             OperandShape::RegisterList => "d0-d3/a0-a2",
             OperandShape::GroupedExpression => "(640-2)/2",
+            OperandShape::RegisterPair => "d1:d2",
+            OperandShape::BitField => "d0{4:8}",
         }
     }
 }
@@ -184,7 +196,7 @@ pub enum DiagnosticKind {
         /// The name as it was written, dot included.
         name: String,
     },
-    /// A Symbol named like one of the twenty-four reserved register names.
+    /// A Symbol named like one of the twenty-eight reserved register names.
     ReservedNameAsSymbol {
         /// The name that was written.
         name: String,
@@ -727,36 +739,40 @@ pub enum DiagnosticKind {
         processor: Processor,
         /// The program's processor.
         program: Processor,
-        /// What to write on the program's processor instead, with what it
-        /// does: "`ext.w d0` and then `ext.l d0`, which do the same".
+        /// What to do on the program's processor instead, with what it does:
+        /// "write `ext.w d0` and then `ext.l d0`, which do the same".
         equivalent: Option<String>,
         /// Whether an `opt p=` line chose the program's processor, which is
         /// then the line to change rather than one to add.
         chosen: bool,
-    },
-    /// A 68020 instruction, or a shape the 68020 gave a 68000 one, that
-    /// s68k's dialect does not implement yet: `cas`, `muls.l`, `bfextu`. The
-    /// 68010's dialect is complete.
-    UnimplementedInDialect {
-        /// What was written, as the message quotes it: `rtd`, `muls.l d0,d1`.
-        name: String,
-        /// The first processor that has it.
-        processor: Processor,
-        /// Whether it is one of the 68020's bit-field instructions, which
-        /// `opt bit` gives a 68000 program in EASy68K.
-        bit_field: bool,
+        /// What `name` is: an instruction, an Operand in an addressing mode of
+        /// the later processor's, `(4,a0,d1.w*4)`, or one of its control
+        /// registers, `cacr`.
+        what: LaterFeature,
     },
 }
 
-/// What the processor dialects have so far, as a hint about one of their
-/// instructions that is still to come says it.
-fn partial_dialect(processor: Processor, bit_field: bool) -> String {
-    match (processor, bit_field) {
-        (_, true) => "s68k reads `opt bit` and has no bit-field instruction yet".to_string(),
-        //the 68010 dialect is complete, so every instruction still to come is the 68020's
-        _ => "The 68020 dialect is partial so far: of the 68020's instructions s68k has \
-              `extb.l` and the long branches `bra.l`, `bsr.l` and `b<cc>.l`"
-            .to_string(),
+/// What a [`DiagnosticKind::NeedsALaterProcessor`] is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaterFeature {
+    /// An instruction, `extb.l`.
+    Instruction,
+    /// An Operand in one of the later processor's addressing modes,
+    /// `(4,a0,d1.w*4)`.
+    AddressingMode,
+    /// One of the later processor's control registers, `cacr`, which only
+    /// `movec` names.
+    ControlRegister,
+}
+
+impl LaterFeature {
+    /// How a message names it.
+    pub fn noun(self) -> &'static str {
+        match self {
+            LaterFeature::Instruction => "instruction",
+            LaterFeature::AddressingMode => "addressing mode",
+            LaterFeature::ControlRegister => "control register",
+        }
     }
 }
 
@@ -842,7 +858,6 @@ pub const ALL_CODES: &[&str] = &[
     "processor_chosen_after_code",
     "unknown_option",
     "needs_a_later_processor",
-    "unimplemented_in_dialect",
     "short_branch_marks_a_long_branch",
     "bit_number_wraps",
 ];
@@ -934,7 +949,6 @@ impl DiagnosticKind {
             DiagnosticKind::ProcessorChosenAfterCode { .. } => "processor_chosen_after_code",
             DiagnosticKind::UnknownOption { .. } => "unknown_option",
             DiagnosticKind::NeedsALaterProcessor { .. } => "needs_a_later_processor",
-            DiagnosticKind::UnimplementedInDialect { .. } => "unimplemented_in_dialect",
             DiagnosticKind::ShortBranchMarksALongBranch { .. } => {
                 "short_branch_marks_a_long_branch"
             }
@@ -1277,30 +1291,14 @@ impl DiagnosticKind {
                 name,
                 processor,
                 program,
+                what,
                 ..
             } => format!(
-                "`{name}` is a {} instruction, and this program is written for the {}.",
+                "`{name}` is a {} {}, and this program is written for the {}.",
                 processor.name(),
+                what.noun(),
                 program.name()
             ),
-            DiagnosticKind::UnimplementedInDialect {
-                name,
-                processor,
-                bit_field,
-                ..
-            } => match bit_field {
-                true => format!(
-                    "`{name}` is a {} bit-field instruction, and bit fields are not implemented \
-                     yet.",
-                    processor.name()
-                ),
-                false => format!(
-                    "`{name}` is a {} instruction, and is not implemented yet in s68k's {} \
-                     dialect.",
-                    processor.name(),
-                    processor.name()
-                ),
-            },
         }
     }
 
@@ -1660,16 +1658,11 @@ impl DiagnosticKind {
                 };
                 Some(match equivalent {
                     Some(equivalent) => {
-                        format!("On the {}, write {equivalent}; or {dialect}", program.name())
+                        format!("On the {}, {equivalent}; or {dialect}", program.name())
                     }
                     None => format!("{}{}", dialect[..1].to_uppercase(), &dialect[1..]),
                 })
             }
-            DiagnosticKind::UnimplementedInDialect {
-                processor,
-                bit_field,
-                ..
-            } => Some(partial_dialect(*processor, *bit_field)),
             DiagnosticKind::WrongOperandCount {
                 mnemonic,
                 at_least: true,
@@ -2387,19 +2380,12 @@ mod tests {
                     processor: Processor::M68020,
                     program: Processor::M68000,
                     equivalent: Some(
-                        "`ext.w d0` and then `ext.l d0`, which do the same".to_string(),
+                        "write `ext.w d0` and then `ext.l d0`, which do the same".to_string(),
                     ),
                     chosen: false,
+                    what: LaterFeature::Instruction,
                 },
                 "needs_a_later_processor",
-            ),
-            (
-                DiagnosticKind::UnimplementedInDialect {
-                    name: "rtd".to_string(),
-                    processor: Processor::M68010,
-                    bit_field: false,
-                },
-                "unimplemented_in_dialect",
             ),
             (
                 DiagnosticKind::ShortBranchMarksALongBranch {
@@ -2636,6 +2622,7 @@ mod tests {
                 program: Processor::M68000,
                 equivalent: None,
                 chosen: false,
+                what: LaterFeature::Instruction,
             },
             Location::new("main.m68k", 4, 4, 10),
         )

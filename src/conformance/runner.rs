@@ -21,6 +21,7 @@ use crate::debugger::MutationOperation;
 use crate::interpreter::{
     Cpu, Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError, ADDRESS_MASK,
 };
+use crate::machine::Processor;
 
 /// What one test came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,7 +274,14 @@ const MUSASHI_LIMIT: usize = 50_000_000;
 /// ends with `stop #$2700` after its verdict, and nothing raises an IRQ, so
 /// the processor stopped is its end.
 pub fn run_musashi(bytes: &[u8]) -> Result<(), String> {
-    let program = Program::from_image(MUSASHI_LOAD_ADDRESS, bytes.to_vec(), MUSASHI_LOAD_ADDRESS);
+    run_musashi_on(bytes, Processor::M68000)
+}
+
+/// [`run_musashi`] on `processor`: the 68020 runs the programs of
+/// Musashi's `test/mc68040` that are of its instructions.
+pub fn run_musashi_on(bytes: &[u8], processor: Processor) -> Result<(), String> {
+    let program = Program::from_image(MUSASHI_LOAD_ADDRESS, bytes.to_vec(), MUSASHI_LOAD_ADDRESS)
+        .with_dialect(processor, false);
     let options = InterpreterOptions {
         keep_history: false,
         history_size: 0,

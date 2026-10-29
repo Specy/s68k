@@ -240,6 +240,10 @@ pub struct ProgramInfo<'a> {
     /// Whether the Program has the 68020's bit-field instructions, through
     /// `opt bit` or `opt p=68020`.
     pub bit_fields: bool,
+    /// Whether the cycle counter of an Interpreter of the Program counts the
+    /// processor's exact time, as it does on the 68000 and the 68010, or an
+    /// estimate, the 68020's cache case ([`Processor::cycles_exact`]).
+    pub cycles_exact: bool,
 }
 
 impl<'a> ProgramInfo<'a> {
@@ -252,6 +256,7 @@ impl<'a> ProgramInfo<'a> {
             symbols: program.symbols(),
             processor: program.processor(),
             bit_fields: program.bit_fields(),
+            cycles_exact: program.processor().cycles_exact(),
         }
     }
 }
@@ -758,15 +763,16 @@ mod api_tests {
         );
         assert_eq!(info["processor"], "68000", "the default");
         assert_eq!(info["bitFields"], false);
+        assert_eq!(info["cyclesExact"], true, "the 68000's are exact");
     }
 
     #[test]
     fn the_program_info_names_the_processor_opt_chose() {
-        for (source, processor, bit_fields) in [
-            ("    opt p=68010\n    nop\n", "68010", false),
-            ("    OPT CRE,P=68020\n    nop\n", "68020", true),
-            ("    opt bit\n    nop\n", "68000", true),
-            ("    opt p=68000,bit\n    nop\n", "68000", true),
+        for (source, processor, bit_fields, cycles_exact) in [
+            ("    opt p=68010\n    nop\n", "68010", false, true),
+            ("    OPT CRE,P=68020\n    nop\n", "68020", true, false),
+            ("    opt bit\n    nop\n", "68000", true, true),
+            ("    opt p=68000,bit\n    nop\n", "68000", true, true),
         ] {
             let assembly = WasmAssembly::new(assembler::assemble_source(source));
             assert!(assembly.diagnostics().is_empty(), "{source:?}");
@@ -774,6 +780,7 @@ mod api_tests {
             let info = serde_json::to_value(ProgramInfo::of(program)).expect("info serialises");
             assert_eq!(info["processor"], processor, "{source:?}");
             assert_eq!(info["bitFields"], bit_fields, "{source:?}");
+            assert_eq!(info["cyclesExact"], cycles_exact, "{source:?}");
         }
     }
 
@@ -903,10 +910,21 @@ mod api_tests {
         for mnemonic in ["rtd", "bkpt", "moves"] {
             assert_eq!(find(mnemonic)["forms"][0]["processor"], "68010");
         }
-        for later in ["cas", "bfextu"] {
+        assert_eq!(
+            find("bfins")["forms"][0]["operands"][1],
+            json!([
+                "Dn",
+                "(An)",
+                "d(An)",
+                "d(An,Xn)",
+                "Ea/<label>",
+                "{offset:width}"
+            ])
+        );
+        for missing in ["callm", "rtm"] {
             assert!(
-                rows.iter().all(|row| row["mnemonic"] != later),
-                "`{later}` is not implemented yet and is not listed"
+                rows.iter().all(|row| row["mnemonic"] != missing),
+                "`{missing}` is left out and is not listed"
             );
         }
     }

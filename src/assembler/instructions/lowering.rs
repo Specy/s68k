@@ -40,9 +40,11 @@
 use crate::assembler::ast::{self, SizeSuffix};
 
 use super::choice;
+use super::encoded::{BitField, BitFieldOperation, FieldValue};
 use super::encoded::{
-    BranchSize, ControlRegister, IndexRegister, Instruction, Operand, RegisterOperand,
-    ShiftDirection, Size, TargetDirection, EXTENSION_WORD_OFFSET,
+    BranchSize, ControlRegister, DisplacementSize, ExtensionWord, IndexBase, IndexRegister,
+    Indirection, Instruction, Operand, RegisterOperand, ShiftDirection, Size, TargetDirection,
+    TrapOperand, EXTENSION_WORD_OFFSET,
 };
 use super::table::{BitOperation, Family, ImmediateKind, LogicalKind, ShiftKind, ShiftWay};
 use crate::machine::Processor;
@@ -92,6 +94,8 @@ pub struct Lowered {
     /// Whether it is an immediate written `#n.l`, which keeps the long form of
     /// `move.l`, `add` and `sub`.
     pub long: bool,
+    /// The `{offset:width}` written after it, a bit field's.
+    pub field: Option<BitField>,
 }
 
 impl Lowered {
@@ -102,6 +106,7 @@ impl Lowered {
             operand,
             back_reference: true,
             long: false,
+            field: None,
         }
     }
 }
@@ -140,6 +145,30 @@ pub struct Site {
 /// ([`choice::address_width`]): forced by `.w` or `.l`, else a word for a back
 /// reference a word holds, and a long otherwise.
 pub fn lower_operand(operand: &ast::Operand, values: &dyn Values) -> Option<Lowered> {
+    lower_operand_at(operand, values, EXTENSION_WORD_OFFSET as i64)
+}
+
+/// [`lower_operand`], for an Operand whose extension word is
+/// `extension_offset` bytes past the instruction
+/// ([`extension_word_offset`]), which is what a PC-relative distance is
+/// measured from.
+///
+/// On the 68020 a displacement the 68000's field does not hold is the
+/// 68020's base displacement when it is a back reference, a word or a long
+/// as it needs ([`choice::displacement_size`]): `d(An)` and `d(PC)` past a
+/// word, and `d(An,Xn)` and `d(PC,Xn)` past a byte, are the full extension
+/// word; and an index with a scale is the brief one with it. A forward
+/// reference keeps the 68000's field, which the analyzer holds it to, so a
+/// line the 68000 encodes keeps its encoding under `opt p=68020`.
+fn lower_operand_at(
+    operand: &ast::Operand,
+    values: &dyn Values,
+    extension_offset: i64,
+) -> Option<Lowered> {
+    let extended = values.processor().has(Processor::M68020);
+    //the address of the extension word, which a PC-relative distance is measured from
+    let extension_word = (values.instruction_address() + extension_offset) as u32;
+    let distance = |target: u32| target.wrapping_sub(extension_word) as i32 as i64;
     let mut back_reference = true;
     let mut long = false;
     let lowered = match operand {
@@ -163,23 +192,53 @@ pub fn lower_operand(operand: &ast::Operand, values: &dyn Values) -> Option<Lowe
         ast::Operand::Predecrement { register, .. } => Operand::PreIndirect(register.number),
         ast::Operand::Displacement {
             displacement, base, ..
-        } => Operand::IndirectDisplacement {
-            offset: values.value_of(displacement)? as i16 as i32,
-            base: RegisterOperand::Address(base.number),
-        },
+        } => {
+            let value = values.value_of(displacement)?;
+            match extended && values.is_back_reference(displacement) && !choice::fits_a_word(value)
+            {
+                true => Operand::Extended {
+                    base: IndexBase::address(base.number),
+                    word: no_index(DisplacementSize::Long),
+                    displacement: value as i32,
+                    outer: 0,
+                },
+                false => Operand::IndirectDisplacement {
+                    offset: value as i16 as i32,
+                    base: RegisterOperand::Address(base.number),
+                },
+            }
+        }
         ast::Operand::Index {
             displacement,
             base,
             index,
             ..
-        } => Operand::IndirectIndex {
-            base: RegisterOperand::Address(base.number),
-            offset: match displacement {
-                Some(displacement) => values.value_of(displacement)? as i8 as i32,
-                None => 0,
-            },
-            index: lower_index_register(index),
-        },
+        } => {
+            let (value, known) = match displacement {
+                Some(displacement) => (
+                    values.value_of(displacement)?,
+                    values.is_back_reference(displacement),
+                ),
+                None => (0, true),
+            };
+            let base = IndexBase::address(base.number);
+            match indexed(extended, known, value, index) {
+                Some(word) => Operand::Extended {
+                    base,
+                    word,
+                    displacement: match word.is_full() {
+                        true => value as i32,
+                        false => value as i8 as i32,
+                    },
+                    outer: 0,
+                },
+                None => Operand::IndirectIndex {
+                    base: RegisterOperand::Address(base.address_register().unwrap_or(0)),
+                    offset: value as i8 as i32,
+                    index: lower_index_register(index),
+                },
+            }
+        }
         // An address is 32 bits wide, so a negative value is the address its
         // two's complement names and never a 64-bit number: `as u32` first,
         // which is what 1.4.2 stored as well.
@@ -192,22 +251,36 @@ pub fn lower_operand(operand: &ast::Operand, values: &dyn Values) -> Option<Lowe
             }
         }
         ast::Operand::RegisterList { items, .. } => Operand::Immediate(register_mask(items) as u32),
+        // A pair of registers becomes their two indexes as an immediate, the
+        // first one's in bits 7–4, as a register list becomes its mask; the
+        // Family that takes one reads it back ([`pair`]).
+        ast::Operand::RegisterPair { first, second, .. }
+        | ast::Operand::IndirectPair { first, second, .. } => Operand::Immediate(
+            (lower_register(*first).to_index() << 4 | lower_register(*second).to_index()) as u32,
+        ),
         // A PC-relative Operand is written as the address it reaches and
         // stored as that address. The analyzer has already refused one whose
         // distance from the extension word does not fit its field
         // ([`pc_relative_offset`]).
         ast::Operand::PcDisplacement { displacement, .. } => {
             back_reference = values.is_back_reference(displacement);
-            Operand::PcDisplacement {
-                target: values.value_of(displacement)? as u32,
+            let target = values.value_of(displacement)? as u32;
+            match extended && back_reference && !choice::fits_a_word(distance(target)) {
+                true => Operand::Extended {
+                    base: IndexBase::PC,
+                    word: no_index(DisplacementSize::Long),
+                    displacement: target as i32,
+                    outer: 0,
+                },
+                false => Operand::PcDisplacement { target },
             }
         }
         ast::Operand::PcIndex {
             displacement,
             index,
             ..
-        } => Operand::PcIndex {
-            target: match displacement {
+        } => {
+            let target = match displacement {
                 Some(displacement) => {
                     back_reference = values.is_back_reference(displacement);
                     values.value_of(displacement)? as u32
@@ -217,22 +290,238 @@ pub fn lower_operand(operand: &ast::Operand, values: &dyn Values) -> Option<Lowe
                 // 2.5). EASy68K also throws away the displacement of
                 // `(d,pc,d1.w)` there, which is a bug and not followed.
                 None => values.instruction_address() as u32,
-            },
-            index: lower_index_register(index),
-        },
+            };
+            match indexed(extended, back_reference, distance(target), index) {
+                Some(word) => Operand::Extended {
+                    base: IndexBase::PC,
+                    word,
+                    displacement: target as i32,
+                    outer: 0,
+                },
+                None => Operand::PcIndex {
+                    target,
+                    index: lower_index_register(index),
+                },
+            }
+        }
+        ast::Operand::FullIndex {
+            base_displacement,
+            base,
+            index,
+            indirection,
+            outer_displacement,
+            ..
+        } => lower_full_index(
+            base_displacement.as_ref(),
+            *base,
+            index.as_ref(),
+            *indirection,
+            outer_displacement.as_ref(),
+            values,
+            extension_word,
+        )?,
         ast::Operand::SpecialRegister { .. } => return None,
+        // The field's halves are numbers the analyzer has held to 0–31 for
+        // the offset and 1–32 for the width, of which 32 is encoded 0.
+        ast::Operand::BitField {
+            target,
+            offset,
+            width,
+            ..
+        } => {
+            let value = |value: &ast::FieldValue| -> Option<FieldValue> {
+                Some(match value {
+                    ast::FieldValue::Value { value } => {
+                        FieldValue::Immediate((values.value_of(value)? & 31) as u8)
+                    }
+                    ast::FieldValue::Register { register } => FieldValue::Register(register.number),
+                })
+            };
+            let field = BitField {
+                offset: value(offset)?,
+                width: value(width)?,
+            };
+            let mut lowered = lower_operand_at(target, values, extension_offset)?;
+            lowered.field = Some(field);
+            return Some(lowered);
+        }
     };
     Some(Lowered {
         operand: lowered,
         back_reference,
         long,
+        field: None,
+    })
+}
+
+/// The extension word of `d(An,Xn)` or `d(PC,Xn)` on the 68020 when the
+/// 68000's would not do, or `None`: the full word, with a base displacement
+/// of a word or a long, for a back reference `distance` (the displacement,
+/// or from the program counter the distance from the extension word) that a
+/// byte does not hold; and the brief word with its scale for an index written
+/// with one.
+fn indexed(
+    extended: bool,
+    known: bool,
+    distance: i64,
+    index: &ast::IndexRegister,
+) -> Option<ExtensionWord> {
+    if !extended {
+        return None;
+    }
+    let register = lower_index_register(index);
+    let scale = index.scale.unwrap_or(1);
+    if known && !choice::fits_a_byte(distance) {
+        let size = match choice::fits_a_word(distance) {
+            true => DisplacementSize::Word,
+            false => DisplacementSize::Long,
+        };
+        return Some(ExtensionWord::full(
+            register,
+            scale,
+            false,
+            false,
+            size,
+            Indirection::None,
+            DisplacementSize::Null,
+        ));
+    }
+    (scale != 1).then(|| ExtensionWord::brief(register, scale))
+}
+
+/// The full extension word of `d(An)` or `d(PC)` past a word: the index
+/// suppressed, its bits clear, and a base displacement of `size`.
+fn no_index(size: DisplacementSize) -> ExtensionWord {
+    ExtensionWord::full(
+        SUPPRESSED_INDEX,
+        1,
+        false,
+        true,
+        size,
+        Indirection::None,
+        DisplacementSize::Null,
+    )
+}
+
+/// The index bits of a suppressed index: clear, `d0.w`, as assemblers write
+/// them.
+const SUPPRESSED_INDEX: IndexRegister = IndexRegister {
+    register: RegisterOperand::Data(0),
+    size: Size::Word,
+};
+
+/// A 68020 indexed Operand written with what only the 68020 has, a base or
+/// an index suppressed, a displacement's width, brackets, at the
+/// `extension_word`'s address.
+///
+/// * The base is the register named, `za0` to `za7` and `zpc` suppressed, and
+///   none written is `za0`'s place, as GNU `as` writes it.
+/// * A suppressed index, or none, has its bits clear; with brackets either
+///   way it is the 68020's memory indirect with no index.
+/// * A displacement's width is the one written, or EASy68K's back-reference
+///   choice ([`choice::displacement_size`]); none written is null, and from
+///   the program counter reaches the extension word.
+/// * `(d.w,An)` and `(d.w,PC)` are the 68000's `d16(An)` and `d16(PC)`, as
+///   vasm and GNU `as` assemble them.
+fn lower_full_index(
+    base_displacement: Option<&ast::SizedDisplacement>,
+    base: ast::BaseRegister,
+    index: Option<&ast::IndexRegister>,
+    indirection: ast::Indirection,
+    outer_displacement: Option<&ast::SizedDisplacement>,
+    values: &dyn Values,
+    extension_word: u32,
+) -> Option<Operand> {
+    let (base, base_suppressed) = match base {
+        ast::BaseRegister::Address { register } => (IndexBase::address(register.number), false),
+        ast::BaseRegister::ProgramCounter => (IndexBase::PC, false),
+        ast::BaseRegister::SuppressedAddress { number } => (IndexBase::address(number), true),
+        ast::BaseRegister::SuppressedProgramCounter => (IndexBase::PC, true),
+        ast::BaseRegister::Omitted => (IndexBase::address(0), true),
+    };
+    let pc_relative = base.is_pc() && !base_suppressed;
+    let (base_size, displacement) = match base_displacement {
+        None => (
+            DisplacementSize::Null,
+            match pc_relative {
+                true => extension_word as i32,
+                false => 0,
+            },
+        ),
+        Some(written) => {
+            let value = values.value_of(&written.value)?;
+            let measured = match pc_relative {
+                true => (value as u32).wrapping_sub(extension_word) as i32 as i64,
+                false => value,
+            };
+            let known = values.is_back_reference(&written.value);
+            (
+                choice::displacement_size(written.size, known, measured),
+                value as u32 as i32,
+            )
+        }
+    };
+    let (register, scale, index_suppressed) = match index {
+        Some(index) if !index.suppressed => {
+            (lower_index_register(index), index.scale.unwrap_or(1), false)
+        }
+        _ => (SUPPRESSED_INDEX, 1, true),
+    };
+    let indirection = match indirection {
+        ast::Indirection::None => Indirection::None,
+        ast::Indirection::Postindexed if !index_suppressed => Indirection::Postindexed,
+        ast::Indirection::Preindexed | ast::Indirection::Postindexed => Indirection::Preindexed,
+    };
+    let (outer_size, outer) = match (indirection, outer_displacement) {
+        (Indirection::None, _) | (_, None) => (DisplacementSize::Null, 0),
+        (_, Some(written)) => {
+            let value = values.value_of(&written.value)?;
+            let known = values.is_back_reference(&written.value);
+            (
+                choice::displacement_size(written.size, known, value),
+                value as u32 as i32,
+            )
+        }
+    };
+    let the_68000s = !base_suppressed
+        && index.is_none()
+        && indirection == Indirection::None
+        && base_displacement.and_then(|written| written.size) == Some(SizeSuffix::Word);
+    if the_68000s {
+        return Some(match base.address_register() {
+            Some(number) => Operand::IndirectDisplacement {
+                offset: displacement as i16 as i32,
+                base: RegisterOperand::Address(number),
+            },
+            None => Operand::PcDisplacement {
+                target: displacement as u32,
+            },
+        });
+    }
+    Some(Operand::Extended {
+        base,
+        word: ExtensionWord::full(
+            register,
+            scale,
+            base_suppressed,
+            index_suppressed,
+            base_size,
+            indirection,
+            outer_size,
+        ),
+        displacement,
+        outer,
     })
 }
 
 /// How far past an instruction the extension word of its PC-relative Operand
 /// sits: [`EXTENSION_WORD_OFFSET`], the word after the operation word, but for
 /// `movem`, whose register mask comes first, and a bit instruction with a
-/// static bit number, whose number does. Those two are 4.
+/// static bit number, whose number does. Those two are 4. The 68020's `cmpi`
+/// compares an immediate of `size` with a PC-relative Operand, whose
+/// extension word follows the immediate's words: 4, or 6 for a long. Its
+/// long multiplies and divides, `chk2`, `cmp2` and `cas` have an extension
+/// word of their own first: 4.
 ///
 /// The 68000 adds the displacement to the address of the word that holds it,
 /// so this is what a PC-relative distance is measured from when the analyzer
@@ -240,9 +529,19 @@ pub fn lower_operand(operand: &ast::Operand, values: &dyn Values) -> Option<Lowe
 /// No other instruction puts a word before a PC-relative Operand's: a
 /// PC-relative Operand is read and never written, so it is the first Operand
 /// everywhere else, or follows a register.
-pub fn extension_word_offset(family: Family, operands: &[ast::Operand]) -> i64 {
+pub fn extension_word_offset(family: Family, size: Option<Size>, operands: &[ast::Operand]) -> i64 {
     match (family, operands.first()) {
         (Family::Movem, _) | (Family::Bit(_), Some(ast::Operand::Immediate { .. })) => 4,
+        (Family::Immediate(_) | Family::Cmp, Some(ast::Operand::Immediate { .. })) => match size {
+            Some(Size::Long) => 6,
+            _ => 4,
+        },
+        // the 68020's instructions whose own extension word comes first
+        (Family::Multiply(_) | Family::Divide(_), _) if size == Some(Size::Long) => 4,
+        (
+            Family::DivideLong(_) | Family::BoundsCheck { .. } | Family::Cas | Family::BitField(_),
+            _,
+        ) => 4,
         _ => EXTENSION_WORD_OFFSET as i64,
     }
 }
@@ -284,6 +583,28 @@ fn lower_register(register: ast::Register) -> RegisterOperand {
     match register.kind {
         ast::RegisterKind::Data => RegisterOperand::Data(register.number),
         ast::RegisterKind::Address => RegisterOperand::Address(register.number),
+    }
+}
+
+/// The two registers of a lowered pair, `d1:d2` or `(a0):(d1)`, as
+/// [`lower_operand`] keeps them, or `None` for an Operand that is no pair.
+fn pair(operand: Option<Operand>) -> Option<(RegisterOperand, RegisterOperand)> {
+    let register = |index: u32| match index & 0xF {
+        number @ 0..=7 => RegisterOperand::Data(number as u8),
+        number => RegisterOperand::Address(number as u8 - 8),
+    };
+    match operand? {
+        Operand::Immediate(code) => Some((register(code >> 4), register(code))),
+        _ => None,
+    }
+}
+
+/// The number of a data register, which every register of a pair a long
+/// multiply or divide takes is.
+fn data_number(register: RegisterOperand) -> Option<u8> {
+    match register {
+        RegisterOperand::Data(number) => Some(number),
+        RegisterOperand::Address(_) => None,
     }
 }
 
@@ -338,9 +659,10 @@ pub fn lower_operation(
     if let Some(instruction) = lower_status_register(family, operands, values) {
         return Some(instruction);
     }
+    let extension_offset = extension_word_offset(family, size, operands);
     let lowered: Vec<Lowered> = operands
         .iter()
-        .map(|operand| lower_operand(operand, values))
+        .map(|operand| lower_operand_at(operand, values, extension_offset))
         .collect::<Option<Vec<_>>>()?;
     let site = Site {
         written,
@@ -449,6 +771,10 @@ fn lower_movec(first: &ast::Operand, second: &ast::Operand) -> Option<Instructio
             ast::SpecialRegister::Dfc => ControlRegister::DFC,
             ast::SpecialRegister::Usp => ControlRegister::USP,
             ast::SpecialRegister::Vbr => ControlRegister::VBR,
+            ast::SpecialRegister::Cacr => ControlRegister::CACR,
+            ast::SpecialRegister::Caar => ControlRegister::CAAR,
+            ast::SpecialRegister::Msp => ControlRegister::MSP,
+            ast::SpecialRegister::Isp => ControlRegister::ISP,
             ast::SpecialRegister::Sr | ast::SpecialRegister::Ccr => return None,
         }),
         _ => None,
@@ -554,22 +880,84 @@ pub fn lower(
         )),
         Family::Cmpm => Some(Instruction::CMPM(operand(0)?, operand(1)?, size?)),
         Family::Logical(kind) => lower_logical(kind, size?, operand(0)?, operand(1)?),
-        Family::Divide(sign) => Some(Instruction::DIVx(
-            at_size(operand(0)?, Size::Word),
-            register(operand(1))?,
-            sign,
-        )),
-        Family::Multiply(sign) => Some(Instruction::MULx(
-            at_size(operand(0)?, Size::Word),
-            register(operand(1))?,
-            sign,
-        )),
+        // `divs.l <ea>,Dq` divides 32 bits by 32, and `divs.l <ea>,Dr:Dq` 64
+        // by 32, the 68020's
+        Family::Divide(sign) => match size? {
+            Size::Long => {
+                let source = at_size(operand(0)?, Size::Long);
+                Some(match operand(1)? {
+                    Operand::Register(RegisterOperand::Data(quotient)) => Instruction::DIVL {
+                        source,
+                        quotient,
+                        remainder: quotient,
+                        wide: false,
+                        sign,
+                    },
+                    _ => {
+                        let (remainder, quotient) = pair(operand(1))?;
+                        Instruction::DIVL {
+                            source,
+                            quotient: data_number(quotient)?,
+                            remainder: data_number(remainder)?,
+                            wide: true,
+                            sign,
+                        }
+                    }
+                })
+            }
+            _ => Some(Instruction::DIVx(
+                at_size(operand(0)?, Size::Word),
+                register(operand(1))?,
+                sign,
+            )),
+        },
+        // `divsl.l <ea>,Dr:Dq`, 32 bits by 32 with the remainder
+        Family::DivideLong(sign) => {
+            let (remainder, quotient) = pair(operand(1))?;
+            Some(Instruction::DIVL {
+                source: at_size(operand(0)?, Size::Long),
+                quotient: data_number(quotient)?,
+                remainder: data_number(remainder)?,
+                wide: false,
+                sign,
+            })
+        }
+        // `muls.l <ea>,Dl` keeps the low 32 bits of the product, and
+        // `muls.l <ea>,Dh:Dl` all 64, the 68020's
+        Family::Multiply(sign) => match size? {
+            Size::Long => {
+                let source = at_size(operand(0)?, Size::Long);
+                Some(match operand(1)? {
+                    Operand::Register(RegisterOperand::Data(low)) => Instruction::MULL {
+                        source,
+                        low,
+                        high: None,
+                        sign,
+                    },
+                    _ => {
+                        let (high, low) = pair(operand(1))?;
+                        Instruction::MULL {
+                            source,
+                            low: data_number(low)?,
+                            high: Some(data_number(high)?),
+                            sign,
+                        }
+                    }
+                })
+            }
+            _ => Some(Instruction::MULx(
+                at_size(operand(0)?, Size::Word),
+                register(operand(1))?,
+                sign,
+            )),
+        },
         Family::Clr => Some(Instruction::CLR(operand(0)?, size?)),
         Family::Neg => Some(Instruction::NEG(operand(0)?, size?)),
         Family::NegExtended => Some(Instruction::NEGX(operand(0)?, size?)),
         Family::NegDecimal => Some(Instruction::NBCD(operand(0)?)),
         Family::Not => Some(Instruction::NOT(operand(0)?, size?)),
-        Family::Tst => Some(Instruction::TST(operand(0)?, size?)),
+        // the 68020 tests an immediate too, kept at the size it is read at
+        Family::Tst => Some(Instruction::TST(at_size(operand(0)?, size?), size?)),
         Family::Ext => {
             // `ext.w` reads a byte and writes a word; `ext.l` reads a word and
             // writes a long.
@@ -589,10 +977,10 @@ pub fn lower(
         Family::Exg => Some(lower_exg(register(operand(0))?, register(operand(1))?)),
         Family::Lea => Some(Instruction::LEA(operand(0)?, register(operand(1))?)),
         Family::Pea => Some(Instruction::PEA(operand(0)?)),
-        Family::Link => Some(Instruction::LINK(
-            register(operand(0))?,
-            immediate(operand(1))?,
-        )),
+        Family::Link => Some(match size {
+            Some(Size::Long) => Instruction::LINKL(register(operand(0))?, immediate(operand(1))?),
+            _ => Instruction::LINK(register(operand(0))?, immediate(operand(1))?),
+        }),
         Family::Unlk => Some(Instruction::UNLK(register(operand(0))?)),
         Family::Jmp => Some(Instruction::JMP(operand(0)?)),
         Family::Jsr => Some(Instruction::JSR(operand(0)?)),
@@ -642,10 +1030,12 @@ pub fn lower(
         // the analyzer has checked fits one
         Family::Stop => Some(Instruction::STOP(immediate(operand(0))? as u16)),
         Family::Reset => Some(Instruction::RESET),
-        Family::Chk => Some(Instruction::CHK(
-            at_size(operand(0)?, Size::Word),
-            register(operand(1))?,
-        )),
+        Family::Chk => Some(match size? {
+            Size::Long => {
+                Instruction::CHKL(at_size(operand(0)?, Size::Long), register(operand(1))?)
+            }
+            _ => Instruction::CHK(at_size(operand(0)?, Size::Word), register(operand(1))?),
+        }),
         Family::Trapv => Some(Instruction::TRAPV),
         Family::Illegal => Some(Instruction::ILLEGAL),
         // the displacement is kept sign extended, as `link`'s is, and the
@@ -657,6 +1047,62 @@ pub fn lower(
         // `lower_status_register` lowers it, as its Operands are registers
         // that are no Addressing mode
         Family::Movec => None,
+        Family::Pack { unpack } => {
+            let (source, destination) = (operand(0)?, operand(1)?);
+            let adjustment = at_size_value(immediate(operand(2))?, Size::Word) as u16;
+            Some(match unpack {
+                false => Instruction::PACK(source, destination, adjustment),
+                true => Instruction::UNPK(source, destination, adjustment),
+            })
+        }
+        Family::BoundsCheck { trap } => {
+            let (bounds, register) = (operand(0)?, register(operand(1))?);
+            Some(match trap {
+                true => Instruction::CHK2(bounds, register, size?),
+                false => Instruction::CMP2(bounds, register, size?),
+            })
+        }
+        Family::Cas => Some(Instruction::CAS {
+            compare: data_number(register(operand(0))?)?,
+            update: data_number(register(operand(1))?)?,
+            target: operand(2)?,
+            size: size?,
+        }),
+        Family::Cas2 => {
+            let (compare_1, compare_2) = pair(operand(0))?;
+            let (update_1, update_2) = pair(operand(1))?;
+            Some(Instruction::CAS2 {
+                compare: (data_number(compare_1)?, data_number(compare_2)?),
+                update: (data_number(update_1)?, data_number(update_2)?),
+                pointers: pair(operand(2))?,
+                size: size?,
+            })
+        }
+        // the field is after the Operand it is in, the second of `bfins`
+        Family::BitField(operation) => {
+            let (target, register) = match operation {
+                BitFieldOperation::Insert => (operands.get(1)?, register(operand(0))),
+                _ => (operands.first()?, register(operand(1))),
+            };
+            Some(Instruction::BF {
+                operation,
+                target: target.operand,
+                field: target.field?,
+                register: match register {
+                    Some(register) => data_number(register)?,
+                    None => 0,
+                },
+            })
+        }
+        Family::TrapCc(condition) => Some(Instruction::TRAPcc(
+            condition,
+            match (operand(0), size) {
+                (None, _) => TrapOperand::None,
+                (Some(Operand::Immediate(value)), Some(Size::Long)) => TrapOperand::Long(value),
+                (Some(Operand::Immediate(value)), _) => TrapOperand::Word(value as u16),
+                (Some(_), _) => return None,
+            },
+        )),
         Family::Moves => {
             let (first, second) = (operand(0)?, operand(1)?);
             let size = size?;
@@ -1215,6 +1661,8 @@ mod tests {
             index: ast::IndexRegister {
                 register: data(1),
                 size: None,
+                scale: None,
+                suppressed: false,
                 span: span(),
             },
             span: span(),
@@ -1255,6 +1703,8 @@ mod tests {
             index: ast::IndexRegister {
                 register: data(1),
                 size: None,
+                scale: None,
+                suppressed: false,
                 span: span(),
             },
             span: span(),
@@ -1273,6 +1723,8 @@ mod tests {
             index: ast::IndexRegister {
                 register: data(1),
                 size: Some(SizeSuffix::Long),
+                scale: None,
+                suppressed: false,
                 span: span(),
             },
             span: span(),

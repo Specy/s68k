@@ -2560,13 +2560,38 @@ fn expressions_of(operand: &Operand) -> Vec<&Expr> {
         Operand::Index { displacement, .. } | Operand::PcIndex { displacement, .. } => {
             displacement.iter().collect()
         }
+        Operand::FullIndex {
+            base_displacement,
+            outer_displacement,
+            ..
+        } => [base_displacement, outer_displacement]
+            .into_iter()
+            .flatten()
+            .map(|displacement| &displacement.value)
+            .collect(),
         Operand::DataRegisterDirect { .. }
         | Operand::AddressRegisterDirect { .. }
         | Operand::SpecialRegister { .. }
         | Operand::Indirect { .. }
         | Operand::Postincrement { .. }
         | Operand::Predecrement { .. }
-        | Operand::RegisterList { .. } => Vec::new(),
+        | Operand::RegisterList { .. }
+        | Operand::RegisterPair { .. }
+        | Operand::IndirectPair { .. } => Vec::new(),
+        Operand::BitField {
+            target,
+            offset,
+            width,
+            ..
+        } => {
+            let mut found = expressions_of(target);
+            for value in [offset, width] {
+                if let crate::assembler::ast::FieldValue::Value { value } = value {
+                    found.push(value);
+                }
+            }
+            found
+        }
     }
 }
 

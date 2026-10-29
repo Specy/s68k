@@ -16,6 +16,7 @@
 
 use std::str::FromStr;
 
+use crate::machine::Processor;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -157,6 +158,41 @@ pub enum Operand {
         index: IndexRegister,
     },
 
+    /// The 68020's indexed modes beyond the 68000's, in the effective address
+    /// modes of `d8(An,Xn)` and `d8(PC,Xn)`: a scaled index in the brief
+    /// extension word, `(4,a0,d1.w*4)`, and everything the full extension word
+    /// encodes, `(1000,a0,d1.l)`, `(d0.l*4)`, `([8,a0],d1.w,4)`,
+    /// `([label,pc,d1.w])` (the M68000 Programmer's Reference Manual, 2.2.8
+    /// to 2.2.10 and 2.2.13 to 2.2.15).
+    ///
+    /// The extension word is kept as it is encoded, with what it says read
+    /// through [`ExtensionWord`], so that every word decodes to a value and
+    /// encodes back to itself; the decoder makes one only for the 68020, and
+    /// only for a word whose bits 10–8 are not clear, so a word the 68000 reads
+    /// is an [`IndirectIndex`](Operand::IndirectIndex) or a
+    /// [`PcIndex`](Operand::PcIndex) on every processor. Its fields fit in the
+    /// twelve bytes the 68000's own Operands take in WebAssembly, so the
+    /// Instructions the decode cache keeps are no larger for it.
+    Extended {
+        /// The base register the effective address field names: an address
+        /// register, or the program counter. The extension word says whether
+        /// it is suppressed.
+        base: IndexBase,
+        /// The extension word. A brief one is kept with its low byte 0: its
+        /// displacement is `displacement`, as encoded at the address the word
+        /// is at, so that the same Operand is the same value wherever it is.
+        word: ExtensionWord,
+        /// The base displacement, sign extended from its width, 0 when it is
+        /// null: the brief word's byte or the full word's word or long. For the
+        /// program counter as the base, not suppressed, it is the address the
+        /// displacement reaches from the extension word instead, as
+        /// [`PcIndex`](Operand::PcIndex) keeps it.
+        displacement: i32,
+        /// The outer displacement of a memory indirect mode, sign extended
+        /// from its width, 0 when it is null or there is none.
+        outer: i32,
+    },
+
     /// `$2000`, and a Label, which is its address by the time it gets here.
     Absolute {
         /// The address. An absolute short one is the address its word means,
@@ -165,6 +201,282 @@ pub enum Operand {
         /// Whether the address is encoded in a word or a long.
         width: AddressWidth,
     },
+}
+
+// The 68020's Operand takes no more room than the 68000's do in WebAssembly,
+// so the Instructions the decode cache keeps are no larger for it.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(std::mem::size_of::<Operand>() == 12);
+
+/// The base register of an [`Operand::Extended`]: an address register,
+/// `A0` to `A7`, or the program counter, as the effective address field names
+/// it, mode 6 or mode 7 with register 3.
+///
+/// It is one byte, so that the Operand that carries it stays as small as the
+/// 68000's.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct IndexBase(u8);
+
+impl IndexBase {
+    /// The program counter, `d8(PC,Xn)`'s mode.
+    pub const PC: IndexBase = IndexBase(8);
+
+    /// The address register of number `number`, of which the low three bits
+    /// are read.
+    pub fn address(number: u8) -> IndexBase {
+        IndexBase(number & 7)
+    }
+
+    /// Whether it is the program counter.
+    pub fn is_pc(self) -> bool {
+        self.0 == 8
+    }
+
+    /// The address register's number, `None` for the program counter.
+    pub fn address_register(self) -> Option<u8> {
+        (self.0 < 8).then_some(self.0)
+    }
+}
+
+/// How wide a base or an outer displacement of the full extension word is:
+/// null, which takes no word and counts as 0, a word or a long.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum DisplacementSize {
+    /// No displacement: none is encoded, and it counts as 0.
+    Null,
+    /// One word, sign extended.
+    Word,
+    /// Two words.
+    Long,
+}
+
+impl DisplacementSize {
+    /// The bytes it takes.
+    pub fn bytes(self) -> u32 {
+        match self {
+            DisplacementSize::Null => 0,
+            DisplacementSize::Word => 2,
+            DisplacementSize::Long => 4,
+        }
+    }
+
+    /// The bits of the full extension word that say it: `01`, `10` or `11`,
+    /// in the BD SIZE field (bits 5–4) and the low two bits of I/IS alike.
+    pub fn code(self) -> u16 {
+        match self {
+            DisplacementSize::Null => 1,
+            DisplacementSize::Word => 2,
+            DisplacementSize::Long => 3,
+        }
+    }
+
+    /// The size a two-bit code says, as the 68020 reads it: `10` a word, `11`
+    /// a long, and `01` and the reserved `00` none.
+    pub fn of_code(code: u16) -> DisplacementSize {
+        match code & 3 {
+            2 => DisplacementSize::Word,
+            3 => DisplacementSize::Long,
+            _ => DisplacementSize::Null,
+        }
+    }
+}
+
+/// Whether and how an [`Operand::Extended`] reads its address from memory:
+/// the full extension word's IS and I/IS fields.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum Indirection {
+    /// `(bd,An,Xn)`: the address is the sum.
+    None,
+    /// `([bd,An,Xn],od)`: the index is added before the long at the sum is
+    /// read, and the outer displacement to what it holds. With the index
+    /// suppressed it is the 68020's memory indirect with no index,
+    /// `([bd,An],od)`.
+    Preindexed,
+    /// `([bd,An],Xn,od)`: the long at the base and the base displacement is
+    /// read, and the index and the outer displacement are added to what it
+    /// holds.
+    Postindexed,
+}
+
+/// The extension word of an [`Operand::Extended`], as it is encoded, and what
+/// the 68020 reads in it (the M68000 Programmer's Reference Manual, figure
+/// 2-2 and table 2-2):
+///
+/// * the index register in bits 15–12, its width in bit 11 and its scale in
+///   bits 10–9, for both formats;
+/// * bit 8, clear for the brief format, whose low byte is the displacement,
+///   and set for the full one;
+/// * in the full one, BS (bit 7) and IS (bit 6), which suppress the base and
+///   the index, BD SIZE (bits 5–4), and I/IS (bits 2–0), the indirection and
+///   the outer displacement's size.
+///
+/// The combinations the manual reserves, BD SIZE `00` and I/IS `100` (and
+/// `1xx` with the index suppressed), are read as Musashi reads them, bit by
+/// bit: a BD SIZE of `00` is a null displacement, and bit 2 of I/IS makes the
+/// indirection postindexed. No assembler writes them, and the disassembler
+/// prints an instruction that has one as its words
+/// ([`is_canonical`](ExtensionWord::is_canonical)).
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct ExtensionWord(pub u16);
+
+impl ExtensionWord {
+    /// The bit that marks the full format.
+    pub const FULL: u16 = 0x0100;
+    /// BS, the base suppressed.
+    pub const BASE_SUPPRESSED: u16 = 0x0080;
+    /// IS, the index suppressed.
+    pub const INDEX_SUPPRESSED: u16 = 0x0040;
+
+    /// Whether it is the full format.
+    pub fn is_full(self) -> bool {
+        self.0 & Self::FULL != 0
+    }
+
+    /// The index register and the width it is read at, whether or not it is
+    /// suppressed.
+    pub fn index_register(self) -> IndexRegister {
+        let number = ((self.0 >> 12) & 7) as u8;
+        IndexRegister {
+            register: match self.0 & 0x8000 != 0 {
+                true => RegisterOperand::Address(number),
+                false => RegisterOperand::Data(number),
+            },
+            size: match self.0 & 0x0800 != 0 {
+                true => Size::Long,
+                false => Size::Word,
+            },
+        }
+    }
+
+    /// How far the index is shifted left: 0 to 3, for a scale of 1, 2, 4 or 8.
+    pub fn scale_shift(self) -> u32 {
+        ((self.0 >> 9) & 3) as u32
+    }
+
+    /// The scale, 1, 2, 4 or 8.
+    pub fn scale(self) -> u8 {
+        1 << self.scale_shift()
+    }
+
+    /// The index register, `None` when it is suppressed.
+    pub fn index(self) -> Option<IndexRegister> {
+        (!self.index_suppressed()).then(|| self.index_register())
+    }
+
+    /// Whether the base register is suppressed, which only the full format
+    /// can say.
+    pub fn base_suppressed(self) -> bool {
+        self.is_full() && self.0 & Self::BASE_SUPPRESSED != 0
+    }
+
+    /// Whether the index is suppressed, which only the full format can say.
+    pub fn index_suppressed(self) -> bool {
+        self.is_full() && self.0 & Self::INDEX_SUPPRESSED != 0
+    }
+
+    /// The width of the base displacement in the full format; the brief
+    /// format's is its low byte.
+    pub fn base_displacement_size(self) -> DisplacementSize {
+        DisplacementSize::of_code(self.0 >> 4)
+    }
+
+    /// Whether and how the address is read from memory.
+    pub fn indirection(self) -> Indirection {
+        match (self.is_full(), self.0 & 7) {
+            (false, _) | (true, 0) => Indirection::None,
+            (true, 1..=3) => Indirection::Preindexed,
+            (true, _) => Indirection::Postindexed,
+        }
+    }
+
+    /// The width of the outer displacement, null when there is no
+    /// indirection.
+    pub fn outer_displacement_size(self) -> DisplacementSize {
+        match self.indirection() {
+            Indirection::None => DisplacementSize::Null,
+            _ => DisplacementSize::of_code(self.0),
+        }
+    }
+
+    /// The bytes of extension words it takes, itself included.
+    pub fn bytes(self) -> u32 {
+        match self.is_full() {
+            false => 2,
+            true => {
+                2 + self.base_displacement_size().bytes() + self.outer_displacement_size().bytes()
+            }
+        }
+    }
+
+    /// The full extension word of these parts; the index register, its width
+    /// and its scale are read from `index` and `scale` even when `index` is
+    /// suppressed, so that the word says what was written.
+    pub fn full(
+        index: IndexRegister,
+        scale: u8,
+        base_suppressed: bool,
+        index_suppressed: bool,
+        base_displacement: DisplacementSize,
+        indirection: Indirection,
+        outer_displacement: DisplacementSize,
+    ) -> ExtensionWord {
+        let mut word = Self::FULL | Self::index_bits(index, scale);
+        if base_suppressed {
+            word |= Self::BASE_SUPPRESSED;
+        }
+        if index_suppressed {
+            word |= Self::INDEX_SUPPRESSED;
+        }
+        word |= base_displacement.code() << 4;
+        word |= match indirection {
+            Indirection::None => 0,
+            Indirection::Preindexed => outer_displacement.code(),
+            Indirection::Postindexed => 4 | outer_displacement.code(),
+        };
+        ExtensionWord(word)
+    }
+
+    /// The brief extension word of an index register with a scale, as an
+    /// [`Operand::Extended`] keeps it: its low byte, the displacement, is 0,
+    /// as the displacement is the Operand's.
+    pub fn brief(index: IndexRegister, scale: u8) -> ExtensionWord {
+        ExtensionWord(Self::index_bits(index, scale))
+    }
+
+    /// Bits 15–9: the index register, its width and its scale.
+    fn index_bits(index: IndexRegister, scale: u8) -> u16 {
+        let register = match index.register {
+            RegisterOperand::Data(number) => (number & 7) as u16,
+            RegisterOperand::Address(number) => 8 | (number & 7) as u16,
+        };
+        let long = match index.size {
+            Size::Long => 0x0800,
+            _ => 0,
+        };
+        let scale = match scale {
+            2 => 1,
+            4 => 2,
+            8 => 3,
+            _ => 0,
+        };
+        register << 12 | long | scale << 9
+    }
+
+    /// Whether an assembler writes this word, and the disassembler can print
+    /// what reassembles to it: no reserved combination, bit 3 of the full
+    /// format clear, and the index bits clear when the index is suppressed.
+    pub fn is_canonical(self) -> bool {
+        if !self.is_full() {
+            return true;
+        }
+        let reserved = (self.0 >> 4) & 3 == 0
+            || self.0 & 0x8 != 0
+            || match self.index_suppressed() {
+                false => self.0 & 7 == 4,
+                true => self.0 & 4 != 0 || self.0 & 0xFE00 != 0,
+            };
+        !reserved
+    }
 }
 
 /// How wide an absolute address is encoded: the 68000's absolute short and
@@ -362,6 +674,115 @@ pub enum Sign {
     Unsigned,
 }
 
+/// The offset or the width of a bit field, as its extension word holds it:
+/// a number in five bits, or a data register that holds it.
+#[derive(Copy, Clone, Debug, Serialize, PartialEq, Eq)]
+pub enum FieldValue {
+    /// An offset of 0 to 31, or a width of 1 to 31, 0 standing for 32.
+    Immediate(u8),
+    /// The data register that holds it: an offset read as a signed long, a
+    /// width taken modulo 32, 0 standing for 32.
+    Register(u8),
+}
+
+/// The `{offset:width}` of a 68020 bit-field instruction.
+#[derive(Copy, Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct BitField {
+    /// The bit the field starts at, counted from the most significant bit of
+    /// the operand: of a data register, modulo 32; in memory, from the most
+    /// significant bit of the byte the operand names, any distance either way.
+    pub offset: FieldValue,
+    /// How many bits the field holds, 1 to 32.
+    pub width: FieldValue,
+}
+
+/// Which of the eight bit-field instructions an [`Instruction::BF`] is, in
+/// the order of bits 10–8 of its operation word.
+#[derive(Copy, Clone, Debug, Serialize, PartialEq, Eq)]
+pub enum BitFieldOperation {
+    /// `bftst`: the flags of the field.
+    Test,
+    /// `bfextu`: the field into `Dn`, zero extended.
+    ExtractUnsigned,
+    /// `bfchg`: the field complemented.
+    Change,
+    /// `bfexts`: the field into `Dn`, sign extended.
+    ExtractSigned,
+    /// `bfclr`: the field cleared.
+    Clear,
+    /// `bfffo`: the offset of the field's first set bit into `Dn`.
+    FindFirstOne,
+    /// `bfset`: the field set.
+    Set,
+    /// `bfins`: the low bits of `Dn` into the field.
+    Insert,
+}
+
+impl BitFieldOperation {
+    /// The eight, in the order of their code.
+    pub const ALL: [BitFieldOperation; 8] = [
+        BitFieldOperation::Test,
+        BitFieldOperation::ExtractUnsigned,
+        BitFieldOperation::Change,
+        BitFieldOperation::ExtractSigned,
+        BitFieldOperation::Clear,
+        BitFieldOperation::FindFirstOne,
+        BitFieldOperation::Set,
+        BitFieldOperation::Insert,
+    ];
+
+    /// Its mnemonic, lower case.
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            BitFieldOperation::Test => "bftst",
+            BitFieldOperation::ExtractUnsigned => "bfextu",
+            BitFieldOperation::Change => "bfchg",
+            BitFieldOperation::ExtractSigned => "bfexts",
+            BitFieldOperation::Clear => "bfclr",
+            BitFieldOperation::FindFirstOne => "bfffo",
+            BitFieldOperation::Set => "bfset",
+            BitFieldOperation::Insert => "bfins",
+        }
+    }
+
+    /// Whether it names a data register beside the field: `bfextu`,
+    /// `bfexts` and `bfffo` write one, `bfins` reads one.
+    pub fn has_register(self) -> bool {
+        matches!(
+            self,
+            BitFieldOperation::ExtractUnsigned
+                | BitFieldOperation::ExtractSigned
+                | BitFieldOperation::FindFirstOne
+                | BitFieldOperation::Insert
+        )
+    }
+
+    /// Whether it writes the field back.
+    pub fn writes(self) -> bool {
+        matches!(
+            self,
+            BitFieldOperation::Change
+                | BitFieldOperation::Clear
+                | BitFieldOperation::Set
+                | BitFieldOperation::Insert
+        )
+    }
+}
+
+/// The operand of the 68020's `trapcc`, which the processor reads past and
+/// only a handler looks at, by the address the exception stacks: none, a
+/// word or a long, as the operation word's opmode says (`%100`, `%010` and
+/// `%011`).
+#[derive(Copy, Clone, Debug, Serialize, PartialEq, Eq)]
+pub enum TrapOperand {
+    /// `trapcc`, with no operand.
+    None,
+    /// `trapcc.w #n`.
+    Word(u16),
+    /// `trapcc.l #n`.
+    Long(u32),
+}
+
 /// One instruction, ready to run: what the Assembler stores and what the
 /// decoder ([`crate::machine::decode`]) reads back from words.
 ///
@@ -379,8 +800,9 @@ pub enum Sign {
 /// the register forms a data register. A branch carries its [`BranchSize`]
 /// and an absolute address its [`AddressWidth`].
 ///
-/// What is kept is what the 68000 reads. The bits it ignores are not: bits
-/// 10–8 of a brief index word, and the high byte of the word that holds a byte
+/// What is kept is what the processor reads. The bits it ignores are not:
+/// bits 10–8 of a brief index word on the 68000 and the 68010, which the
+/// 68020 reads ([`Operand::Extended`]), and the high byte of the word that holds a byte
 /// immediate, an `andi`/`ori`/`eori` to `ccr` or a static bit number. An
 /// immediate is kept as the value at the size it is read at, zero extended
 /// (`$FF` for `move.b #-1,d0`), and the displacement of `link` sign extended.
@@ -666,6 +1088,99 @@ pub enum Instruction {
         /// The memory operand, memory alterable.
         target: Operand,
     },
+    /// `chk.l <ea>,Dn`, the 68020's: the whole register against 0 and a long
+    /// bound, both signed, and the exception of vector 6 outside them.
+    CHKL(Operand, RegisterOperand),
+    /// `link.l An,#n`, the 68020's: `link` with a 32-bit displacement.
+    LINKL(RegisterOperand, u32),
+    /// `trapcc`, `trapcc.w #n` and `trapcc.l #n`, the 68020's: the exception
+    /// of vector 7 when the condition is true, with the operand, if any,
+    /// left for the handler. `t` and `f` are conditions like the others here.
+    TRAPcc(Condition, TrapOperand),
+    /// `muls.l` and `mulu.l`, the 68020's: `<ea>,Dl`, 32 bits by 32 into
+    /// the 32 of `Dl`, or `<ea>,Dh:Dl`, into 64.
+    MULL {
+        /// The multiplier, a long.
+        source: Operand,
+        /// `Dl`: the multiplicand, and the low 32 bits of the product.
+        low: u8,
+        /// `Dh`, the high 32 bits of a 64-bit product, or `None` for a
+        /// 32-bit one, whose extension word leaves the field unread.
+        high: Option<u8>,
+        /// Signed or unsigned.
+        sign: Sign,
+    },
+    /// `pack -(Ax),-(Ay),#adj` and `pack Dx,Dy,#adj`, the 68020's: the low
+    /// digits of two bytes, the word they make plus the adjustment, packed
+    /// into one byte. The source, the destination and the adjustment.
+    PACK(Operand, Operand, u16),
+    /// `unpk -(Ax),-(Ay),#adj` and `unpk Dx,Dy,#adj`, the 68020's: the two
+    /// digits of a byte spread into the low digits of a word, plus the
+    /// adjustment. The source, the destination and the adjustment.
+    UNPK(Operand, Operand, u16),
+    /// `chk2.<size> <ea>,Rn`, the 68020's: the register against the bounds
+    /// pair at `<ea>`, the lower first, and the exception of vector 6 outside
+    /// them.
+    CHK2(Operand, RegisterOperand, Size),
+    /// `cmp2.<size> <ea>,Rn`, the 68020's: `chk2` without the exception.
+    CMP2(Operand, RegisterOperand, Size),
+    /// `cas.<size> Dc,Du,<ea>`, the 68020's: compare the operand with `Dc`,
+    /// then write `Du` to it when they are equal, or the operand into `Dc`
+    /// when not.
+    CAS {
+        /// `Dc`, the value compared.
+        compare: u8,
+        /// `Du`, the value written when they are equal.
+        update: u8,
+        /// The memory operand.
+        target: Operand,
+        /// `.b`, `.w` or `.l`.
+        size: Size,
+    },
+    /// `cas2.<size> Dc1:Dc2,Du1:Du2,(Rn1):(Rn2)`, the 68020's: `cas` of two
+    /// operands at once, each through the address a register holds, both
+    /// written when both are equal.
+    CAS2 {
+        /// `Dc1` and `Dc2`.
+        compare: (u8, u8),
+        /// `Du1` and `Du2`.
+        update: (u8, u8),
+        /// `Rn1` and `Rn2`, data or address registers.
+        pointers: (RegisterOperand, RegisterOperand),
+        /// `.w` or `.l`.
+        size: Size,
+    },
+    /// The 68020's eight bit-field instructions, which EASy68K's `opt bit`
+    /// gives a 68000 program too: a field of a data register, or of memory
+    /// from the byte the operand names, `{offset:width}`.
+    BF {
+        /// Which of the eight.
+        operation: BitFieldOperation,
+        /// The data register or the place in memory the field is in.
+        target: Operand,
+        /// Where the field is and how wide.
+        field: BitField,
+        /// The data register `bfextu`, `bfexts` and `bfffo` write and `bfins`
+        /// reads; 0 for the others, whose extension word leaves it clear.
+        register: u8,
+    },
+    /// `divs.l`, `divu.l`, `divsl.l` and `divul.l`, the 68020's: a dividend
+    /// of 32 bits in `Dq`, or of 64 in `Dr:Dq` when `wide`, divided by a long,
+    /// the quotient into `Dq` and the remainder into `Dr`. `divs.l <ea>,Dq`
+    /// is the 32-bit form with `Dr` the same register as `Dq`, which keeps
+    /// the quotient alone; `divsl.l <ea>,Dr:Dq` the same with another.
+    DIVL {
+        /// The divisor, a long.
+        source: Operand,
+        /// `Dq`: the dividend's low 32 bits, then the quotient.
+        quotient: u8,
+        /// `Dr`: the dividend's high 32 bits when `wide`, then the remainder.
+        remainder: u8,
+        /// Whether the dividend is the 64 bits of `Dr:Dq`.
+        wide: bool,
+        /// Signed or unsigned.
+        sign: Sign,
+    },
 }
 
 /// A control register of the 68010 and the 68020, as `movec` names it by the
@@ -675,7 +1190,9 @@ pub enum Instruction {
 /// one is an instruction that raises the illegal instruction exception when it
 /// runs, and its words decode and print like any other. The 68010 has four:
 /// SFC and DFC, the function codes `moves` reads and writes through, the
-/// user stack pointer, and VBR, the vector base register.
+/// user stack pointer, and VBR, the vector base register. The 68020 adds
+/// four: CACR and CAAR, the cache's control and address registers, and its
+/// two supervisor stack pointers, MSP and ISP.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub struct ControlRegister(pub u16);
 
@@ -684,31 +1201,55 @@ impl ControlRegister {
     pub const SFC: ControlRegister = ControlRegister(0x000);
     /// The destination function code, `$001`.
     pub const DFC: ControlRegister = ControlRegister(0x001);
+    /// The 68020's cache control register, `$002`.
+    pub const CACR: ControlRegister = ControlRegister(0x002);
     /// The user stack pointer, `$800`.
     pub const USP: ControlRegister = ControlRegister(0x800);
     /// The vector base register, `$801`.
     pub const VBR: ControlRegister = ControlRegister(0x801);
+    /// The 68020's cache address register, `$802`.
+    pub const CAAR: ControlRegister = ControlRegister(0x802);
+    /// The 68020's master stack pointer, `$803`.
+    pub const MSP: ControlRegister = ControlRegister(0x803);
+    /// The 68020's interrupt stack pointer, `$804`.
+    pub const ISP: ControlRegister = ControlRegister(0x804);
 
     /// The control register of the low twelve bits of `code`.
     pub fn from_code(code: u16) -> ControlRegister {
         ControlRegister(code & 0x0FFF)
     }
 
-    /// Its name as `movec` writes it, `sfc`, `dfc`, `usp` or `vbr`, or `None`
-    /// for a code no processor s68k has gives a register.
+    /// Its name as `movec` writes it, `sfc`, `dfc`, `usp`, `vbr`, `cacr`,
+    /// `caar`, `msp` or `isp`, or `None` for a code no processor s68k has
+    /// gives a register.
     pub fn name(self) -> Option<&'static str> {
         Some(match self {
             ControlRegister::SFC => "sfc",
             ControlRegister::DFC => "dfc",
             ControlRegister::USP => "usp",
             ControlRegister::VBR => "vbr",
+            ControlRegister::CACR => "cacr",
+            ControlRegister::CAAR => "caar",
+            ControlRegister::MSP => "msp",
+            ControlRegister::ISP => "isp",
             _ => return None,
         })
     }
 
-    /// Whether the 68010 has it, which is whether `movec` reaches it there
-    /// and on the 68020; every other code is an illegal instruction.
-    pub fn is_the_68010s(self) -> bool {
-        self.name().is_some()
+    /// The first processor whose `movec` reaches it, or `None` for a code no
+    /// processor s68k has gives a register, which is an illegal instruction
+    /// on every one.
+    pub fn processor(self) -> Option<Processor> {
+        match self {
+            ControlRegister::SFC
+            | ControlRegister::DFC
+            | ControlRegister::USP
+            | ControlRegister::VBR => Some(Processor::M68010),
+            ControlRegister::CACR
+            | ControlRegister::CAAR
+            | ControlRegister::MSP
+            | ControlRegister::ISP => Some(Processor::M68020),
+            _ => None,
+        }
     }
 }

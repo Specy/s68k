@@ -33,8 +33,9 @@
 //! The parser asks [`names`] two questions and no more (see that module).
 
 use super::ast::{
-    is_reserved_name, BinaryOperator, Comment, CommentKind, Expr, IndexRegister, Label, Line,
-    Operand, Operation, Register, RegisterKind, RegisterListItem, SizeSuffix, SpecialRegister,
+    is_reserved_name, suppressed_register, BaseRegister, BinaryOperator, Comment, CommentKind,
+    Expr, FieldValue, IndexRegister, Indirection, Label, Line, Operand, Operation, Register,
+    RegisterKind, RegisterListItem, SizeSuffix, SizedDisplacement, SpecialRegister, Suppressed,
     TextOperandField, UnaryOperator,
 };
 use super::diagnostics::{Diagnostic, DiagnosticKind, OperandShape};
@@ -218,6 +219,30 @@ pub fn first_double_quoted_literal(line: &Line) -> Option<Span> {
     operation.operands.iter().find_map(double_quote_in_operand)
 }
 
+/// The register of `(a0)` or of the 68020's `(d0)`, which is what each half
+/// of `cas2`'s `(a0):(d1)` is, or `None` for any other Operand.
+fn indirect_register(operand: &Operand) -> Option<Register> {
+    match operand {
+        Operand::Indirect { register, .. } => Some(*register),
+        Operand::FullIndex {
+            base_displacement: None,
+            base: BaseRegister::Omitted,
+            index:
+                Some(IndexRegister {
+                    register,
+                    size: None,
+                    scale: None,
+                    suppressed: false,
+                    ..
+                }),
+            indirection: Indirection::None,
+            outer_displacement: None,
+            ..
+        } => Some(*register),
+        _ => None,
+    }
+}
+
 /// The span of the first double-quoted literal inside one Operand.
 fn double_quote_in_operand(operand: &Operand) -> Option<Span> {
     match operand {
@@ -228,13 +253,34 @@ fn double_quote_in_operand(operand: &Operand) -> Option<Span> {
         Operand::Index { displacement, .. } | Operand::PcIndex { displacement, .. } => {
             displacement.as_ref().and_then(double_quote_in_expression)
         }
+        Operand::FullIndex {
+            base_displacement,
+            outer_displacement,
+            ..
+        } => [base_displacement, outer_displacement]
+            .into_iter()
+            .flatten()
+            .find_map(|displacement| double_quote_in_expression(&displacement.value)),
         Operand::DataRegisterDirect { .. }
         | Operand::AddressRegisterDirect { .. }
         | Operand::SpecialRegister { .. }
         | Operand::Indirect { .. }
         | Operand::Postincrement { .. }
         | Operand::Predecrement { .. }
-        | Operand::RegisterList { .. } => None,
+        | Operand::RegisterList { .. }
+        | Operand::RegisterPair { .. }
+        | Operand::IndirectPair { .. } => None,
+        Operand::BitField {
+            target,
+            offset,
+            width,
+            ..
+        } => double_quote_in_operand(target).or_else(|| {
+            [offset, width].into_iter().find_map(|value| match value {
+                FieldValue::Value { value } => double_quote_in_expression(value),
+                FieldValue::Register { .. } => None,
+            })
+        }),
     }
 }
 
@@ -734,8 +780,10 @@ impl<'a> Parser<'a> {
                 }
                 _ => {
                     match current.kind {
-                        TokenKind::LeftParen => depth += 1,
-                        TokenKind::RightParen => depth = depth.saturating_sub(1),
+                        TokenKind::LeftParen | TokenKind::LeftBrace => depth += 1,
+                        TokenKind::RightParen | TokenKind::RightBrace => {
+                            depth = depth.saturating_sub(1)
+                        }
                         _ => {}
                     }
                     self.tokens.push(current);
@@ -845,7 +893,11 @@ impl<'a> Parser<'a> {
             // already said `operand_expected` about this Operand, so the check
             // after the `,` below stays quiet about the same comma.
             let empty = self.peek().map(|token| token.kind) == Some(TokenKind::Comma);
-            match self.parse_operand() {
+            match self
+                .parse_operand()
+                .and_then(|operand| self.parse_pair_tail(operand))
+                .and_then(|operand| self.parse_field_tail(operand))
+            {
                 Some(operand) => operands.push(operand),
                 None => self.skip_to_next_operand(),
             }
@@ -888,6 +940,147 @@ impl<'a> Parser<'a> {
             }
         }
         operands
+    }
+
+    /// `register_pair` (2.5): a `:` after an Operand makes it the first of a
+    /// pair, the 68020's, `d1:d2` of two data registers or `(a0):(d1)` of two
+    /// registers in parentheses; any other Operand is answered as it is.
+    fn parse_pair_tail(&mut self, first: Operand) -> Option<Operand> {
+        if self.peek().map(|token| token.kind) != Some(TokenKind::Colon) {
+            return Some(first);
+        }
+        let start = first.span().start;
+        self.bump();
+        let Some(second) = self.parse_operand() else {
+            if self.at_end() || self.peek().map(|token| token.kind) == Some(TokenKind::Comma) {
+                self.operand_start = start;
+                self.malformed(
+                    OperandShape::RegisterPair,
+                    "a register pair needs a second register after the `:`",
+                    None,
+                );
+            }
+            return None;
+        };
+        let span = Span::new(start, second.span().end);
+        match (&first, &second) {
+            (
+                Operand::DataRegisterDirect {
+                    register: first, ..
+                },
+                Operand::DataRegisterDirect {
+                    register: second, ..
+                },
+            ) => Some(Operand::RegisterPair {
+                first: *first,
+                second: *second,
+                span,
+            }),
+            _ => match (indirect_register(&first), indirect_register(&second)) {
+                (Some(first), Some(second)) => Some(Operand::IndirectPair {
+                    first,
+                    second,
+                    span,
+                }),
+                _ => {
+                    self.operand_start = start;
+                    self.malformed(
+                        OperandShape::RegisterPair,
+                        "a pair is two data registers, `d1:d2`, or two registers in \
+                         parentheses, `(a0):(a1)`",
+                        None,
+                    );
+                    None
+                }
+            },
+        }
+    }
+
+    /// `bit_field` (2.5): a `{` after an Operand opens the `{offset:width}`
+    /// of a 68020 bit-field instruction, each half a data register or an
+    /// Expression, with a `#` or without; any other Operand is answered as
+    /// it is.
+    fn parse_field_tail(&mut self, target: Operand) -> Option<Operand> {
+        let Some(open) = self
+            .peek()
+            .filter(|token| token.kind == TokenKind::LeftBrace)
+        else {
+            return Some(target);
+        };
+        let start = target.span().start;
+        self.bump();
+        let offset = self.parse_field_value(start, "offset")?;
+        if self.peek().map(|token| token.kind) != Some(TokenKind::Colon) {
+            self.operand_start = start;
+            self.malformed(
+                OperandShape::BitField,
+                "a bit field is `{offset:width}`, the two halves apart by a `:`",
+                None,
+            );
+            return None;
+        }
+        self.bump();
+        let width = self.parse_field_value(start, "width")?;
+        let Some(close) = self
+            .peek()
+            .filter(|token| token.kind == TokenKind::RightBrace)
+        else {
+            self.operand_start = start;
+            self.malformed(
+                OperandShape::BitField,
+                "this `{` is never closed: a bit field ends with `}`",
+                None,
+            );
+            let _ = open;
+            return None;
+        };
+        self.bump();
+        Some(Operand::BitField {
+            target: Box::new(target),
+            offset,
+            width,
+            span: Span::new(start, close.span.end),
+        })
+    }
+
+    /// One half of a bit field: a data register, or an Expression after an
+    /// optional `#`.
+    fn parse_field_value(&mut self, start: usize, half: &str) -> Option<FieldValue> {
+        if let Some(register) = self.register_at(0) {
+            let token = self.bump().expect("a register");
+            if register.kind != RegisterKind::Data {
+                let name = self.text_of(token).to_string();
+                self.operand_start = start;
+                self.malformed(
+                    OperandShape::BitField,
+                    format!(
+                        "the {half} of a bit field is a number or a data register, and `{name}` \
+                         is an address register"
+                    ),
+                    None,
+                );
+                return None;
+            }
+            return Some(FieldValue::Register { register });
+        }
+        if self.peek().map(|token| token.kind) == Some(TokenKind::Hash) {
+            self.bump();
+        }
+        match self.parse_expression() {
+            Ok(value) => Some(FieldValue::Value { value }),
+            Err(TermError::Reported) => None,
+            Err(TermError::Absent) => {
+                self.operand_start = start;
+                self.malformed(
+                    OperandShape::BitField,
+                    format!(
+                        "the {half} of a bit field is missing: write a number or a data register"
+                    ),
+                    None,
+                );
+                None
+            }
+        }
     }
 
     /// Step over everything up to the next `,` of the Operand list, which is
@@ -1120,8 +1313,17 @@ impl<'a> Parser<'a> {
     /// `unclosed_parenthesis`.
     fn parse_parenthesised_operand(&mut self, open: Token) -> Option<Operand> {
         self.bump();
-        // Any register, not just an address one: `(d0)` is a mistake with a
-        // name — the base of an indirect operand is an address register — and
+        // `([`: the 68020's memory indirection.
+        if self.peek().map(|token| token.kind) == Some(TokenKind::LeftBracket) {
+            return self.parse_memory_indirect(open);
+        }
+        // `(d0)`, `(d0.l*4)`, `(a1.w)`, `(za0,d1)`, `(zpc,d0)`: a 68020 Operand
+        // whose base is suppressed or left out.
+        if self.starts_a_full_index() {
+            return self.parse_full_index(open, None);
+        }
+        // Any register, not just an address one: `(d0,d1)` is a mistake with
+        // a name — the base of an indirect operand is an address register — and
         // `parse_base_and_index` says so, where reading it as a grouped
         // Expression would answer `register_in_expression` and offer nothing
         // (2.5, ADR 0003).
@@ -1154,8 +1356,28 @@ impl<'a> Parser<'a> {
             }
         };
         match self.peek() {
+            // `(1000.w,a0,d1)`: the 68020's base displacement with its width
+            Some(token)
+                if token.kind == TokenKind::SizeSuffix
+                    && self.peek_at(1).map(|token| token.kind) == Some(TokenKind::Comma) =>
+            {
+                let size = self.take_size_suffix(expression.span());
+                self.bump();
+                let displacement = SizedDisplacement {
+                    value: expression,
+                    size: size.and_then(|size| size.size),
+                };
+                self.parse_full_index(open, Some(displacement))
+            }
             Some(token) if token.kind == TokenKind::Comma => {
                 self.bump();
+                if self.starts_a_full_index() {
+                    let displacement = SizedDisplacement {
+                        value: expression,
+                        size: None,
+                    };
+                    return self.parse_full_index(open, Some(displacement));
+                }
                 self.parse_base_and_index(open, Some(expression))
             }
             Some(token) if token.kind == TokenKind::RightParen => {
@@ -1239,11 +1461,20 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let index = self.parse_index_register(OperandShape::Index)?;
                     let close = self.expect_close(open, OperandShape::Index)?;
+                    let span = Span::new(start, close.span.end);
+                    if index.suppressed {
+                        return Some(suppressed_index(
+                            displacement,
+                            BaseRegister::Address { register: base },
+                            index,
+                            span,
+                        ));
+                    }
                     Some(Operand::Index {
                         displacement,
                         base,
                         index,
-                        span: Span::new(start, close.span.end),
+                        span,
                     })
                 }
                 _ => {
@@ -1279,10 +1510,19 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let index = self.parse_index_register(OperandShape::PcIndex)?;
                     let close = self.expect_close(open, OperandShape::PcIndex)?;
+                    let span = Span::new(start, close.span.end);
+                    if index.suppressed {
+                        return Some(suppressed_index(
+                            displacement,
+                            BaseRegister::ProgramCounter,
+                            index,
+                            span,
+                        ));
+                    }
                     Some(Operand::PcIndex {
                         displacement,
                         index,
-                        span: Span::new(start, close.span.end),
+                        span,
                     })
                 }
                 _ => {
@@ -1317,12 +1557,30 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `index_register = register [ size_suffix ]` (2.5). No suffix means `.w`,
-    /// the 68000's default.
+    /// `index_register = ( register | suppressed_index ) [ size_suffix ]
+    /// [ "*" scale ]` (2.5). No suffix means `.w`, the 68000's default, and no
+    /// scale 1; a suppressed index, `zd0` to `za7`, and a scale are the
+    /// 68020's.
     fn parse_index_register(&mut self, shape: OperandShape) -> Option<IndexRegister> {
-        let register = match self.register_at(0) {
-            Some(register) => register,
-            None => {
+        let (register, suppressed) = match (self.register_at(0), self.suppressed_register_at(0)) {
+            (Some(register), _) => (register, false),
+            (None, Some(Suppressed::Data(number))) => (
+                Register {
+                    kind: RegisterKind::Data,
+                    number,
+                    span: self.peek().expect("a register").span,
+                },
+                true,
+            ),
+            (None, Some(Suppressed::Address(number))) => (
+                Register {
+                    kind: RegisterKind::Address,
+                    number,
+                    span: self.peek().expect("a register").span,
+                },
+                true,
+            ),
+            _ => {
                 // Whatever stands where the index register should be is
                 // stepped over, so that the span of the Diagnostic covers it
                 // rather than stopping at the `,` before it (ADR 0003).
@@ -1333,12 +1591,261 @@ impl<'a> Parser<'a> {
         };
         let token = self.bump().expect("a register");
         let suffix = self.take_size_suffix(token.span);
-        let end = suffix.map_or(token.span.end, |suffix| suffix.span.end);
+        let mut end = suffix.map_or(token.span.end, |suffix| suffix.span.end);
+        let mut scale = None;
+        if self.peek().map(|token| token.kind) == Some(TokenKind::Star) {
+            self.bump();
+            let factor = self
+                .peek()
+                .filter(|token| matches!(token.kind, TokenKind::Number(_)));
+            let value = factor.map(|token| match token.kind {
+                TokenKind::Number(base) => self.number(token, base),
+                _ => unreachable!("a number"),
+            });
+            match value {
+                Some(Expr::Number {
+                    value: value @ (1 | 2 | 4 | 8),
+                    span,
+                    ..
+                }) => {
+                    self.bump();
+                    scale = Some(value as u8);
+                    end = span.end;
+                }
+                _ => {
+                    self.bump();
+                    self.malformed(shape, "the scale after `*` is 1, 2, 4 or 8", None);
+                    return None;
+                }
+            }
+        }
         Some(IndexRegister {
             register,
             size: suffix.and_then(|suffix| suffix.size),
+            scale,
+            suppressed,
             span: Span::new(token.span.start, end),
         })
+    }
+
+    /// Whether the cursor, just inside a `(` or after the displacement and its
+    /// `,`, is on a 68020 Operand whose base is suppressed or left out: a
+    /// suppressed register, `zd0` to `za7` or `zpc`; a data register on its
+    /// own or with a size or a scale, `(d0)` and `(d0.l*4)`; or an address
+    /// register with a size or a scale, which is an index, `(a1.w)`. A data
+    /// register followed by a `,` is not, and is answered as the base it was
+    /// written as, which is not an address register.
+    fn starts_a_full_index(&self) -> bool {
+        let next = self.peek_at(1).map(|token| token.kind);
+        if self.suppressed_register_at(0).is_some() {
+            return matches!(
+                next,
+                Some(TokenKind::RightParen)
+                    | Some(TokenKind::Comma)
+                    | Some(TokenKind::SizeSuffix)
+                    | Some(TokenKind::Star)
+            );
+        }
+        match self.register_at(0) {
+            Some(register) if register.kind == RegisterKind::Data => matches!(
+                next,
+                Some(TokenKind::RightParen) | Some(TokenKind::SizeSuffix) | Some(TokenKind::Star)
+            ),
+            Some(_) => matches!(next, Some(TokenKind::SizeSuffix) | Some(TokenKind::Star)),
+            None => false,
+        }
+    }
+
+    /// The rest of a 68020 indexed Operand with no brackets, from its base or
+    /// its index on: `(d0.l*4)`, `(4,za0,d1)`, `(1000.w,a0,d1.l)`.
+    fn parse_full_index(
+        &mut self,
+        open: Token,
+        base_displacement: Option<SizedDisplacement>,
+    ) -> Option<Operand> {
+        let start = self.operand_start;
+        let (base, index) = self.parse_base_and_index_registers(OperandShape::Index, true)?;
+        let close = self.expect_close(open, OperandShape::Index)?;
+        Some(Operand::FullIndex {
+            base_displacement,
+            base,
+            index,
+            indirection: Indirection::None,
+            outer_displacement: None,
+            span: Span::new(start, close.span.end),
+        })
+    }
+
+    /// The 68020's memory indirect Operand, the cursor on the `[` after its
+    /// `(`: `([bd,An,Xn],od)`, preindexed, and `([bd,An],Xn,od)`,
+    /// postindexed, every part of either left out at will.
+    fn parse_memory_indirect(&mut self, open: Token) -> Option<Operand> {
+        let start = self.operand_start;
+        let shape = OperandShape::MemoryIndirect;
+        self.bump();
+        let mut base_displacement = None;
+        let mut registers = (BaseRegister::Omitted, None);
+        if self.peek().map(|token| token.kind) != Some(TokenKind::RightBracket) {
+            if !self.is_a_base_or_an_index() {
+                base_displacement = Some(self.parse_sized_displacement(shape)?);
+                if self.peek().map(|token| token.kind) == Some(TokenKind::Comma) {
+                    self.bump();
+                    registers = self.parse_base_and_index_registers(shape, true)?;
+                }
+            } else {
+                registers = self.parse_base_and_index_registers(shape, true)?;
+            }
+        }
+        if self.peek().map(|token| token.kind) != Some(TokenKind::RightBracket) {
+            self.malformed(shape, "the `]` is missing", Some(open));
+            return None;
+        }
+        self.bump();
+        let (base, inner_index) = registers;
+        let mut index = inner_index;
+        let mut indirection = Indirection::Preindexed;
+        let mut outer_displacement = None;
+        if self.peek().map(|token| token.kind) == Some(TokenKind::Comma) {
+            self.bump();
+            if self.is_an_index() {
+                if index.is_some() {
+                    self.bump();
+                    self.malformed(
+                        shape,
+                        "the index register goes inside the brackets or after them, not both",
+                        None,
+                    );
+                    return None;
+                }
+                index = Some(self.parse_index_register(shape)?);
+                indirection = Indirection::Postindexed;
+                if self.peek().map(|token| token.kind) == Some(TokenKind::Comma) {
+                    self.bump();
+                    outer_displacement = Some(self.parse_sized_displacement(shape)?);
+                }
+            } else {
+                outer_displacement = Some(self.parse_sized_displacement(shape)?);
+            }
+        }
+        let close = self.expect_close(open, shape)?;
+        Some(Operand::FullIndex {
+            base_displacement,
+            base,
+            index,
+            indirection,
+            outer_displacement,
+            span: Span::new(start, close.span.end),
+        })
+    }
+
+    /// A base or an outer displacement of a 68020 indexed Operand: an
+    /// Expression and the width written after it, if any.
+    fn parse_sized_displacement(&mut self, shape: OperandShape) -> Option<SizedDisplacement> {
+        let value = match self.parse_expression() {
+            Ok(value) => value,
+            Err(TermError::Reported) => return None,
+            Err(TermError::Absent) => {
+                self.bump();
+                self.malformed(shape, "a displacement is missing", None);
+                return None;
+            }
+        };
+        let size = self.take_size_suffix(value.span());
+        Some(SizedDisplacement {
+            value,
+            size: size.and_then(|size| size.size),
+        })
+    }
+
+    /// The base and the index of a 68020 indexed Operand, either left out: a
+    /// base register, `a0`, `pc`, `za0` or `zpc`, then a `,` and an index; or
+    /// an index alone, its base left out. `required` says that one of them
+    /// has to be there.
+    fn parse_base_and_index_registers(
+        &mut self,
+        shape: OperandShape,
+        required: bool,
+    ) -> Option<(BaseRegister, Option<IndexRegister>)> {
+        if let Some(base) = self.base_at() {
+            self.bump();
+            let mut index = None;
+            if self.peek().map(|token| token.kind) == Some(TokenKind::Comma)
+                && self.is_an_index_at(1)
+            {
+                self.bump();
+                index = Some(self.parse_index_register(shape)?);
+            }
+            return Some((base, index));
+        }
+        if self.is_an_index() {
+            let index = self.parse_index_register(shape)?;
+            return Some((BaseRegister::Omitted, Some(index)));
+        }
+        if required {
+            self.bump();
+            self.malformed(
+                shape,
+                "a base register or an index register is missing",
+                None,
+            );
+            return None;
+        }
+        Some((BaseRegister::Omitted, None))
+    }
+
+    /// The base register at the cursor, if it is one: an address register or
+    /// `za0` to `za7` with no size or scale after it, which would make it an
+    /// index, `pc` or `zpc`.
+    fn base_at(&self) -> Option<BaseRegister> {
+        let indexed = matches!(
+            self.peek_at(1).map(|token| token.kind),
+            Some(TokenKind::SizeSuffix) | Some(TokenKind::Star)
+        );
+        if self.program_counter_at(0) {
+            return Some(BaseRegister::ProgramCounter);
+        }
+        match (self.register_at(0), self.suppressed_register_at(0)) {
+            (Some(register), _) if register.kind == RegisterKind::Address && !indexed => {
+                Some(BaseRegister::Address { register })
+            }
+            (None, Some(Suppressed::ProgramCounter)) => {
+                Some(BaseRegister::SuppressedProgramCounter)
+            }
+            (None, Some(Suppressed::Address(number))) if !indexed => {
+                Some(BaseRegister::SuppressedAddress { number })
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the cursor is on a base register or an index register.
+    fn is_a_base_or_an_index(&self) -> bool {
+        self.base_at().is_some() || self.is_an_index()
+    }
+
+    /// Whether the cursor is on an index register, suppressed or not.
+    fn is_an_index(&self) -> bool {
+        self.is_an_index_at(0)
+    }
+
+    /// Whether the token `ahead` places past the cursor is an index register,
+    /// suppressed or not.
+    fn is_an_index_at(&self, ahead: usize) -> bool {
+        self.register_at(ahead).is_some()
+            || matches!(
+                self.suppressed_register_at(ahead),
+                Some(Suppressed::Data(_)) | Some(Suppressed::Address(_))
+            )
+    }
+
+    /// The suppressed register `ahead` places past the cursor, if that token
+    /// is one: `zd0` to `za7` or `zpc`.
+    fn suppressed_register_at(&self, ahead: usize) -> Option<Suppressed> {
+        let token = self.peek_at(ahead)?;
+        if token.kind != TokenKind::Identifier {
+            return None;
+        }
+        suppressed_register(self.text_of(token))
     }
 
     /// An Operand that begins with an Expression: `absolute`, or the `x(An)`
@@ -1588,7 +2095,7 @@ impl<'a> Parser<'a> {
                 let name = self.text_of(token).to_string();
                 self.bump();
                 if is_reserved_name(&name) {
-                    // `symbol_reference` excludes the twenty-four reserved names
+                    // `symbol_reference` excludes the twenty-eight reserved names
                     // (2.7), so `#a0+4` and `4+d0` are this and not a Symbol.
                     self.raise(
                         DiagnosticKind::RegisterInExpression { register: name },
@@ -1781,6 +2288,24 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// The 68020 Operand an index written suppressed makes of `(d,An,zd0)` and
+/// `(d,PC,zd0)`, which are no Operands of the 68000's.
+fn suppressed_index(
+    displacement: Option<Expr>,
+    base: BaseRegister,
+    index: IndexRegister,
+    span: Span,
+) -> Operand {
+    Operand::FullIndex {
+        base_displacement: displacement.map(|value| SizedDisplacement { value, size: None }),
+        base,
+        index: Some(index),
+        indirection: Indirection::None,
+        outer_displacement: None,
+        span,
+    }
+}
+
 /// The same Expression, carrying another span.
 ///
 /// A grouped Expression has no node of its own — `(1+2)` *is* `1+2` — so the
@@ -1953,6 +2478,51 @@ mod tests {
                 displacement.as_ref().map_or("0".to_string(), render),
                 describe_index(index)
             ),
+            Operand::FullIndex {
+                base_displacement,
+                base,
+                index,
+                indirection,
+                outer_displacement,
+                ..
+            } => {
+                let sized = |displacement: &SizedDisplacement| {
+                    format!(
+                        "{}{}",
+                        render(&displacement.value),
+                        displacement
+                            .size
+                            .map(|size| size.suffix().to_string())
+                            .unwrap_or_default()
+                    )
+                };
+                let base = match base {
+                    BaseRegister::Address { register } => Some(register.name().to_string()),
+                    BaseRegister::ProgramCounter => Some("pc".to_string()),
+                    BaseRegister::SuppressedAddress { number } => Some(format!("za{number}")),
+                    BaseRegister::SuppressedProgramCounter => Some("zpc".to_string()),
+                    BaseRegister::Omitted => None,
+                };
+                let index = index.as_ref().map(describe_index);
+                let bd = base_displacement.as_ref().map(sized);
+                let od = outer_displacement.as_ref().map(sized);
+                let join = |parts: Vec<Option<String>>| {
+                    parts.into_iter().flatten().collect::<Vec<_>>().join(",")
+                };
+                match indirection {
+                    Indirection::None => format!("({})", join(vec![bd, base, index])),
+                    Indirection::Preindexed => {
+                        format!(
+                            "([{}]{})",
+                            join(vec![bd, base, index]),
+                            od.map(|od| format!(",{od}")).unwrap_or_default()
+                        )
+                    }
+                    Indirection::Postindexed => {
+                        format!("([{}],{})", join(vec![bd, base]), join(vec![index, od]))
+                    }
+                }
+            }
             Operand::Absolute { value, size, .. } => format!(
                 "{}{}",
                 render(value),
@@ -1969,15 +2539,39 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
                 .join("/"),
+            Operand::RegisterPair { first, second, .. } => {
+                format!("{}:{}", first.name(), second.name())
+            }
+            Operand::IndirectPair { first, second, .. } => {
+                format!("({}):({})", first.name(), second.name())
+            }
+            Operand::BitField {
+                target,
+                offset,
+                width,
+                ..
+            } => {
+                let half = |value: &FieldValue| match value {
+                    FieldValue::Value { value } => render(value),
+                    FieldValue::Register { register } => register.name().to_string(),
+                };
+                format!("{}{{{}:{}}}", describe(target), half(offset), half(width))
+            }
         }
     }
 
-    /// An index register, always with its size, the `.w` default included.
+    /// An index register, always with its size, the `.w` default included,
+    /// and its scale when one is written.
     fn describe_index(index: &IndexRegister) -> String {
         format!(
-            "{}{}",
+            "{}{}{}{}",
+            if index.suppressed { "z" } else { "" },
             index.register.name(),
-            index.size.unwrap_or(SizeSuffix::Word).suffix()
+            index.size.unwrap_or(SizeSuffix::Word).suffix(),
+            index
+                .scale
+                .map(|scale| format!("*{scale}"))
+                .unwrap_or_default()
         )
     }
 
@@ -2447,6 +3041,96 @@ mod tests {
                 ["0(a6,d1.w)", "d0"],
                 "the displacement-free form is a displacement of zero"
             );
+        }
+
+        #[test]
+        fn index_reads_the_68020s_scale_and_suppressed_registers() {
+            assert_eq!(only("    lea (4,a0,d1.w*4)"), "4(a0,d1.w*4)");
+            assert_eq!(only("    lea 4(a0,d1*8)"), "4(a0,d1.w*8)");
+            assert_eq!(only("    lea (pc,a1.l*2)"), "0(pc,a1.l*2)");
+            assert_eq!(only("    lea (a0,zd0)"), "(a0,zd0.w)");
+            assert_eq!(only("    lea (4,pc,za3.l)"), "(4,pc,za3.l)");
+            assert_eq!(only("    lea (d0)"), "(d0.w)");
+            assert_eq!(only("    lea (d0.l*4)"), "(d0.l*4)");
+            assert_eq!(only("    lea (a1.w)"), "(a1.w)");
+            assert_eq!(only("    lea (4,d0)"), "(4,d0.w)");
+            assert_eq!(only("    lea (1000.w,a0,d1.l)"), "(1000.w,a0,d1.l)");
+            assert_eq!(only("    lea (4.l,a0)"), "(4.l,a0)");
+            assert_eq!(only("    lea (za0,d1)"), "(za0,d1.w)");
+            assert_eq!(only("    lea (zpc,d1)"), "(zpc,d1.w)");
+            assert_eq!(only("    lea (label.w,zpc,d1)"), "(label.w,zpc,d1.w)");
+        }
+
+        #[test]
+        fn register_pair_and_indirect_pair_join_two_registers() {
+            assert_eq!(shapes("    muls.l d0,d1:d2"), ["d0", "d1:d2"]);
+            assert_eq!(
+                shapes("    cas2.l d0:d1,d2:d3,(a0):(d4)"),
+                ["d0:d1", "d2:d3", "(a0):(d4)"]
+            );
+            for text in ["    x d1:a2", "    x (a0):d1", "    x d1:(a0)", "    x d1:"] {
+                assert_eq!(codes(text), ["malformed_operand"], "{text}");
+            }
+        }
+
+        #[test]
+        fn bit_field_follows_its_operand() {
+            assert_eq!(only("    bftst d0{4:8}"), "d0{4:8}");
+            assert_eq!(only("    bftst (a0){#4:#32}"), "(a0){4:32}");
+            assert_eq!(only("    bftst 8(a0,d1.w){d2:d3}"), "8(a0,d1.w){d2:d3}");
+            assert_eq!(
+                shapes("    bfins d1,([4,a0]){off-1:width}"),
+                ["d1", "([4,a0]){(off - 1):width}"]
+            );
+            for text in [
+                "    bftst d0{4}",
+                "    bftst d0{4:8",
+                "    bftst d0{a0:8}",
+                "    bftst d0{:8}",
+            ] {
+                assert_eq!(codes(text), ["malformed_operand"], "{text}");
+            }
+        }
+
+        #[test]
+        fn memory_indirect_reads_the_index_inside_or_after_the_brackets() {
+            assert_eq!(only("    lea ([a0])"), "([a0])");
+            assert_eq!(only("    lea ([4,a0])"), "([4,a0])");
+            assert_eq!(only("    lea ([4,a0],8)"), "([4,a0],8)");
+            assert_eq!(only("    lea ([4,a0,d1.w*4],8)"), "([4,a0,d1.w*4],8)");
+            assert_eq!(only("    lea ([4,a0],d1.w*4,8)"), "([4,a0],d1.w*4,8)");
+            assert_eq!(only("    lea ([4,a0],d1.w*4)"), "([4,a0],d1.w*4)");
+            assert_eq!(
+                only("    lea ([label.l,pc],d0,od.w)"),
+                "([label.l,pc],d0.w,od.w)"
+            );
+            assert_eq!(only("    lea ([$1000])"), "([4096])");
+            assert_eq!(only("    lea ([d1])"), "([d1.w])");
+            assert_eq!(only("    lea ([zpc])"), "([zpc])");
+            assert_eq!(only("    lea ([a0,zd0],4)"), "([a0,zd0.w],4)");
+        }
+
+        #[test]
+        fn a_68020_operand_that_does_not_finish_names_its_shape() {
+            for (text, message) in [
+                (
+                    "    lea ([4,a0,d1),a1",
+                    "This looks like a memory indirect operand, `([4,a0],d1.w*4,8)`, but the `]` \
+                     is missing.",
+                ),
+                (
+                    "    lea ([4,a0,d1],d2),a1",
+                    "This looks like a memory indirect operand, `([4,a0],d1.w*4,8)`, but the index \
+                     register goes inside the brackets or after them, not both.",
+                ),
+                (
+                    "    lea (4,a0,d1*3),a1",
+                    "This looks like an indexed operand, `4(a0,d1.w)`, but the scale after `*` is 1, \
+                     2, 4 or 8.",
+                ),
+            ] {
+                assert_eq!(messages(text), [message.to_string()], "{text}");
+            }
         }
 
         #[test]
@@ -2985,7 +3669,7 @@ mod tests {
             // "Later" is the phase order of the design record, not the
             // calendar: the analyzer, the Directives and the Layout all raise
             // Diagnostics of their own, and none of them is the parser's.
-            const LATER_PHASES: [&str; 51] = [
+            const LATER_PHASES: [&str; 50] = [
                 "unknown_mnemonic",
                 "mnemonic_used_as_label",
                 "wrong_operand_count",
@@ -3034,7 +3718,6 @@ mod tests {
                 "processor_chosen_after_code",
                 "unknown_option",
                 "needs_a_later_processor",
-                "unimplemented_in_dialect",
                 "short_branch_marks_a_long_branch",
                 "bit_number_wraps",
             ];
@@ -3196,7 +3879,7 @@ mod tests {
             let (_, diagnostics) = parse("    move.l 4(d0),d1");
             assert_eq!(diagnostics[0].location.column, 11, "`4(d0`, not `4(`");
             assert_eq!(diagnostics[0].location.end_column, 15);
-            let (_, diagnostics) = parse("    move.l (label,d0),d1");
+            let (_, diagnostics) = parse("    move.l (label,d0,d1),d2");
             assert_eq!(diagnostics[0].location.column, 11);
             assert_eq!(diagnostics[0].location.end_column, 20, "`(label,d0`");
         }

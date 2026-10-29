@@ -5,8 +5,7 @@
 //! for: it reads the vector, pushes the frame this module describes on the
 //! supervisor stack, and jumps to the handler. The 68010 reads the vector
 //! through its vector base register and pushes frames of its own, which
-//! begin with a format word (ADR 0011); the 68020 has the 68010's until its
-//! batch gives it its own.
+//! begin with a format word (ADR 0011), and the 68020 has its own again.
 //!
 //! **What the frames hold.**
 //!
@@ -18,6 +17,13 @@
 //!   the access address, the instruction register, the status register and
 //!   the program counter, fourteen bytes. The 68010 pushes its format `$8`
 //!   frame of 29 words instead ([`Frame::Format8`]).
+//! * The 68020 pushes format `$0` too, but for `chk`, `chk2`, `trapcc`,
+//!   `trapv`, a division by zero and trace, which push format `$2`, six words
+//!   that add the address of the instruction ([`Frame::Format2`]); its bus
+//!   and address errors push the short and the long bus fault frames,
+//!   formats `$A` and `$B` ([`Frame::Format10`] and [`Frame::Format11`]); and
+//!   an interrupt taken with M set pushes a second frame, the throwaway frame
+//!   of format `$1`, on the interrupt stack ([`Frame::Format1`]).
 //!
 //! **The program counter stacked.** An illegal instruction, a privilege
 //! violation and the line A and line F words stack the address of the
@@ -33,7 +39,7 @@
 
 use crate::instructions::{AddressWidth, Instruction, Operand, Size};
 use crate::interpreter::{Access, RuntimeError};
-use crate::machine::interrupts;
+use crate::machine::{interrupts, Processor};
 
 /// The vector of the bus error, which the Memory map raises.
 pub const BUS_ERROR: u8 = 2;
@@ -115,8 +121,8 @@ pub fn vector_of(error: &RuntimeError) -> Option<u8> {
         RuntimeError::AddressError { .. } => Some(ADDRESS_ERROR),
         RuntimeError::IllegalInstruction => Some(ILLEGAL_INSTRUCTION),
         RuntimeError::DivisionByZero => Some(DIVISION_BY_ZERO),
-        RuntimeError::ChkOutOfBounds { .. } => Some(CHK),
-        RuntimeError::OverflowException => Some(TRAPV),
+        RuntimeError::ChkOutOfBounds { .. } | RuntimeError::Chk2OutOfBounds { .. } => Some(CHK),
+        RuntimeError::OverflowException | RuntimeError::ConditionalTrap => Some(TRAPV),
         RuntimeError::PrivilegeViolation => Some(PRIVILEGE_VIOLATION),
         RuntimeError::Trace => Some(TRACE),
         RuntimeError::LineA(_) => Some(LINE_A),
@@ -163,6 +169,9 @@ pub fn group(vector: u8) -> Group {
 /// the 68010's begin with a format/vector-offset word, the format in its
 /// four high bits and four times the vector below, which `rte` reads to know
 /// what to pop: [`Format0`](Frame::Format0) and [`Format8`](Frame::Format8).
+/// The 68020's are [`Format0`](Frame::Format0), [`Format1`](Frame::Format1),
+/// [`Format2`](Frame::Format2), [`Format10`](Frame::Format10) and
+/// [`Format11`](Frame::Format11) (the M68020 User's Manual, 6.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frame {
     /// The frame of groups 1 and 2: the status register at the stack
@@ -216,7 +225,73 @@ pub enum Frame {
         /// [`special_status_word`]'s.
         special_status_word: u16,
     },
+    /// The 68020's throwaway frame, format `$1`: the words of a
+    /// [`Format0`](Frame::Format0), which an interrupt taken with M set pushes
+    /// on the interrupt stack over the format `$0` frame it pushed on the
+    /// master stack. `rte` pops it, writes the status register it holds,
+    /// which has S and M set and so makes A7 the master stack pointer again,
+    /// and goes on to the frame there.
+    Format1 {
+        /// The program counter stacked, the same as the master frame's.
+        pc: u32,
+        /// The vector of the interrupt.
+        vector: u8,
+    },
+    /// The 68020's six-word frame, format `$2`, of `chk`, `chk2`, `trapcc`,
+    /// `trapv`, a division by zero and trace: a [`Format0`](Frame::Format0)
+    /// and the address of the instruction that raised it after the format
+    /// word.
+    Format2 {
+        /// The program counter stacked: the next instruction's.
+        pc: u32,
+        /// The vector.
+        vector: u8,
+        /// The address of the instruction that raised it.
+        address: u32,
+    },
+    /// The 68020's short bus fault frame, format `$A`, sixteen words, of a
+    /// bus error taken as an instruction begins, before any of it ran: the
+    /// fetch of its words faulted. It stacks that instruction's address, the
+    /// next to run, which `rte` returns to.
+    ///
+    /// The special status word and the data cycle fault address are written;
+    /// the internal registers, the instruction pipe and the data output
+    /// buffer are zeros, as s68k does not go on from them, as the 68010's
+    /// [`Format8`](Frame::Format8) does not (the asm-editor's
+    /// `docs/design/m68k-machine.md`, decision 3).
+    Format10 {
+        /// The program counter stacked: the instruction whose fetch faulted.
+        pc: u32,
+        /// The vector, 2.
+        vector: u8,
+        /// The address the access that faulted was made to, all 32 bits.
+        fault_address: u32,
+        /// [`special_status_word_68020`]'s.
+        special_status_word: u16,
+    },
+    /// The 68020's long bus fault frame, format `$B`, 46 words, of a bus or
+    /// an address error in the middle of an instruction, which an address
+    /// error at an odd program counter is too, as WinUAE's 68020 pushes it:
+    /// a [`Format10`](Frame::Format10), and 30 words more, the stage B
+    /// address, the data input buffer, the version number in the four high
+    /// bits of the word at `+$36` and internal registers, all zeros, the
+    /// version number 0 among them. It stacks the address of the instruction
+    /// that faulted, which `rte` runs again from the start.
+    Format11 {
+        /// The program counter stacked: the instruction that faulted.
+        pc: u32,
+        /// The vector, 2 or 3.
+        vector: u8,
+        /// The address the access that faulted was made to, all 32 bits.
+        fault_address: u32,
+        /// [`special_status_word_68020`]'s.
+        special_status_word: u16,
+    },
 }
+
+/// The offset of the word of a [`Frame::Format11`] whose four high bits are
+/// the version number `rte` checks.
+pub const FORMAT_11_VERSION: u32 = 0x36;
 
 /// The words of a [`Frame::Format8`] that are not written: the stack pointer
 /// goes down by 29 words, and only 26 are written, the three words before
@@ -252,6 +327,53 @@ impl Frame {
                 low(pc),
             ],
             Frame::Format0 { pc, vector } => vec![sr, high(pc), low(pc), format_word(0, vector)],
+            Frame::Format1 { pc, vector } => vec![sr, high(pc), low(pc), format_word(1, vector)],
+            Frame::Format2 {
+                pc,
+                vector,
+                address,
+            } => vec![
+                sr,
+                high(pc),
+                low(pc),
+                format_word(2, vector),
+                high(address),
+                low(address),
+            ],
+            Frame::Format10 {
+                pc,
+                vector,
+                fault_address,
+                special_status_word,
+            }
+            | Frame::Format11 {
+                pc,
+                vector,
+                fault_address,
+                special_status_word,
+            } => {
+                let (format, words) = match self {
+                    Frame::Format10 { .. } => (0xA, 16),
+                    _ => (0xB, 46),
+                };
+                let mut frame = vec![
+                    sr,
+                    high(pc),
+                    low(pc),
+                    format_word(format, vector),
+                    //an internal register, then the special status word
+                    0,
+                    special_status_word,
+                    //the instruction pipe's stages C and B
+                    0,
+                    0,
+                    high(fault_address),
+                    low(fault_address),
+                ];
+                //the internal registers, the data output buffer and, in the long frame, the rest
+                frame.resize(words, 0);
+                frame
+            }
             Frame::Format8 {
                 pc,
                 vector,
@@ -282,13 +404,16 @@ impl Frame {
     }
 
     /// How many bytes the frame takes on the stack: 6 or 14 on a 68000, 8 or
-    /// 58 on a 68010.
+    /// 58 on a 68010, and 8, 12, 32 or 92 on a 68020.
     pub fn size(&self) -> u32 {
         match self {
             Frame::Short { .. } => 6,
             Frame::Group0 { .. } => 14,
-            Frame::Format0 { .. } => 8,
+            Frame::Format0 { .. } | Frame::Format1 { .. } => 8,
             Frame::Format8 { .. } => 58,
+            Frame::Format2 { .. } => 12,
+            Frame::Format10 { .. } => 32,
+            Frame::Format11 { .. } => 92,
         }
     }
 
@@ -298,9 +423,71 @@ impl Frame {
             Frame::Short { pc }
             | Frame::Group0 { pc, .. }
             | Frame::Format0 { pc, .. }
-            | Frame::Format8 { pc, .. } => pc,
+            | Frame::Format1 { pc, .. }
+            | Frame::Format2 { pc, .. }
+            | Frame::Format8 { pc, .. }
+            | Frame::Format10 { pc, .. }
+            | Frame::Format11 { pc, .. } => pc,
         }
     }
+
+    /// How many bytes `rte` pops for a frame of the format `format` on
+    /// `processor`, the format word's four high bits, when it is one of the
+    /// processor's: `$0` on a 68010 and a 68020, `$8` on a 68010, and `$1`,
+    /// `$2`, `$A` and `$B` on a 68020. `None` for any other, which is a
+    /// format error.
+    pub fn popped(format: u16, processor: Processor) -> Option<u32> {
+        let m68020 = processor.has(Processor::M68020);
+        Some(match format {
+            0x0 => 8,
+            0x1 if m68020 => 8,
+            0x2 if m68020 => 12,
+            0x8 if !m68020 => 58,
+            0xA if m68020 => 32,
+            0xB if m68020 => 92,
+            _ => return None,
+        })
+    }
+}
+
+/// Whether the 68020's frame of the exception through `vector` is format
+/// `$2`, which stacks the instruction's address beside the next one's: a
+/// division by zero, `chk` and `chk2`, `trapv` and `trapcc`, and trace (the
+/// M68020 User's Manual, 6.3.4 and 6.5.3). The others push format `$0`.
+pub fn has_instruction_address(vector: u8) -> bool {
+    matches!(vector, DIVISION_BY_ZERO | CHK | TRAPV | TRACE)
+}
+
+/// The special status word of a 68020 bus fault frame (the M68020 User's
+/// Manual, figure 6-2), as s68k fills it, for an access of `size` that
+/// faulted, a `fetch` of the instruction's words or a data `access`: for a
+/// data access, an operand relative to the program counter among them, DF,
+/// bit 8, set, as the processor would rerun it; RW, bit 6, set for a read;
+/// SIZ, bits 5 and 4, `01` for a byte, `10` for a word and `00` for a long;
+/// and in bits 2 to 0 the function code of the access, as [`status_word`]'s.
+/// A fetch, which has no data cycle, is a read of a word in program space
+/// with DF clear, as WinUAE's 68020 writes it for an odd program counter. The
+/// fault and rerun bits of the instruction pipe, FC, FB, RC and RB, are
+/// clear, and so is RM.
+pub fn special_status_word_68020(access: Access, size: Size, supervisor: bool, fetch: bool) -> u16 {
+    let (access, size) = match fetch {
+        true => (Access::Program, Size::Word),
+        false => (access, size),
+    };
+    let data = match fetch {
+        true => 0,
+        false => 0x0100,
+    };
+    let read = match access {
+        Access::Write => 0,
+        Access::Read | Access::Program => 0x0040,
+    };
+    let size = match size {
+        Size::Byte => 0x0010,
+        Size::Word => 0x0020,
+        Size::Long => 0,
+    };
+    data | read | size | (status_word(0, access, supervisor) & 7)
 }
 
 /// The special status word of a 68010 [`Frame::Format8`] (the 68000 User's
@@ -364,6 +551,7 @@ fn extension_bytes(operand: &Operand, size: Size) -> u32 {
         | Operand::IndirectIndex { .. }
         | Operand::PcDisplacement { .. }
         | Operand::PcIndex { .. } => 2,
+        Operand::Extended { word, .. } => word.bytes(),
         Operand::Register(_)
         | Operand::Indirect(_)
         | Operand::PostIndirect(_)

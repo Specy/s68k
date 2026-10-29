@@ -350,6 +350,13 @@ export type RuntimeError = { type: "Raw", value: string } |
 { type: "ChkOutOfBounds", value: { value: number, bound: number } } |
 /** `trapv` with the overflow flag set: vector 7. */
 { type: "OverflowException" } |
+/** The 68020's `trapcc` with its condition true: vector 7, as `trapv`. */
+{ type: "ConditionalTrap" } |
+/**
+ * The 68020's `chk2` found the register outside its bounds: vector 6, as
+ * `chk`. The three are as the processor compared them, sign extended.
+ */
+{ type: "Chk2OutOfBounds", value: { value: number, lower: number, upper: number } } |
 /**
  * The `illegal` instruction, or a word that is no instruction, which is what
  * bytes never assembled as code can decode to when the program runs into
@@ -434,13 +441,20 @@ export type Termination =
 { type: "Halted", value: { cause: RuntimeError, vector: number } }
 
 /**
- * The System register file: the whole status register and both stack
- * pointers, and from the 68010 on its control registers VBR, SFC and DFC. A7
- * is the SSP while S is set and the USP while it is not.
+ * The System register file: the whole status register and the stack
+ * pointers, from the 68010 on its control registers VBR, SFC and DFC, and on
+ * the 68020 its master and interrupt stack pointers and its cache registers.
+ * A7 is the USP while S is clear and the SSP while it is set, which on a
+ * 68020 is the ISP while M is clear and the MSP while it is set.
  */
 export type SystemRegisters = {
     sr: number,
     usp: number,
+    /**
+     * The supervisor stack pointer of the 68000 and the 68010, which the
+     * 68020 calls the interrupt stack pointer: on a 68020 the same register
+     * as `isp`.
+     */
     ssp: number,
     /**
      * The vector base register, where the vector table starts, which every
@@ -454,7 +468,28 @@ export type SystemRegisters = {
      * one address space, so `moves` reaches the same memory whatever they are.
      */
     sfc?: number,
-    dfc?: number
+    dfc?: number,
+    /**
+     * The 68020's interrupt stack pointer, `ssp` under its 68020 name: A7 in
+     * supervisor mode with M clear, and the stack an interrupt is taken on.
+     * Absent before the 68020.
+     */
+    isp?: number,
+    /**
+     * The 68020's master stack pointer: A7 in supervisor mode with M set.
+     * Absent before the 68020; 0 at the start.
+     */
+    msp?: number,
+    /**
+     * The 68020's cache control register, of which `movec` keeps E (bit 0)
+     * and F (bit 1); s68k has no cache behind it. Absent before the 68020.
+     */
+    cacr?: number,
+    /**
+     * The 68020's cache address register, kept whole. Absent before the
+     * 68020.
+     */
+    caar?: number
 }
 "#;
 
@@ -721,7 +756,14 @@ export type ProgramInfo = {
     /** The processor `opt p=` chose, the 68000 when no line chose one. */
     processor: Processor,
     /** Whether the program has the 68020's bit-field instructions, through `opt bit` or `opt p=68020`. */
-    bitFields: boolean
+    bitFields: boolean,
+    /**
+     * Whether the cycle counter counts the processor's exact time, as it does
+     * for the 68000 and the 68010, or an estimate, as for the 68020: the cache
+     * case of its manual's tables, since its real time depends on its
+     * instruction cache and on how neighbouring instructions overlap.
+     */
+    cyclesExact: boolean
 }
 "#;
 
@@ -746,7 +788,12 @@ export type ParsedLabel = {
 }
 
 export type ParsedOperand = {
-    /** The addressing mode: `immediate`, `data_register_direct`, ... */
+    /**
+     * The addressing mode: `immediate`, `data_register_direct`, ..., and the
+     * 68020's: `full_index` for its indexed forms beyond `index` and
+     * `pc_index`, `register_pair` for `d1:d2`, `indirect_pair` for
+     * `(a0):(d1)`, and `bit_field` for an operand with a `{offset:width}`.
+     */
     mode: string,
     /** The same in English ("an immediate"). */
     description: string,
@@ -1013,15 +1060,16 @@ export type MutationOperation = {
     }
 } | {
     /**
-     * Both stack pointers before and after `move An,usp`, a poke of the USP or
-     * the SSP, or a write of the status register that changed S. A change of S
-     * moves no value: it makes A7 the other one, which the step's `new_sr`
-     * says.
+     * The stack pointers before and after `move An,usp`, `movec` of one, a
+     * poke of one, or a write of the status register that changed S, or on a
+     * 68020 M. A change of S or M moves no value: it makes A7 another one,
+     * which the step's `new_sr` says. `ssp` is the 68020's ISP, and `msp`,
+     * the 68020's master stack pointer, is 0 on the others.
      */
     type: "WriteStackPointers",
     value: {
-        old: { usp: number, ssp: number },
-        new: { usp: number, ssp: number }
+        old: { usp: number, ssp: number, msp: number },
+        new: { usp: number, ssp: number, msp: number }
     }
 } | {
     /**
@@ -1053,12 +1101,13 @@ export type MutationOperation = {
     }
 } | {
     /**
-     * A control register of the 68010 that is no stack pointer before and
-     * after `movec` or a poke wrote it: a function code is its three bits.
+     * A control register that is no stack pointer before and after `movec`
+     * or a poke wrote it, the 68010's or the 68020's: a function code is its
+     * three bits, and CACR its E and F bits.
      */
     type: "WriteControlRegister",
     value: {
-        register: "vbr" | "sfc" | "dfc",
+        register: "vbr" | "sfc" | "dfc" | "cacr" | "caar",
         old: number,
         new: number
     }

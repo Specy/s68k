@@ -54,10 +54,13 @@
 //! and takes that encoding's bytes (ADR 0006), which was the one decision the
 //! design record left open.
 //!
-//! What says "yet" is the 68010 and the 68020 (ADR 0011): `opt p=` chooses
-//! either, and of their instructions s68k has `move ccr,<ea>` and `extb.l`
-//! and the long branches; every other one is `unimplemented_in_dialect` until
-//! its batch of the asm-editor's `docs/design/m68k-machine-plan.md`.
+//! The 68010 and the 68020 are dialects `opt p=` chooses (ADR 0011), each
+//! complete for a program in user mode: every instruction of theirs but the
+//! 68020's module call, `callm` and `rtm`, which are refused for good, and
+//! the 68020's bit fields, which EASy68K's `opt bit` gives a 68000 Program
+//! too, and the 68020's supervisor model, whose `movec` names `cacr`, `caar`,
+//! `msp` and `isp`. What the 68020 still lacks is its cycles, the
+//! asm-editor's `docs/design/m68k-machine-plan.md`, milestone C13.
 
 pub mod analyzer;
 pub mod ast;

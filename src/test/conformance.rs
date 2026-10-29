@@ -7,8 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::conformance::runner::{self, Report};
-use crate::conformance::skips::{self, MUSASHI};
+use crate::conformance::skips::{self, MUSASHI, MUSASHI_68040, MUSASHI_68040_RELAXATIONS};
 use crate::conformance::suite::{self, Kind};
+use crate::machine::Processor;
 
 /// The vendored subset: the first 50 tests of each file that raise no address
 /// error (`tests/m68000/README.md`).
@@ -20,6 +21,10 @@ const FETCHED: &str = "tests/m68000/fetched/v1";
 
 /// Musashi's programs, `tests/musashi/mc68000/`.
 const MUSASHI_PROGRAMS: &str = "tests/musashi/mc68000";
+
+/// Musashi's programs of the 68040's integer instructions,
+/// `tests/musashi/mc68040/`, of which s68k's 68020 runs those of its own.
+const MUSASHI_68040_PROGRAMS: &str = "tests/musashi/mc68040";
 
 /// How many tests of each file the vendored subset keeps.
 const VENDORED_PER_FILE: usize = 50;
@@ -227,6 +232,64 @@ fn exception_processing_is_found_from_the_final_state() {
     for test in suite::read(&bytes).unwrap() {
         assert_eq!(skips::exception_vector(&test), None, "{}", test.name);
     }
+}
+
+/// Musashi's self-checking programs of the 68040's integer instructions,
+/// those of the 68020's among them, run by a 68020 Program: the bit fields,
+/// `cas` and `cas2`, `chk2` and `cmp2`, the long multiplies and divides and
+/// `trapcc`, and three of the 68000's and the 68010's instructions. Their
+/// exception handlers return with `rte` from whatever frame the processor
+/// pushed.
+#[test]
+fn musashi_68040_programs_pass() {
+    let mut programs: Vec<PathBuf> = fs::read_dir(manifest(MUSASHI_68040_PROGRAMS))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "bin"))
+        .collect();
+    programs.sort();
+    assert_eq!(
+        programs.len(),
+        17,
+        "Musashi has 18 programs for the 68040, one left out"
+    );
+    let mut failures = Vec::new();
+    let mut passed = 0;
+    for path in &programs {
+        let name = path.file_stem().unwrap().to_str().unwrap();
+        if MUSASHI_68040.iter().any(|(skipped, _)| *skipped == name) {
+            continue;
+        }
+        let mut bytes = fs::read(path).unwrap();
+        for (_, addresses, _) in MUSASHI_68040_RELAXATIONS
+            .iter()
+            .filter(|(relaxed, _, _)| *relaxed == name)
+        {
+            for address in *addresses {
+                let at = (*address as usize) - runner::MUSASHI_LOAD_ADDRESS;
+                assert_eq!(
+                    (bytes[at] & 0xF0, bytes[at + 1]),
+                    (0x60, 0x00),
+                    "{name}: a word branch at ${address:X}"
+                );
+                bytes[at..at + 4].copy_from_slice(&[0x4E, 0x71, 0x4E, 0x71]);
+            }
+        }
+        match runner::run_musashi_on(&bytes, Processor::M68020) {
+            Ok(()) => passed += 1,
+            Err(reason) => failures.push(format!("{name}: {reason}")),
+        }
+    }
+    println!(
+        "Musashi's 68040 programs: {passed} passed, {} skipped",
+        MUSASHI_68040.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "{} failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 #[test]

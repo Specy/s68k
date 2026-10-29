@@ -108,6 +108,50 @@ pub const MUSASHI: &[(&str, Until, &str)] = &[
     ("move", Until::Never, "cmpi.b #$B9,(d16,PC) at $10160 is a 68020 form, an illegal instruction on a 68000; Musashi's driver runs every program as a 68040"),
 ];
 
+/// The programs of Musashi's `test/mc68040` that s68k's 68020 does not run,
+/// and why: none since the 68020's batch. `interrupt`, whose interrupts come
+/// from a register of Musashi's test driver, is not vendored.
+pub const MUSASHI_68040: &[(&str, &str)] = &[];
+
+/// The checks of Musashi's `test/mc68040` programs that s68k's 68020 is not
+/// held to, by program and by the addresses of the branches to `TEST_FAIL`
+/// that make them, which the run replaces with `nop`s, and why. A relaxation
+/// of the program, not a skip: the rest of it runs and is checked.
+pub const MUSASHI_68040_RELAXATIONS: &[(&str, &[u32], &str)] = &[
+    (
+        "divs_long",
+        &[0x100E8, 0x100EC, 0x100F0, 0x101DC],
+        "it checks the flags the 68040 leaves where Motorola leaves them undefined: N, Z and V \
+         unchanged after a division by zero, and N and Z after a 64-bit division that \
+         overflows, in the sum of the flags of its loop of `divs.l`. The 68020 clears N and \
+         sets Z after a division by zero, and sets N and Z from the dividend after an \
+         overflow, as WinUAE has it from cputester's runs on the hardware; the quotients and \
+         remainders, and every flag Motorola defines, are checked",
+    ),
+    (
+        "chk2",
+        &[0x100F0, 0x100FA],
+        "`chk2 (%a7),%a0`, written with no size, assembles as a word, whose bounds, $1000 and 0, \
+         are the wrong way round; the 68020 compares the whole of A0 with them sign extended, \
+         as the manual says, and finds $70000001 in the range that wraps round, with no \
+         trap, where Musashi compares its low word and traps, which the program expects",
+    ),
+    (
+        "cmp2",
+        &[0x100AA, 0x100BA, 0x100C8, 0x100E4],
+        "the same word `cmp2 (%a7),%a0` as `chk2`'s; and the byte bounds $F0 and $70, which \
+         it reads relative to the program counter, where Musashi reads a byte bound unsigned \
+         and nowhere else: signed, as the 68020 reads them, $60, $F0 and $70 are in bounds, \
+         and the program's own comments doubt it expects the right carry there",
+    ),
+    (
+        "divu_long",
+        &[0x100E8, 0x100EC, 0x100F0, 0x101DC],
+        "as `divs_long`: the 68020 sets N and Z from the dividend's low long and sets V after a \
+         division by zero, and sets N and Z from it after an overflow",
+    ),
+];
+
 /// The first skip that leaves `test` of `file` out, if one does.
 pub fn skip(file: &str, test: &Test) -> Option<&'static Skip> {
     SKIPS.iter().find(|skip| match skip.when {

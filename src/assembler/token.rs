@@ -143,6 +143,14 @@ pub enum TokenKind {
     LeftParen,
     /// `)`.
     RightParen,
+    /// `[`, which opens the memory indirect part of a 68020 indexed Operand.
+    LeftBracket,
+    /// `]`.
+    RightBracket,
+    /// `{`, which opens the `{offset:width}` of a 68020 bit field.
+    LeftBrace,
+    /// `}`.
+    RightBrace,
     /// `:`, which makes the identifier before it a Label.
     Colon,
     /// `+`: postincrement, or addition.

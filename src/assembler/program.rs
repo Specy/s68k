@@ -52,7 +52,7 @@ use super::instructions::encoded::{BranchSize, Instruction};
 use super::source::Location;
 use super::symbols::{SymbolKind, SymbolTable, SymbolValue};
 use crate::machine::disassemble::{disassemble, Symbols};
-use crate::machine::Processor;
+use crate::machine::{Dialect, Processor};
 
 /// One assembled instruction: what it is, where it goes and where it came from.
 ///
@@ -356,9 +356,23 @@ impl Program {
         self.bit_fields
     }
 
-    pub fn with_layout_items(mut self, items: Vec<u32>) -> Self { self.layout_items = items; self }
+    /// What its code is decoded for: its processor, with the bit fields when
+    /// it has them.
+    pub fn dialect(&self) -> Dialect {
+        Dialect {
+            processor: self.processor,
+            bit_fields: self.bit_fields,
+        }
+    }
+
+    pub fn with_layout_items(mut self, items: Vec<u32>) -> Self {
+        self.layout_items = items;
+        self
+    }
     /// Flat tuples: address, length, kind, section number, alignment.
-    pub fn layout_items(&self) -> &[u32] { &self.layout_items }
+    pub fn layout_items(&self) -> &[u32] {
+        &self.layout_items
+    }
 
     /// Every instruction, in address order.
     pub fn instructions(&self) -> &[AssembledInstruction] {

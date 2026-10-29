@@ -63,7 +63,7 @@
 //! cascade of "move takes two operands" under a real mistake teaches nothing.
 
 use super::ast::{self, Line, Operand, Operation, SizeSuffix};
-use super::diagnostics::{Diagnostic, DiagnosticKind, SuggestedFix};
+use super::diagnostics::{Diagnostic, DiagnosticKind, LaterFeature, SuggestedFix};
 use super::expr;
 use super::instructions::choice;
 use super::instructions::encoded::{BranchSize, Instruction, Size, EXTENSION_WORD_OFFSET};
@@ -327,23 +327,6 @@ impl<'a> Analyzer<'a> {
             self.suggest_a_label(line, operation);
             return None;
         }
-        if let Implementation::NotImplementedYet {
-            processor,
-            bit_field,
-        } = spec.implementation
-        {
-            self.raise(
-                DiagnosticKind::UnimplementedInDialect {
-                    name: name.clone(),
-                    processor,
-                    bit_field,
-                },
-                operation.name_span,
-            );
-            self.suggest_a_label(line, operation);
-            return None;
-        }
-
         let instruction = self.check(line, spec, operation, parser_reported_an_error);
         self.suggest_a_label(line, operation);
         instruction
@@ -374,25 +357,7 @@ impl<'a> Analyzer<'a> {
             operands
         };
 
-        // A shape a later processor gave the Mnemonic, in a Program written
-        // for that processor: it is still to come, and nothing else about the
-        // line is worth saying. On an earlier processor the line is judged as
-        // the 68000 judges it.
-        if let Some(shape) = table::later_shape(spec.mnemonic, operation.size, operands) {
-            if self.context.processor.has(shape.processor) {
-                self.raise(
-                    DiagnosticKind::UnimplementedInDialect {
-                        name: self.text_of(operation.span),
-                        processor: shape.processor,
-                        bit_field: false,
-                    },
-                    operation.span,
-                );
-                return None;
-            }
-        }
-
-        let form = match self.choose_form(spec, operands) {
+        let form = match self.choose_form(spec, operands, operation.size) {
             Some(form) => form,
             None => {
                 let arities = spec.arities();
@@ -411,7 +376,10 @@ impl<'a> Analyzer<'a> {
             }
         };
 
-        if !self.context.processor.has(form.processor) {
+        // the bit fields, which `opt bit` gives the processors before the
+        // 68020, with their own addressing modes
+        let bit_fields = form.is_bit_field() && self.context.bit_fields;
+        if !self.context.processor.has(form.processor) && !bit_fields {
             self.needs_a_later_processor(spec, form, operation, operands);
             return None;
         }
@@ -422,7 +390,7 @@ impl<'a> Analyzer<'a> {
         let extension_offset = spec
             .family()
             .map_or(EXTENSION_WORD_OFFSET as i64, |family| {
-                lowering::extension_word_offset(family, operands)
+                lowering::extension_word_offset(family, size, operands)
             });
         // An Operand that is not allowed where it stands is not asked about its
         // value as well: one mistake, one message.
@@ -435,7 +403,7 @@ impl<'a> Analyzer<'a> {
             }
             fits[index] = self.check_mode(spec, form, index, operand);
             if fits[index] {
-                self.check_operand_values(operand, extension_offset);
+                self.check_operand_values(operand, extension_offset, form.operands[index]);
             }
         }
         self.check_combination(spec, form, operands);
@@ -446,7 +414,9 @@ impl<'a> Analyzer<'a> {
             self.check_instruction_value(spec, operands);
             self.check_bit_number(spec, operands);
         }
-        self.check_link_displacement(spec, operands, &fits);
+        if form.sizes != table::SizeRule::LongOnly {
+            self.check_link_displacement(spec, operands, &fits);
+        }
         self.check_branch_distance(spec, operation, operands, &fits);
         self.check_immediate_sizes(spec, size, operands, &fits);
         self.suggest_immediates(form, operands, &fits);
@@ -607,10 +577,16 @@ impl<'a> Analyzer<'a> {
     /// agreement is exact. When nothing agrees — `move sr,ccr` — every Form of
     /// that arity is a candidate again and the fallback answers as it always
     /// did.
+    ///
+    /// **A written size decides between Forms the Operands both fit.** The
+    /// 68020 gave `chk`, `link`, `muls` and their kind a long Form beside the
+    /// 68000's, with the same Operands: `chk.l d0,d1` is the 68020's, and a
+    /// line with no size is the first Form's, the 68000's.
     fn choose_form(
         &self,
         spec: &'static InstructionSpec,
         operands: &[Operand],
+        written: Option<SizeSuffix>,
     ) -> Option<&'static Form> {
         let of_that_arity: Vec<&'static Form> = spec
             .forms
@@ -627,9 +603,12 @@ impl<'a> Analyzer<'a> {
         } else {
             &agreeing
         };
+        let sized = |form: &&&'static Form| written.is_none_or(|size| form.sizes.accepts(size));
         candidates
             .iter()
-            .find(|form| form.fits(operands))
+            .find(|form| form.fits(operands) && sized(form))
+            .or(candidates.iter().find(|form| form.fits(operands)))
+            .or(candidates.iter().find(sized))
             .or(candidates.first())
             .copied()
     }
@@ -647,9 +626,42 @@ impl<'a> Analyzer<'a> {
         let Some(mode) = Modes::of(operand) else {
             return true;
         };
+        // a bit field where none is taken, or none where one is, is a
+        // mistake of its own; then the Operand it is in is judged as any
+        let field = Modes::BIT_FIELD;
+        if allowed.contains(field) != mode.contains(field) {
+            let suggestion = match allowed.contains(field) {
+                true => format!(
+                    "`{}` takes the field after the operand, `{}{{0:8}}`, its offset and its \
+                     width each a number or a data register",
+                    spec.mnemonic,
+                    self.text_of(operand.span())
+                ),
+                false => "only the bit-field instructions take `{offset:width}`".to_string(),
+            };
+            self.raise(
+                DiagnosticKind::InvalidAddressingMode {
+                    mnemonic: spec.mnemonic.to_string(),
+                    position: index + 1,
+                    found: match mode.contains(field) {
+                        true => "a bit field".to_string(),
+                        false => operand.description().to_string(),
+                    },
+                    allowed: allowed.names(),
+                    suggestion: Some(suggestion),
+                },
+                operand.span(),
+            );
+            return false;
+        }
         if allowed.contains(mode) {
             return true;
         }
+        let (operand, mode) = match operand {
+            Operand::BitField { target, .. } => (&**target, mode.difference(field)),
+            _ => (operand, mode),
+        };
+        let allowed = allowed.difference(field);
         let suggestion = self.suggestion_for(spec, index, mode, allowed);
         self.raise(
             DiagnosticKind::InvalidAddressingMode {
@@ -902,9 +914,14 @@ impl<'a> Analyzer<'a> {
         // writes a long, and neither is a size an author picked. `moves` is
         // the one instruction whose byte reaches an address register: the low
         // byte of one is written, and a byte read is sign extended into one.
+        // `chk2` and `cmp2` compare an address register whole with the
+        // bounds of any size, sign extended.
         if size == Some(Size::Byte)
             && form.sizes == table::SizeRule::Any
-            && spec.family() != Some(Family::Moves)
+            && !matches!(
+                spec.family(),
+                Some(Family::Moves | Family::BoundsCheck { .. })
+            )
         {
             if let Some(operand) = operands
                 .iter()
@@ -1155,11 +1172,69 @@ impl<'a> Analyzer<'a> {
     /// forced to.
     ///
     /// `extension_offset` is how far past the instruction a PC-relative
-    /// Operand's extension word is ([`lowering::extension_word_offset`]).
-    fn check_operand_values(&mut self, operand: &Operand, extension_offset: i64) {
+    /// Operand's extension word is ([`lowering::extension_word_offset`]), and
+    /// `allowed` the modes the position takes.
+    ///
+    /// On the 68020 a displacement that is a back reference has no range: the
+    /// 68020's base displacement holds what the 68000's field does not, where
+    /// the position takes the mode it is encoded in, which is every one but
+    /// `movep`'s. A forward reference is held to the 68000's field, which is
+    /// what pass 1 measured it at, and told to write the width it needs. The
+    /// 68020's own forms, and a scaled index, are refused for an earlier
+    /// processor.
+    fn check_operand_values(&mut self, operand: &Operand, extension_offset: i64, allowed: Modes) {
+        let extended = self.context.processor.has(Processor::M68020);
+        let widens = |expression: &ast::Expr, mode: Modes| {
+            extended && allowed.contains(mode) && self.context.is_back_reference(expression)
+        };
+        let advice = |notation: &str| {
+            extended.then(|| {
+                format!(
+                    "a name defined further down keeps the 68000's field; write its width after \
+                     it, `{notation}`, for the 68020's base displacement"
+                )
+            })
+        };
+        if let Operand::BitField {
+            target,
+            offset,
+            width,
+            ..
+        } = operand
+        {
+            for (value, subject, min, max) in [
+                (offset, "the offset of a bit field", 0, 31),
+                (width, "the width of a bit field", 1, 32),
+            ] {
+                if let ast::FieldValue::Value { value } = value {
+                    self.check_range_with(
+                        value,
+                        subject,
+                        (min, max),
+                        Some(
+                            "a data register holds an offset of any size, from −2³¹ to 2³¹ − 1, \
+                             and a width modulo 32"
+                                .to_string(),
+                        ),
+                    );
+                }
+            }
+            return self.check_operand_values(target, extension_offset, allowed);
+        }
+        if self.needs_the_68020(operand) {
+            self.needs_the_68020s_modes(operand);
+            return;
+        }
         match operand {
             Operand::Displacement { displacement, .. } => {
-                self.check_range(displacement, "the displacement of `d(An)`", -32768, 32767);
+                if !widens(displacement, Modes::INDEX) {
+                    self.check_range_with(
+                        displacement,
+                        "the displacement of `d(An)`",
+                        (-32768, 32767),
+                        advice("(label.l,a0)"),
+                    );
+                }
             }
             Operand::Index {
                 displacement,
@@ -1167,12 +1242,21 @@ impl<'a> Analyzer<'a> {
                 ..
             } => {
                 if let Some(displacement) = displacement {
-                    self.check_range(displacement, "the displacement of `d(An,Xn)`", -128, 127);
+                    if !widens(displacement, Modes::INDEX) {
+                        self.check_range_with(
+                            displacement,
+                            "the displacement of `d(An,Xn)`",
+                            (-128, 127),
+                            advice("(label.w,a0,d0)"),
+                        );
+                    }
                 }
                 self.check_index_size(index);
             }
             Operand::PcDisplacement { displacement, .. } => {
-                self.check_pc_distance(displacement, extension_offset, "d(PC)", -32768, 32767);
+                if !widens(displacement, Modes::PC_INDEX) {
+                    self.check_pc_distance(displacement, extension_offset, "d(PC)", -32768, 32767);
+                }
             }
             Operand::PcIndex {
                 displacement,
@@ -1180,12 +1264,81 @@ impl<'a> Analyzer<'a> {
                 ..
             } => {
                 if let Some(displacement) = displacement {
-                    self.check_pc_distance(displacement, extension_offset, "d(PC,Xn)", -128, 127);
+                    if !widens(displacement, Modes::PC_INDEX) {
+                        self.check_pc_distance(
+                            displacement,
+                            extension_offset,
+                            "d(PC,Xn)",
+                            -128,
+                            127,
+                        );
+                    }
                 }
                 self.check_index_size(index);
             }
+            Operand::FullIndex {
+                base_displacement,
+                base,
+                index,
+                outer_displacement,
+                ..
+            } => {
+                if let Some(index) = index {
+                    self.check_index_size(index);
+                }
+                for (displacement, outer) in
+                    [(base_displacement, false), (outer_displacement, true)]
+                {
+                    let Some(displacement) = displacement else {
+                        continue;
+                    };
+                    match displacement.size {
+                        None | Some(SizeSuffix::Long) => {}
+                        Some(SizeSuffix::Word) => match (outer, base) {
+                            (false, ast::BaseRegister::ProgramCounter) => self.check_pc_distance(
+                                &displacement.value,
+                                extension_offset,
+                                "(bd.w,PC)",
+                                -32768,
+                                32767,
+                            ),
+                            _ => self.check_range(
+                                &displacement.value,
+                                "a displacement written `.w`",
+                                -32768,
+                                32767,
+                            ),
+                        },
+                        Some(size) => self.raise(
+                            DiagnosticKind::InvalidSize {
+                                mnemonic: "(bd,An,Xn)".to_string(),
+                                size: size.suffix().to_string(),
+                                allowed: vec!["`.w`".to_string(), "`.l`".to_string()],
+                            },
+                            displacement.value.span(),
+                        ),
+                    }
+                }
+            }
             Operand::Absolute { value, size, .. } => self.check_address_width(value, *size),
             _ => {}
+        }
+    }
+
+    /// Whether `operand` is in an addressing mode the 68020 added and the
+    /// Program's processor does not have: a 68020 indexed form, or an index
+    /// with a scale other than 1.
+    fn needs_the_68020(&self, operand: &Operand) -> bool {
+        if self.context.processor.has(Processor::M68020) {
+            return false;
+        }
+        match operand {
+            Operand::FullIndex { .. } => true,
+            Operand::Index { index, .. } | Operand::PcIndex { index, .. } => {
+                index.scale.is_some_and(|scale| scale != 1)
+            }
+            Operand::SpecialRegister { register, .. } => register.processor() == Processor::M68020,
+            _ => false,
         }
     }
 
@@ -1304,6 +1457,18 @@ impl<'a> Analyzer<'a> {
 
     /// One Expression against a range, when its value is already known.
     fn check_range(&mut self, expression: &ast::Expr, subject: &str, min: i64, max: i64) {
+        self.check_range_with(expression, subject, (min, max), None);
+    }
+
+    /// [`check_range`](Analyzer::check_range), with what to do about a value
+    /// out of it.
+    fn check_range_with(
+        &mut self,
+        expression: &ast::Expr,
+        subject: &str,
+        (min, max): (i64, i64),
+        advice: Option<String>,
+    ) {
         let Some(value) = self.context.evaluate(expression) else {
             return;
         };
@@ -1316,7 +1481,7 @@ impl<'a> Analyzer<'a> {
                 value,
                 min,
                 max,
-                advice: None,
+                advice,
             },
             expression.span(),
         );
@@ -1352,6 +1517,8 @@ impl<'a> Analyzer<'a> {
                 (Some(Family::Bit(_)), 1) => Size::Byte,
                 // the word `stop` loads the status register with
                 (Some(Family::Stop), 0) => Size::Word,
+                // the adjustment of `pack` and `unpk`
+                (Some(Family::Pack { .. }), 2) => Size::Word,
                 _ => match size {
                     Some(size) => size,
                     None => continue,
@@ -1458,7 +1625,7 @@ impl<'a> Analyzer<'a> {
             self.failed = true;
             return;
         }
-        let (program, needed) = (self.context.processor, form.processor);
+        let needed = form.processor;
         let uppercase = operation.name.chars().any(|c| c.is_ascii_uppercase())
             && !operation.name.chars().any(|c| c.is_ascii_lowercase());
         let cased = |text: &str| match uppercase {
@@ -1488,7 +1655,7 @@ impl<'a> Analyzer<'a> {
                     "extb.l".to_string(),
                     Some((
                         format!(
-                            "`ext.w {register}` and then `ext.l {register}`, which do the same"
+                            "write `ext.w {register}` and then `ext.l {register}`, which do the same"
                         ),
                         fix,
                     )),
@@ -1517,11 +1684,78 @@ impl<'a> Analyzer<'a> {
                 };
                 (
                     "move ccr,<ea>".to_string(),
-                    Some((format!("`{rewritten}`, whose low byte is the CCR"), fix)),
+                    Some((
+                        format!("write `{rewritten}`, whose low byte is the CCR"),
+                        fix,
+                    )),
                 )
+            }
+            // EASy68K's `opt bit` gives the earlier processors the bit fields
+            (Some(Family::BitField(_)), _) => {
+                let program = self.context.processor;
+                let fix = self.context.processor_line.map(|line| match line {
+                    ProcessorLine::Chosen(location) => SuggestedFix {
+                        title: format!("Write `opt p={},bit`", program.name()),
+                        location: location.clone(),
+                        text: format!("{},bit", program.name()),
+                    },
+                    ProcessorLine::Missing { above, indentation } => SuggestedFix {
+                        title: "Add `opt bit` at the top of the program".to_string(),
+                        location: Location::new(above.file.clone(), above.line, 0, 0),
+                        text: format!("{indentation}opt bit\n"),
+                    },
+                });
+                (
+                    spec.mnemonic.to_string(),
+                    fix.map(|fix| {
+                        (
+                            "write `opt bit` at the top, EASy68K's option for the bit fields"
+                                .to_string(),
+                            fix,
+                        )
+                    }),
+                )
+            }
+            // a shape the 68020 gave a 68000 Mnemonic, `chk.l` or `tst a0`, is
+            // named as it was written, as the Mnemonic alone is the 68000's
+            _ if spec
+                .forms
+                .iter()
+                .any(|form| form.processor == Processor::M68000) =>
+            {
+                (self.text_of(operation.span), None)
             }
             _ => (spec.mnemonic.to_string(), None),
         };
+        let (equivalent, equivalent_fix) = match equivalent {
+            Some((text, fix)) => (Some(text), Some(fix)),
+            None => (None, None),
+        };
+        self.raise_needs_a_later_processor(
+            name,
+            needed,
+            equivalent,
+            equivalent_fix,
+            LaterFeature::Instruction,
+            operation.span,
+        );
+    }
+
+    /// `needs_a_later_processor` about `name`, an instruction of `needed`'s,
+    /// an Operand in one of its addressing modes or one of its control
+    /// registers (`what`), written at `span`: with the `opt p=` line that
+    /// writes the program for `needed` as its first fix, and `equivalent_fix`
+    /// after it.
+    fn raise_needs_a_later_processor(
+        &mut self,
+        name: String,
+        needed: Processor,
+        equivalent: Option<String>,
+        equivalent_fix: Option<SuggestedFix>,
+        what: LaterFeature,
+        span: Span,
+    ) {
+        let program = self.context.processor;
         let dialect_fix = self.context.processor_line.map(|line| match line {
             ProcessorLine::Chosen(location) => SuggestedFix {
                 title: format!(
@@ -1539,10 +1773,6 @@ impl<'a> Analyzer<'a> {
             },
         });
         let chosen = matches!(self.context.processor_line, Some(ProcessorLine::Chosen(_)));
-        let (equivalent, equivalent_fix) = match equivalent {
-            Some((text, fix)) => (Some(text), Some(fix)),
-            None => (None, None),
-        };
         let mut diagnostic = Diagnostic::new(
             DiagnosticKind::NeedsALaterProcessor {
                 name,
@@ -1550,14 +1780,80 @@ impl<'a> Analyzer<'a> {
                 program,
                 equivalent,
                 chosen,
+                what,
             },
-            self.location(operation.span),
+            self.location(span),
         );
         for fix in dialect_fix.into_iter().chain(equivalent_fix) {
             diagnostic = diagnostic.with_fix(fix);
         }
         self.failed = true;
         self.diagnostics.push(diagnostic);
+    }
+
+    /// An Operand in one of the 68020's addressing modes, or one of its
+    /// control registers, in a Program for an earlier processor:
+    /// `needs_a_later_processor` about it. `(d0)` is the one that is most
+    /// likely a 68000 indirect Operand written with the wrong register, and
+    /// the 68000's way of writing it is said too, for the register written:
+    /// copy it into an address register first, as `movea` does, which no fix
+    /// writes, as only the student knows which address register is free.
+    fn needs_the_68020s_modes(&mut self, operand: &Operand) {
+        if self.context.planning {
+            self.failed = true;
+            return;
+        }
+        let text = self.text_of(operand.span());
+        if let Operand::SpecialRegister { register, .. } = operand {
+            self.raise_needs_a_later_processor(
+                register.name().to_string(),
+                Processor::M68020,
+                None,
+                None,
+                LaterFeature::ControlRegister,
+                operand.span(),
+            );
+            return;
+        }
+        let equivalent = match operand {
+            Operand::FullIndex {
+                base_displacement: None,
+                base: ast::BaseRegister::Omitted,
+                index:
+                    Some(ast::IndexRegister {
+                        register,
+                        size,
+                        scale: None | Some(1),
+                        suppressed: false,
+                        ..
+                    }),
+                indirection: ast::Indirection::None,
+                outer_displacement: None,
+                ..
+            } if register.kind == ast::RegisterKind::Data => {
+                let data = format!("d{}", register.number);
+                //the address register of the same number, but for a7, the stack pointer
+                let address = format!("a{}", register.number.min(6));
+                //an index is a word unless it says `.l`, and `movea.w` extends one as the index is
+                let movea = match size {
+                    Some(ast::SizeSuffix::Long) => "movea.l",
+                    _ => "movea.w",
+                };
+                Some(format!(
+                    "copy `{data}` into an address register, `{movea} {data},{address}`, and \
+                     write `({address})`, as a 68000 has no data register indirect mode"
+                ))
+            }
+            _ => None,
+        };
+        self.raise_needs_a_later_processor(
+            text,
+            Processor::M68020,
+            equivalent,
+            None,
+            LaterFeature::AddressingMode,
+            operand.span(),
+        );
     }
 
     fn raise(&mut self, kind: DiagnosticKind, span: Span) {
@@ -2033,7 +2329,6 @@ mod tests {
             "    clr.l data(pc)",
             "    asl.w data(pc)",
             "    movem.l d0-d2,data(pc)",
-            "    tst.b data(pc)",
         ] {
             assert_eq!(
                 analyze_with(line, symbols([("data", 0x1010)])).0,
@@ -2041,6 +2336,11 @@ mod tests {
                 "{line}"
             );
         }
+        // `tst` reads one on the 68020, which a 68000 Program is told.
+        assert_eq!(
+            analyze_with("    tst.b data(pc)", symbols([("data", 0x1010)])).0,
+            ["needs_a_later_processor"]
+        );
         // A position that takes no place in memory is told what it takes and
         // not lectured about the program counter.
         assert_eq!(
@@ -2456,41 +2756,20 @@ mod tests {
         assert!(found[0].hint().unwrap().contains("add `opt p=68020`"));
     }
 
-    /// The other instructions of the 68020, and the shapes it gives 68000
-    /// Mnemonics, are still to come, and say so. The 68010's are all in.
+    /// An instruction of a later processor, or a shape it gave a 68000
+    /// Mnemonic, needs that processor, and assembles under it.
     #[test]
-    fn an_instruction_still_to_come_says_so() {
-        for (text, processor) in [
-            ("    cas.l d0,d1,(a0)", Processor::M68000),
-            ("    cas.l d0,d1,(a0)", Processor::M68020),
-            ("    bfextu d0{4:8},d1", Processor::M68000),
-            ("    muls.l d0,d1", Processor::M68020),
-            ("    link.l a6,#-8", Processor::M68020),
-            ("    tst.l a0", Processor::M68020),
-        ] {
-            assert_eq!(
-                analyze_for(text, processor, None).0,
-                ["unimplemented_in_dialect"],
-                "{text}, {processor:?}"
-            );
-        }
-        // On an earlier processor a later shape is judged as the 68000
-        // judges it.
-        assert_eq!(
-            analyze_for("    muls.l d0,d1", Processor::M68000, None).0,
-            ["invalid_size"]
-        );
-        assert_eq!(
-            analyze_for("    muls.l d0,d1", Processor::M68010, None).0,
-            ["invalid_size"]
-        );
-        assert_eq!(
-            analyze_for("    tst.l a0", Processor::M68000, None).0,
-            ["invalid_addressing_mode"]
-        );
+    fn a_later_instruction_needs_its_processor() {
         for (text, processor) in [
             ("    rtd #4", Processor::M68000),
             ("    movec vbr,d0", Processor::M68000),
+            ("    tst.l a0", Processor::M68000),
+            ("    link.l a6,#-8", Processor::M68010),
+            ("    muls.l d0,d1", Processor::M68000),
+            ("    divsl.l d0,d1:d2", Processor::M68010),
+            ("    cas.l d0,d1,(a0)", Processor::M68000),
+            ("    pack d0,d1,#0", Processor::M68010),
+            ("    bfextu d0{4:8},d1", Processor::M68000),
         ] {
             assert_eq!(
                 analyze_for(text, processor, None).0,
@@ -2501,22 +2780,20 @@ mod tests {
         for (text, processor) in [
             ("    rtd #4", Processor::M68010),
             ("    movec vbr,d0", Processor::M68020),
+            ("    tst.l a0", Processor::M68020),
+            ("    link.l a6,#-8", Processor::M68020),
+            ("    muls.l d0,d1", Processor::M68020),
+            ("    bfextu d0{4:8},d1", Processor::M68020),
         ] {
             assert!(
                 analyze_for(text, processor, None).0.is_empty(),
                 "{text}, {processor:?}"
             );
         }
-        let (_, _, found) = analyze_for("    muls.l d0,d1", Processor::M68020, None);
-        assert_eq!(
-            found[0].message(),
-            "`muls.l d0,d1` is a 68020 instruction, and is not implemented yet in s68k's 68020 \
-             dialect."
-        );
         let (_, _, found) = analyze_for("    bftst (a0){0:8}", Processor::M68000, None);
         assert_eq!(
             found[0].message(),
-            "`bftst` is a 68020 bit-field instruction, and bit fields are not implemented yet."
+            "`bftst` is a 68020 instruction, and this program is written for the 68000."
         );
     }
 
@@ -2741,12 +3018,12 @@ mod tests {
     #[test]
     fn a_line_the_parser_has_already_failed_on_gets_no_second_message() {
         assert_eq!(
-            codes("    move.l (d0),d1"),
+            codes("    move.l 4(d0),d1"),
             Vec::<String>::new(),
             "the parser has said what is wrong; a count of the survivors would not help"
         );
         assert_eq!(
-            codes("    movea.b (d0),d1"),
+            codes("    movea.b 4(d0),d1"),
             ["invalid_size"],
             "the size is still the analyzer's to judge"
         );

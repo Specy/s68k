@@ -310,6 +310,13 @@ fn print_operand(operand: &Operand) -> String {
             register(&index.register),
             size_suffix(index.size)
         ),
+        // The 68020's own modes, which no program of the corpus has: as the
+        // disassembler prints them.
+        Operand::Extended { .. } => {
+            crate::machine::disassemble::disassemble(&Instruction::PEA(*operand), None)
+                .trim_start_matches("PEA ")
+                .to_lowercase()
+        }
     }
 }
 
@@ -742,6 +749,22 @@ fn print_instruction(instruction: &Instruction) -> String {
                 register(general)
             ),
         },
+        // The 68020's, which no corpus program writes: as the disassembler
+        // prints them.
+        Instruction::CHKL(..)
+        | Instruction::LINKL(..)
+        | Instruction::TRAPcc(..)
+        | Instruction::MULL { .. }
+        | Instruction::DIVL { .. }
+        | Instruction::PACK(..)
+        | Instruction::UNPK(..)
+        | Instruction::CHK2(..)
+        | Instruction::CMP2(..)
+        | Instruction::CAS { .. }
+        | Instruction::CAS2 { .. }
+        | Instruction::BF { .. } => {
+            crate::machine::disassemble::disassemble(instruction, None).to_lowercase()
+        }
     }
 }
 
@@ -860,7 +883,7 @@ fn run(name: &str, source: &str, limit: usize) -> RunFixture {
             flags[4], flags[3], flags[2], flags[1], flags[0]
         ),
         output,
-        memory: format!("{:016x}", fnv1a_64(memory)),
+        memory: format!("{:016x}", fnv1a_64(&memory)),
     }
 }
 

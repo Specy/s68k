@@ -441,7 +441,18 @@ assert.equal(moveFromSr.privilegedFrom, '68010')
 // Each form names the first processor that has it.
 assert.equal(moveRow.forms.find((form) => form.operands[0][0] === 'ccr').processor, '68010')
 assert.equal(table.find(({mnemonic}) => mnemonic === 'extb').forms[0].processor, '68020')
-assert.equal(table.find(({mnemonic}) => mnemonic === 'cas'), undefined, 'one still to come is not listed')
+assert.equal(table.find(({mnemonic}) => mnemonic === 'cas').forms[0].processor, '68020')
+assert.deepEqual(
+    table.find(({mnemonic}) => mnemonic === 'cas2').forms[0].operands,
+    [['Dx:Dy'], ['Dx:Dy'], ['(Rx):(Ry)']],
+    'a pair is a mode of its own'
+)
+assert.deepEqual(
+    table.find(({mnemonic}) => mnemonic === 'bftst').forms[0].operands[0].at(-1),
+    '{offset:width}',
+    'a bit field is a mode of its position'
+)
+assert.equal(table.find(({mnemonic}) => mnemonic === 'callm'), undefined, 'the module call is left out')
 for (const mnemonic of ['rtd', 'bkpt', 'movec', 'moves']) {
     assert.equal(table.find((row) => row.mnemonic === mnemonic).forms[0].processor, '68010', `\`${mnemonic}\` is the 68010's`)
 }
@@ -458,10 +469,13 @@ assert.deepEqual(JSON.parse(JSON.stringify(table)), table, 'the table is plain d
 
 assert.equal(assembly.program.getProcessor(), '68000', 'the default processor')
 assert.equal(assembly.program.getInfo().bitFields, false)
+assert.equal(assembly.program.getInfo().cyclesExact, true, "the 68000's cycles are exact")
+assert.equal(assembly.program.hasExactCycles(), true)
 const for68020 = S68k.assemble('    OPT P=68020\n    EXTB.L D0\n    BRA.L done\ndone: rts\n')
 assert.deepEqual(for68020.diagnostics, [])
 assert.equal(for68020.program.getProcessor(), '68020')
 assert.equal(for68020.program.hasBitFields(), true, '`opt p=68020` implies bit fields')
+assert.equal(for68020.program.hasExactCycles(), false, "the 68020's cycles are an estimate")
 assert.deepEqual(for68020.program.getInstructionAddresses(), [0x1000, 0x1002, 0x1008], 'a long branch is six bytes')
 for68020.program.dispose()
 
@@ -1127,6 +1141,26 @@ assert.equal(counter.getCycles(), 52n, 'undo puts back what task 30 cleared')
 counter.dispose()
 counting.program.dispose()
 
+// The 68020 counts the cache case of its manual's tables, an estimate
+const estimating = S68k.assemble(`
+    OPT     P=68020
+    ORG     $1000
+START:
+    moveq   #1,d1           ; 2
+    lsl.l   #8,d1           ; 4, whatever the count
+    mulu.w  d1,d1           ; 27, whatever the source
+    SIMHALT
+    END     START
+`)
+assert.equal(estimating.program.getInfo().cyclesExact, false)
+const estimate = new Interpreter(estimating.program)
+estimate.step()
+estimate.step()
+estimate.step()
+assert.equal(estimate.getCycles(), 33n, "the 68020's cache case")
+estimate.dispose()
+estimating.program.dispose()
+
 // ---------------------------------------------------------------------------
 // Errors are typed, a failing task ends the program, and nothing panics
 // ---------------------------------------------------------------------------
@@ -1400,7 +1434,52 @@ m68010.undo()
 assert.equal(m68010.getSystem().vbr, 0x8000, 'one undo takes the poke back')
 m68010.dispose()
 for68010.program.dispose()
+// The 68020: ISP, MSP, CACR and CAAR in the System file, `movec` of them, M
+// making A7 the MSP, and a long read at an odd address
+const for68020System = S68k.assemble(`    opt p=68020
+    org $1000
+start:
+    move.l #$9000,d0
+    movec d0,msp
+    moveq #-1,d0
+    movec d0,cacr
+    movec cacr,d2
+    ori #$1000,sr
+    move.l a7,d3
+    move.l odd+1,d4
+    simhalt
+odd:
+    dc.b 0,1,2,3,4,5`)
+assert.deepEqual(for68020System.diagnostics, [])
+const m68020 = new Interpreter(for68020System.program, {keep_history: true, history_size: 100})
+assert.deepEqual(m68020.getSystem(), {
+    sr: 0x2000, usp: 0x00ff0000, ssp: 0x01000000, vbr: 0, sfc: 0, dfc: 0,
+    isp: 0x01000000, msp: 0, cacr: 0, caar: 0
+})
+assert.equal(m68020.run(), InterpreterStatus.Paused)
+assert.equal(m68020.getRegisterValue({type: 'Data', value: 2}), 3, 'CACR keeps E and F')
+assert.equal(m68020.getRegisterValue({type: 'Data', value: 3}), 0x9000, 'M makes A7 the MSP')
+assert.equal(m68020.getRegisterValue({type: 'Data', value: 4}), 0x01020304, 'a 68020 reads a long at an odd address')
+assert.deepEqual(m68020.getSystem(), {
+    sr: 0x3000, usp: 0x00ff0000, ssp: 0x01000000, vbr: 0, sfc: 0, dfc: 0,
+    isp: 0x01000000, msp: 0x9000, cacr: 3, caar: 0
+})
+const swap = m68020.getUndoHistory(20).flatMap((step) => step.mutations)
+    .find((mutation) => mutation.type === 'WriteStackPointers' && mutation.value.old.msp !== mutation.value.new.msp)
+assert.deepEqual(swap.value.old, {usp: 0x00ff0000, ssp: 0x01000000, msp: 0}, 'movec msp journals the three')
+m68020.beginPoke()
+m68020.setMsp(0xa000)
+m68020.setIsp(0x00f00000)
+m68020.setCaar(0x1234)
+assert.equal(m68020.endPoke(), true)
+assert.equal(m68020.getRegisterValue({type: 'Address', value: 7}), 0xa000, 'A7 is the MSP')
+assert.deepEqual([m68020.getSystem().ssp, m68020.getSystem().isp, m68020.getSystem().caar], [0x00f00000, 0x00f00000, 0x1234])
+m68020.undo()
+assert.deepEqual([m68020.getSystem().msp, m68020.getSystem().isp], [0x9000, 0x01000000], 'one undo takes the poke back')
+m68020.dispose()
+for68020System.program.dispose()
 assert.throws(() => handled.setVbr(0x8000), (error) => error.type === 'InvalidArgument', 'a 68000 has no VBR')
+assert.throws(() => handled.setMsp(0x8000), (error) => error.type === 'InvalidArgument', 'a 68000 has no MSP')
 handled.dispose()
 withHandler.program.dispose()
 

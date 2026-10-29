@@ -35,6 +35,20 @@
 //!   `D0-D2/A0/A6`.
 //! * A shift in memory prints no count, `ASL.W (A0)`, which is how it is
 //!   written.
+//! * The 68020's indexed modes print in its Motorola syntax: the brief word's
+//!   scale after the index, `4(A0,D1.W*4)`, and the full word's parts in
+//!   parentheses, with brackets for memory indirection, every displacement
+//!   with its width and a null one left out, `(1000.W,A0,D1.L)`,
+//!   `([8.W,A0],D1.W*2,4.W)`; a suppressed base is `ZA0` to `ZA7` or `ZPC`,
+//!   and a suppressed index `ZD0` where there is no indirection. What prints
+//!   reassembles under `opt p=68020` to the same words; an extension word no
+//!   assembler writes, a reserved combination or the full word of an index
+//!   with no displacement, prints as `DC.W`.
+//! * The 68020's instructions print as `opt p=68020` writes them: a register
+//!   pair `MULS.L D0,D1:D2`, `CAS2.L D0:D1,D2:D3,(A0):(D4)`, `DIVSL.L` for a
+//!   32-bit division with a remainder and `DIVS.L D0,D1` for one without, a
+//!   bit field after its Operand, `BFEXTU (A0){D1:32},D2`, a width of 32
+//!   written 32, and `TRAPEQ.W #$1`.
 //! * A line A word, a line F word and a word that is no instruction print as
 //!   `DC.W $A000`; EASy68K's halt as `SIMHALT`.
 //! * A `MOVEM` of no register runs, and no line writes it, as a register list
@@ -42,11 +56,15 @@
 //!   `DC.W $4890,$0000`, which [`disassemble_words`] reads from memory.
 
 use crate::instructions::{
-    AddressWidth, BranchSize, Condition, Instruction, Operand, RegisterOperand, ShiftDirection,
-    Sign, Size, TargetDirection,
+    AddressWidth, BranchSize, Condition, DisplacementSize, ExtensionWord, IndexBase, IndexRegister,
+    Indirection, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
+    TargetDirection, TrapOperand,
 };
+use crate::instructions::{BitFieldOperation, FieldValue};
 
 use super::decode::{decode, Truncated};
+use super::Dialect;
+#[cfg(test)]
 use super::Processor;
 
 /// Names for addresses: what a disassembly prints in place of a number when it
@@ -120,9 +138,10 @@ pub struct Line {
 pub fn disassemble_bytes(
     bytes: &[u8],
     address: u32,
-    processor: Processor,
+    processor: impl Into<Dialect>,
     symbols: Option<&dyn Symbols>,
 ) -> Vec<Line> {
+    let processor = processor.into();
     let printer = Printer { symbols };
     let word_at = |offset: usize| -> Option<u16> {
         Some(u16::from_be_bytes([
@@ -215,6 +234,106 @@ impl Printer<'_> {
                 name(&index.register),
                 suffix(index.size)
             ),
+            Operand::Extended {
+                base,
+                word,
+                displacement,
+                outer,
+            } => self.extended(*base, *word, *displacement, *outer),
+        }
+    }
+
+    /// An [`Operand::Extended`], in the Motorola syntax of the 68020: the
+    /// brief format as the 68000's index with a scale, `4(A0,D1.W*4)`, and the
+    /// full one with every displacement's width written, `.W` or `.L`, a null
+    /// one left out, so that it reassembles to the same words:
+    /// `(1000.W,A0,D1.L)`, `([8.W,A0],D1.W*2,4.W)`, `([table.L,PC,D0.L])`. A
+    /// suppressed base is `ZPC`, or `ZA0` to `ZA7`, `ZA0` left out where
+    /// something else is written beside it; a suppressed index is `ZD0` where
+    /// there is no indirection, which tells `(4.W,A0,ZD0)` from the 68000's
+    /// `4(A0)`, and left out inside brackets.
+    fn extended(
+        &self,
+        base: IndexBase,
+        word: ExtensionWord,
+        displacement: i32,
+        outer: i32,
+    ) -> String {
+        let index = || {
+            let IndexRegister { register, size } = word.index_register();
+            let scale = match word.scale() {
+                1 => String::new(),
+                scale => format!("*{scale}"),
+            };
+            format!("{}.{}{scale}", name(&register), suffix(size))
+        };
+        let pc_relative = base.is_pc() && !word.base_suppressed();
+        if !word.is_full() {
+            let at = match pc_relative {
+                true => self.address(displacement as u32),
+                false => displacement.to_string(),
+            };
+            let base = match base.address_register() {
+                Some(number) => format!("A{number}"),
+                None => "PC".to_string(),
+            };
+            return format!("{at}({base},{})", index());
+        }
+        let sized = |value: i32, size: DisplacementSize, address: bool| {
+            let value = match address {
+                true => self.address(value as u32),
+                false => value.to_string(),
+            };
+            match size {
+                DisplacementSize::Null => None,
+                DisplacementSize::Word => Some(format!("{value}.W")),
+                DisplacementSize::Long => Some(format!("{value}.L")),
+            }
+        };
+        let base_displacement = match (pc_relative, word.base_displacement_size()) {
+            //from the program counter a null displacement reaches the extension word, which is
+            //the address written when there is no other way to write it
+            (true, DisplacementSize::Null) => None,
+            (_, size) => sized(displacement, size, pc_relative),
+        };
+        let base_name = match (base.address_register(), word.base_suppressed()) {
+            (Some(number), false) => Some(format!("A{number}")),
+            (None, false) => Some("PC".to_string()),
+            (Some(0), true) => None,
+            (Some(number), true) => Some(format!("ZA{number}")),
+            (None, true) => Some("ZPC".to_string()),
+        };
+        let index = match word.index() {
+            Some(_) => Some(index()),
+            None => None,
+        };
+        //a base suppressed in A0's place is written only when nothing else would be
+        let group = |parts: Vec<Option<String>>| -> String {
+            let parts: Vec<String> = parts.into_iter().flatten().collect();
+            match parts.is_empty() {
+                true => "ZA0".to_string(),
+                false => parts.join(","),
+            }
+        };
+        let outer = sized(outer, word.outer_displacement_size(), false);
+        match word.indirection() {
+            Indirection::None => {
+                let index = index.or_else(|| Some("ZD0".to_string()));
+                format!("({})", group(vec![base_displacement, base_name, index]))
+            }
+            Indirection::Preindexed => {
+                let inner = group(vec![base_displacement, base_name, index]);
+                let after = outer.map(|outer| format!(",{outer}")).unwrap_or_default();
+                format!("([{inner}]{after})")
+            }
+            Indirection::Postindexed => {
+                let inner = group(vec![base_displacement, base_name]);
+                let after: Vec<String> = [index, outer].into_iter().flatten().collect();
+                match after.is_empty() {
+                    true => format!("([{inner}])"),
+                    false => format!("([{inner}],{})", after.join(",")),
+                }
+            }
         }
     }
 
@@ -527,6 +646,125 @@ impl Printer<'_> {
             I::ILLEGAL => "ILLEGAL".to_string(),
             I::SIMHALT => "SIMHALT".to_string(),
             I::LINEA(word) | I::LINEF(word) | I::IllegalWord(word) => format!("DC.W ${word:04X}"),
+            I::CHKL(bound, register) => self.into_register("CHK", Size::Long, bound, register),
+            I::BF {
+                operation,
+                target,
+                field,
+                register,
+            } => {
+                let value = |value: &FieldValue, width: bool| match value {
+                    FieldValue::Register(number) => format!("D{number}"),
+                    FieldValue::Immediate(0) if width => "32".to_string(),
+                    FieldValue::Immediate(number) => number.to_string(),
+                };
+                let field = format!(
+                    "{}{{{}:{}}}",
+                    self.operand(target, Size::Byte),
+                    value(&field.offset, false),
+                    value(&field.width, true)
+                );
+                let mnemonic = operation.mnemonic().to_uppercase();
+                match operation {
+                    BitFieldOperation::Insert => format!("{mnemonic} D{register},{field}"),
+                    _ if operation.has_register() => format!("{mnemonic} {field},D{register}"),
+                    _ => format!("{mnemonic} {field}"),
+                }
+            }
+            I::PACK(source, destination, adjustment) | I::UNPK(source, destination, adjustment) => {
+                let mnemonic = match instruction {
+                    I::PACK(..) => "PACK",
+                    _ => "UNPK",
+                };
+                format!(
+                    "{mnemonic} {},{},{}",
+                    self.operand(source, Size::Byte),
+                    self.operand(destination, Size::Byte),
+                    self.operand(&Operand::Immediate(*adjustment as u32), Size::Word)
+                )
+            }
+            I::CHK2(bounds, register, size) => self.into_register("CHK2", *size, bounds, register),
+            I::CMP2(bounds, register, size) => self.into_register("CMP2", *size, bounds, register),
+            I::CAS {
+                compare,
+                update,
+                target,
+                size,
+            } => format!(
+                "CAS.{} D{compare},D{update},{}",
+                suffix(*size),
+                self.operand(target, *size)
+            ),
+            I::CAS2 {
+                compare,
+                update,
+                pointers,
+                size,
+            } => format!(
+                "CAS2.{} D{}:D{},D{}:D{},({}):({})",
+                suffix(*size),
+                compare.0,
+                compare.1,
+                update.0,
+                update.1,
+                name(&pointers.0),
+                name(&pointers.1)
+            ),
+            I::MULL {
+                source,
+                low,
+                high,
+                sign,
+            } => {
+                let mnemonic = match sign {
+                    Sign::Signed => "MULS.L",
+                    Sign::Unsigned => "MULU.L",
+                };
+                let destination = match high {
+                    Some(high) => format!("D{high}:D{low}"),
+                    None => format!("D{low}"),
+                };
+                format!(
+                    "{mnemonic} {},{destination}",
+                    self.operand(source, Size::Long)
+                )
+            }
+            I::DIVL {
+                source,
+                quotient,
+                remainder,
+                wide,
+                sign,
+            } => {
+                let stem = match sign {
+                    Sign::Signed => "DIVS",
+                    Sign::Unsigned => "DIVU",
+                };
+                let (mnemonic, destination) = match (wide, remainder == quotient) {
+                    (true, _) => (format!("{stem}.L"), format!("D{remainder}:D{quotient}")),
+                    (false, true) => (format!("{stem}.L"), format!("D{quotient}")),
+                    (false, false) => (format!("{stem}L.L"), format!("D{remainder}:D{quotient}")),
+                };
+                format!(
+                    "{mnemonic} {},{destination}",
+                    self.operand(source, Size::Long)
+                )
+            }
+            I::LINKL(register, displacement) => {
+                format!("LINK.L {},#{}", name(register), *displacement as i32)
+            }
+            I::TRAPcc(condition, operand) => {
+                let mnemonic = format!("TRAP{}", code(condition));
+                match operand {
+                    TrapOperand::None => mnemonic,
+                    TrapOperand::Word(value) => {
+                        self.one(&mnemonic, Size::Word, &Operand::Immediate(*value as u32))
+                    }
+                    TrapOperand::Long(value) => {
+                        self.one(&mnemonic, Size::Long, &Operand::Immediate(*value))
+                    }
+                }
+            }
         }
     }
 }
@@ -541,8 +779,85 @@ fn is_written(instruction: &Instruction) -> bool {
         Instruction::MOVEM {
             registers_mask: 0, ..
         } => false,
-        Instruction::MOVEC { control, .. } => control.is_the_68010s(),
+        Instruction::MOVEC { control, .. } => control.name().is_some(),
+        _ => operands(instruction).iter().all(is_written_operand),
+    }
+}
+
+/// Whether a line can write `operand`: all but an [`Operand::Extended`] whose
+/// extension word no assembler writes ([`ExtensionWord::is_canonical`]), and
+/// the full format's index with no displacement, which an assembler writes in
+/// the brief format, as its displacement of 0 fits a byte.
+fn is_written_operand(operand: &Operand) -> bool {
+    match operand {
+        Operand::Extended { word, .. } => {
+            word.is_canonical()
+                && !(word.is_full()
+                    && !word.base_suppressed()
+                    && !word.index_suppressed()
+                    && word.indirection() == Indirection::None
+                    && word.base_displacement_size() == DisplacementSize::Null)
+        }
         _ => true,
+    }
+}
+
+/// The Operands of `instruction` that can be [`Operand::Extended`]: those of
+/// an effective address.
+fn operands(instruction: &Instruction) -> Vec<Operand> {
+    use Instruction::*;
+    match *instruction {
+        ADDA(a, ..)
+        | SUBA(a, ..)
+        | CMPA(a, ..)
+        | MOVEA(a, ..)
+        | ADDQ(_, a, _)
+        | SUBQ(_, a, _)
+        | ADDI(_, a, _)
+        | SUBI(_, a, _)
+        | ANDI(_, a, _)
+        | ORI(_, a, _)
+        | EORI(_, a, _)
+        | CMPI(_, a, _)
+        | DIVx(a, ..)
+        | MULx(a, ..)
+        | CLR(a, _)
+        | LEA(a, _)
+        | PEA(a)
+        | NEG(a, _)
+        | NEGX(a, _)
+        | NBCD(a)
+        | TST(a, _)
+        | CMP(a, ..)
+        | Scc(a, _)
+        | NOT(a, _)
+        | JSR(a)
+        | JMP(a)
+        | MOVEtoCCR(a)
+        | MOVEfromCCR(a)
+        | MOVEtoSR(a)
+        | MOVEfromSR(a)
+        | TAS(a)
+        | CHK(a, _)
+        | CHKL(a, _) => vec![a],
+        MULL { source, .. } | DIVL { source, .. } => vec![source],
+        CHK2(a, ..) | CMP2(a, ..) | CAS { target: a, .. } | BF { target: a, .. } => vec![a],
+        MOVEM { target, .. } | MOVES { target, .. } | MOVEP { target, .. } => vec![target],
+        MOVE(a, b, _)
+        | ADD(a, b, _)
+        | SUB(a, b, _)
+        | OR(a, b, _)
+        | AND(a, b, _)
+        | EOR(a, b, _)
+        | ASd(a, b, ..)
+        | ROd(a, b, ..)
+        | LSd(a, b, ..)
+        | ROXd(a, b, ..)
+        | BTST(a, b)
+        | BCLR(a, b)
+        | BSET(a, b)
+        | BCHG(a, b) => vec![a, b],
+        _ => vec![],
     }
 }
 

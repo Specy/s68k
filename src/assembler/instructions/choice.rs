@@ -17,6 +17,13 @@
 //! size pass 2 encodes it at; EASy68K assembles in two passes and so does
 //! s68k.
 //!
+//! On the 68020 the same rule extends to the widths the 68000 has no
+//! encoding for: an unsized branch back too far for a word is long, and a
+//! displacement back reference that does not fit the 68000's field is the
+//! 68020's base displacement ([`displacement_size`]). A line the 68000
+//! encodes keeps the 68000's encoding, so `opt p=68020` changes no line that
+//! assembled without it.
+//!
 //! A number, a character literal and `*` are back references: only a Symbol
 //! can be defined below the line. A Label on the line itself is one too,
 //! because EASy68K defines it before it reads the Operands, so `loop bra loop`
@@ -25,7 +32,7 @@
 use crate::assembler::ast::SizeSuffix;
 use crate::machine::Processor;
 
-use super::encoded::{AddressWidth, BranchSize};
+use super::encoded::{AddressWidth, BranchSize, DisplacementSize};
 
 /// The displacement a branch at `address` encodes to reach `target`: the
 /// distance from the word after the operation word, which is where the 68000's
@@ -43,9 +50,13 @@ pub fn branch_displacement(address: u32, target: u32) -> i64 {
 ///   Whether a forced short displacement fits is the caller's question; it is
 ///   still short.
 /// * Unsized, a branch is short when its target is a back reference and a
-///   short branch can encode the displacement ([`fits_a_short_branch`]).
+///   short branch can encode the displacement ([`fits_a_short_branch`]). On
+///   the 68020 it is long when its target is a back reference that a word
+///   does not reach, which the 68000 has no encoding for, as vasm makes one.
 ///   Otherwise it is a word, so a branch forward is always a word, on every
-///   processor.
+///   processor, and one that runs out of range is an error whose hint is
+///   `.l`: without relaxation, a branch forward that may be long would be
+///   long every time.
 pub fn branch_size(
     written: Option<SizeSuffix>,
     back_reference: bool,
@@ -56,10 +67,47 @@ pub fn branch_size(
         Some(SizeSuffix::Short | SizeSuffix::Byte) => BranchSize::Short,
         Some(SizeSuffix::Long) if processor.has(Processor::M68020) => BranchSize::Long,
         Some(SizeSuffix::Word | SizeSuffix::Long) => BranchSize::Word,
-        None if back_reference && fits_a_short_branch(displacement, processor) => {
-            BranchSize::Short
+        None if back_reference && fits_a_short_branch(displacement, processor) => BranchSize::Short,
+        None if back_reference
+            && processor.has(Processor::M68020)
+            && !fits_a_word(displacement) =>
+        {
+            BranchSize::Long
         }
         None => BranchSize::Word,
+    }
+}
+
+/// Whether a displacement fits a byte, sign extended: the brief extension
+/// word's.
+pub fn fits_a_byte(value: i64) -> bool {
+    (-128..=127).contains(&value)
+}
+
+/// Whether a displacement fits a word, sign extended.
+pub fn fits_a_word(value: i64) -> bool {
+    (-32768..=32767).contains(&value)
+}
+
+/// The width of a base or an outer displacement of a 68020 indexed Operand,
+/// [`ast::Operand::FullIndex`](crate::assembler::ast::Operand::FullIndex),
+/// by EASy68K's back-reference rule, as an absolute address's width is
+/// chosen: forced by `.w` or `.l`; else, for a back reference, none for 0, a
+/// word for what a word holds and a long otherwise; and a long for a forward
+/// reference, whatever it turns out to be, so that both passes choose the
+/// same. `value` is the displacement the word holds, which from the program
+/// counter is the distance from the extension word.
+pub fn displacement_size(
+    written: Option<SizeSuffix>,
+    back_reference: bool,
+    value: i64,
+) -> DisplacementSize {
+    match written {
+        Some(SizeSuffix::Word) => DisplacementSize::Word,
+        Some(_) => DisplacementSize::Long,
+        None if back_reference && value == 0 => DisplacementSize::Null,
+        None if back_reference && fits_a_word(value) => DisplacementSize::Word,
+        None => DisplacementSize::Long,
     }
 }
 

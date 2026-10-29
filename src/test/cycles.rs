@@ -392,3 +392,110 @@ handler:
         "undo takes the IRQ's cycles back"
     );
 }
+
+/// An Interpreter for `code`, written for the 68020, at `$1000`.
+fn m68020(code: &str) -> Interpreter {
+    Interpreter::new(
+        assemble(&format!("    opt p=68020\n    org $1000\nstart:\n{code}\n")),
+        Some(InterpreterOptions {
+            keep_history: true,
+            history_size: 10_000,
+        }),
+    )
+}
+
+/// A 68020 Program counts the manual's cache case, and what its data adds
+/// where the manual's times depend on it: a branch taken or not, a `DBcc`
+/// whose counter runs out, a bit field in five bytes, `cas` that writes. A
+/// shift, a bit above 15, a multiply and a division take the same whatever
+/// their data.
+#[test]
+fn the_68020_counts_the_manuals_cache_case() {
+    let mut interpreter = m68020(
+        "    moveq #0,d0
+    beq.s s_taken
+    nop
+s_taken:
+    bne.s s_taken
+    beq.w w_taken
+    nop
+w_taken:
+    bne.w w_taken
+    moveq #1,d1
+loop:
+    dbra d1,loop
+    moveq #0,d2
+    dbeq d1,loop
+    moveq #65,d1
+    lsl.l #8,d0
+    lsl.w d1,d0
+    rol.l d1,d0
+    bchg #20,d0
+    move.w #$FFFF,d3
+    mulu.w d3,d3
+    divu.w d3,d3
+    movea.l #$2000,a0
+    moveq #0,d4
+    moveq #9,d5
+    cas.l d4,d5,(a0)
+    cas.l d4,d5,(a0)
+    bfchg (a0){4:32}
+    bfchg (a0){0:32}
+    move.l #handler,$80
+    trap #0
+    simhalt
+handler:
+    rte",
+    );
+    let cycles = costs(&mut interpreter, 28);
+    //moveq, beq.s and bne.s taken and not, beq.w and bne.w taken and not
+    assert_eq!(cycles[..5], [2, 6, 4, 6, 6]);
+    //moveq, dbra back and run out, moveq, dbeq with its condition true
+    assert_eq!(cycles[5..10], [2, 6, 10, 2, 6]);
+    //moveq, lsl by 8 and by a register's 65, rol, bchg of bit 20
+    assert_eq!(cycles[10..15], [2, 4, 6, 8, 4]);
+    //move.w of an immediate, mulu by $FFFF, divu, movea.l of an immediate long, two moveq
+    assert_eq!(cycles[15..21], [4, 27, 44, 6, 2, 2]);
+    //cas that does not write, as memory is not 0, and loads it into d4, then cas that writes
+    assert_eq!(cycles[21..23], [12 + 2, 15 + 2]);
+    //a field in five bytes, and in four
+    assert_eq!(cycles[23..25], [16 + 2 + 8, 16 + 2]);
+    //move.l of an immediate to an absolute short address, trap, rte
+    assert_eq!(cycles[25..], [2 + 4 + 2, 20, 21]);
+}
+
+/// A 68020's IRQ takes 26, and 41 in the master state, where it pushes the
+/// throwaway frame too, which `rte` takes 16 more to pop.
+#[test]
+fn a_68020_irq_takes_26_and_41_with_its_throwaway_frame() {
+    let mut interpreter = m68020(
+        "    move.l #handler,$68
+    move.l #$8000,d0
+    movec d0,msp
+    andi #$F8FF,sr
+    nop
+    ori #$1000,sr
+    nop
+    simhalt
+handler:
+    rte",
+    );
+    costs(&mut interpreter, 4);
+    interpreter.raise_irq(2).unwrap();
+    interpreter.step().unwrap();
+    assert_eq!(interpreter.get_last_steps(1)[0].get_cycles(), 26);
+    assert_eq!(costs(&mut interpreter, 3), [21, 2, 12], "rte, nop, ori");
+    interpreter.raise_irq(2).unwrap();
+    interpreter.step().unwrap();
+    let irq = interpreter.get_last_steps(1)[0];
+    assert_eq!(irq.get_kind(), ExecutionStepKind::Irq);
+    assert_eq!(irq.get_cycles(), 41);
+    assert_eq!(costs(&mut interpreter, 1), [21 + 16], "rte of both frames");
+    let before = interpreter.get_cycles();
+    interpreter.undo().unwrap();
+    assert_eq!(
+        interpreter.get_cycles(),
+        before - 37,
+        "undo takes them back"
+    );
+}

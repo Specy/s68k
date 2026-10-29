@@ -34,8 +34,9 @@
 //! is the 68000's, the 68010's or the 68020's by what it is, and whether a
 //! Program may use it is the analyzer's question. `move ccr,<ea>` is written
 //! as the 68010 has it, and so are `rtd`, `bkpt`, `movec` and `moves`;
-//! `extb.l` and a [`BranchSize::Long`] as the 68020 has them, and the decoder
-//! reads those words back only for those processors.
+//! `extb.l`, a [`BranchSize::Long`] and the rest of the 68020's as the 68020
+//! has them, and the decoder reads those words back only for those
+//! processors.
 //!
 //! [`size`] measures an instruction without placing it: the size of an
 //! encoding depends on its Operands' modes and never on their values or its
@@ -43,15 +44,18 @@
 
 use std::fmt;
 
+use crate::instructions::FieldValue;
 use crate::instructions::{
-    AddressWidth, BranchSize, Condition, IndexRegister, Instruction, Operand, RegisterOperand,
-    ShiftDirection, Sign, Size, TargetDirection,
+    AddressWidth, BranchSize, Condition, DisplacementSize, ExtensionWord, IndexBase, IndexRegister,
+    Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size, TargetDirection,
+    TrapOperand,
 };
 
 use super::decode::{
-    ABSOLUTE_LONG, ABSOLUTE_WORD, ALL, ALTERABLE, AN, CONTROL, DATA, DATA_ALTERABLE,
-    DATA_NOT_IMMEDIATE, DISPLACEMENT, DN, IMMEDIATE, INDEX, INDIRECT, MEMORY_ALTERABLE,
-    MOVEM_FROM_MEMORY, MOVEM_TO_MEMORY, PC_DISPLACEMENT, PC_INDEX, POSTINCREMENT, PREDECREMENT,
+    ABSOLUTE_LONG, ABSOLUTE_WORD, ALL, ALTERABLE, AN, CONTROL, CONTROL_ALTERABLE, DATA,
+    DATA_ALTERABLE, DATA_NOT_IMMEDIATE, DISPLACEMENT, DN, IMMEDIATE, INDEX, INDIRECT,
+    MEMORY_ALTERABLE, MOVEM_FROM_MEMORY, MOVEM_TO_MEMORY, PC_DISPLACEMENT, PC_INDEX, POSTINCREMENT,
+    PREDECREMENT,
 };
 
 /// Encodes `instruction` at `address`: its words, the operation word first.
@@ -150,6 +154,19 @@ pub enum Field {
     RtdDisplacement,
     /// The vector of `bkpt`: 0 to 7.
     BreakpointVector,
+    /// A base displacement of the 68020's full extension word written in a
+    /// word.
+    BaseDisplacement,
+    /// An outer displacement of the 68020's full extension word written in a
+    /// word.
+    OuterDisplacement,
+    /// A displacement of the 68020's full extension word written as none,
+    /// which holds 0: from the program counter, the address of the extension
+    /// word itself.
+    NullDisplacement,
+    /// The offset or the width of a bit field, five bits, or the number of
+    /// the data register that holds it.
+    BitField,
 }
 
 impl Field {
@@ -162,13 +179,17 @@ impl Field {
             | Field::Displacement
             | Field::ShortAddress
             | Field::LinkDisplacement
-            | Field::RtdDisplacement => (-32768, 32767),
+            | Field::RtdDisplacement
+            | Field::BaseDisplacement
+            | Field::OuterDisplacement => (-32768, 32767),
+            Field::NullDisplacement => (0, 0),
             Field::LongAddress => (0, u32::MAX as i64),
             Field::Immediate(size) => (0, mask(size) as i64),
             Field::Count => (1, 8),
             Field::TrapVector => (0, 15),
             Field::BitNumber => (0, 255),
             Field::Register | Field::BreakpointVector => (0, 7),
+            Field::BitField => (0, 31),
         }
     }
 
@@ -199,6 +220,10 @@ impl Field {
             Field::Register => "a register number",
             Field::RtdDisplacement => "the displacement of `rtd`",
             Field::BreakpointVector => "the vector of `bkpt`",
+            Field::BaseDisplacement => "a base displacement written in a word",
+            Field::OuterDisplacement => "an outer displacement written in a word",
+            Field::NullDisplacement => "a displacement written as none",
+            Field::BitField => "the offset or the width of a bit field",
         }
     }
 }
@@ -225,6 +250,14 @@ impl fmt::Display for EncodeError {
 }
 
 impl std::error::Error for EncodeError {}
+
+/// The number a bit field's offset or width holds, as encoded: its value or
+/// its register's number.
+fn field_number(value: FieldValue) -> u8 {
+    match value {
+        FieldValue::Immediate(number) | FieldValue::Register(number) => number,
+    }
+}
 
 /// The bits of an immediate of `size`.
 fn mask(size: Size) -> u32 {
@@ -428,7 +461,73 @@ impl Encoder {
                 self.immediate(value, size)?;
                 0o74
             }
+            Operand::Extended {
+                base,
+                word,
+                displacement,
+                outer,
+            } => self.extended_index(base, word, displacement, outer)?,
         })
+    }
+
+    /// The extension words of an [`Operand::Extended`], and its mode and
+    /// register: the brief word with its displacement byte, or the full word
+    /// and the base and outer displacements its sizes ask for. From the
+    /// program counter, not suppressed, the base displacement is measured from
+    /// the extension word.
+    fn extended_index(
+        &mut self,
+        base: IndexBase,
+        word: ExtensionWord,
+        displacement: i32,
+        outer: i32,
+    ) -> Result<u16, EncodeError> {
+        let at = self.next();
+        let base_displacement = match base.is_pc() && !word.base_suppressed() {
+            true => displacement.wrapping_sub(at as i32) as i64,
+            false => displacement as i64,
+        };
+        match word.is_full() {
+            false => {
+                let field = match base.is_pc() {
+                    true => Field::PcIndex,
+                    false => Field::IndexDisplacement,
+                };
+                self.fits(field, base_displacement)?;
+                self.word(word.0 & 0xFF00 | base_displacement as u8 as u16);
+            }
+            true => {
+                self.word(word.0);
+                let base_size = word.base_displacement_size();
+                self.displacement(base_size, base_displacement, Field::BaseDisplacement)?;
+                let outer_size = word.outer_displacement_size();
+                self.displacement(outer_size, outer as i64, Field::OuterDisplacement)?;
+            }
+        }
+        Ok(match base.address_register() {
+            Some(number) => 0o60 | number as u16,
+            None => 0o73,
+        })
+    }
+
+    /// A base or outer displacement of the full extension word at `size`:
+    /// nothing for a null one, which holds only 0, a word that holds `value`
+    /// as `field`, or a long.
+    fn displacement(
+        &mut self,
+        size: DisplacementSize,
+        value: i64,
+        field: Field,
+    ) -> Result<(), EncodeError> {
+        match size {
+            DisplacementSize::Null => self.fits(Field::NullDisplacement, value)?,
+            DisplacementSize::Word => {
+                self.fits(field, value)?;
+                self.word(value as u16);
+            }
+            DisplacementSize::Long => self.long(value as u32),
+        }
+        Ok(())
     }
 
     /// Writes the instruction, its operation word last into the first slot.
@@ -517,7 +616,16 @@ impl Encoder {
             I::CLR(target, size) => self.one_operand(0x4200, target, size)?,
             I::NEG(target, size) => self.one_operand(0x4400, target, size)?,
             I::NOT(target, size) => self.one_operand(0x4600, target, size)?,
-            I::TST(target, size) => self.one_operand(0x4A00, target, size)?,
+            // the 68020 tests an address register, a PC-relative operand and
+            // an immediate too, which a 68000's decoder refuses
+            I::TST(target, size) => {
+                if size == Size::Byte && mode_of(&target) == AN {
+                    return no_encoding("an address register is never read a byte at a time");
+                }
+                0x4A00
+                    | standard_size(size) << 6
+                    | self.ea(target, size, ALL, "`tst` reads any operand")?
+            }
             I::MOVEfromSR(target) => {
                 0x40C0
                     | self.ea(
@@ -696,6 +804,153 @@ impl Encoder {
                     | register << 9
                     | self.ea(bound, Size::Word, DATA, "`chk` reads a data operand")?
             }
+            I::CHKL(bound, register) => {
+                let register = self.data(register)?;
+                0x4100
+                    | register << 9
+                    | self.ea(bound, Size::Long, DATA, "`chk` reads a data operand")?
+            }
+            I::MULL {
+                source,
+                low,
+                high,
+                sign,
+            } => {
+                let signed = match sign {
+                    Sign::Signed => 0x0800,
+                    Sign::Unsigned => 0,
+                };
+                let high = match high {
+                    Some(high) => 0x0400 | self.number(high)?,
+                    None => 0,
+                };
+                self.word(self.number(low)? << 12 | signed | high);
+                0x4C00 | self.ea(source, Size::Long, DATA, "a multiply reads a data operand")?
+            }
+            I::DIVL {
+                source,
+                quotient,
+                remainder,
+                wide,
+                sign,
+            } => {
+                let signed = match sign {
+                    Sign::Signed => 0x0800,
+                    Sign::Unsigned => 0,
+                };
+                let extension = self.number(quotient)? << 12
+                    | signed
+                    | (wide as u16) << 10
+                    | self.number(remainder)?;
+                self.word(extension);
+                0x4C40 | self.ea(source, Size::Long, DATA, "a divide reads a data operand")?
+            }
+            I::PACK(source, destination, adjustment) => {
+                self.pack(0x8140, source, destination, adjustment)?
+            }
+            I::UNPK(source, destination, adjustment) => {
+                self.pack(0x8180, source, destination, adjustment)?
+            }
+            I::CHK2(bounds, register, size) => self.bounds(true, bounds, register, size)?,
+            I::CMP2(bounds, register, size) => self.bounds(false, bounds, register, size)?,
+            I::CAS {
+                compare,
+                update,
+                target,
+                size,
+            } => {
+                self.word(self.number(update)? << 6 | self.number(compare)?);
+                0x08C0
+                    | (standard_size(size) + 1) << 9
+                    | self.ea(
+                        target,
+                        size,
+                        MEMORY_ALTERABLE,
+                        "`cas` takes a memory alterable operand",
+                    )?
+            }
+            I::CAS2 {
+                compare,
+                update,
+                pointers,
+                size,
+            } => {
+                let opcode = match size {
+                    Size::Word => 0x0CFC,
+                    Size::Long => 0x0EFC,
+                    Size::Byte => return no_encoding("`cas2` compares words or longs"),
+                };
+                for (compare, update, pointer) in [
+                    (compare.0, update.0, pointers.0),
+                    (compare.1, update.1, pointers.1),
+                ] {
+                    let extension = self.general(pointer)?
+                        | self.number(update)? << 6
+                        | self.number(compare)?;
+                    self.word(extension);
+                }
+                opcode
+            }
+            I::BF {
+                operation,
+                target,
+                field,
+                register,
+            } => {
+                let value = |value: FieldValue| match value {
+                    FieldValue::Immediate(number) => (false, number as u16 & 0x1F),
+                    FieldValue::Register(number) => (true, number as u16 & 7),
+                };
+                let (offset_register, offset) = value(field.offset);
+                let (width_register, width) = value(field.width);
+                if field_number(field.offset) > 31
+                    || field_number(field.width) > 31
+                    || matches!(field.offset, FieldValue::Register(8..))
+                    || matches!(field.width, FieldValue::Register(8..))
+                {
+                    return Err(EncodeError::OutOfRange {
+                        field: Field::BitField,
+                        value: field_number(field.offset).max(field_number(field.width)) as i64,
+                    });
+                }
+                self.word(
+                    self.number(register)? << 12
+                        | (offset_register as u16) << 11
+                        | offset << 6
+                        | (width_register as u16) << 5
+                        | width,
+                );
+                let (allowed, reason) = match operation.writes() {
+                    true => (
+                        DN | CONTROL_ALTERABLE,
+                        "a bit field written is in a data register or a control alterable operand",
+                    ),
+                    false => (
+                        DN | CONTROL,
+                        "a bit field read is in a data register or a control operand",
+                    ),
+                };
+                0xE8C0 | (operation as u16) << 8 | self.ea(target, Size::Byte, allowed, reason)?
+            }
+            I::LINKL(register, displacement) => {
+                let register = self.address_register(register)?;
+                self.long(displacement);
+                0x4808 | register
+            }
+            I::TRAPcc(condition, operand) => {
+                let opmode = match operand {
+                    TrapOperand::None => 4,
+                    TrapOperand::Word(value) => {
+                        self.word(value);
+                        2
+                    }
+                    TrapOperand::Long(value) => {
+                        self.long(value);
+                        3
+                    }
+                };
+                0x50F8 | condition.code() << 8 | opmode
+            }
             I::LEA(source, register) => {
                 let register = self.address_register(register)?;
                 0x41C0
@@ -869,13 +1124,60 @@ impl Encoder {
         size: Size,
     ) -> Result<u16, EncodeError> {
         self.immediate(value, size)?;
-        let destination = self.ea(
-            destination,
-            size,
-            DATA_ALTERABLE,
-            "an immediate instruction writes a data alterable operand",
-        )?;
+        // `cmpi` only reads its destination, and the 68020 lets it read one
+        // relative to the program counter
+        let (allowed, reason) = match kind {
+            6 => (
+                DATA_NOT_IMMEDIATE,
+                "`cmpi` compares with a data operand other than an immediate",
+            ),
+            _ => (
+                DATA_ALTERABLE,
+                "an immediate instruction writes a data alterable operand",
+            ),
+        };
+        let destination = self.ea(destination, size, allowed, reason)?;
         Ok(kind << 9 | standard_size(size) << 6 | destination)
+    }
+
+    /// `pack` or `unpk` by `opcode`: two data registers or two predecrements,
+    /// and the adjustment word.
+    fn pack(
+        &mut self,
+        opcode: u16,
+        source: Operand,
+        destination: Operand,
+        adjustment: u16,
+    ) -> Result<u16, EncodeError> {
+        let (x, y, memory) = match (source, destination) {
+            (
+                Operand::Register(RegisterOperand::Data(x)),
+                Operand::Register(RegisterOperand::Data(y)),
+            ) => (x, y, 0),
+            (Operand::PreIndirect(x), Operand::PreIndirect(y)) => (x, y, 0x0008),
+            _ => return no_encoding("`pack` and `unpk` take two data registers or two `-(An)`"),
+        };
+        self.word(adjustment);
+        Ok(opcode | self.number(y)? << 9 | memory | self.number(x)?)
+    }
+
+    /// `chk2`, or `cmp2`: the extension word of the register, then the
+    /// bounds' effective address, a control one.
+    fn bounds(
+        &mut self,
+        trap: bool,
+        bounds: Operand,
+        register: RegisterOperand,
+        size: Size,
+    ) -> Result<u16, EncodeError> {
+        self.word(self.general(register)? | (trap as u16) << 11);
+        let bounds = self.ea(
+            bounds,
+            size,
+            CONTROL,
+            "`chk2` and `cmp2` read their bounds from a control operand",
+        )?;
+        Ok(0x00C0 | standard_size(size) << 9 | bounds)
     }
 
     /// `andi`, `ori` or `eori` to `ccr` or `sr`: the operation word, and the
@@ -1191,6 +1493,10 @@ fn mode_of(operand: &Operand) -> u16 {
         } => ABSOLUTE_LONG,
         Operand::PcDisplacement { .. } => PC_DISPLACEMENT,
         Operand::PcIndex { .. } => PC_INDEX,
+        Operand::Extended { base, .. } => match base.is_pc() {
+            true => PC_INDEX,
+            false => INDEX,
+        },
         Operand::Immediate(_) => IMMEDIATE,
     }
 }
@@ -1261,6 +1567,19 @@ mod tests {
                 let mut expected = words;
                 if let Instruction::MOVES { .. } = decoded.instruction {
                     expected[1] &= 0xF800;
+                }
+                //nor the long multiplies and divides their reserved bits, and a 32-bit product its
+                //unused `Dh`
+                match decoded.instruction {
+                    Instruction::MULL { high: None, .. } => expected[1] &= 0x7C00,
+                    Instruction::MULL { .. } | Instruction::DIVL { .. } => expected[1] &= 0x7C07,
+                    Instruction::CHK2(..) | Instruction::CMP2(..) => expected[1] &= 0xF800,
+                    Instruction::CAS { .. } => expected[1] &= 0x01C7,
+                    Instruction::CAS2 { .. } => {
+                        expected[1] &= 0xF1C7;
+                        expected[2] &= 0xF1C7;
+                    }
+                    _ => {}
                 }
                 assert_eq!(
                     encoded,
@@ -1752,11 +2071,15 @@ mod tests {
         refused(Instruction::ADDQ(1, a(0), Size::Byte));
         refused(Instruction::ADDI(1, a(0), Size::Word));
         refused(Instruction::CLR(a(0), Size::Word));
-        refused(Instruction::CMPI(
+        //nothing is written through the program counter; the 68020's `cmpi`
+        //only reads through it
+        refused(Instruction::ADDI(
             1,
             Operand::PcDisplacement { target: 0 },
             Size::Word,
         ));
+        refused(Instruction::CMPI(1, Operand::Immediate(2), Size::Word));
+        refused(Instruction::TST(a(0), Size::Byte));
         refused(Instruction::CMPM(
             Operand::Indirect(0),
             Operand::PostIndirect(1),

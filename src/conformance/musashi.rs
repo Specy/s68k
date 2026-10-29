@@ -1,7 +1,8 @@
-//! Musashi (MIT, <https://github.com/kstenerud/Musashi>) as a 68010 beside the
-//! Interpreter: the reference of the differential harness of the 68010 dialect
-//! (the asm-editor's `docs/design/m68k-machine.md`, decision 3, and planning
-//! decision 6 of its plan), behind the `musashi` feature.
+//! Musashi (MIT, <https://github.com/kstenerud/Musashi>) as a 68010, or a
+//! 68EC020, beside the Interpreter: the reference of the differential harness
+//! of the 68010 and 68020 dialects (the asm-editor's
+//! `docs/design/m68k-machine.md`, decision 3, and planning decision 6 of its
+//! plan), behind the `musashi` feature.
 //!
 //! `build.rs` compiles Musashi from the copy `scripts/fetch-musashi.sh`
 //! fetched; this module declares the few of its functions the harness calls
@@ -28,6 +29,7 @@ mod ffi {
         pub fn m68k_get_reg(context: *mut c_void, register: u32) -> u32;
         pub fn m68k_set_reg(register: u32, value: u32);
         pub fn m68k_is_valid_instruction(instruction: u32, cpu_type: u32) -> u32;
+        pub fn m68k_set_irq(level: u32);
     }
 }
 
@@ -35,6 +37,9 @@ mod ffi {
 pub const CPU_TYPE_68000: u32 = 1;
 /// Musashi's `M68K_CPU_TYPE_68010`.
 pub const CPU_TYPE_68010: u32 = 2;
+/// Musashi's `M68K_CPU_TYPE_68EC020`: the 68020 with a 24-bit bus, which is
+/// s68k's.
+pub const CPU_TYPE_68EC020: u32 = 3;
 
 /// The numbers of `m68k_register_t` the harness reads and writes.
 mod register {
@@ -44,9 +49,12 @@ mod register {
     pub const SR: u32 = 17;
     pub const USP: u32 = 19;
     pub const ISP: u32 = 20;
+    pub const MSP: u32 = 21;
     pub const SFC: u32 = 22;
     pub const DFC: u32 = 23;
     pub const VBR: u32 = 24;
+    pub const CACR: u32 = 25;
+    pub const CAAR: u32 = 26;
 }
 
 /// The 16 MB Musashi reads and writes, masked to the 24 bits of the 68010's
@@ -149,6 +157,12 @@ impl Musashi {
         Musashi { _held: held }
     }
 
+    /// Makes it a processor of `cpu_type`, until the next [`lock`](Musashi::lock)
+    /// makes it a 68010 again.
+    pub fn set_cpu_type(&mut self, cpu_type: u32) {
+        unsafe { ffi::m68k_set_cpu_type(cpu_type) };
+    }
+
     /// Whether Musashi's disassembler takes `word` as the first word of an
     /// instruction of `cpu_type`, [`CPU_TYPE_68000`] or [`CPU_TYPE_68010`].
     pub fn is_valid(&self, word: u16, cpu_type: u32) -> bool {
@@ -157,7 +171,9 @@ impl Musashi {
 
     /// Puts `regions` in memory, after clearing what the last test loaded and
     /// wrote, and the processor in `state`: a reset, which clears a stopped
-    /// processor and the cycles of the reset itself, then every register.
+    /// processor and the cycles of the reset itself, then every register, the
+    /// status register first, which chooses the stack pointer each of the
+    /// three is written to.
     pub fn load(&mut self, state: &State, regions: &[(u32, Vec<u8>)]) {
         BUS.with(|bus| {
             let mut bus = bus.borrow_mut();
@@ -185,6 +201,9 @@ impl Musashi {
             ffi::m68k_set_reg(register::SR, state.sr as u32);
             ffi::m68k_set_reg(register::USP, state.usp);
             ffi::m68k_set_reg(register::ISP, state.ssp);
+            ffi::m68k_set_reg(register::MSP, state.msp);
+            ffi::m68k_set_reg(register::CACR, state.cacr);
+            ffi::m68k_set_reg(register::CAAR, state.caar);
             for (index, value) in state.d.iter().enumerate() {
                 ffi::m68k_set_reg(register::D0 + index as u32, *value);
             }
@@ -204,6 +223,15 @@ impl Musashi {
         unsafe { ffi::m68k_execute(1) as u32 }
     }
 
+    /// Holds the interrupt request lines at `level`, 0 for none: Musashi
+    /// takes a request above the interrupt mask, or one that rises to 7,
+    /// through its autovector at the start of the next
+    /// [`step`](Musashi::step), which then runs the handler's first
+    /// instruction.
+    pub fn set_irq(&mut self, level: u8) {
+        unsafe { ffi::m68k_set_irq(level as u32) }
+    }
+
     /// The registers as they are now.
     pub fn state(&self) -> State {
         let get = |register| unsafe { ffi::m68k_get_reg(std::ptr::null_mut(), register) };
@@ -212,6 +240,9 @@ impl Musashi {
             a: [0; 7],
             usp: get(register::USP),
             ssp: get(register::ISP),
+            msp: get(register::MSP),
+            cacr: get(register::CACR),
+            caar: get(register::CAAR),
             sr: get(register::SR) as u16,
             pc: get(register::PC),
             vbr: get(register::VBR),

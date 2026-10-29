@@ -123,9 +123,8 @@ impl MemoryMap {
     /// that is only its NUL or a read of none, touches a range it starts in
     /// past the range's first byte, and not one it starts on the first byte of.
     pub fn check(&self, kinds: Kinds, address: usize, length: usize, supervisor: bool) -> Verdict {
-        let last = address as i64 + length as i64 - 1;
         let touches = |kind| match self.range(kind) {
-            Some((start, end)) => kinds.has(kind) && last >= start as i64 && address <= end,
+            Some(range) => kinds.has(kind) && reaches(range, address, length),
             None => false,
         };
         if touches(MemoryRangeKind::Invalid) {
@@ -173,6 +172,20 @@ impl MemoryMap {
             .filter_map(|kind| self.range(kind))
             .filter(|(start, end)| start <= end)
     }
+}
+
+/// Whether any of the `length` bytes at `address`, an address of the 24 bits
+/// of the bus, is in the range from `start` to `end`, both included: the bytes
+/// that pass `$FFFFFF` go on at `$000000`, as the bus does, and a run of no
+/// bytes reaches nothing.
+pub fn reaches((start, end): (usize, usize), address: usize, length: usize) -> bool {
+    let last = address as i64 + length as i64 - 1;
+    if last >= start as i64 && address <= end {
+        return true;
+    }
+    //the bytes past the end, from $000000 on
+    let wrapped = last - (BUS as i64 + 1);
+    wrapped >= start as i64 && start <= end
 }
 
 #[cfg(test)]
@@ -245,6 +258,20 @@ mod tests {
         assert_eq!(map.buffer(Kinds::INVALID_READ_ROM, 0x1000, 0), Verdict::Allowed);
         let protected = super::tests::map(&[(Protected, 0, 0xfff)]);
         assert_eq!(protected.buffer(Kinds::INVALID, 0, 0x10), Verdict::Allowed);
+    }
+
+    #[test]
+    fn an_access_round_the_end_of_the_bus_reaches_the_bottom() {
+        let map = map(&[(MemoryRangeKind::Invalid, 0x0, 0xff)]);
+        assert_eq!(
+            map.write(0xff_fffe, 4, true),
+            Verdict::Refused(MemoryRangeKind::Invalid)
+        );
+        assert_eq!(map.write(0xff_fffc, 4, true), Verdict::Allowed);
+        assert!(reaches((0x10, 0x20), 0xff_fff0, 0x21));
+        assert!(!reaches((0x10, 0x20), 0xff_fff0, 0x20));
+        assert!(!reaches((0x10, 0x20), 0xff_fff0, 0));
+        assert!(reaches((0xff_fff8, 0xff_ffff), 0xff_fff0, 0x100));
     }
 
     #[test]

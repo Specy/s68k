@@ -110,7 +110,7 @@ fn snapshot(interpreter: &Interpreter) -> Snapshot {
         (0x8000, 0x8400),
         (0xFFFF00, 0x1000000),
     ] {
-        bytes.extend_from_slice(memory.read_bytes(start, end - start).unwrap());
+        bytes.extend_from_slice(&memory.read_bytes(start, end - start).unwrap());
     }
     Snapshot {
         registers: interpreter.get_cpu().get_register_values(),

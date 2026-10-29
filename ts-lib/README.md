@@ -561,9 +561,8 @@ interpreter.endPoke()                 // one step, which one undo takes back, th
 interpreter.getCallStack()[0]         // {kind: 'exception', vector: 5, address: handler, source_address: the stacked PC, ...}
 ```
 
-In a program for the 68010 (`opt p=68010`), and for the 68020 until its
-batch, the System file has the control registers too, and the frames are the
-68010's:
+In a program for the 68010 (`opt p=68010`) the System file has the control
+registers too, and the frames are the 68010's:
 
 ```ts
 interpreter.getSystem()               // {sr: 0x2000, usp: 0x00ff0000, ssp: 0x01000000, vbr: 0, sfc: 0, dfc: 0}
@@ -592,11 +591,47 @@ interpreter.endPoke()                 // one step, which one undo takes back; on
   new}`, and `movec An,usp` the stack pointers, as `move An,usp` does.
 - `move sr,<ea>` is privileged.
 
+In a program for the 68020 (`opt p=68020`) the System file has the 68010's and
+the 68020's: its interrupt and master stack pointers, which M chooses between
+in supervisor mode, and its cache registers, with no cache behind them. `ssp`
+is the 68020's ISP, which `isp` names too:
+
+```ts
+interpreter.getSystem()               // {sr: 0x2000, usp: 0x00ff0000, ssp: 0x01000000, vbr: 0, sfc: 0, dfc: 0,
+                                      //  isp: 0x01000000, msp: 0, cacr: 0, caar: 0}
+interpreter.beginPoke()
+interpreter.setMsp(0x8000)            // A7 in supervisor mode while M is set
+interpreter.setIsp(0x00f00000)        // the SSP: A7 in supervisor mode while M is clear
+interpreter.setCacr(0xff)             // keeps E and F, bits 0 and 1: 3
+interpreter.setCaar(0x1234)
+interpreter.setSr(0x3000)             // M set: A7 is the MSP
+interpreter.endPoke()                 // one step; before the 68020 these throw InvalidArgument
+```
+
+- **The status register** reads back `0xF71F` for `0xFFFF`: T1 (bit 15)
+  traces every instruction, and T0 (bit 14), with T1 clear, only a branch
+  taken, a jump, a return and a write of SR or of CCR by `andi`, `ori` or
+  `eori`; M (bit 12) chooses the stack pointer.
+- **Frames.** Format `$0`, eight bytes, and format `$2`, twelve, with the
+  instruction's address at `+8`, for `chk`, `chk2`, `trapcc`, `trapv`, a
+  division by zero and trace. A bus or address error pushes format `$B`, 92
+  bytes, or `$A`, 32, for a bus error on fetching an instruction none of which
+  ran: the special status word at `+$0A` and the fault address at `+$10`,
+  every internal word 0, and `rte` runs the instruction again. An interrupt
+  taken with M set pushes its frame on the MSP and the throwaway frame, format
+  `$1`, on the ISP; `rte` pops both. Any other format is the format error,
+  with no change of flags.
+- **Odd addresses.** A word or a long at an odd address is read and written;
+  only an instruction fetched from one is an address error.
+- `movec` journals `WriteControlRegister` with `cacr` and `caar` too, and a
+  `movec` of `msp` or `isp` the stack pointers.
+
 A call frame is `kind: 'call'` and has no `vector`. The history journals an
 exception taken as `PushException {vector, from, handler}`, `rte` as
-`PopException {to, from}`, and every change of S, `move An,usp` and a poke of a
-stack pointer as `WriteStackPointers {old: {usp, ssp}, new: {usp, ssp}}`; the
-step's `old_sr` and `new_sr` say which of the two A7 was.
+`PopException {to, from}`, and every change of S, or of the 68020's M,
+`move An,usp`, `movec` and a poke of a stack pointer as
+`WriteStackPointers {old: {usp, ssp, msp}, new: {usp, ssp, msp}}`, `msp` being
+0 before the 68020; the step's `old_sr` and `new_sr` say which of them A7 was.
 
 ### Interrupts
 
@@ -653,11 +688,26 @@ maximum (an exception 38, an IRQ 46, `rte` 24, `mulu` 40), with its loop mode:
 a `DBcc` that branches back by −4 to a one-word instruction the 68010 can loop
 makes the loop's next turns fetch nothing, `move.w (a0)+,(a1)+` taking 8 and
 `dbra` 6 where they took 12 and 10, which the history journals as
-`SetLoopMode {old, new}`. A program for the 68020 counts as a 68010 for now.
+`SetLoopMode {old, new}`.
+
+A program for the 68020 counts an estimate: the cache case of the M68020
+User's Manual's timing tables, the instruction in the cache and no overlap
+with the instructions around it. The manual gives a best, a cache and a worst
+case for every instruction and says that exact times depend on the cache and
+on that overlap, so no exact count exists; the cache case is the middle one,
+and Musashi's. Its data counts only where the manual's times depend on it (a
+branch taken, a `DBcc` that runs out, a bit field in five bytes, `cas` that
+writes, the frame `rte` pops), so a shift by any count and a multiply by any
+operand take the same; an exception 20, `trapcc` and `trapv` 25, an IRQ 26,
+or 41 with the throwaway frame of the master state. The program says which
+kind of count it gets: `cyclesExact` in `getInfo()`, or `hasExactCycles()`,
+is `true` for the 68000 and the 68010 and `false` for the 68020, whose count a
+host shows as an estimate.
 
 ```ts
 interpreter.getCycles()               // 1234n: a bigint, since the start or task 30
 interpreter.getUndoHistory(1)[0].cycles // 12: what the newest step took, 0 for a poke
+program.hasExactCycles()              // false for a program for the 68020: an estimate
 ```
 
 Task 30 clears the counter and task 31 reads it into D1.L, 0 once it is past
@@ -675,6 +725,45 @@ effective address and not 4.
 collection cannot reach. Call `dispose()` on both when a program is done with.
 `S68k.assemble` frees the assembly itself when the source did not build one, so
 live checking on every keystroke leaks nothing.
+
+## Migrating: the 68020's cycles
+
+The 68020's cycles (above, "Cycles") change what a program for the 68020
+counts, and add one field a host reads:
+
+| before | after |
+|---|---|
+| a 68020 program counted as a 68010: its own instructions and modes a placeholder, an exception 38, an IRQ 46 | the manual's cache case, an estimate: `moveq` 2, `mulu.w` 27, a shift 4 to 12 by any count, an exception 20, an IRQ 26 |
+| | `cyclesExact` in `ProgramInfo`, and `Program.hasExactCycles()` |
+
+## Migrating: the 68020's supervisor model
+
+The 68020's supervisor model (the README's "The 68020's supervisor model")
+changes what a program for the 68020 does, and two shapes every host may read:
+
+| before | after |
+|---|---|
+| a 68020 program took its exceptions with the 68010's frames, `$0` and `$8` | the 68020's: `$0`, `$2` for `chk`, `chk2`, `trapcc`, `trapv`, a division by zero and trace, `$A` and `$B` for the bus and address errors, and `$1`, the throwaway frame of an interrupt with M set; `rte` takes those and raises the format error on `$8` |
+| a 68020 program's word or long at an odd address was an address error | read and written; only a fetch from an odd address is an address error |
+| a 68020 program's status register read `0xA71F` at most | `0xF71F`: T0 and M |
+| `getSystem()` of a 68020 program as a 68010's | and `isp`, `msp`, `cacr` and `caar`; `setIsp`, `setMsp`, `setCacr`, `setCaar` |
+| `WriteStackPointers {old: {usp, ssp}, new: {usp, ssp}}` | `{usp, ssp, msp}` on every processor, `msp` 0 before the 68020 |
+| `WriteControlRegister`'s `register` was `'vbr'`, `'sfc'` or `'dfc'` | and `'cacr'` or `'caar'` |
+| `cacr`, `caar`, `msp` and `isp` were names a symbol could take | reserved in every program, as `vbr` is; `movec` takes them under `opt p=68020` |
+| the hint of `(d3)` in a 68000 program named `(a0)` | it names `movea.w d3,a3` and `(a3)` |
+
+## Migrating: the 68020's instructions
+
+The 68020's integer instructions (the README's "The 68020's instructions")
+change what a program for the 68020, or a 68000 one with `opt bit`, can
+write, and what a host may be told:
+
+| before | after |
+|---|---|
+| `chk2`, `cmp2`, `cas`, `cas2`, `pack`, `unpk`, `divsl`, `divul`, `trapcc` and the bit fields refused, `unimplemented_in_dialect`; `muls.l`, `chk.l`, `tst a0` and the like refused under `opt p=68020` | assembled under `opt p=68020`, and the bit fields under `opt bit`; `needs_a_later_processor` on an earlier processor, a bit field's second fix writing `opt bit` |
+| the code `unimplemented_in_dialect` | gone: no instruction is still to come |
+| | the causes `ConditionalTrap`, vector 7, and `Chk2OutOfBounds {value, lower, upper}`, vector 6 |
+| | `parseLine`'s modes `register_pair`, `indirect_pair` and `bit_field`; `instructionTable`'s modes `Dx:Dy`, `(Rx):(Ry)` and `{offset:width}` |
 
 ## Migrating past 4.0.0: the 68010
 
@@ -835,7 +924,7 @@ are recognised and refused with a diagnostic naming the feature.
 
 ## Known limitations
 1. Characters are one byte, read and written as Windows-1252, as in EASy68K; a source character with no byte of its own is an assembly error.
-2. There is no cycle counter yet.
+2. The 68020's cycle count is an estimate, the manual's cache case (above, "Cycles"); the 68000's and the 68010's are exact, with no wait states.
 3. The timers of task 32 are the host's to run; the interpreter keeps their settings and takes the requests the host raises.
 
 # How to build

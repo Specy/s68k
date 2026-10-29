@@ -29,9 +29,11 @@
 //! Every row is gated on its first processor, so a word the 68010 or the 68020
 //! adds is illegal on the processors before it: `move ccr,<ea>` (`$42C0` to
 //! `$42F9`), `rtd`, `movec`, `moves` and `bkpt` on the 68000, `extb.l`
-//! (`$49C0` to `$49C7`) on both the 68000 and the 68010. The 68000 and the
-//! 68010 are decoded in full; the 68020's other instructions and addressing
-//! modes are not read yet, and decode as illegal for every processor.
+//! (`$49C0` to `$49C7`) and the rest of the 68020's on both the 68000 and
+//! the 68010. All three are decoded in full, but for the 68020's module call,
+//! `callm` and `rtm`, which s68k leaves out and decodes as illegal. The
+//! 68020's bit fields, `$E8C0` to `$EFFF`, are also read for a [`Dialect`]
+//! that has them, which EASy68K's `opt bit` gives a 68000 Program.
 //!
 //! Two readings differ by processor (`docs/research/m68k-cpu-variants.md`
 //! §2.1 in the asm-editor):
@@ -40,8 +42,9 @@
 //!   the 68010 and a 32-bit displacement on the 68020, in a row of its own;
 //! * the brief extension word of `d8(An,Xn)` and `d8(PC,Xn)`, whose bits 10–8
 //!   the 68000 and the 68010 ignore and the 68020 reads as a scale and as the
-//!   mark of its full extension word. Those are the 68020's addressing modes,
-//!   so every processor reads the word as the 68000 does for now.
+//!   mark of its full extension word, with a base and an outer displacement
+//!   and memory indirection ([`Operand::Extended`]). A word with the three
+//!   clear means the same to every processor and decodes as the 68000's.
 //!
 //! # SIMHALT
 //!
@@ -49,11 +52,13 @@
 //! processor. It is recognised before line F, which `$FFFF` alone would be.
 
 use crate::instructions::{
-    AddressWidth, BranchSize, Condition, ControlRegister, IndexRegister, Instruction, Operand,
-    RegisterOperand, ShiftDirection, Sign, Size, TargetDirection,
+    AddressWidth, BranchSize, Condition, ControlRegister, DisplacementSize, ExtensionWord,
+    IndexBase, IndexRegister, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
+    TargetDirection, TrapOperand,
 };
+use crate::instructions::{BitField, BitFieldOperation, FieldValue};
 
-use super::Processor;
+use super::{Dialect, Processor};
 
 /// One decoded instruction, and how many bytes its words took up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +73,11 @@ pub struct Decoded {
 /// The longest a 68000 instruction is, in bytes: the operation word and two
 /// longs, as in `move.l #n,$xxxxxxxx.l`.
 pub const MAX_68000_SIZE: u32 = 10;
+
+/// The longest an instruction of any processor s68k decodes is, in bytes: a
+/// 68020 `move` of two memory indirect Operands, each a full extension word,
+/// a long base displacement and a long outer one.
+pub const MAX_SIZE: u32 = 22;
 
 /// Decodes the instruction at `address` for `processor`, reading its words
 /// through `read`.
@@ -85,11 +95,11 @@ pub const MAX_68000_SIZE: u32 = 10;
 /// different addresses.
 pub fn decode<E>(
     address: u32,
-    processor: Processor,
+    processor: impl Into<Dialect>,
     mut read: impl FnMut(u32) -> Result<u16, E>,
 ) -> Result<Decoded, E> {
     let mut error = None;
-    let decoded = decode_with(address, processor, &mut |at| match read(at) {
+    let decoded = decode_with(address, processor.into(), &mut |at| match read(at) {
         Ok(word) => Some(word),
         Err(failure) => {
             error = Some(failure);
@@ -118,7 +128,7 @@ pub struct Truncated {
 pub fn decode_words(
     words: &[u16],
     address: u32,
-    processor: Processor,
+    processor: impl Into<Dialect>,
 ) -> Result<Decoded, Truncated> {
     decode(address, processor, |at| {
         let index = at.wrapping_sub(address) / 2;
@@ -134,8 +144,8 @@ pub fn decode_words(
 /// Line A and line F words are: each is an instruction that raises an
 /// exception of its own. So is `$4AFC`, `illegal`. Every other word that
 /// [`decode`] answers with [`Instruction::IllegalWord`] is not.
-pub fn is_legal(word: u16, processor: Processor) -> bool {
-    row_for(word, processor).is_some()
+pub fn is_legal(word: u16, processor: impl Into<Dialect>) -> bool {
+    row_for(word, processor.into()).is_some()
 }
 
 /// The first processor whose decoder reads `word` as an instruction, or
@@ -154,15 +164,16 @@ pub fn first_processor(word: u16) -> Option<Processor> {
 /// read; `None` back means a read failed.
 fn decode_with(
     address: u32,
-    processor: Processor,
+    dialect: Dialect,
     read: &mut dyn FnMut(u32) -> Option<u16>,
 ) -> Option<Decoded> {
     let mut words = Words {
         read,
         next: address,
+        processor: dialect.processor,
     };
     let word = words.word()?;
-    let instruction = match row_for(word, processor) {
+    let instruction = match row_for(word, dialect) {
         Some(row) => (row.build)(&mut words, word)?,
         None => Instruction::IllegalWord(word),
     };
@@ -172,11 +183,14 @@ fn decode_with(
     })
 }
 
-/// The row of the opcode map that reads `word` for `processor`, if any.
-fn row_for(word: u16, processor: Processor) -> Option<&'static Row> {
-    LINES[(word >> 12) as usize]
-        .iter()
-        .find(|row| word & row.mask == row.bits && processor.has(row.first) && (row.legal)(word))
+/// The row of the opcode map that reads `word` for `dialect`, if any: one of
+/// its processor's, or a bit field's where the dialect has them.
+fn row_for(word: u16, dialect: Dialect) -> Option<&'static Row> {
+    LINES[(word >> 12) as usize].iter().find(|row| {
+        word & row.mask == row.bits
+            && (dialect.processor.has(row.first) || (row.bit_field && dialect.bit_fields))
+            && (row.legal)(word)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +203,9 @@ struct Words<'r> {
     /// The address of the next word to read, which is also what a PC-relative
     /// displacement in that word is measured from.
     next: u32,
+    /// The processor the words are read for, which decides what an index
+    /// extension word says.
+    processor: Processor,
 }
 
 impl Words<'_> {
@@ -241,7 +258,11 @@ impl Words<'_> {
                 base: RegisterOperand::Address(register),
             },
             6 => {
+                let at = self.next;
                 let extension = self.word()?;
+                if self.reads_extended(extension) {
+                    return self.extended(IndexBase::address(register), at, extension);
+                }
                 Operand::IndirectIndex {
                     base: RegisterOperand::Address(register),
                     offset: extension as u8 as i8 as i32,
@@ -263,6 +284,9 @@ impl Words<'_> {
                 3 => {
                     let at = self.next;
                     let extension = self.word()?;
+                    if self.reads_extended(extension) {
+                        return self.extended(IndexBase::PC, at, extension);
+                    }
                     Operand::PcIndex {
                         target: at.wrapping_add(extension as u8 as i8 as i32 as u32),
                         index: index_register(extension),
@@ -275,14 +299,61 @@ impl Words<'_> {
     }
 }
 
+impl Words<'_> {
+    /// Whether an index extension word is one of the 68020's own: a 68020
+    /// reads bits 10–9 as a scale and bit 8 as the mark of its full format,
+    /// where the 68000 and the 68010 ignore all three. A word with the three
+    /// clear means the same to every processor, and is read as the 68000
+    /// reads it.
+    #[inline(always)]
+    fn reads_extended(&self, extension: u16) -> bool {
+        extension & 0x0700 != 0 && self.processor.has(Processor::M68020)
+    }
+
+    /// The rest of a 68020 index Operand whose extension word, at `at`, is
+    /// `extension`: the base and outer displacements its full format asks
+    /// for, read in that order, or the brief format's byte.
+    #[cold]
+    #[inline(never)]
+    fn extended(&mut self, base: IndexBase, at: u32, extension: u16) -> Option<Operand> {
+        let word = ExtensionWord(extension);
+        let (word, base_displacement) = match word.is_full() {
+            true => (word, self.displacement(word.base_displacement_size())?),
+            false => (
+                ExtensionWord(extension & 0xFF00),
+                extension as u8 as i8 as i32,
+            ),
+        };
+        let outer = self.displacement(word.outer_displacement_size())?;
+        //from the program counter, the address it reaches, as `PcIndex` keeps it
+        let displacement = match base.is_pc() && !word.base_suppressed() {
+            true => at.wrapping_add(base_displacement as u32) as i32,
+            false => base_displacement,
+        };
+        Some(Operand::Extended {
+            base,
+            word,
+            displacement,
+            outer,
+        })
+    }
+
+    /// A base or outer displacement of `size`, sign extended.
+    fn displacement(&mut self, size: DisplacementSize) -> Option<i32> {
+        Some(match size {
+            DisplacementSize::Null => 0,
+            DisplacementSize::Word => self.word()? as i16 as i32,
+            DisplacementSize::Long => self.long()? as i32,
+        })
+    }
+}
+
 /// The index register of a brief extension word: bit 15 picks the data or the
 /// address registers, bits 14–12 the register, bit 11 a word or a long.
 ///
-/// Bits 10–8 are not read. The 68000 and the 68010 ignore them; the 68020
-/// reads bits 10–9 as a scale and bit 8 as the mark of its full extension
-/// word, which are the 68020's addressing modes and are not decoded yet, so
-/// every processor reads the word as the 68000 does. The displacement, bits
-/// 7–0, is read by the caller.
+/// Bits 10–8 are not read: the 68000 and the 68010 ignore them, and a 68020
+/// word with any of them set is read by `Words::extended`. The displacement,
+/// bits 7–0, is read by the caller.
 fn index_register(extension: u16) -> IndexRegister {
     let number = ((extension >> 12) & 7) as u8;
     IndexRegister {
@@ -398,6 +469,9 @@ struct Row {
     bits: u16,
     /// The first processor that has the instruction.
     first: Processor,
+    /// Whether it is one of the 68020's bit-field instructions, which `opt
+    /// bit` gives the processors before it.
+    bit_field: bool,
     /// The rest of the test: the modes and the sizes the instruction takes,
     /// from the first word alone.
     legal: fn(u16) -> bool,
@@ -428,9 +502,57 @@ const fn gated(
         mask,
         bits,
         first,
+        bit_field: false,
         legal,
         build,
     }
+}
+
+/// A row of one of the 68020's bit-field instructions, by bits 10–8.
+const fn bit_field_row(operation: u16, legal: fn(u16) -> bool) -> Row {
+    Row {
+        mask: 0xFFC0,
+        bits: 0xE8C0 | operation << 8,
+        first: Processor::M68020,
+        bit_field: true,
+        legal,
+        build: bit_field,
+    }
+}
+
+/// A bit field's operand: a data register or a control mode.
+fn bit_field_read(word: u16) -> bool {
+    ea::<{ DN | CONTROL }>(word)
+}
+
+/// A bit field's operand that is written: a data register or a control
+/// alterable mode.
+fn bit_field_written(word: u16) -> bool {
+    ea::<{ DN | CONTROL_ALTERABLE }>(word)
+}
+
+/// One of the eight bit-field instructions, by bits 10–8: the extension word,
+/// of the register in bits 14–12, the offset in bits 11–6 and the width in
+/// bits 5–0, each a number or a data register, then the effective address.
+fn bit_field(words: &mut Words, word: u16) -> Option<Instruction> {
+    let extension = words.word()?;
+    let value = |register: bool, field: u16| match register {
+        true => FieldValue::Register((field & 7) as u8),
+        false => FieldValue::Immediate((field & 0x1F) as u8),
+    };
+    let operation = BitFieldOperation::ALL[((word >> 8) & 7) as usize];
+    Some(Instruction::BF {
+        operation,
+        field: BitField {
+            offset: value(extension & 0x0800 != 0, extension >> 6),
+            width: value(extension & 0x0020 != 0, extension),
+        },
+        register: match operation.has_register() {
+            true => ((extension >> 12) & 7) as u8,
+            false => 0,
+        },
+        target: words.ea(word, Size::Byte)?,
+    })
 }
 
 /// The pattern is the whole test.
@@ -488,6 +610,14 @@ static LINE_0: &[Row] = &[
     row(0xFF00, 0x0600, sized_ea::<DATA_ALTERABLE>, immediate),
     row(0xFF00, 0x0A00, sized_ea::<DATA_ALTERABLE>, immediate),
     row(0xFF00, 0x0C00, sized_ea::<DATA_ALTERABLE>, immediate),
+    // `cmpi` against the program counter, which the 68020 added
+    gated(
+        Processor::M68020,
+        0xFF00,
+        0x0C00,
+        sized_ea::<DATA_NOT_IMMEDIATE>,
+        immediate,
+    ),
     gated(
         Processor::M68010,
         0xFF00,
@@ -495,6 +625,12 @@ static LINE_0: &[Row] = &[
         sized_ea::<MEMORY_ALTERABLE>,
         moves,
     ),
+    // the 68020's `cas2`, `cas`, `chk2` and `cmp2`, in the size `%11` the
+    // immediates and `moves` do not take, or in `%00` of the bit
+    // instructions for `chk2.b`
+    gated(Processor::M68020, 0xFDFF, 0x0CFC, any, cas2),
+    gated(Processor::M68020, 0xF9C0, 0x08C0, cas_legal, cas),
+    gated(Processor::M68020, 0xF9C0, 0x00C0, bounds_legal, bounds),
 ];
 
 /// Line 1: `move.b`.
@@ -542,6 +678,9 @@ static LINE_4: &[Row] = &[
     }),
     row(0xFFF8, 0x4E58, any, |_, word| {
         Some(Instruction::UNLK(address_register(word)))
+    }),
+    gated(Processor::M68020, 0xFFF8, 0x4808, any, |words, word| {
+        Some(Instruction::LINKL(address_register(word), words.long()?))
     }),
     row(0xFFF0, 0x4E60, any, |_, word| {
         Some(Instruction::MOVEUSP {
@@ -626,12 +765,67 @@ static LINE_4: &[Row] = &[
         let size = standard_size(word);
         Some(Instruction::TST(words.ea(word, size)?, size))
     }),
+    // `tst` of an address register, a word or a long, of a PC-relative operand
+    // and of an immediate, which the 68020 added
+    gated(
+        Processor::M68020,
+        0xFF00,
+        0x4A00,
+        sized_ea::<ALL>,
+        |words, word| {
+            let size = standard_size(word);
+            Some(Instruction::TST(words.ea(word, size)?, size))
+        },
+    ),
     row(0xF1C0, 0x4180, ea::<DATA>, |words, word| {
         Some(Instruction::CHK(
             words.ea(word, Size::Word)?,
             data_register(word >> 9),
         ))
     }),
+    gated(
+        Processor::M68020,
+        0xFFC0,
+        0x4C00,
+        ea::<DATA>,
+        |words, word| {
+            let extension = words.word()?;
+            Some(Instruction::MULL {
+                low: ((extension >> 12) & 7) as u8,
+                high: (extension & 0x0400 != 0).then_some((extension & 7) as u8),
+                sign: sign_of(extension),
+                source: words.ea(word, Size::Long)?,
+            })
+        },
+    ),
+    gated(
+        Processor::M68020,
+        0xFFC0,
+        0x4C40,
+        ea::<DATA>,
+        |words, word| {
+            let extension = words.word()?;
+            Some(Instruction::DIVL {
+                quotient: ((extension >> 12) & 7) as u8,
+                remainder: (extension & 7) as u8,
+                wide: extension & 0x0400 != 0,
+                sign: sign_of(extension),
+                source: words.ea(word, Size::Long)?,
+            })
+        },
+    ),
+    gated(
+        Processor::M68020,
+        0xF1C0,
+        0x4100,
+        ea::<DATA>,
+        |words, word| {
+            Some(Instruction::CHKL(
+                words.ea(word, Size::Long)?,
+                data_register(word >> 9),
+            ))
+        },
+    ),
     row(0xF1C0, 0x41C0, ea::<CONTROL>, |words, word| {
         Some(Instruction::LEA(
             words.ea(word, Size::Long)?,
@@ -640,8 +834,27 @@ static LINE_4: &[Row] = &[
     }),
 ];
 
-/// Line 5: `addq`, `subq`, `Scc` and `DBcc`.
+/// Line 5: `addq`, `subq`, `Scc` and `DBcc`, and the 68020's `trapcc`, whose
+/// three opmodes are the effective addresses `Scc` cannot take.
 static LINE_5: &[Row] = &[
+    gated(Processor::M68020, 0xF0FF, 0x50FA, any, |words, word| {
+        Some(Instruction::TRAPcc(
+            Condition::from_code(word >> 8),
+            TrapOperand::Word(words.word()?),
+        ))
+    }),
+    gated(Processor::M68020, 0xF0FF, 0x50FB, any, |words, word| {
+        Some(Instruction::TRAPcc(
+            Condition::from_code(word >> 8),
+            TrapOperand::Long(words.long()?),
+        ))
+    }),
+    gated(Processor::M68020, 0xF0FF, 0x50FC, any, |_, word| {
+        Some(Instruction::TRAPcc(
+            Condition::from_code(word >> 8),
+            TrapOperand::None,
+        ))
+    }),
     row(0xF0F8, 0x50C8, any, |words, word| {
         Some(Instruction::DBcc(
             data_register(word),
@@ -685,8 +898,11 @@ static LINE_7: &[Row] = &[row(0xF100, 0x7000, any, |_, word| {
     Some(Instruction::MOVEQ(word as u8, data_register(word >> 9)))
 })];
 
-/// Line 8: `or`, `divu`, `divs` and `sbcd`.
+/// Line 8: `or`, `divu`, `divs` and `sbcd`, and the 68020's `pack` and
+/// `unpk`.
 static LINE_8: &[Row] = &[
+    gated(Processor::M68020, 0xF1F0, 0x8140, any, pack),
+    gated(Processor::M68020, 0xF1F0, 0x8180, any, pack),
     row(0xF1C0, 0x80C0, ea::<DATA>, |words, word| {
         divide_or_multiply(words, word, Instruction::DIVx, Sign::Unsigned)
     }),
@@ -822,8 +1038,17 @@ static LINE_D: &[Row] = &[
 ];
 
 /// Line E: the shifts and rotates, in memory by one place and in a data
-/// register by a count or by a register.
+/// register by a count or by a register, and the 68020's bit fields, which
+/// are the memory shifts' size `%11` with bit 11 set.
 static LINE_E: &[Row] = &[
+    bit_field_row(0, bit_field_read),
+    bit_field_row(1, bit_field_read),
+    bit_field_row(2, bit_field_written),
+    bit_field_row(3, bit_field_read),
+    bit_field_row(4, bit_field_written),
+    bit_field_row(5, bit_field_read),
+    bit_field_row(6, bit_field_written),
+    bit_field_row(7, bit_field_written),
     row(0xF8C0, 0xE0C0, ea::<MEMORY_ALTERABLE>, |words, word| {
         let target = words.ea(word, Size::Word)?;
         Some(shift(
@@ -866,6 +1091,15 @@ fn standard_size(word: u16) -> Size {
         1 => Size::Word,
         // `%10`, and `%11`, which the rows refuse.
         _ => Size::Long,
+    }
+}
+
+/// Whether the extension word of a long multiply or divide says signed, in
+/// bit 11.
+fn sign_of(extension: u16) -> Sign {
+    match extension & 0x0800 != 0 {
+        true => Sign::Signed,
+        false => Sign::Unsigned,
     }
 }
 
@@ -1066,6 +1300,83 @@ fn moves(words: &mut Words, word: u16) -> Option<Instruction> {
         size,
         register: general_register(extension),
         target,
+    })
+}
+
+/// `cas`: a size in bits 10–9 that is not `%00`, and a memory alterable
+/// effective address.
+fn cas_legal(word: u16) -> bool {
+    word & 0x0600 != 0 && ea::<MEMORY_ALTERABLE>(word)
+}
+
+/// `cas`: the size in bits 10–9, `%01` a byte, `%10` a word and `%11` a long,
+/// then an extension word of `Du` in bits 8–6 and `Dc` in bits 2–0, the rest
+/// zero and not read.
+fn cas(words: &mut Words, word: u16) -> Option<Instruction> {
+    let size = match (word >> 9) & 3 {
+        1 => Size::Byte,
+        2 => Size::Word,
+        _ => Size::Long,
+    };
+    let extension = words.word()?;
+    Some(Instruction::CAS {
+        compare: (extension & 7) as u8,
+        update: ((extension >> 6) & 7) as u8,
+        target: words.ea(word, size)?,
+        size,
+    })
+}
+
+/// `cas2`: `$0CFC` a word and `$0EFC` a long, then one extension word per
+/// operand, of its register in bits 15–12, `Du` in 8–6 and `Dc` in 2–0.
+fn cas2(words: &mut Words, word: u16) -> Option<Instruction> {
+    let first = words.word()?;
+    let second = words.word()?;
+    Some(Instruction::CAS2 {
+        compare: ((first & 7) as u8, (second & 7) as u8),
+        update: (((first >> 6) & 7) as u8, ((second >> 6) & 7) as u8),
+        pointers: (general_register(first), general_register(second)),
+        size: match word & 0x0200 {
+            0 => Size::Word,
+            _ => Size::Long,
+        },
+    })
+}
+
+/// `chk2` and `cmp2`: a size in bits 10–9 that is not `%11`, and a control
+/// effective address.
+fn bounds_legal(word: u16) -> bool {
+    word & 0x0600 != 0x0600 && ea::<CONTROL>(word)
+}
+
+/// `chk2` and `cmp2`: the size in bits 10–9, then an extension word of the
+/// register in bits 15–12 and, in bit 11, whether it is `chk2`.
+fn bounds(words: &mut Words, word: u16) -> Option<Instruction> {
+    let size = standard_size(word >> 3);
+    let extension = words.word()?;
+    let register = general_register(extension);
+    let bounds = words.ea(word, size)?;
+    Some(match extension & 0x0800 {
+        0 => Instruction::CMP2(bounds, register, size),
+        _ => Instruction::CHK2(bounds, register, size),
+    })
+}
+
+/// `pack` or `unpk`: `Dy` or `Ay` in bits 11–9, `Dx` or `Ax` in bits 2–0,
+/// bit 3 for the predecrements, and the adjustment word.
+fn pack(words: &mut Words, word: u16) -> Option<Instruction> {
+    let (x, y) = ((word & 7) as u8, ((word >> 9) & 7) as u8);
+    let (source, destination) = match word & 0x0008 {
+        0 => (
+            Operand::Register(RegisterOperand::Data(x)),
+            Operand::Register(RegisterOperand::Data(y)),
+        ),
+        _ => (Operand::PreIndirect(x), Operand::PreIndirect(y)),
+    };
+    let adjustment = words.word()?;
+    Some(match word & 0x00C0 {
+        0x0040 => Instruction::PACK(source, destination, adjustment),
+        _ => Instruction::UNPK(source, destination, adjustment),
     })
 }
 

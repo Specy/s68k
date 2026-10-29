@@ -64,8 +64,11 @@ const SLOTS: usize = PAGE_BYTES / 2;
 const PAGES: usize = MEMORY_SIZE / PAGE_BYTES;
 
 /// How far before a written byte the instruction that covers it can start, at
-/// most: an instruction of the 68000 is at most ten bytes, so one that covers
-/// the byte at `a` starts at `a - 9` or after, and on an even address.
+/// most, while the cache keeps no instruction longer than the 68000's: an
+/// instruction of the 68000 is at most ten bytes, so one that covers the byte
+/// at `a` starts at `a - 9` or after, and on an even address. A cache that
+/// keeps a longer one, of the 68020's addressing modes, looks further
+/// back, as far as that one is long ([`DecodeCache::store`]).
 pub const LOOK_BACK: usize = MAX_68000_SIZE as usize - 1;
 
 /// The `index` of a slot decoded from memory at run time.
@@ -205,6 +208,11 @@ pub struct DecodeCache {
     near: Box<[bool; PAGES]>,
     /// The first slot cleared since the last take.
     cleared: Option<Cleared>,
+    /// How far before a written byte a write looks for the instructions that
+    /// cover it: [`LOOK_BACK`], or one less than the longest instruction kept,
+    /// when that is longer than the 68000's, so that a 68000 Program's writes
+    /// look no further than they did.
+    look_back: usize,
 }
 
 impl std::fmt::Debug for DecodeCache {
@@ -232,6 +240,7 @@ impl DecodeCache {
                 .expect("PAGES pages"),
             near: Box::new([false; PAGES]),
             cleared: None,
+            look_back: LOOK_BACK,
         }
     }
 
@@ -257,6 +266,7 @@ impl DecodeCache {
     /// Keeps `slot` as the instruction that starts at `address`, an even
     /// address of the 24 bits of the bus, making its page if it has none.
     pub fn store(&mut self, address: usize, slot: Slot) {
+        self.look_back = self.look_back.max((slot.size as usize).saturating_sub(1));
         let page = address >> PAGE_SHIFT;
         if self.pages[page].is_none() {
             self.pages[page] = Some(
@@ -268,6 +278,11 @@ impl DecodeCache {
             for near in page.saturating_sub(1)..(page + 2).min(PAGES) {
                 self.near[near] = true;
             }
+            //an instruction at the top of memory can run on past the end of the bus, into the
+            //bottom, whose writes have to find it
+            if page == PAGES - 1 {
+                self.near[0] = true;
+            }
         }
         if let Some(slots) = self.pages[page].as_mut() {
             slots[(address & (PAGE_BYTES - 1)) >> 1] = slot;
@@ -276,7 +291,9 @@ impl DecodeCache {
 
     /// Clears the slot of every instruction that covers a byte of the `length`
     /// bytes written at `address`, an address of the 24 bits of the bus whose
-    /// run ends inside memory.
+    /// run ends inside memory: a run that passes the end is written, and
+    /// cleared, in two. An instruction whose words run on past the end, from
+    /// the top of memory into the bottom, is cleared by a write to the bottom.
     ///
     /// It is on the path of every store, so a write of up to a page that no page
     /// is near costs the one branch on [`near`](DecodeCache).
@@ -291,9 +308,17 @@ impl DecodeCache {
     #[cold]
     #[inline(never)]
     fn clear(&mut self, address: usize, length: usize) {
-        let Self { pages, cleared, .. } = self;
+        if address < self.look_back {
+            self.clear_round_the_end(address, length);
+        }
+        let Self {
+            pages,
+            cleared,
+            look_back,
+            ..
+        } = self;
         let end = (address + length).min(MEMORY_SIZE);
-        let mut at = address.saturating_sub(LOOK_BACK).next_multiple_of(2);
+        let mut at = address.saturating_sub(*look_back).next_multiple_of(2);
         while at < end {
             let page = at >> PAGE_SHIFT;
             let page_end = ((page + 1) << PAGE_SHIFT).min(end);
@@ -319,6 +344,35 @@ impl DecodeCache {
 
     /// Whether a write has cleared a slot since the last
     /// [`take_cleared`](DecodeCache::take_cleared).
+    /// Clears the instructions at the top of memory whose words run on past
+    /// the end of the bus into the `length` bytes written at `address`, near
+    /// the bottom: those that start less than the look-back before it,
+    /// counting round the end.
+    #[cold]
+    #[inline(never)]
+    fn clear_round_the_end(&mut self, address: usize, length: usize) {
+        let Some(slots) = self.pages[PAGES - 1].as_mut() else {
+            return;
+        };
+        if length == 0 {
+            return;
+        }
+        let mut at = (MEMORY_SIZE + address - self.look_back).next_multiple_of(2);
+        while at < MEMORY_SIZE {
+            let slot = &mut slots[(at & (PAGE_BYTES - 1)) >> 1];
+            if slot.size != 0 && at + slot.size as usize > MEMORY_SIZE + address {
+                if self.cleared.is_none() {
+                    self.cleared = Some(Cleared {
+                        address: at,
+                        index: slot.program_index(),
+                    });
+                }
+                slot.size = 0;
+            }
+            at += 2;
+        }
+    }
+
     #[inline(always)]
     pub fn has_cleared(&self) -> bool {
         self.cleared.is_some()

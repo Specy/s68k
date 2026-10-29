@@ -22,9 +22,11 @@
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 pub use crate::assembler::instructions::encoded::{
-    AddressWidth, BranchSize, Condition, ControlRegister, IndexRegister, Instruction, Operand,
-    RegisterOperand, ShiftDirection, Sign, Size, TargetDirection, EXTENSION_WORD_OFFSET,
+    AddressWidth, BranchSize, Condition, ControlRegister, DisplacementSize, ExtensionWord,
+    IndexBase, IndexRegister, Indirection, Instruction, Operand, RegisterOperand, ShiftDirection,
+    Sign, Size, TargetDirection, TrapOperand, EXTENSION_WORD_OFFSET,
 };
+pub use crate::assembler::instructions::encoded::{BitField, BitFieldOperation, FieldValue};
 
 /// Which form of task 19 the program asked for, decided by D1.L: EASy68K reads
 /// four key codes packed one per byte, or the codes of the last keys when D1.L is zero.

@@ -22,9 +22,11 @@ pub mod lowering;
 pub mod table;
 
 pub use encoded::{
-    AddressWidth, BranchSize, Condition, IndexRegister, Instruction, Operand, RegisterOperand,
-    ShiftDirection, Sign, Size, TargetDirection,
+    AddressWidth, BranchSize, Condition, DisplacementSize, ExtensionWord, IndexBase, IndexRegister,
+    Indirection, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
+    TargetDirection, TrapOperand,
 };
+pub use encoded::{BitField, BitFieldOperation, FieldValue};
 pub use lowering::{lower, lower_operand, lower_size, Lowered, Site, Values};
 pub use table::{
     is_mnemonic, lookup, mnemonics, Family, Form, Implementation, InstructionSpec, Modes, SizeRule,

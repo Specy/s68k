@@ -17,6 +17,7 @@ use serde::Serialize;
 
 use super::source::Span;
 use super::token::{NumberBase, QuoteKind, TokenKind};
+use crate::machine::Processor;
 
 /// The size an Operation or an Operand is written with (`docs/grammar.md`
 /// 1.11).
@@ -185,6 +186,14 @@ pub enum SpecialRegister {
     Dfc,
     /// The vector base register, a control register of the 68010.
     Vbr,
+    /// The cache control register, a control register of the 68020.
+    Cacr,
+    /// The cache address register, a control register of the 68020.
+    Caar,
+    /// The master stack pointer, a control register of the 68020.
+    Msp,
+    /// The interrupt stack pointer, a control register of the 68020.
+    Isp,
 }
 
 impl SpecialRegister {
@@ -197,6 +206,10 @@ impl SpecialRegister {
             "sfc" => Some(SpecialRegister::Sfc),
             "dfc" => Some(SpecialRegister::Dfc),
             "vbr" => Some(SpecialRegister::Vbr),
+            "cacr" => Some(SpecialRegister::Cacr),
+            "caar" => Some(SpecialRegister::Caar),
+            "msp" => Some(SpecialRegister::Msp),
+            "isp" => Some(SpecialRegister::Isp),
             _ => None,
         }
     }
@@ -210,17 +223,35 @@ impl SpecialRegister {
             SpecialRegister::Sfc => "sfc",
             SpecialRegister::Dfc => "dfc",
             SpecialRegister::Vbr => "vbr",
+            SpecialRegister::Cacr => "cacr",
+            SpecialRegister::Caar => "caar",
+            SpecialRegister::Msp => "msp",
+            SpecialRegister::Isp => "isp",
+        }
+    }
+
+    /// The first processor that has it: the 68000 for `sr`, `ccr` and
+    /// `usp`, the 68010 for its control registers and the 68020 for its own.
+    pub fn processor(&self) -> Processor {
+        match self {
+            SpecialRegister::Sr | SpecialRegister::Ccr | SpecialRegister::Usp => Processor::M68000,
+            SpecialRegister::Sfc | SpecialRegister::Dfc | SpecialRegister::Vbr => Processor::M68010,
+            SpecialRegister::Cacr
+            | SpecialRegister::Caar
+            | SpecialRegister::Msp
+            | SpecialRegister::Isp => Processor::M68020,
         }
     }
 }
 
-/// The twenty-four names no Symbol may carry (`docs/grammar.md` 1.10): the
-/// sixteen general registers, `sp`, `pc`, `sr`, `ccr` and `usp`, and the
-/// 68010's control registers `sfc`, `dfc` and `vbr`, which `movec` names in
-/// every Program, whatever its processor.
-pub const RESERVED_NAMES: [&str; 24] = [
+/// The twenty-eight names no Symbol may carry (`docs/grammar.md` 1.10): the
+/// sixteen general registers, `sp`, `pc`, `sr`, `ccr` and `usp`, the 68010's
+/// control registers `sfc`, `dfc` and `vbr`, and the 68020's `cacr`, `caar`,
+/// `msp` and `isp`, which `movec` names in every Program, whatever its
+/// processor.
+pub const RESERVED_NAMES: [&str; 28] = [
     "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
-    "sp", "pc", "sr", "ccr", "usp", "sfc", "dfc", "vbr",
+    "sp", "pc", "sr", "ccr", "usp", "sfc", "dfc", "vbr", "cacr", "caar", "msp", "isp",
 ];
 
 /// Whether `name` is one of the [`RESERVED_NAMES`], case insensitively.
@@ -235,6 +266,34 @@ pub fn is_program_counter(name: &str) -> bool {
     name.eq_ignore_ascii_case("pc")
 }
 
+/// The name of a suppressed register of the 68020's indexed Operands, `zd0`
+/// to `zd7`, `za0` to `za7` and `zpc` (`docs/grammar.md` 2.5): a register
+/// whose place is kept in the encoding and whose value is not added. It is a
+/// register only there, as `pc` is, so a Symbol may still be called so.
+pub fn suppressed_register(name: &str) -> Option<Suppressed> {
+    let name = name.to_ascii_lowercase();
+    if name == "zpc" {
+        return Some(Suppressed::ProgramCounter);
+    }
+    let register = Register::parse(name.strip_prefix('z')?, Span::empty(0))?;
+    Some(match register.kind {
+        RegisterKind::Data => Suppressed::Data(register.number),
+        RegisterKind::Address => Suppressed::Address(register.number),
+    })
+}
+
+/// A suppressed register, as [`suppressed_register`] reads its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(tag = "kind", content = "number", rename_all = "snake_case")]
+pub enum Suppressed {
+    /// `zd0` to `zd7`.
+    Data(u8),
+    /// `za0` to `za7`.
+    Address(u8),
+    /// `zpc`.
+    ProgramCounter,
+}
+
 /// The index register of an indexed Operand, with the size it is used at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct IndexRegister {
@@ -243,8 +302,72 @@ pub struct IndexRegister {
     /// The size written after it. `None` is `.w`, the 68000's default and what
     /// the fixture printer writes out.
     pub size: Option<SizeSuffix>,
-    /// Where the whole `d1.w` was written.
+    /// The scale written after it, `*2`, `*4` or `*8` (or `*1`), the 68020's;
+    /// `None` when none is written, which is 1.
+    pub scale: Option<u8>,
+    /// Whether it was written suppressed, `zd1` or `za1`, the 68020's: an
+    /// index whose value is not added.
+    pub suppressed: bool,
+    /// Where the whole `d1.w*4` was written.
     pub span: Span,
+}
+
+/// The base of one of the 68020's indexed Operands, [`Operand::FullIndex`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BaseRegister {
+    /// `a0` to `a7`.
+    Address {
+        /// The register.
+        register: Register,
+    },
+    /// `pc`.
+    ProgramCounter,
+    /// `za0` to `za7`: an address register suppressed.
+    SuppressedAddress {
+        /// Its number.
+        number: u8,
+    },
+    /// `zpc`: the program counter suppressed, an access in program space
+    /// with nothing added for the base.
+    SuppressedProgramCounter,
+    /// No base written: suppressed, as `za0`.
+    Omitted,
+}
+
+impl BaseRegister {
+    /// Whether it is the program counter, suppressed or not.
+    pub fn is_program_counter(&self) -> bool {
+        matches!(
+            self,
+            BaseRegister::ProgramCounter | BaseRegister::SuppressedProgramCounter
+        )
+    }
+}
+
+/// A base or an outer displacement of a 68020 indexed Operand, with the
+/// width written after it: `1000.w`, `label.l`, or none, which the Assembler
+/// chooses (`instructions::choice::displacement_size`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SizedDisplacement {
+    /// The displacement.
+    pub value: Expr,
+    /// `.w` or `.l` when the source forced one.
+    pub size: Option<SizeSuffix>,
+}
+
+/// Whether a 68020 indexed Operand reads its address from memory, and where
+/// its index is added (`docs/grammar.md` 2.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Indirection {
+    /// `(bd,An,Xn)`: no brackets.
+    None,
+    /// `([bd,An,Xn],od)`: the index inside the brackets, or none at all,
+    /// `([bd,An],od)`.
+    Preindexed,
+    /// `([bd,An],Xn,od)`: the index after the brackets.
+    Postindexed,
 }
 
 /// One item of a register list: a single register, or a range.
@@ -579,6 +702,27 @@ pub enum Operand {
         /// Where the whole Operand was written.
         span: Span,
     },
+    /// The 68020's indexed forms beyond `d(An,Xn)` and `d(PC,Xn)`: a
+    /// displacement written with its width, `(1000.w,a0,d1.l)`; a base or an
+    /// index suppressed, `(d0.l*4)`, `(4,za0,d1)`, `(a0,zd0)`, `(zpc,d0)`; and
+    /// memory indirection, `([4,a0],d1.w*4,8)` and `([4,a0,d1.w*4],8)`
+    /// (`docs/grammar.md` 2.5). A scale alone is the 68000's
+    /// [`Index`](Operand::Index) or [`PcIndex`](Operand::PcIndex) with one.
+    FullIndex {
+        /// The base displacement, `None` when none is written.
+        base_displacement: Option<SizedDisplacement>,
+        /// The base register.
+        base: BaseRegister,
+        /// The index register, `None` when none is written.
+        index: Option<IndexRegister>,
+        /// Whether, and how, the address is read from memory.
+        indirection: Indirection,
+        /// The outer displacement, after the brackets, `None` when none is
+        /// written.
+        outer_displacement: Option<SizedDisplacement>,
+        /// Where the whole Operand was written.
+        span: Span,
+    },
     /// `$1000`, `label`, `($1000)`, `label.w`: a bare Expression, with the
     /// width it is forced to when one is written.
     Absolute {
@@ -598,6 +742,58 @@ pub enum Operand {
         /// Where the whole Operand was written.
         span: Span,
     },
+    /// `d1:d2`, two data registers, the 68020's: the 64-bit product `Dh:Dl`
+    /// of `muls.l` and `mulu.l`, the remainder and the quotient `Dr:Dq` of
+    /// `divs.l` and its kind, and `cas2`'s two compare and two update
+    /// registers (`docs/grammar.md` 2.5).
+    RegisterPair {
+        /// The register before the colon.
+        first: Register,
+        /// The register after it.
+        second: Register,
+        /// Where the whole Operand was written.
+        span: Span,
+    },
+    /// `d0{4:8}` and `(a0){d1:d2}`, an Operand with the `{offset:width}` of
+    /// a 68020 bit-field instruction after it (`docs/grammar.md` 2.5).
+    BitField {
+        /// The Operand the field is in.
+        target: Box<Operand>,
+        /// The bit it starts at.
+        offset: FieldValue,
+        /// How many bits it holds.
+        width: FieldValue,
+        /// Where the whole Operand, field included, was written.
+        span: Span,
+    },
+    /// `(a0):(d1)`, two registers in parentheses, the 68020's: the two
+    /// addresses `cas2` compares and swaps through, each in an address or a
+    /// data register (`docs/grammar.md` 2.5).
+    IndirectPair {
+        /// The register of the first parentheses.
+        first: Register,
+        /// The register of the second.
+        second: Register,
+        /// Where the whole Operand was written.
+        span: Span,
+    },
+}
+
+/// The offset or the width of a bit field, `{offset:width}`: a number, with
+/// or without a `#`, or a data register that holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FieldValue {
+    /// `4`, `#4`, `width-1`.
+    Value {
+        /// The number.
+        value: Expr,
+    },
+    /// `d1`.
+    Register {
+        /// The data register.
+        register: Register,
+    },
 }
 
 impl Operand {
@@ -615,8 +811,12 @@ impl Operand {
             | Operand::Index { span, .. }
             | Operand::PcDisplacement { span, .. }
             | Operand::PcIndex { span, .. }
+            | Operand::FullIndex { span, .. }
             | Operand::Absolute { span, .. }
-            | Operand::RegisterList { span, .. } => *span,
+            | Operand::RegisterList { span, .. }
+            | Operand::RegisterPair { span, .. }
+            | Operand::IndirectPair { span, .. }
+            | Operand::BitField { span, .. } => *span,
         }
     }
 
@@ -639,8 +839,12 @@ impl Operand {
             Operand::Index { .. } => "index",
             Operand::PcDisplacement { .. } => "pc_displacement",
             Operand::PcIndex { .. } => "pc_index",
+            Operand::FullIndex { .. } => "full_index",
             Operand::Absolute { .. } => "absolute",
             Operand::RegisterList { .. } => "register_list",
+            Operand::RegisterPair { .. } => "register_pair",
+            Operand::IndirectPair { .. } => "indirect_pair",
+            Operand::BitField { .. } => "bit_field",
         }
     }
 
@@ -675,6 +879,22 @@ impl Operand {
                 register: SpecialRegister::Vbr,
                 ..
             } => "the vector base register",
+            Operand::SpecialRegister {
+                register: SpecialRegister::Cacr,
+                ..
+            } => "the cache control register",
+            Operand::SpecialRegister {
+                register: SpecialRegister::Caar,
+                ..
+            } => "the cache address register",
+            Operand::SpecialRegister {
+                register: SpecialRegister::Msp,
+                ..
+            } => "the master stack pointer",
+            Operand::SpecialRegister {
+                register: SpecialRegister::Isp,
+                ..
+            } => "the interrupt stack pointer",
             Operand::Indirect { .. } => "an indirect operand",
             Operand::Postincrement { .. } => "a postincrement operand",
             Operand::Predecrement { .. } => "a predecrement operand",
@@ -682,8 +902,19 @@ impl Operand {
             Operand::Index { .. } => "an indexed operand",
             Operand::PcDisplacement { .. } => "a PC-relative operand",
             Operand::PcIndex { .. } => "a PC-relative indexed operand",
+            Operand::FullIndex {
+                base, indirection, ..
+            } => match (base.is_program_counter(), indirection) {
+                (false, Indirection::None) => "an indexed operand",
+                (true, Indirection::None) => "a PC-relative indexed operand",
+                (false, _) => "a memory indirect operand",
+                (true, _) => "a PC-relative memory indirect operand",
+            },
             Operand::Absolute { .. } => "an absolute operand",
             Operand::RegisterList { .. } => "a register list",
+            Operand::RegisterPair { .. } => "a register pair",
+            Operand::IndirectPair { .. } => "a pair of indirect operands",
+            Operand::BitField { target, .. } => target.description(),
         }
     }
 }
@@ -868,8 +1099,8 @@ mod tests {
     }
 
     #[test]
-    fn the_twenty_four_reserved_names_are_reserved() {
-        assert_eq!(RESERVED_NAMES.len(), 24);
+    fn the_twenty_eight_reserved_names_are_reserved() {
+        assert_eq!(RESERVED_NAMES.len(), 28);
         for name in RESERVED_NAMES {
             assert!(is_reserved_name(name));
             assert!(is_reserved_name(&name.to_ascii_uppercase()));
@@ -887,6 +1118,8 @@ mod tests {
         let index = IndexRegister {
             register: data,
             size: None,
+            scale: None,
+            suppressed: false,
             span: span(),
         };
         let value = Expr::Number {

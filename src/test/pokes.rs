@@ -176,7 +176,7 @@ fn a_host_memory_write_outside_a_poke_records_nothing() {
         .expect("the write");
     interpreter.undo().expect("the first move to be undone");
     assert_eq!(
-        interpreter.get_memory().read_bytes(0x2000, 4).unwrap(),
+        &*interpreter.get_memory().read_bytes(0x2000, 4).unwrap(),
         &[1, 2, 3, 4],
         "the bytes survive the undo of the instruction before them"
     );
@@ -225,7 +225,7 @@ fn a_poke_journals_both_setters() {
     assert_eq!(step.get_writes().len(), 2, "one write per value written");
     assert_eq!(data(&interpreter, 2), 0, "the register is back");
     assert_eq!(
-        interpreter.get_memory().read_bytes(0x3000, 2).unwrap(),
+        &*interpreter.get_memory().read_bytes(0x3000, 2).unwrap(),
         //memory starts filled with $FF, which is what the poke overwrote
         &[0xff, 0xff],
         "and so are the bytes"
@@ -471,7 +471,7 @@ routine:
     assert_eq!(step.get_kind(), ExecutionStepKind::Poke, "undo answers it");
     assert_eq!(data(&interpreter, 1), d1, "the register is back");
     assert_eq!(
-        interpreter.get_memory().read_bytes(0x7000, 2).unwrap(),
+        &*interpreter.get_memory().read_bytes(0x7000, 2).unwrap(),
         &[0xff, 0xff],
         "and the bytes are back"
     );
@@ -582,7 +582,7 @@ fn a_poke_then_an_instruction_is_undone_newest_first() {
     assert_eq!(undone.get_kind(), ExecutionStepKind::Poke);
     assert_eq!(data(&interpreter, 0), d0, "and back to before the poke");
     assert_eq!(
-        interpreter.get_memory().read_bytes(0x8000, 1).unwrap(),
+        &*interpreter.get_memory().read_bytes(0x8000, 1).unwrap(),
         &[0xff]
     );
     assert_eq!(

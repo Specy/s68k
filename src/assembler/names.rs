@@ -120,10 +120,6 @@ pub fn text_operation(name: &str) -> Option<TextOperandKind> {
         "fail" => Some(TextOperandKind::MessageText),
         "opt" => Some(TextOperandKind::OptionList),
         name if REFUSED_OPERATIONS.contains(&name) => Some(TextOperandKind::RawOperandField),
-        // An instruction of the 68010 or the 68020 that s68k does not
-        // implement yet is refused whole, as a refused Directive is: one
-        // Diagnostic, and none about the bit fields' `{4:8}`.
-        name if table::is_still_to_come(name) => Some(TextOperandKind::RawOperandField),
         _ => None,
     }
 }
@@ -181,8 +177,8 @@ mod tests {
         assert_eq!(text_operation("if"), Some(TextOperandKind::RawOperandField));
         assert_eq!(
             text_operation("bfextu"),
-            Some(TextOperandKind::RawOperandField),
-            "an instruction still to come is refused whole"
+            None,
+            "every instruction is read, the 68020's bit fields too"
         );
         assert_eq!(
             text_operation("extb"),

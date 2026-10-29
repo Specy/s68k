@@ -35,9 +35,11 @@ use crate::assembler::program::Program;
 use crate::assembler::source::{Files, DEFAULT_ENTRY_PATH};
 use crate::assembler::{include, layout};
 use crate::instructions::{
-    AddressWidth, BranchSize, IndexRegister, Instruction, Operand, RegisterOperand, ShiftDirection,
-    Sign, Size, TargetDirection,
+    AddressWidth, BranchSize, DisplacementSize, ExtensionWord, IndexBase, IndexRegister,
+    Indirection, Instruction, Operand, RegisterOperand, ShiftDirection, Sign, Size,
+    TargetDirection, TrapOperand,
 };
+use crate::instructions::{BitFieldOperation, FieldValue};
 use crate::machine::decode::decode_words;
 use crate::machine::encode::{encode, encode_bytes, size};
 use crate::machine::Processor;
@@ -94,6 +96,8 @@ const REPRESENTATIVES: &[(Modes, &[&str])] = &[
     (Modes::CCR, &["ccr"]),
     (Modes::USP, &["usp"]),
     (Modes::CONTROL_REGISTER, &["sfc", "dfc", "vbr"]),
+    (Modes::REGISTER_PAIR, &["d1:d2"]),
+    (Modes::INDIRECT_PAIR, &["(a0):(d3)"]),
 ];
 
 /// The representatives of every mode a position takes.
@@ -121,6 +125,26 @@ fn representatives(spec: &InstructionSpec, position: usize, modes: Modes) -> Vec
                 found.push(Representative::immediate(3, true));
             }
         }
+    }
+    // a bit field's Operand, with a field of numbers, and the first with one
+    // of registers too
+    if modes.contains(Modes::BIT_FIELD) {
+        let mut fields: Vec<Representative> = found
+            .iter()
+            .map(|operand| Representative {
+                text: format!("{}{{3:12}}", operand.text),
+                mode: operand.mode | Modes::BIT_FIELD,
+                ..operand.clone()
+            })
+            .collect();
+        if let Some(first) = found.first() {
+            fields.push(Representative {
+                text: format!("{}{{d4:d5}}", first.text),
+                mode: first.mode | Modes::BIT_FIELD,
+                ..first.clone()
+            });
+        }
+        found = fields;
     }
     found
 }
@@ -177,6 +201,26 @@ fn lines() -> Vec<Line> {
             }
             for written in &sizes {
                 for operands in &combinations {
+                    // A later processor's Form that an earlier Form of the
+                    // Mnemonic takes the line from: `link a6,#3`, written with
+                    // no size, is the 68000's and not `link.l`.
+                    let taken = spec
+                        .forms
+                        .iter()
+                        .take_while(|earlier| *earlier != form)
+                        .any(|earlier| {
+                            form.processor != Processor::M68000
+                                && earlier.arity() == operands.len()
+                                && earlier
+                                    .operands
+                                    .iter()
+                                    .zip(operands)
+                                    .all(|(modes, operand)| modes.contains(operand.mode))
+                                && written.is_none_or(|size| earlier.sizes.accepts(size))
+                        });
+                    if taken {
+                        continue;
+                    }
                     lines.push(Line {
                         spec,
                         form,
@@ -206,7 +250,10 @@ fn refusals(line: &Line, processor: Processor) -> BTreeSet<&'static str> {
     if line.written == Some(SizeSuffix::Byte)
         && line.form.sizes == SizeRule::Any
         && modes.contains(&Modes::AN)
-        && line.spec.family() != Some(Family::Moves)
+        && !matches!(
+            line.spec.family(),
+            Some(Family::Moves | Family::BoundsCheck { .. })
+        )
     {
         codes.insert("address_register_byte_size");
     }
@@ -480,7 +527,13 @@ fn every_form_encodes_and_decodes_back_for(processor: Processor) {
             assert_eq!(size, expected, "`{}`", text.trim());
         } else if !matches!(instruction, Instruction::DBcc(..)) {
             let debug = format!("{instruction:?}");
-            let count = |text: &str| line.operands.iter().filter(|o| o.text == text).count();
+            //an address alone, or with a bit field after it
+            let count = |text: &str| {
+                line.operands
+                    .iter()
+                    .filter(|o| o.text == text || o.text.starts_with(&format!("{text}{{")))
+                    .count()
+            };
             assert_eq!(
                 debug.matches("width: Word").count(),
                 count("{b}"),
@@ -638,6 +691,78 @@ fn gnu_operand(operand: Operand, address: u32, pc_index_zero: bool) -> String {
             true => format!("(0,pc,{})", gnu_index(index)),
             false => format!("({},pc,{})", from_here(target, address), gnu_index(index)),
         },
+        Operand::Extended {
+            base,
+            word,
+            displacement,
+            outer,
+        } => gnu_extended(base, word, displacement, outer, address),
+    }
+}
+
+/// An [`Operand::Extended`] in GNU `as`'s Motorola syntax, every displacement
+/// with its width written, `.w` or `.l`, and a suppressed base or index named
+/// `za0`, `zpc` or `zd0`, so that `as` writes the extension word the Operand
+/// keeps; from the program counter, the displacement from `.`, as
+/// [`gnu_operand`] writes one.
+fn gnu_extended(
+    base: IndexBase,
+    word: ExtensionWord,
+    displacement: i32,
+    outer: i32,
+    address: u32,
+) -> String {
+    let index = || {
+        let register = word.index_register();
+        format!("{}*{}", gnu_index(register), word.scale())
+    };
+    let pc_relative = base.is_pc() && !word.base_suppressed();
+    let at = |value: i32| match pc_relative {
+        true => from_here(value as u32, address),
+        false => value.to_string(),
+    };
+    let base_name = match (base.address_register(), word.base_suppressed()) {
+        (Some(number), false) => format!("a{number}"),
+        (None, false) => "pc".to_string(),
+        (Some(number), true) => format!("za{number}"),
+        (None, true) => "zpc".to_string(),
+    };
+    if !word.is_full() {
+        return format!("({},{base_name},{})", at(displacement), index());
+    }
+    let sized = |text: String, size: DisplacementSize| match size {
+        DisplacementSize::Null => None,
+        DisplacementSize::Word => Some(format!("{text}.w")),
+        DisplacementSize::Long => Some(format!("{text}.l")),
+    };
+    let base_displacement = sized(at(displacement), word.base_displacement_size());
+    let outer = sized(outer.to_string(), word.outer_displacement_size());
+    let index = word.index().map(|_| index());
+    let join =
+        |parts: Vec<Option<String>>| parts.into_iter().flatten().collect::<Vec<_>>().join(",");
+    match word.indirection() {
+        Indirection::None => format!(
+            "({})",
+            join(vec![
+                base_displacement,
+                Some(base_name),
+                index.or(Some("zd0".to_string()))
+            ])
+        ),
+        Indirection::Preindexed => {
+            let after = outer.map(|outer| format!(",{outer}")).unwrap_or_default();
+            format!(
+                "([{}]{after})",
+                join(vec![base_displacement, Some(base_name), index])
+            )
+        }
+        Indirection::Postindexed => {
+            let inner = join(vec![base_displacement, Some(base_name)]);
+            match join(vec![index, outer]) {
+                after if after.is_empty() => format!("([{inner}])"),
+                after => format!("([{inner}],{after})"),
+            }
+        }
     }
 }
 
@@ -661,8 +786,8 @@ fn gnu_list(mask: u16, target: Operand) -> String {
 /// `address`, with an explicit mnemonic, or `None` where it has none: `as`
 /// writes `cmp #n,dn` and `and #n,dn` as `cmpi` and `andi`, and a `move.l`
 /// of a byte as `moveq`, whatever is written; SIMHALT is EASy68K's; and the
-/// 68020's instructions are left to its batch. The 68010's are written as
-/// `as -m68010` reads them.
+/// long branches are left to the 68020's own tests. The 68010's and the
+/// 68020's are written as `as -m68010` and `-m68020` read them.
 fn gnu_line(instruction: &Instruction, address: u32, pc_index_zero: bool) -> Option<String> {
     use Instruction as I;
     let operand = |operand: Operand| gnu_operand(operand, address, pc_index_zero);
@@ -688,13 +813,118 @@ fn gnu_line(instruction: &Instruction, address: u32, pc_index_zero: bool) -> Opt
             Operand::Register(RegisterOperand::Data(_)),
             Size::Long,
         ) if (-128..=127).contains(&(value as i32)) => return None,
-        I::SIMHALT
-        | I::IllegalWord(_)
-        | I::LINEA(_)
-        | I::LINEF(_)
-        | I::EXT(_, Size::Byte, Size::Long) => return None,
+        I::SIMHALT | I::IllegalWord(_) | I::LINEA(_) | I::LINEF(_) => return None,
+        I::EXT(register, Size::Byte, Size::Long) => format!("extb.l {}", gnu_register(register)),
         I::MOVEfromCCR(target) => format!("move.w ccr,{}", operand(target)),
         I::RTD(displacement) => format!("rtd #{}", displacement as i32),
+        I::CHKL(bound, register) => two("chk", Size::Long, bound, Operand::Register(register)),
+        I::BF {
+            operation,
+            target,
+            field,
+            register,
+        } => {
+            let value = |value: FieldValue| match value {
+                FieldValue::Register(number) => format!("d{number}"),
+                FieldValue::Immediate(number) => format!("#{number}"),
+            };
+            let field = format!(
+                "{}{{{}:{}}}",
+                operand(target),
+                value(field.offset),
+                value(field.width)
+            );
+            match operation {
+                BitFieldOperation::Insert => format!("bfins d{register},{field}"),
+                _ if operation.has_register() => {
+                    format!("{} {field},d{register}", operation.mnemonic())
+                }
+                _ => format!("{} {field}", operation.mnemonic()),
+            }
+        }
+        I::PACK(source, destination, adjustment) | I::UNPK(source, destination, adjustment) => {
+            let mnemonic = match instruction {
+                I::PACK(..) => "pack",
+                _ => "unpk",
+            };
+            format!(
+                "{mnemonic} {},{},#0x{adjustment:x}",
+                operand(source),
+                operand(destination)
+            )
+        }
+        I::CHK2(bounds, register, size) => two("chk2", size, bounds, Operand::Register(register)),
+        I::CMP2(bounds, register, size) => two("cmp2", size, bounds, Operand::Register(register)),
+        I::CAS {
+            compare,
+            update,
+            target,
+            size,
+        } => format!(
+            "cas{} d{compare},d{update},{}",
+            gnu_size(size),
+            operand(target)
+        ),
+        I::CAS2 {
+            compare,
+            update,
+            pointers,
+            size,
+        } => format!(
+            "cas2{} d{}:d{},d{}:d{},({}):({})",
+            gnu_size(size),
+            compare.0,
+            compare.1,
+            update.0,
+            update.1,
+            gnu_register(pointers.0),
+            gnu_register(pointers.1)
+        ),
+        I::MULL {
+            source,
+            low,
+            high,
+            sign,
+        } => {
+            let mnemonic = match sign {
+                Sign::Signed => "muls.l",
+                Sign::Unsigned => "mulu.l",
+            };
+            match high {
+                Some(high) => format!("{mnemonic} {},d{high}:d{low}", operand(source)),
+                None => format!("{mnemonic} {},d{low}", operand(source)),
+            }
+        }
+        I::DIVL {
+            source,
+            quotient,
+            remainder,
+            wide,
+            sign,
+        } => {
+            let stem = match sign {
+                Sign::Signed => "divs",
+                Sign::Unsigned => "divu",
+            };
+            match (wide, remainder == quotient) {
+                (true, _) => format!("{stem}.l {},d{remainder}:d{quotient}", operand(source)),
+                (false, true) => format!("{stem}.l {},d{quotient}", operand(source)),
+                (false, false) => {
+                    format!("{stem}l.l {},d{remainder}:d{quotient}", operand(source))
+                }
+            }
+        }
+        I::LINKL(register, displacement) => {
+            format!("link.l {},#{}", gnu_register(register), displacement as i32)
+        }
+        I::TRAPcc(condition, operand) => {
+            let mnemonic = format!("trap{}", condition.suffix());
+            match operand {
+                TrapOperand::None => mnemonic,
+                TrapOperand::Word(value) => format!("{mnemonic}.w #0x{value:x}"),
+                TrapOperand::Long(value) => format!("{mnemonic}.l #0x{value:x}"),
+            }
+        }
         I::BKPT(vector) => format!("bkpt #{vector}"),
         I::MOVEC {
             to_control,
@@ -942,7 +1172,15 @@ fn the_encodings_are_gnu_as_encodings() {
         for_68010 > 100,
         "only {for_68010} lines of the 68010's were checked"
     );
-    println!("{checked} lines checked with -m68000, and {for_68010} of the 68010's with -m68010");
+    let for_68020 = encodings_are_gnu_as_encodings_for(Processor::M68020, "-m68020");
+    assert!(
+        for_68020 > 100,
+        "only {for_68020} lines of the 68020's were checked"
+    );
+    println!(
+        "{checked} lines checked with -m68000, {for_68010} of the 68010's with -m68010, and \
+         {for_68020} of the 68020's with -m68020"
+    );
 }
 
 /// The lines of a Program written for `processor`, by `as` with the option
@@ -1018,6 +1256,83 @@ fn encodings_are_gnu_as_encodings_for(processor: Processor, option: &'static str
         mismatches.join("\n")
     );
     checked
+}
+
+/// The 68020's addressing modes against GNU `as -m68020`: every Operand of
+/// the round trips that a line writes (`super::m68020`), in `lea`, in a
+/// `move` from it, and where it is alterable in a `move` to it and an `add`
+/// to it, encoded by s68k and by `as` the same.
+///
+/// `cargo test --release gnu_as -- --ignored`
+#[test]
+#[ignore = "needs GNU as for m68k, named by S68K_BINUTILS_PREFIX"]
+fn the_68020s_modes_are_gnu_as_encodings() {
+    use super::m68020::{every_brief_operand, every_full_operand};
+    let prefix = std::env::var("S68K_BINUTILS_PREFIX")
+        .expect("S68K_BINUTILS_PREFIX names the m68k binutils, e.g. /usr/bin/m68k-linux-gnu-");
+    let directory = std::env::temp_dir().join(format!("s68k-gnu-as-68020-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let gnu = Gnu {
+        prefix,
+        directory,
+        processor: "-m68020",
+    };
+    let address = 0x1000;
+    let (d0, d1) = (
+        Operand::Register(RegisterOperand::Data(0)),
+        Operand::Register(RegisterOperand::Data(1)),
+    );
+    let mut seen = BTreeSet::new();
+    let mut mismatches = Vec::new();
+    for operand in every_full_operand(address)
+        .into_iter()
+        .chain(every_brief_operand(address))
+    {
+        let lea = Instruction::LEA(operand, RegisterOperand::Address(1));
+        if crate::machine::disassemble::disassemble(&lea, None).starts_with("DC.W") {
+            //a word no line writes, which `as` would write otherwise
+            continue;
+        }
+        let mut instructions = vec![lea, Instruction::MOVE(operand, d0, Size::Long)];
+        if !matches!(operand, Operand::Extended { base, .. } if base.is_pc()) {
+            instructions.push(Instruction::MOVE(d1, operand, Size::Word));
+            instructions.push(Instruction::ADD(d1, operand, Size::Long));
+        }
+        for instruction in instructions {
+            let line = gnu_line(&instruction, address, false).expect("a GNU line");
+            if !seen.insert(line.clone()) {
+                continue;
+            }
+            let ours = encode_bytes(&instruction, address).expect("the operand encodes");
+            let theirs = match gnu.assemble(&line) {
+                Ok(bytes) => bytes,
+                // `as` refuses a brief PC-relative index that reaches its own
+                // extension word, which is then written as the displacement 0
+                Err(complaint) if complaint.contains("invalid byte branch offset") => {
+                    let line = line.replace("(.+2,pc,", "(0,pc,");
+                    gnu.assemble(&line)
+                        .unwrap_or_else(|complaint| panic!("`{line}`: {complaint}"))
+                }
+                Err(complaint) => panic!("`{line}`: {complaint}"),
+            };
+            if theirs != ours {
+                mismatches.push(format!("`{line}`: as {theirs:02X?}, s68k {ours:02X?}"));
+            }
+        }
+    }
+    std::fs::remove_dir_all(&gnu.directory).ok();
+    assert!(
+        mismatches.is_empty(),
+        "{} of {} lines differ:\n{}",
+        mismatches.len(),
+        seen.len(),
+        mismatches.join("\n")
+    );
+    assert!(seen.len() > 1000, "only {} lines", seen.len());
+    println!(
+        "{} lines of the 68020's modes checked with -m68020",
+        seen.len()
+    );
 }
 
 /// EASy68K's back-reference rule over a whole program: a value known above

@@ -132,13 +132,16 @@ struct Snapshot {
     machine: MachineState,
     call_stack: Vec<(usize, usize, FrameKind, Option<u8>)>,
     memory: Vec<u8>,
+    /// The instruction that ran last, which the editor highlights while the
+    /// processor waits.
+    last_instruction: usize,
 }
 
 fn snapshot(interpreter: &Interpreter) -> Snapshot {
     let memory = interpreter.get_memory();
     let mut bytes = Vec::new();
     for (start, end) in [(0x0, 0x400), (0x1000, 0x1400), (0xFFFF00, 0x1000000)] {
-        bytes.extend_from_slice(memory.read_bytes(start, end - start).unwrap());
+        bytes.extend_from_slice(&memory.read_bytes(start, end - start).unwrap());
     }
     Snapshot {
         registers: interpreter.get_cpu().get_register_values(),
@@ -155,6 +158,7 @@ fn snapshot(interpreter: &Interpreter) -> Snapshot {
             .map(|frame| (frame.address, frame.source_address, frame.kind, frame.vector))
             .collect(),
         memory: bytes,
+        last_instruction: interpreter.get_current_instruction_address(),
     }
 }
 
@@ -744,9 +748,13 @@ mod reset {
         let after = snapshot(&interpreter);
         assert_eq!(after.pc, before.pc + 6, "`reset` and the `simhalt` after it");
         assert_eq!(
-            Snapshot { pc: before.pc, ..after },
+            Snapshot {
+                pc: before.pc,
+                last_instruction: before.last_instruction,
+                ..after
+            },
             before,
-            "nothing else moved"
+            "nothing else moved but the instruction that ran last"
         );
     }
 
@@ -810,9 +818,16 @@ mod undo {
         assert!(!interpreter.get_machine_state().is_stopped());
         assert_eq!(pending(&interpreter), [3]);
         assert_eq!(
-            Snapshot { status: stopped.status, machine: stopped.machine, pc: stopped.pc, ..snapshot(&interpreter) },
+            Snapshot {
+                status: stopped.status,
+                machine: stopped.machine,
+                pc: stopped.pc,
+                last_instruction: stopped.last_instruction,
+                ..snapshot(&interpreter)
+            },
             stopped,
-            "the rest is as before the `stop`, but the status register it loaded"
+            "the rest is as before the `stop`, but the status register it loaded and the \
+             instruction that ran last"
         );
         //and running on from there takes it before the `stop`
         assert_eq!(interpreter.step(), Ok(InterpreterStatus::Running));
@@ -840,6 +855,33 @@ mod undo {
         interpreter.end_poke().unwrap();
         run_to_the_pause(&mut interpreter);
         assert_eq!(log(&interpreter), [3]);
+    }
+
+    /// The editor highlights the instruction that ran last while the
+    /// processor waits: undoing the handler back to the wait is on the
+    /// `stop` again, not on the handler's last line.
+    #[test]
+    fn undoing_back_to_a_stopped_wait_is_on_the_stop_again() {
+        let code = program("    stop #$2000\nwoken:\n    simhalt", &[]);
+        let mut interpreter = machine(&code);
+        assert_eq!(interpreter.run(), Ok(InterpreterStatus::Stopped));
+        let stop = label(&interpreter, "woken") - 4;
+        assert_eq!(interpreter.get_current_instruction_address(), stop);
+        interpreter.raise_irq(3).unwrap();
+        run_to_the_pause(&mut interpreter);
+        assert_eq!(interpreter.get_current_instruction_address(), label(&interpreter, "woken"));
+        //the `simhalt`, the `rte`, the `move.b` and the IRQ
+        for _ in 0..4 {
+            interpreter.undo().unwrap();
+        }
+        assert_eq!(last_step_kind(&interpreter), ExecutionStepKind::Instruction);
+        assert_eq!(interpreter.get_current_instruction_address(), stop);
+        interpreter.undo().unwrap();
+        assert_eq!(
+            interpreter.get_current_instruction_address(),
+            stop - 6,
+            "the `lea` before the `stop`"
+        );
     }
 
     #[test]

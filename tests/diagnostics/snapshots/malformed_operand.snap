@@ -7,13 +7,13 @@ input_file: tests/diagnostics/malformed_operand.asm
   {
     "severity": "error",
     "code": "malformed_operand",
-    "message": "This looks like an indirect operand, `(a0)`, but `d0` is not an address register.",
+    "message": "This looks like a displacement operand, `4(a0)`, but `d0` is not an address register.",
     "hint": null,
     "location": {
       "file": "malformed_operand.asm",
       "line": 1,
       "column": 11,
-      "endColumn": 14
+      "endColumn": 15
     },
     "related": []
   },

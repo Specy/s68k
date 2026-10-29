@@ -139,6 +139,10 @@ impl Moira {
             vbr: 0,
             sfc: 0,
             dfc: 0,
+            //a 68010's, which has none of them
+            msp: 0,
+            cacr: 0,
+            caar: 0,
         };
         unsafe {
             ffi::s68k_moira_state(

@@ -1,6 +1,7 @@
-This folder holds two things from Musashi, https://github.com/kstenerud/Musashi:
-m68000-valid.hex, a table generated from its disassembler, and mc68000/, its
-self-checking test programs. Both are covered by Musashi's licence, at the end.
+This folder holds three things from Musashi, https://github.com/kstenerud/Musashi:
+m68000-valid.hex, a table generated from its disassembler, and mc68000/ and
+mc68040/, its self-checking test programs. All are covered by Musashi's
+licence, at the end.
 
 The `musashi` feature's differential harness of the 68010 dialect
 (src/conformance/musashi.rs, src/test/differential.rs) compiles Musashi's own
@@ -79,6 +80,21 @@ They are run by `musashi_programs_pass` in src/test/conformance.rs, through
 Interpreter::from_image, and the ones left out are listed with their reasons
 in src/conformance/skips.rs. Their sources, test/mc68000/*.s, are in
 Musashi's repository and not here.
+
+mc68040/
+========
+
+Seventeen of Musashi's eighteen self-checking programs of the 68040's integer
+instructions, the prebuilt test/mc68040/*.bin of Musashi at the same commit,
+313ebf1bd9f4d0d93341eb5ce21fd8a119e9dbdd, copied unchanged. They are built and
+laid out as the mc68000 ones are, for a 68040 (test/mc68040/Makefile), and
+cover the bit fields, cas and cas2, chk2 and cmp2, the long multiplies and
+divides, trapcc, rtd, jmp and jsr, and shifts by a register. They are run by
+`musashi_68040_programs_pass` in src/test/conformance.rs as 68020 Programs,
+with the checks of the 68040's undefined flags relaxed and the ones not run
+listed with their reasons in src/conformance/skips.rs. interrupt.bin is left
+out: its interrupts come from a register of Musashi's test driver. Their
+sources, test/mc68040/*.s, are in Musashi's repository and not here.
 
 Musashi's licence
 -----------------

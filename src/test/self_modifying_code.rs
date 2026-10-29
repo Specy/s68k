@@ -136,7 +136,7 @@ start:
     assert_eq!(interpreter.get_pc(), 0x1000);
     assert_eq!(data(&interpreter, 0), 0);
     assert_eq!(
-        interpreter.get_memory().read_bytes(0x1000, 2).unwrap(),
+        &*interpreter.get_memory().read_bytes(0x1000, 2).unwrap(),
         [0x52, 0x80],
         "undo wrote the old bytes back"
     );

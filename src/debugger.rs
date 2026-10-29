@@ -22,7 +22,7 @@ use crate::{
     assembler::{program::ProgramSymbol, source::Location, symbols::SymbolKind},
     instructions::{InputSettings, RegisterOperand, Size},
     interpreter::{CodeWrite, Flags, InterpreterStatus, StackPointers, StackTops},
-    machine::{decode::MAX_68000_SIZE, interrupts::MachineState},
+    machine::{decode::MAX_68000_SIZE, interrupts::MachineState, Processor},
 };
 
 /// One thing a step changed, with the value it replaced beside the value it
@@ -87,13 +87,13 @@ pub enum MutationOperation {
         old: InputSettings,
         new: InputSettings,
     },
-    /// The two stack pointers before and after a change of one of them that
-    /// is not a write of A7, or of S: `move An,usp`, a Poke of the USP or the
-    /// SSP, and every write of the status register that changes S, which
-    /// makes A7 the other stack pointer. The values are unchanged by such a
-    /// swap; what moved is which of them A7 is, which the step's status
-    /// register says. Undo puts both back, A7 being the one of the mode
-    /// undo has restored.
+    /// The stack pointers before and after a change of one of them that is
+    /// not a write of A7, or of S or M: `move An,usp`, `movec` of a stack
+    /// pointer, a Poke of one, and every write of the status register that
+    /// changes S, or on a 68020 M, which makes A7 another stack pointer. The
+    /// values are unchanged by such a swap; what moved is which of them A7 is,
+    /// which the step's status register says. Undo puts them all back, A7
+    /// being the one of the mode undo has restored.
     WriteStackPointers {
         old: StackPointers,
         new: StackPointers,
@@ -126,8 +126,9 @@ pub enum MutationOperation {
         old: Box<MachineState>,
         new: Box<MachineState>,
     },
-    /// A control register of the 68010 that is no stack pointer, VBR, SFC or
-    /// DFC, before and after `movec` or a Poke wrote it. Undo puts `old` back.
+    /// A control register that is no stack pointer, the 68010's VBR, SFC or
+    /// DFC or the 68020's CACR or CAAR, before and after `movec` or a Poke
+    /// wrote it. Undo puts `old` back.
     WriteControlRegister {
         register: SystemRegister,
         old: u32,
@@ -189,16 +190,26 @@ pub enum PokeWrite {
 /// written twice reports the value the Poke leaves behind and not the one it
 /// passed through.
 pub enum PokeTarget {
-    Register { register: RegisterOperand, old: u32 },
-    Memory { address: usize, old: Vec<u8> },
-    /// The status register or one of the two stack pointers, the System
-    /// register file's.
-    System { register: SystemRegister, old: u32 },
+    Register {
+        register: RegisterOperand,
+        old: u32,
+    },
+    Memory {
+        address: usize,
+        old: Vec<u8>,
+    },
+    /// A register of the System register file: the status register, a stack
+    /// pointer or a control register.
+    System {
+        register: SystemRegister,
+        old: u32,
+    },
 }
 
-/// The registers of the System register file: the status register and the two
-/// stack pointers, and the 68010's control registers VBR, SFC and DFC, which a
-/// Poke can write beside the CPU file's D0 to A7.
+/// The registers of the System register file: the status register and the
+/// stack pointers, the 68010's control registers VBR, SFC and DFC, and the
+/// 68020's stack pointers ISP and MSP and its cache registers CACR and CAAR,
+/// which a Poke can write beside the CPU file's D0 to A7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SystemRegister {
@@ -206,7 +217,7 @@ pub enum SystemRegister {
     Sr,
     /// The user stack pointer.
     Usp,
-    /// The supervisor stack pointer.
+    /// The supervisor stack pointer: the 68020's interrupt stack pointer.
     Ssp,
     /// The vector base register, the 68010's.
     Vbr,
@@ -214,10 +225,19 @@ pub enum SystemRegister {
     Sfc,
     /// The destination function code, the 68010's.
     Dfc,
+    /// The interrupt stack pointer, the 68020's name for the SSP.
+    Isp,
+    /// The master stack pointer, the 68020's.
+    Msp,
+    /// The cache control register, the 68020's.
+    Cacr,
+    /// The cache address register, the 68020's.
+    Caar,
 }
 
 impl SystemRegister {
-    /// How the editor spells it: `sr`, `usp`, `ssp`, `vbr`, `sfc` or `dfc`.
+    /// How the editor spells it: `sr`, `usp`, `ssp`, `vbr`, `sfc`, `dfc`,
+    /// `isp`, `msp`, `cacr` or `caar`.
     pub fn name(self) -> &'static str {
         match self {
             SystemRegister::Sr => "sr",
@@ -226,16 +246,36 @@ impl SystemRegister {
             SystemRegister::Vbr => "vbr",
             SystemRegister::Sfc => "sfc",
             SystemRegister::Dfc => "dfc",
+            SystemRegister::Isp => "isp",
+            SystemRegister::Msp => "msp",
+            SystemRegister::Cacr => "cacr",
+            SystemRegister::Caar => "caar",
         }
     }
 
-    /// Whether it is one of the 68010's control registers that are no stack
-    /// pointer: VBR, SFC or DFC, which a 68000 does not have.
+    /// Whether it is a control register that is no stack pointer: VBR, SFC
+    /// or DFC, the 68010's, or CACR or CAAR, the 68020's.
     pub fn is_control(self) -> bool {
         matches!(
             self,
-            SystemRegister::Vbr | SystemRegister::Sfc | SystemRegister::Dfc
+            SystemRegister::Vbr
+                | SystemRegister::Sfc
+                | SystemRegister::Dfc
+                | SystemRegister::Cacr
+                | SystemRegister::Caar
         )
+    }
+
+    /// The first processor that has it.
+    pub fn processor(self) -> Processor {
+        match self {
+            SystemRegister::Sr | SystemRegister::Usp | SystemRegister::Ssp => Processor::M68000,
+            SystemRegister::Vbr | SystemRegister::Sfc | SystemRegister::Dfc => Processor::M68010,
+            SystemRegister::Isp
+            | SystemRegister::Msp
+            | SystemRegister::Cacr
+            | SystemRegister::Caar => Processor::M68020,
+        }
     }
 }
 
@@ -443,8 +483,13 @@ pub struct ExecutionStep {
     old_interpreter_status: InterpreterStatus,
 }
 
-/// The most bytes an instruction the Interpreter decodes takes up, which is
-/// what a step keeps of the one it ran.
+/// The most bytes a step keeps of the instruction it ran: the 68000's longest
+/// instruction, ten bytes. A 68020 instruction is up to 22, and one longer
+/// than ten that ran decoded from memory, not as the Program assembled it,
+/// keeps only its first ten, and its step says nothing of what ran
+/// (`Interpreter::ran_by` answers `None`): a step that kept 22 would cost
+/// every step that keeps a history, of every processor, the copy of twelve
+/// bytes more.
 pub const MAX_INSTRUCTION_BYTES: usize = MAX_68000_SIZE as usize;
 
 /// The words of the instruction a step ran ([`ExecutionStep::get_ran`]),
@@ -828,6 +873,19 @@ impl Debugger {
         } else {
             Some(&self.history[self.index_of(0)])
         }
+    }
+    /// The address of the newest instruction step the history holds, which
+    /// is the instruction that ran last before the steps after it: an IRQ and
+    /// a Poke run none. `None` when it holds no instruction step.
+    ///
+    /// Undo reads it to put back the address of the instruction that ran
+    /// last, so that no step has to carry it: it is looked for only on an
+    /// undo, past the IRQs and Pokes since that instruction.
+    pub fn last_instruction_address(&self) -> Option<usize> {
+        (0..self.len)
+            .map(|age| &self.history[self.index_of(age)])
+            .find(|step| step.kind == ExecutionStepKind::Instruction)
+            .map(|step| step.pc)
     }
     /// Records the tops of the stacks before the step being recorded changed
     /// them, the first time it does: a step can follow A7's and swap them.

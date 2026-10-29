@@ -2794,24 +2794,17 @@ start:
         }
 
         #[test]
-        fn a_line_that_does_not_fit_in_memory_is_refused_and_the_interrupt_waits() {
+        fn a_line_that_runs_past_the_end_of_memory_goes_on_at_the_bottom() {
             let mut interpreter = waiting(
                 "move.l #$FFFFF0,a1
     move.b #2,d0
     trap #15",
             );
-            let refused =
-                interpreter.answer_interrupt(InterruptResult::ReadKeyboardString("x".repeat(40)));
-            assert!(
-                matches!(refused, Err(RuntimeError::OutOfBounds(_))),
-                "{:?}",
-                refused
-            );
-            assert_eq!(*interpreter.get_status(), InterpreterStatus::Interrupt);
             interpreter
-                .answer_interrupt(InterruptResult::ReadKeyboardString("ok".to_string()))
-                .expect("a line that fits");
-            assert_eq!(bytes_at(&interpreter, 0xFFFFF0, 3), b"ok\0");
+                .answer_interrupt(InterruptResult::ReadKeyboardString("x".repeat(40)))
+                .expect("the bus wraps round");
+            assert_eq!(bytes_at(&interpreter, 0xFFFFF0, 16), [b'x'; 16]);
+            assert_eq!(bytes_at(&interpreter, 0, 25), [&[b'x'; 24][..], b"\0"].concat());
         }
 
         #[test]

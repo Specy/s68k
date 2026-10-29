@@ -174,7 +174,7 @@ fn a_memory_write_reports_the_value_it_replaced_and_the_value_it_left() {
         other => panic!("expected one memory write, got {:?}", other),
     }
     assert_eq!(
-        interpreter.get_memory().read_bytes(0x2000, 3).unwrap(),
+        &*interpreter.get_memory().read_bytes(0x2000, 3).unwrap(),
         &[0x12, 0x34, 0xff],
         "and nothing past the width it was made at"
     );
@@ -244,7 +244,7 @@ fn a_run_of_bytes_reports_the_bytes_it_replaced_and_the_bytes_it_left() {
     assert_eq!(bytes.1, vec![0xff, 0xff, 0xff], "the bytes it replaced");
     assert_eq!(bytes.2, vec![b'h', b'i', 0], "and the bytes it left");
     assert_eq!(
-        interpreter.get_memory().read_bytes(0x2000, 3).unwrap(),
+        &*interpreter.get_memory().read_bytes(0x2000, 3).unwrap(),
         &[b'h', b'i', 0]
     );
 }

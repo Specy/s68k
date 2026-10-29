@@ -22,8 +22,9 @@
 //! * [`timing`] says how many cycles an instruction, an exception and an IRQ
 //!   take.
 //!
-//! Both are written for a [`Processor`]. The 68000 and the 68010 are decoded
-//! in full and the 68020 in part; the later two are dialects of the 68000,
+//! Both are written for a [`Processor`], or a [`Dialect`], a processor with
+//! the 68020's bit fields or without. All three are decoded in full, the
+//! 68020 but for its module call; the later two are dialects of the 68000,
 //! and each row of the decoder's table names the first processor that has
 //! it, so that a word one of them adds is an illegal instruction on the
 //! processors before it. The frames and the timing are each processor's.
@@ -87,6 +88,37 @@ impl Processor {
     pub fn has(self, first: Processor) -> bool {
         self >= first
     }
+
+    /// Whether the cycle counter counts this processor's exact time, as it
+    /// does the 68000's and the 68010's; the 68020's is an estimate, the
+    /// cache case of its manual's tables, since its real time depends on its
+    /// instruction cache and on how neighbouring instructions overlap
+    /// ([`timing`]).
+    pub fn cycles_exact(self) -> bool {
+        self != Processor::M68020
+    }
+}
+
+/// What words are decoded for: a [`Processor`], and whether the 68020's
+/// bit-field instructions are in, which EASy68K's `opt bit` gives a 68000
+/// Program too, with the 68000's addressing modes (ADR 0011). A processor
+/// alone is its own dialect: the 68020 with its bit fields, the others
+/// without.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Dialect {
+    /// The processor.
+    pub processor: Processor,
+    /// Whether it has the bit-field instructions.
+    pub bit_fields: bool,
+}
+
+impl From<Processor> for Dialect {
+    fn from(processor: Processor) -> Self {
+        Dialect {
+            processor,
+            bit_fields: processor.has(Processor::M68020),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +133,11 @@ mod tests {
         assert!(!Processor::M68010.has(Processor::M68020));
         assert!(Processor::M68020.has(Processor::M68010));
         assert_eq!(Processor::default(), Processor::M68000);
+        assert!(Processor::M68000.cycles_exact() && Processor::M68010.cycles_exact());
+        assert!(
+            !Processor::M68020.cycles_exact(),
+            "the 68020's are an estimate"
+        );
         let names: Vec<_> = Processor::ALL.iter().map(|p| p.name()).collect();
         assert_eq!(names, ["68000", "68010", "68020"]);
         for processor in Processor::ALL {

@@ -238,6 +238,17 @@ export class Program {
         return this.getInfo().bitFields
     }
 
+    /**
+     * Whether {@link Interpreter.getCycles} counts the processor's exact time,
+     * as for the 68000 and the 68010, or an estimate, as for the 68020: the
+     * cache case of the M68020 User's Manual's tables, which say that the real
+     * time depends on the instruction cache and on how neighbouring
+     * instructions overlap. A host shows the 68020's count as an estimate.
+     */
+    hasExactCycles(): boolean {
+        return this.getInfo().cyclesExact
+    }
+
     getLayoutItems(): Uint32Array {
         return this.assembly.wasm_get_layout_items()
     }
@@ -562,22 +573,27 @@ export class Interpreter {
     }
 
     /**
-     * The System register file: the status register and both stack pointers,
-     * and in a program for the 68010 or the 68020 the control registers VBR,
-     * SFC and DFC, which a 68000 program's has no field for. A7 is the SSP
-     * while S is set and the USP while it is not; a program starts with SR
-     * `0x2000`, the SSP at `0x01000000`, the USP at `0x00FF0000` and the
-     * control registers 0.
+     * The System register file: the status register and the stack pointers,
+     * in a program for the 68010 or the 68020 the control registers VBR, SFC
+     * and DFC, which a 68000 program's has no field for, and in one for the
+     * 68020 its interrupt and master stack pointers ISP and MSP and its cache
+     * registers CACR and CAAR. A7 is the USP while S is clear and the SSP
+     * while it is set; the 68020's SSP is its ISP, `isp` naming the same
+     * register, and A7 is the MSP instead while M is set. A program starts
+     * with SR `0x2000`, the SSP at `0x01000000`, the USP at `0x00FF0000`, and
+     * the MSP and the control registers 0.
      */
     getSystem(): SystemRegisters {
         return this.interpreter.wasm_get_system() as SystemRegisters
     }
 
     /**
-     * Write the status register, as `move #n,sr` would: reduced to the bits a
-     * 68000 has (`0xA71F`), and a change of S makes A7 the other stack pointer.
-     * Inside a poke ({@link Interpreter.beginPoke}) it is journaled, so one undo
-     * puts it back with the stacks; outside one it is direct and records nothing.
+     * Write the status register, as `move #n,sr` would: reduced to the bits
+     * the processor has (`0xA71F`, and on a 68020, which adds T0 and M,
+     * `0xF71F`), and a change of S, or on a 68020 of M, makes A7 another stack
+     * pointer. Inside a poke ({@link Interpreter.beginPoke}) it is journaled, so
+     * one undo puts it back with the stacks; outside one it is direct and
+     * records nothing.
      */
     setSr(value: number) {
         this.interpreter.wasm_set_sr(value)
@@ -592,8 +608,9 @@ export class Interpreter {
     }
 
     /**
-     * Write the supervisor stack pointer, which is A7 in supervisor mode. Inside a
-     * poke it is journaled; outside one it is direct.
+     * Write the supervisor stack pointer, which is A7 in supervisor mode: the
+     * 68020's interrupt stack pointer, A7 in supervisor mode with M clear.
+     * Inside a poke it is journaled; outside one it is direct.
      */
     setSsp(value: number) {
         this.interpreter.wasm_set_ssp(value)
@@ -626,6 +643,45 @@ export class Interpreter {
      */
     setDfc(value: number) {
         this.interpreter.wasm_set_dfc(value)
+    }
+
+    /**
+     * Write the 68020's interrupt stack pointer, the SSP under its 68020 name,
+     * as `movec d0,isp` would. Inside a poke it is journaled; outside one it
+     * is direct. It throws an `InvalidArgument` in a program for an earlier
+     * processor.
+     */
+    setIsp(value: number) {
+        this.interpreter.wasm_set_isp(value)
+    }
+
+    /**
+     * Write the 68020's master stack pointer, A7 in supervisor mode with M
+     * set, as `movec d0,msp` would. Inside a poke it is journaled; outside one
+     * it is direct. It throws an `InvalidArgument` in a program for an earlier
+     * processor.
+     */
+    setMsp(value: number) {
+        this.interpreter.wasm_set_msp(value)
+    }
+
+    /**
+     * Write the 68020's cache control register as `movec d0,cacr` would: its E
+     * (bit 0) and F (bit 1) are kept, and the other bits read as 0, as s68k
+     * has no cache. Inside a poke it is journaled; outside one it is direct.
+     * It throws an `InvalidArgument` in a program for an earlier processor.
+     */
+    setCacr(value: number) {
+        this.interpreter.wasm_set_cacr(value)
+    }
+
+    /**
+     * Write the 68020's cache address register as `movec d0,caar` would.
+     * Inside a poke it is journaled; outside one it is direct. It throws an
+     * `InvalidArgument` in a program for an earlier processor.
+     */
+    setCaar(value: number) {
+        this.interpreter.wasm_set_caar(value)
     }
 
     /**
@@ -811,9 +867,11 @@ export class Interpreter {
      * started, or since trap #15 task 30 last cleared it. Each instruction
      * counts its processor's own time, its data included (a multiply by its
      * bits, a shift by its count, a branch taken or not), and so does each
-     * exception and each IRQ (44 on a 68000, 46 on a 68010); the 68010's loop
-     * mode included, and a 68020 counting as a 68010 for now; trap #15's
-     * tasks take none, as in EASy68K. Undo takes a
+     * exception and each IRQ (44 on a 68000, 46 on a 68010, 26 on a 68020);
+     * the 68010's loop mode included; trap #15's tasks take none, as in
+     * EASy68K. The 68000's and the 68010's are exact, and the 68020's an
+     * estimate, the cache case of its manual's tables
+     * ({@link Program.hasExactCycles}). Undo takes a
      * step's cycles back, and each step of the history says what it took, as
      * `cycles`. Task 31 reads the counter into D1.L, 0 once it is past 32 bits.
      */
