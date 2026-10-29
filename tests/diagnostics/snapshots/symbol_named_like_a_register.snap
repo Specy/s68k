@@ -1,0 +1,33 @@
+---
+source: src/test/diagnostics.rs
+expression: diagnostics
+input_file: tests/diagnostics/symbol_named_like_a_register.asm
+---
+[
+  {
+    "severity": "warning",
+    "code": "symbol_named_like_a_register",
+    "message": "`za0` is read as the symbol of that name here, not as the 68020's suppressed register.",
+    "hint": "Rename the symbol to write the register: a symbol called `za0` keeps its meaning wherever it can stand",
+    "location": {
+      "file": "symbol_named_like_a_register.asm",
+      "line": 4,
+      "column": 9,
+      "endColumn": 12
+    },
+    "related": []
+  },
+  {
+    "severity": "warning",
+    "code": "symbol_named_like_a_register",
+    "message": "`zpc` is read as the symbol of that name here, not as the 68020's suppressed register.",
+    "hint": "Rename the symbol to write the register: a symbol called `zpc` keeps its meaning wherever it can stand",
+    "location": {
+      "file": "symbol_named_like_a_register.asm",
+      "line": 5,
+      "column": 9,
+      "endColumn": 12
+    },
+    "related": []
+  }
+]

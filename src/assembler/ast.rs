@@ -269,7 +269,10 @@ pub fn is_program_counter(name: &str) -> bool {
 /// The name of a suppressed register of the 68020's indexed Operands, `zd0`
 /// to `zd7`, `za0` to `za7` and `zpc` (`docs/grammar.md` 2.5): a register
 /// whose place is kept in the encoding and whose value is not added. It is a
-/// register only there, as `pc` is, so a Symbol may still be called so.
+/// register only there, as `pc` is, so a Symbol may still be called so, and
+/// one that is keeps its meaning wherever it can stand
+/// ([`parse_line_reading`](super::parser::parse_line_reading),
+/// `docs/grammar.md` 1.10).
 pub fn suppressed_register(name: &str) -> Option<Suppressed> {
     let name = name.to_ascii_lowercase();
     if name == "zpc" {
@@ -1000,6 +1003,13 @@ pub struct Operation {
     pub operand_field_span: Option<Span>,
     /// Where the whole Operation was written, Operand field included.
     pub span: Span,
+    /// Where a name of a Symbol was written that was read as the Symbol
+    /// though it is a suppressed register's, `za0` in `(za0)`, in an Operand
+    /// the register's reading would have parsed too
+    /// ([`parse_line_reading`](super::parser::parse_line_reading)): what a
+    /// 68020 program, whose register the name would be, is warned of.
+    #[serde(skip)]
+    pub names_read_as_symbols: Vec<Span>,
 }
 
 impl Operation {

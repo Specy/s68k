@@ -917,6 +917,62 @@ trace:
         assert_eq!(d(&interpreter, 6), label(&interpreter, "after"));
     }
 
+    /// The trace frame after an answer is the processor's own, as after any
+    /// other instruction: a 68010's format `$0` and a 68020's format `$2`,
+    /// with the address of the `trap #15` traced, so that the handler's
+    /// `rte` returns after it rather than raising a format error.
+    #[test]
+    fn a_trap_15_task_traced_after_its_answer_pushes_the_processors_frame() {
+        for (processor, format, frame) in [("68010", 0x0024, 8), ("68020", 0x2024, 12)] {
+            let mut interpreter = machine(&format!(
+                "    opt p={processor}
+    org $1000
+start:
+    move.l #trace,$24
+    moveq #4,d0
+    move.w #$A000,sr
+traced:
+    trap #15
+after:
+    simhalt
+trace:
+    move.w 6(a7),d5
+    move.l 2(a7),d6
+    move.l 8(a7),d4
+    andi.w #$7fff,(a7)
+    rte
+"
+            ));
+            let top = a(&interpreter, 7);
+            assert_eq!(interpreter.run(), Ok(InterpreterStatus::Interrupt));
+            interpreter
+                .answer_interrupt(InterruptResult::ReadNumber("7".to_string()))
+                .unwrap();
+            assert_eq!(interpreter.get_pc(), label(&interpreter, "trace") as usize);
+            assert_eq!(a(&interpreter, 7), top - frame, "{processor}");
+            run_to_the_halt(&mut interpreter);
+            assert_eq!(d(&interpreter, 1), 7, "{processor}: the answer was written");
+            assert_eq!(d(&interpreter, 5), format, "{processor}: the format word");
+            assert_eq!(
+                d(&interpreter, 6),
+                label(&interpreter, "after"),
+                "{processor}"
+            );
+            if processor == "68020" {
+                assert_eq!(
+                    d(&interpreter, 4),
+                    label(&interpreter, "traced"),
+                    "the instruction traced"
+                );
+            }
+            assert_eq!(
+                a(&interpreter, 7),
+                top,
+                "{processor}: `rte` popped the frame"
+            );
+        }
+    }
+
     /// An instruction that raised an exception of group 1 did not run, and is
     /// not traced.
     #[test]
@@ -966,6 +1022,8 @@ start:
             MutationOperation::PushException {
                 vector: 32,
                 from: 0x1008,
+                cause: "UnhandledTrap",
+                vbr: 0,
                 ..
             }
         )));
@@ -982,6 +1040,103 @@ start:
                 ..
             }
         )));
+    }
+
+    /// An exception's entry in the history, and its frame of the call stack,
+    /// say what raised it, which tells the two causes of a vector apart, the
+    /// 68020's `trapcc` from `trapv` and its `chk2` from `chk`, and the
+    /// vector base register it was taken with, which the handler can move
+    /// before it returns.
+    #[test]
+    fn an_exception_says_what_raised_it_and_the_vbr_it_was_taken_with() {
+        let mut interpreter = machine(
+            "    opt p=68020
+    org $1000
+start:
+    move.l #$8000,d0
+    movec d0,vbr
+    move.l #handler,$8000+4*6
+    move.l #handler,$8000+4*7
+    moveq #0,d1
+    trapeq
+    moveq #9,d1
+    chk2.b bounds,d1
+    simhalt
+handler:
+    move.l #$9000,d0
+    movec d0,vbr
+    simhalt
+    move.l #$8000,d0
+    movec d0,vbr
+    rte
+bounds:
+    dc.b 0,5
+",
+        );
+        for (vector, cause) in [(7, "ConditionalTrap"), (6, "Chk2OutOfBounds")] {
+            run_to_the_halt(&mut interpreter);
+            let frames = interpreter.get_pretty_call_stack();
+            assert_eq!(frames.len(), 1, "{cause}");
+            assert_eq!(frames[0].vector, Some(vector));
+            assert_eq!(frames[0].cause, Some(cause));
+            assert_eq!(frames[0].vbr, Some(0x8000), "{cause}: not the $9000 of now");
+            let pushed = interpreter
+                .get_last_steps(10)
+                .iter()
+                .flat_map(|step| step.get_mutations())
+                .find_map(|mutation| match mutation {
+                    MutationOperation::PushException {
+                        vector, cause, vbr, ..
+                    } => Some((*vector, *cause, *vbr)),
+                    _ => None,
+                });
+            assert_eq!(pushed, Some((vector, cause, 0x8000)));
+            let json = serde_json::to_value(&frames[0]).unwrap();
+            assert_eq!(json["cause"], cause);
+            assert_eq!(json["vbr"], 0x8000);
+        }
+        run_to_the_halt(&mut interpreter);
+        assert!(interpreter.get_pretty_call_stack().is_empty());
+    }
+
+    /// The name an exception's cause is given is its `type` in TypeScript,
+    /// the name serde gives the variant.
+    #[test]
+    fn a_cause_is_named_as_its_error_crosses() {
+        for error in [
+            RuntimeError::BusError {
+                address: 0,
+                size: Size::Word,
+                access: Access::Read,
+                range: crate::assembler::program::MemoryRangeKind::Invalid,
+            },
+            RuntimeError::AddressError {
+                address: 1,
+                size: Size::Word,
+                access: Access::Read,
+            },
+            RuntimeError::IllegalInstruction,
+            RuntimeError::DivisionByZero,
+            RuntimeError::ChkOutOfBounds { value: 0, bound: 0 },
+            RuntimeError::Chk2OutOfBounds {
+                value: 0,
+                lower: 0,
+                upper: 0,
+            },
+            RuntimeError::OverflowException,
+            RuntimeError::ConditionalTrap,
+            RuntimeError::PrivilegeViolation,
+            RuntimeError::Trace,
+            RuntimeError::LineA(0xA000),
+            RuntimeError::LineF(0xF000),
+            RuntimeError::FormatError { format: 3 },
+            RuntimeError::UnhandledTrap { vector: 32 },
+            RuntimeError::Irq { level: 2 },
+            RuntimeError::UnsupportedTrapTask { task: 200 },
+        ] {
+            let json = serde_json::to_value(&error).unwrap();
+            assert_eq!(json["type"], error.name());
+        }
     }
 
     /// A return to an odd address takes its frame off the call stack: the

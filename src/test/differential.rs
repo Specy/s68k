@@ -1180,10 +1180,13 @@ fn extended_case(random: &mut Random) -> (Operand, Case) {
 /// s68k's 24-bit bus: random Operands of every mode ([`extended_case`]) in
 /// `lea`, a `move` from them and to them, an `add` to them, `clr` and `jmp`,
 /// from random states, the registers, the program counter and the bytes
-/// written compared. Musashi models every mode, so nothing is relaxed but
-/// the cases in which s68k takes an exception: an odd address, which the
-/// 68020 reads and writes and s68k's 68020 does not yet, and whose frames
-/// are the 68020's to come.
+/// written compared, where an exception's frame would be. Musashi models
+/// every mode, and reads and writes data at an odd address as the 68020 and
+/// s68k's 68020 do, so those cases are compared too. Left out is only the
+/// address error of a jump to an odd address, the one exception these
+/// cases raise, which s68k's 68020 takes and Musashi's does not, having no
+/// address error on a 68020 (the first of [`RELAXATIONS_SUPERVISOR`]); the
+/// runs of the supervisor model compare every other exception and its frame.
 #[cfg(feature = "musashi")]
 #[test]
 #[ignore = "needs Musashi: scripts/fetch-musashi.sh, then --features musashi"]
@@ -1217,7 +1220,9 @@ fn the_68020s_addressing_modes_do_what_musashi_does() {
         let mut ours = interpreter_for(&case, Processor::M68020);
         let stepped = ours.step();
         let (our_writes, vectors) = interpreter_writes(&ours);
-        if stepped.is_err() || !vectors.is_empty() {
+        let odd_jump = matches!(instruction, Instruction::JMP(_))
+            && vectors.contains(&crate::machine::exception::ADDRESS_ERROR);
+        if stepped.is_err() || odd_jump {
             skipped += 1;
             continue;
         }
@@ -1246,7 +1251,10 @@ fn the_68020s_addressing_modes_do_what_musashi_does() {
             ));
         }
     }
-    println!("{compared} cases of the 68020's addressing modes compared, {skipped} left out");
+    println!(
+        "{compared} cases of the 68020's addressing modes compared, {skipped} jumps to an odd \
+         address left out"
+    );
     assert!(compared > 20_000, "only {compared} compared");
     assert!(
         differences.is_empty(),

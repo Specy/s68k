@@ -825,4 +825,77 @@ data:
         //the IRQ, its `rte`, the `tst` out of loop mode, the `dbra` that enters it again
         assert_eq!(cycles[..4], [46, 24, 8, 10]);
     }
+
+    /// A write of the program's into a loop in loop mode ends it, as the
+    /// instruction written is decoded again with its own time: here the
+    /// `move` that writes its own word back, on its third turn, after which
+    /// the `dbra` whose counter runs out takes the 16 of a `DBcc` out of loop
+    /// mode. Undone and run again, the loop takes what it took.
+    #[test]
+    fn a_code_write_into_a_loop_ends_loop_mode() {
+        let body = "    lea area,a1
+    move.w copy,d1
+    moveq #2,d0
+    bra.s copy
+area:
+    dc.w 0,0
+copy:
+    move.w d1,(a1)+
+    dbra d0,copy
+    simhalt";
+        let mut interpreter = m68010(body);
+        let first = step_cycles(&mut interpreter);
+        //the move and the dbra that enters loop mode, a turn in it, the move that writes into
+        //it, and the dbra out of it
+        assert_eq!(first[4..], [8, 10, 4, 6, 4, 16, 0]);
+        for _ in 0..5 {
+            interpreter.undo().unwrap();
+        }
+        let mut again = first[..first.len() - 5].to_vec();
+        again.extend(step_cycles(&mut interpreter));
+        assert_eq!(again, first);
+        undo_restores_every_step(m68010(body));
+    }
+
+    /// A Poke into a loop in loop mode ends it too: the instruction poked
+    /// takes its own time, and the `dbra` after it its own, which enters loop
+    /// mode again. Undoing the Poke puts the loop back in loop mode, as the
+    /// Poke found it.
+    #[test]
+    fn a_poke_into_a_loop_ends_loop_mode_and_its_undo_puts_it_back() {
+        let body = "    lea data,a0
+    move.w #4,d0
+spin:
+    tst.w (a0)+
+    dbra d0,spin
+    simhalt
+data:
+    dcb.w 8,1";
+        let mut interpreter = m68010(body);
+        for _ in 0..6 {
+            interpreter.step().unwrap();
+        }
+        let spin = interpreter.get_program().symbols()["spin"].value as usize;
+        let poke = |interpreter: &mut Interpreter| {
+            interpreter.begin_poke().unwrap();
+            //tst.w (a1)+, which loops as tst.w (a0)+ does
+            interpreter.write_memory_bytes(spin, &[0x4A, 0x59]).unwrap();
+            assert!(interpreter.end_poke().unwrap());
+        };
+        poke(&mut interpreter);
+        let cycles = step_cycles(&mut interpreter);
+        assert_eq!(
+            cycles,
+            [8, 10, 6, 6, 6, 10, 0],
+            "out of loop mode for a turn, then in it again"
+        );
+        let mut interpreter = m68010(body);
+        for _ in 0..6 {
+            interpreter.step().unwrap();
+        }
+        poke(&mut interpreter);
+        interpreter.undo().unwrap();
+        let cycles = step_cycles(&mut interpreter);
+        assert_eq!(cycles, [6, 6, 6, 6, 6, 10, 0], "still in loop mode");
+    }
 }

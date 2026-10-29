@@ -678,6 +678,16 @@ pub enum DiagnosticKind {
         /// The bit it reaches.
         bit: u8,
     },
+    /// A name of the 68020's suppressed registers, `za0` to `za7`, `zd0` to
+    /// `zd7` or `zpc`, that a Symbol has, read as the Symbol in a 68020
+    /// Program's Operand that the register could have stood in too: `(za0)`
+    /// is the Symbol's address there, and not the register. A warning: it
+    /// assembles, as the Symbol, which keeps its meaning wherever it can
+    /// stand.
+    SymbolNamedLikeARegister {
+        /// The name as it was written.
+        name: String,
+    },
     /// A `memory` line whose first word is not one of the four kinds of range
     /// EASy68K's memory map has, or that names none (`MEMORY` in its
     /// `DIRECTIV.CPP`).
@@ -860,6 +870,7 @@ pub const ALL_CODES: &[&str] = &[
     "needs_a_later_processor",
     "short_branch_marks_a_long_branch",
     "bit_number_wraps",
+    "symbol_named_like_a_register",
 ];
 
 impl DiagnosticKind {
@@ -953,6 +964,7 @@ impl DiagnosticKind {
                 "short_branch_marks_a_long_branch"
             }
             DiagnosticKind::BitNumberWraps { .. } => "bit_number_wraps",
+            DiagnosticKind::SymbolNamedLikeARegister { .. } => "symbol_named_like_a_register",
         }
     }
 
@@ -975,7 +987,8 @@ impl DiagnosticKind {
             | DiagnosticKind::EmptyMemoryRange { .. }
             | DiagnosticKind::MemoryRangeReplaced { .. }
             | DiagnosticKind::UnknownOption { .. }
-            | DiagnosticKind::BitNumberWraps { .. } => Severity::Warning,
+            | DiagnosticKind::BitNumberWraps { .. }
+            | DiagnosticKind::SymbolNamedLikeARegister { .. } => Severity::Warning,
             DiagnosticKind::BareComment
             | DiagnosticKind::SpaceBeforeComma
             | DiagnosticKind::DoubleQuotedString
@@ -1240,6 +1253,10 @@ impl DiagnosticKind {
             DiagnosticKind::ShortBranchToNextInstruction { branch, .. } => format!(
                 "`{branch}` to the next instruction has a displacement of 0, which a 68000 reads \
                  as the mark of a word branch."
+            ),
+            DiagnosticKind::SymbolNamedLikeARegister { name } => format!(
+                "`{name}` is read as the symbol of that name here, not as the 68020's \
+                 suppressed register."
             ),
             DiagnosticKind::BitNumberWraps { number, width, bit } => format!(
                 "Bit {number} is bit {bit}: {} has {width} bits, and the 68000 takes the bit \
@@ -1604,6 +1621,10 @@ impl DiagnosticKind {
             ),
             DiagnosticKind::BitNumberWraps { bit, .. } => Some(format!(
                 "Write `#{bit}` if bit {bit} is the one meant; bits are numbered from 0"
+            )),
+            DiagnosticKind::SymbolNamedLikeARegister { name } => Some(format!(
+                "Rename the symbol to write the register: a symbol called `{name}` keeps its \
+                 meaning wherever it can stand"
             )),
             DiagnosticKind::ShortBranchToNextInstruction { mnemonic, .. }
             | DiagnosticKind::ShortBranchMarksALongBranch { mnemonic, .. } => Some(format!(
@@ -2402,6 +2423,12 @@ mod tests {
                 },
                 "bit_number_wraps",
             ),
+            (
+                DiagnosticKind::SymbolNamedLikeARegister {
+                    name: "za0".to_string(),
+                },
+                "symbol_named_like_a_register",
+            ),
         ]
     }
 
@@ -2471,7 +2498,8 @@ mod tests {
                 | "empty_memory_range"
                 | "memory_range_replaced"
                 | "unknown_option"
-                | "bit_number_wraps" => Severity::Warning,
+                | "bit_number_wraps"
+                | "symbol_named_like_a_register" => Severity::Warning,
                 "bare_comment"
                 | "space_before_comma"
                 | "double_quoted_string"

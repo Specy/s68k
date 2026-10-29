@@ -243,7 +243,10 @@ export class Program {
      * as for the 68000 and the 68010, or an estimate, as for the 68020: the
      * cache case of the M68020 User's Manual's tables, which say that the real
      * time depends on the instruction cache and on how neighbouring
-     * instructions overlap. A host shows the 68020's count as an estimate.
+     * instructions overlap. A host shows the 68020's count as an estimate, and
+     * that of a program for the 68000 or the 68010 under `opt bit` that has a
+     * bit-field instruction, whose bit fields take EASy68K's time, the
+     * 68020's cache case.
      */
     hasExactCycles(): boolean {
         return this.getInfo().cyclesExact

@@ -1399,6 +1399,9 @@ impl<'a> Layout<'a> {
         // unknown Mnemonic, an instruction that is not implemented and a
         // Directive it has nothing to say about all reach it the same way.
         let instruction = self.analyze(index, &plan);
+        if matches!(plan.item, Item::Instruction(_)) {
+            self.warn_of_symbols_named_like_registers(index);
+        }
         let (length, kind) = match plan.item {
             Item::Instruction(size) => (size, 0),
             Item::Data(length) => (length, 1),
@@ -1468,6 +1471,33 @@ impl<'a> Layout<'a> {
                 location: self.unit.whole_line(index),
             }),
             Item::Nothing => {}
+        }
+    }
+
+    /// `symbol_named_like_a_register` about each name of an instruction's
+    /// Operands that the parser read as a Symbol where the 68020's suppressed
+    /// register could have stood too ([`parse_line_reading`]), in a program for
+    /// the 68020, whose register the name would otherwise be. A program for an
+    /// earlier processor, which has no suppressed register, is told nothing.
+    ///
+    /// [`parse_line_reading`]: super::parser::parse_line_reading
+    fn warn_of_symbols_named_like_registers(&mut self, index: usize) {
+        let Some(operation) = self.line(index).operation.as_ref() else {
+            return;
+        };
+        if operation.names_read_as_symbols.is_empty()
+            || !self.chosen_processor().has(Processor::M68020)
+        {
+            return;
+        }
+        let text = self.text(index);
+        for span in &operation.names_read_as_symbols {
+            let name = span.text(text).to_string();
+            self.raise(
+                index,
+                *span,
+                DiagnosticKind::SymbolNamedLikeARegister { name },
+            );
         }
     }
 

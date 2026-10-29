@@ -32,6 +32,8 @@
 //! 0003](../../../docs/adr/0003-operands-are-parsed-independently-of-the-instruction.md)).
 //! The parser asks [`names`] two questions and no more (see that module).
 
+use std::collections::HashSet;
+
 use super::ast::{
     is_reserved_name, suppressed_register, BaseRegister, BinaryOperator, Comment, CommentKind,
     Expr, FieldValue, IndexRegister, Indirection, Label, Line, Operand, Operation, Register,
@@ -53,7 +55,30 @@ use super::tokenizer::Tokenizer;
 ///
 /// The Diagnostics come back in the order the line reads, left to right.
 pub fn parse_line(text: &str, file: &str, line_index: usize) -> (Line, Vec<Diagnostic>) {
+    parse_line_reading(text, file, line_index, None)
+}
+
+/// [`parse_line`], knowing `symbols`: the names the program gives its
+/// Symbols that are also the names of the 68020's suppressed registers, `za0`
+/// to `za7`, `zd0` to `zd7` and `zpc` (`docs/grammar.md` 2.5).
+///
+/// One of them first inside the `(` or the `([` an Operand opens with is
+/// read as the Symbol wherever the Operand parses so, `(za0)` the Symbol's
+/// address and `(za0,a1,d0)` a displacement, and as the register only where
+/// it does not, `(zd1.l*4)`: the Symbol keeps its meaning, as on the 68000,
+/// which has no suppressed register. The Operation records the names it read
+/// as Symbols where the register's reading would have parsed too
+/// ([`Operation::names_read_as_symbols`]), which a 68020 program is warned
+/// of. With no such name, which is every program but a rare one, it is
+/// [`parse_line`].
+pub fn parse_line_reading(
+    text: &str,
+    file: &str,
+    line_index: usize,
+    symbols: Option<&HashSet<String>>,
+) -> (Line, Vec<Diagnostic>) {
     let mut parser = Parser::new(text, file, line_index);
+    parser.symbols = symbols.filter(|symbols| !symbols.is_empty());
     let line = parser.parse();
     (line, parser.finish())
 }
@@ -107,6 +132,11 @@ pub struct MacroDefinition {
 /// in `mod.rs`, because all three are the parser's Diagnostics
 /// (`docs/grammar.md` section 4).
 pub fn parse_file(file: &str, text: &str) -> ParsedFile {
+    parse_file_reading(file, text, None)
+}
+
+/// [`parse_file`], each line read by [`parse_line_reading`] with `symbols`.
+pub fn parse_file_reading(file: &str, text: &str, symbols: Option<&HashSet<String>>) -> ParsedFile {
     let mut parsed = ParsedFile::default();
     let mut macro_start: Option<(usize, Span)> = None;
     let mut seen_bare_comment = false;
@@ -124,7 +154,7 @@ pub fn parse_file(file: &str, text: &str) -> ParsedFile {
             continue;
         }
 
-        let (line, diagnostics) = parse_line(line_text, file, index);
+        let (line, diagnostics) = parse_line_reading(line_text, file, index, symbols);
         parsed.diagnostics.extend(diagnostics);
 
         if line.bare_comment && !seen_bare_comment {
@@ -359,6 +389,16 @@ struct Parser<'a> {
     /// How many nested `(` the Expression parser is inside, against
     /// [`MAX_NESTING_DEPTH`].
     depth: usize,
+    /// The names of Symbols that are suppressed registers' names too
+    /// ([`parse_line_reading`]), `None` when there are none.
+    symbols: Option<&'a HashSet<String>>,
+    /// The token, by its index, that the Operand being parsed reads as a name
+    /// although it is a suppressed register's: the Symbol's reading of it
+    /// ([`Parser::parse_either_reading`]).
+    symbol_at: Option<usize>,
+    /// Where the names read as Symbols were written, of the Operands whose
+    /// register's reading would have parsed too.
+    read_as_symbols: Vec<Span>,
 }
 
 impl<'a> Parser<'a> {
@@ -375,6 +415,9 @@ impl<'a> Parser<'a> {
             operand_start: 0,
             space_before_comma: None,
             depth: 0,
+            symbols: None,
+            symbol_at: None,
+            read_as_symbols: Vec::new(),
         }
     }
 
@@ -590,6 +633,7 @@ impl<'a> Parser<'a> {
             text,
             operand_field_span,
             span: Span::new(name_token.span.start, end),
+            names_read_as_symbols: std::mem::take(&mut self.read_as_symbols),
         };
         (operation, comment)
     }
@@ -893,11 +937,11 @@ impl<'a> Parser<'a> {
             // already said `operand_expected` about this Operand, so the check
             // after the `,` below stays quiet about the same comma.
             let empty = self.peek().map(|token| token.kind) == Some(TokenKind::Comma);
-            match self
-                .parse_operand()
-                .and_then(|operand| self.parse_pair_tail(operand))
-                .and_then(|operand| self.parse_field_tail(operand))
-            {
+            let parsed = match self.symbol_named_first() {
+                Some(at) => self.parse_either_reading(at),
+                None => self.parse_whole_operand(),
+            };
+            match parsed {
                 Some(operand) => operands.push(operand),
                 None => self.skip_to_next_operand(),
             }
@@ -940,6 +984,71 @@ impl<'a> Parser<'a> {
             }
         }
         operands
+    }
+
+    /// One Operand, with the pair or the bit field that may follow it.
+    fn parse_whole_operand(&mut self) -> Option<Operand> {
+        self.parse_operand()
+            .and_then(|operand| self.parse_pair_tail(operand))
+            .and_then(|operand| self.parse_field_tail(operand))
+    }
+
+    /// The index of the token of a name of [`symbols`](Parser::symbols) that
+    /// stands first inside the `(` or the `([` the Operand at the cursor
+    /// opens with, where it could be the Symbol or the suppressed register.
+    #[inline]
+    fn symbol_named_first(&self) -> Option<usize> {
+        let symbols = self.symbols?;
+        if self.peek()?.kind != TokenKind::LeftParen {
+            return None;
+        }
+        let ahead = match self.peek_at(1)?.kind {
+            TokenKind::LeftBracket => 2,
+            _ => 1,
+        };
+        let token = self.peek_at(ahead)?;
+        (token.kind == TokenKind::Identifier && symbols.contains(self.text_of(token)))
+            .then_some(self.index + ahead)
+    }
+
+    /// The Operand at the cursor, whose token `at` names a Symbol and a
+    /// suppressed register both: read with it as the Symbol when that reading
+    /// is a whole Operand with no error, and as the register otherwise, which
+    /// is how it reads in a program with no such Symbol. A Symbol's reading
+    /// where the register's would have been an Operand too is recorded, for a
+    /// 68020 program's warning.
+    #[cold]
+    #[inline(never)]
+    fn parse_either_reading(&mut self, at: usize) -> Option<Operand> {
+        let (index, found, start, depth) = (
+            self.index,
+            self.diagnostics.len(),
+            self.operand_start,
+            self.depth,
+        );
+        let whole = |parser: &Self, operand: &Option<Operand>| {
+            operand.is_some()
+                && (parser.at_end()
+                    || parser.peek().map(|token| token.kind) == Some(TokenKind::Comma))
+                && !parser.diagnostics[found..].iter().any(Diagnostic::is_error)
+        };
+        self.symbol_at = Some(at);
+        let symbol = self.parse_whole_operand();
+        self.symbol_at = None;
+        let read = whole(self, &symbol);
+        let (after, kept) = (self.index, self.diagnostics.split_off(found));
+        (self.index, self.operand_start, self.depth) = (index, start, depth);
+        let registers = self.parse_whole_operand();
+        if !read {
+            return registers;
+        }
+        if whole(self, &registers) {
+            self.read_as_symbols.push(self.tokens[at].span);
+        }
+        self.diagnostics.truncate(found);
+        self.diagnostics.extend(kept);
+        (self.index, self.operand_start, self.depth) = (after, start, depth);
+        symbol
     }
 
     /// `register_pair` (2.5): a `:` after an Operand makes it the first of a
@@ -1841,6 +1950,9 @@ impl<'a> Parser<'a> {
     /// The suppressed register `ahead` places past the cursor, if that token
     /// is one: `zd0` to `za7` or `zpc`.
     fn suppressed_register_at(&self, ahead: usize) -> Option<Suppressed> {
+        if self.symbol_at == Some(self.index + ahead) {
+            return None;
+        }
         let token = self.peek_at(ahead)?;
         if token.kind != TokenKind::Identifier {
             return None;
@@ -3669,7 +3781,7 @@ mod tests {
             // "Later" is the phase order of the design record, not the
             // calendar: the analyzer, the Directives and the Layout all raise
             // Diagnostics of their own, and none of them is the parser's.
-            const LATER_PHASES: [&str; 50] = [
+            const LATER_PHASES: [&str; 51] = [
                 "unknown_mnemonic",
                 "mnemonic_used_as_label",
                 "wrong_operand_count",
@@ -3720,6 +3832,7 @@ mod tests {
                 "needs_a_later_processor",
                 "short_branch_marks_a_long_branch",
                 "bit_number_wraps",
+                "symbol_named_like_a_register",
             ];
             let expected: Vec<&str> = ALL_CODES
                 .iter()

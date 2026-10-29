@@ -53,7 +53,11 @@
 //!   [`m68020`] holds its exceptions' times and says where the manual gives
 //!   none and what this takes instead. Operands are taken as aligned, as the
 //!   tables assume, so a word or a long at an odd address takes no more.
-//!   [`Processor::cycles_exact`] says which of the three counts are exact.
+//!   [`Processor::cycles_exact`] says which of the three counts are exact,
+//!   and [`Program::cycles_exact`](crate::assembler::program::Program::cycles_exact)
+//!   which a Program's is: an estimate for the 68020, and for a 68000 or a
+//!   68010 Program under `opt bit` with a bit field, which takes EASy68K's
+//!   time, the 68020's cache case.
 
 use super::Processor;
 use crate::instructions::BitFieldOperation;

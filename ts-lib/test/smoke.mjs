@@ -1365,12 +1365,18 @@ assert.equal(frame.kind, 'exception')
 assert.equal(frame.vector, 5)
 assert.equal(frame.label_name, 'HANDLER')
 assert.equal(frame.source_address, afterAddress, 'the frame returns past the divide')
+assert.equal(frame.cause, 'DivisionByZero', 'the frame says what raised it')
+assert.equal(frame.vbr, 0, 'and the table it was taken through')
 const entry = handled.getUndoHistory(1)[0]
 assert.ok(
-    entry.mutations.some(({type, value}) => type === 'PushException' && value.vector === 5 && value.handler === handlerAddress),
+    entry.mutations.some(({type, value}) => type === 'PushException' && value.vector === 5 && value.handler === handlerAddress
+        && value.cause === 'DivisionByZero' && value.vbr === 0),
     'the step journals the exception'
 )
-assert.ok(entry.mutations.some(({type}) => type === 'WriteStackPointers'), 'and the swap to the SSP')
+assert.ok(
+    entry.mutations.some(({type, value}) => type === 'WriteStackPointers' && value.a7 === 'ssp'),
+    'and the swap to the SSP'
+)
 assert.equal(handled.run(), InterpreterStatus.Paused)
 assert.equal(handled.getRegisterValue({type: 'Data', value: 6}), afterAddress)
 assert.deepEqual(handled.getSystem(), {sr: 0x0004, usp: 0x8000, ssp: 0x01000000}, 'rte went back to user mode')
@@ -1467,6 +1473,11 @@ assert.deepEqual(m68020.getSystem(), {
 const swap = m68020.getUndoHistory(20).flatMap((step) => step.mutations)
     .find((mutation) => mutation.type === 'WriteStackPointers' && mutation.value.old.msp !== mutation.value.new.msp)
 assert.deepEqual(swap.value.old, {usp: 0x00ff0000, ssp: 0x01000000, msp: 0}, 'movec msp journals the three')
+assert.ok(
+    m68020.getUndoHistory(20).flatMap((step) => step.mutations)
+        .some((mutation) => mutation.type === 'WriteStackPointers' && mutation.value.a7 === 'msp'),
+    'the write of SR that sets M says A7 became the MSP'
+)
 m68020.beginPoke()
 m68020.setMsp(0xa000)
 m68020.setIsp(0x00f00000)

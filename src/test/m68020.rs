@@ -567,6 +567,49 @@ mod syntax {
         );
     }
 
+    /// A name defined further down in `(d,PC,Xn)`, too far for the 68000's
+    /// byte, is told to write the width its distance needs, `.w` or `.l`,
+    /// keeping the index, which it then assembles with; and a `link` whose
+    /// frame a word cannot hold is told of `link.l`.
+    #[test]
+    fn a_forward_pc_index_too_far_is_told_its_width_and_link_of_link_l() {
+        for (gap, width) in [(200, "w"), (40000, "l")] {
+            let source = |operand: &str| {
+                format!(
+                    "    opt p=68020\n    org $1000\n    move.l {operand},d1\n    ds.b {gap}\nfar:\n    dc.l 1\n"
+                )
+            };
+            let assembly = crate::assembler::assemble_source(&source("(far,pc,d0.w)"));
+            let errors: Vec<_> = assembly
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.is_error())
+                .collect();
+            assert_eq!(errors.len(), 1, "{gap}");
+            assert_eq!(errors[0].code(), "value_out_of_range");
+            let hint = errors[0].hint().unwrap_or_default();
+            assert!(
+                hint.contains(&format!("`(far.{width},pc,d0.w)`")),
+                "{gap}: {hint}"
+            );
+            assert!(!hint.contains("on its own"), "{gap}: the index is kept");
+            assemble(&source(&format!("(far.{width},pc,d0.w)")));
+        }
+        //a base displacement written `.w` that does not hold the distance is told `.l`
+        let assembly = crate::assembler::assemble_source(
+            "    opt p=68020\n    org $1000\n    move.l (far.w,pc,d0.w),d1\n    ds.b 40000\nfar:\n    dc.l 1\n",
+        );
+        let hint = assembly.diagnostics[0].hint().unwrap_or_default();
+        assert!(hint.contains("`(far.l,pc,d0.w)`"), "{hint}");
+        for (processor, advice) in [("68020", "`link.l`"), ("68000", "`suba.l #n,a7`")] {
+            let assembly = crate::assembler::assemble_source(&format!(
+                "    opt p={processor}\n    link a6,#-70000\n"
+            ));
+            let hint = assembly.diagnostics[0].hint().unwrap_or_default();
+            assert!(hint.contains(advice), "{processor}: {hint}");
+        }
+    }
+
     /// An unsized branch back further than a word reaches is long on the
     /// 68020, as vasm makes it, and one forward stays a word, whose hint is
     /// `.l`; `bra.l`, `bsr.l` and `b<cc>.l` are long.
@@ -691,6 +734,116 @@ ahead:
                 .program
                 .is_some()
         );
+    }
+
+    /// `za0` to `za7`, `zd0` to `zd7` and `zpc` are registers only where no
+    /// Symbol has the name: where one does, the parentheses hold the Symbol,
+    /// as on the 68000, which has no suppressed register, `(za0)` its address
+    /// and `(za0,a1,d0)` a displacement, in an instruction and in a
+    /// Directive alike. A 68020 program, whose register the name would be,
+    /// is warned, and the name stays a register where the Symbol cannot
+    /// stand, `(zd1.l*4)`; with no such Symbol it is the register, which a
+    /// 68000 program is told is the 68020's.
+    #[test]
+    fn a_symbol_named_like_a_suppressed_register_keeps_its_meaning() {
+        let program = "    org $1000
+start:
+    lea (za0),a1
+    lea (zd3),a2
+    lea (zpc),a3
+    lea (four,a1,d0),a4
+    lea (za1,a1,d0),a5
+    lea (za1,a1),a6
+    simhalt
+za0:
+    dc.l (za0),(zpc)
+zd3:
+    dc.w 2
+zpc:
+    dc.w 3
+za1 equ 8
+four equ 4
+";
+        let words = |program: &Program| -> Vec<u16> {
+            program
+                .instructions()
+                .iter()
+                .flat_map(|instruction| instruction.bytes.clone())
+                .collect::<Vec<u8>>()
+                .chunks(2)
+                .map(|word| u16::from_be_bytes([word[0], word[1]]))
+                .collect()
+        };
+        let expected = [
+            0x43F9, 0x0000, 0x1022, // lea za0,a1
+            0x45F9, 0x0000, 0x102A, // lea zd3,a2
+            0x47F9, 0x0000, 0x102C, // lea zpc,a3
+            0x49F1, 0x0004, // lea (4,a1,d0.w),a4
+            0x4BF1, 0x0008, // lea (8,a1,d0.w),a5
+            0x4DE9, 0x0008, // lea 8(a1),a6
+            0xFFFF, 0xFFFF,
+        ];
+        for processor in ["68000", "68020"] {
+            let source = format!("    opt p={processor}\n{program}");
+            let assembly = crate::assembler::assemble_source(&source);
+            let built = assembly
+                .program
+                .as_ref()
+                .unwrap_or_else(|| panic!("{processor}: {:?}", assembly.diagnostics));
+            assert_eq!(words(built), expected, "{processor}");
+            let za0 = built.symbols()["za0"].value as u32;
+            let data: Vec<u8> = built
+                .memory()
+                .iter()
+                .find_map(|run| match &run.content {
+                    crate::assembler::program::MemoryContent::Bytes { bytes }
+                        if run.address == za0 as usize =>
+                    {
+                        Some(bytes.clone())
+                    }
+                    _ => None,
+                })
+                .expect("the dc.l");
+            assert_eq!(data[..4], za0.to_be_bytes(), "{processor}: `dc.l (za0)`");
+            let warned: Vec<(&str, usize)> = assembly
+                .diagnostics
+                .iter()
+                .map(|diagnostic| (diagnostic.code(), diagnostic.location.line))
+                .collect();
+            match processor {
+                "68000" => assert!(warned.is_empty(), "{warned:?}"),
+                //the three lines whose name the 68020 would read as a register, and
+                //`(za1,a1)`; `(za1,a1,d0)` and `dc.l` have no register reading
+                _ => assert_eq!(
+                    warned,
+                    [
+                        ("symbol_named_like_a_register", 3),
+                        ("symbol_named_like_a_register", 4),
+                        ("symbol_named_like_a_register", 5),
+                        ("symbol_named_like_a_register", 8),
+                    ]
+                ),
+            }
+        }
+        // where the Symbol cannot stand, the name is the 68020's register, and
+        // nothing is said
+        let scaled = "    lea (zd1.l*4),a0\nzd1:\n    dc.w 0\n";
+        let assembly = crate::assembler::assemble_source(&format!("    opt p=68020\n{scaled}"));
+        assert!(
+            assembly.diagnostics.is_empty(),
+            "{:?}",
+            assembly.diagnostics
+        );
+        assert_eq!(words_of(scaled), words_of("    lea (zd1.l*4),a0"));
+        // and where both can, `(za1,d1)` is the Symbol's `(bd,Xn)`
+        assert_eq!(
+            words_of("    lea (za1,d1),a0\nza1:\n    dc.w 0\n"),
+            [0x41F0, 0x11B0, 0x0000, 0x1008]
+        );
+        // with no Symbol of the name, the register
+        assert_eq!(words_of("    lea (za0),a1"), [0x43F0, 0x01D0]);
+        let assembly = crate::assembler::assemble_source("    lea (za0),a1\n");
+        assert_eq!(assembly.diagnostics[0].code(), "needs_a_later_processor");
     }
 }
 

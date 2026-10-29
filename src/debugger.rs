@@ -21,7 +21,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use crate::{
     assembler::{program::ProgramSymbol, source::Location, symbols::SymbolKind},
     instructions::{InputSettings, RegisterOperand, Size},
-    interpreter::{CodeWrite, Flags, InterpreterStatus, StackPointers, StackTops},
+    interpreter::{CodeWrite, Flags, InterpreterStatus, StackPointer, StackPointers, StackTops},
     machine::{decode::MAX_68000_SIZE, interrupts::MachineState, Processor},
 };
 
@@ -92,11 +92,16 @@ pub enum MutationOperation {
     /// pointer, a Poke of one, and every write of the status register that
     /// changes S, or on a 68020 M, which makes A7 another stack pointer. The
     /// values are unchanged by such a swap; what moved is which of them A7 is,
-    /// which the step's status register says. Undo puts them all back, A7
-    /// being the one of the mode undo has restored.
+    /// `a7`. Undo puts them all back, A7 being the one of the mode undo has
+    /// restored.
     WriteStackPointers {
         old: StackPointers,
         new: StackPointers,
+        /// Which of them A7 is after the change: the one a swap made it, which
+        /// a step that swaps more than once, an `rte` through the 68020's
+        /// throwaway frame or one a program built by hand, passes through in
+        /// order.
+        a7: StackPointer,
     },
     /// An Exception was taken: the processor pushed a frame and jumped
     /// through `vector` to the handler at `handler`, from the instruction at
@@ -105,6 +110,16 @@ pub enum MutationOperation {
         vector: u8,
         from: usize,
         handler: usize,
+        /// What raised it, the name of its
+        /// [`RuntimeError`](crate::interpreter::RuntimeError)
+        /// ([`name`](crate::interpreter::RuntimeError::name)): what tells
+        /// `chk2` from `chk` through vector 6 and `trapcc` from `trapv`
+        /// through vector 7.
+        cause: &'static str,
+        /// The vector base register when it was taken, whose table the
+        /// vector was read from: 0 on a 68000, and wherever `movec` had moved
+        /// it on a 68010 or a 68020.
+        vbr: u32,
     },
     /// `rte` returned from an Exception, from the `rte` at `from` to `to`.
     PopException {
@@ -660,6 +675,11 @@ pub struct CallStackFrame {
     kind: FrameKind,
     /// The vector of an exception frame.
     vector: Option<u8>,
+    /// What raised an exception frame, as
+    /// [`PushException`](MutationOperation::PushException) names it.
+    cause: Option<&'static str>,
+    /// The vector base register an exception frame was taken with.
+    vbr: Option<u32>,
 }
 
 impl CallStackFrame {
@@ -670,15 +690,20 @@ impl CallStackFrame {
             registers,
             kind: FrameKind::Call,
             vector: None,
+            cause: None,
+            vbr: None,
         }
     }
-    /// The frame of an Exception through `vector` into the handler at
+    /// The frame of an Exception through `vector`, which `cause` raised and
+    /// which was read from the table at `vbr`, into the handler at
     /// `address`, which returns to `source_address`.
     pub fn exception(
         address: usize,
         source_address: usize,
         registers: Vec<u32>,
         vector: u8,
+        cause: &'static str,
+        vbr: u32,
     ) -> Self {
         Self {
             address,
@@ -686,6 +711,8 @@ impl CallStackFrame {
             registers,
             kind: FrameKind::Exception,
             vector: Some(vector),
+            cause: Some(cause),
+            vbr: Some(vbr),
         }
     }
     /// What entered the frame.
@@ -695,6 +722,16 @@ impl CallStackFrame {
     /// The vector of an exception frame, `None` for a call.
     pub fn get_vector(&self) -> Option<u8> {
         self.vector
+    }
+    /// What raised an exception frame, the name of its
+    /// [`RuntimeError`](crate::interpreter::RuntimeError); `None` for a call.
+    pub fn get_cause(&self) -> Option<&'static str> {
+        self.cause
+    }
+    /// The vector base register an exception frame was taken with, `None`
+    /// for a call.
+    pub fn get_vbr(&self) -> Option<u32> {
+        self.vbr
     }
     pub fn get_address(&self) -> usize {
         self.address
@@ -978,12 +1015,16 @@ impl Debugger {
         source_address: usize,
         registers: Vec<u32>,
         vector: u8,
+        cause: &'static str,
+        vbr: u32,
     ) {
         self.call_stack.push(CallStackFrame::exception(
             address,
             source_address,
             registers,
             vector,
+            cause,
+            vbr,
         ));
     }
     /// Takes the frame on top of the call stack off when it is an exception
@@ -1015,6 +1056,8 @@ impl Debugger {
                     label_location: Some(label.location.clone()),
                     kind: frame.kind,
                     vector: frame.vector,
+                    cause: frame.cause,
+                    vbr: frame.vbr,
                 },
                 None => PrettyStackFrame {
                     address: frame.address,
@@ -1025,6 +1068,8 @@ impl Debugger {
                     label_location: None,
                     kind: frame.kind,
                     vector: frame.vector,
+                    cause: frame.cause,
+                    vbr: frame.vbr,
                 },
             })
             .collect()
@@ -1055,6 +1100,15 @@ pub struct PrettyStackFrame {
     /// The vector of an exception frame, `None` for a call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vector: Option<u8>,
+    /// What raised an exception frame, the name of its
+    /// [`RuntimeError`](crate::interpreter::RuntimeError), `None` for a call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<&'static str>,
+    /// The vector base register an exception frame was taken with, which
+    /// says where its vector was read even after `movec` has moved the
+    /// table; `None` for a call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vbr: Option<u32>,
 }
 // The TypeScript declaration of this shape is `IStackFrame` in
 // `src/ts_types.rs`, with every other hand-written one.

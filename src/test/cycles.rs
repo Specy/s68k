@@ -464,6 +464,42 @@ handler:
     assert_eq!(cycles[25..], [2 + 4 + 2, 20, 21]);
 }
 
+/// A bit field in five bytes adds its time only once nothing can fault, as
+/// every instruction adds what its data costs: one whose write a read only
+/// range refuses takes the bus error's time and nothing of the field's, on a
+/// 68020, 79 for the long bus fault frame, and on a 68000 under `opt bit`,
+/// 58 from the access it aborted.
+#[test]
+fn a_bit_field_in_five_bytes_whose_write_faults_takes_the_bus_errors_time() {
+    for (dialect, bus_error) in [("opt p=68020", 79), ("opt bit", 58)] {
+        let mut interpreter = Interpreter::new(
+            assemble(&format!(
+                "    {dialect}
+    memory read $3000,$3FFF
+    org $1000
+start:
+    move.l #handler,$8
+    bfset $3000{{4:32}}
+    simhalt
+handler:
+    simhalt"
+            )),
+            Some(InterpreterOptions {
+                keep_history: true,
+                history_size: 10_000,
+            }),
+        );
+        let cycles = costs(&mut interpreter, 2);
+        assert_eq!(cycles[1], bus_error, "{dialect}");
+        let handler = interpreter.get_program().symbols()["handler"].value;
+        assert_eq!(
+            interpreter.get_pc() as i64,
+            handler,
+            "{dialect}: the handler runs"
+        );
+    }
+}
+
 /// A 68020's IRQ takes 26, and 41 in the master state, where it pushes the
 /// throwaway frame too, which `rte` takes 16 more to pop.
 #[test]

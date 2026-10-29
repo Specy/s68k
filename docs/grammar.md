@@ -381,8 +381,18 @@ misused register with an offer to rename it.
 base whose place is kept in the encoding and whose value is not added
 (`zd0`, `za3`, `zpc`). Like `pc` they are registers only inside the
 parentheses of an indexed Operand (2.5), where `pc` is one too, and they are not
-reserved: a Symbol may be called `zd0`, and is read as the register only
-there.
+reserved: a Symbol may be called `zd0`. Where one is, the name keeps the
+Symbol's meaning wherever it can stand. First inside the `(` or the `([` an
+Operand opens with, it is read as the Symbol whenever the Operand parses so,
+`(za0)` the Symbol's address and `(za0,a1,d0)` a displacement, as on the
+68000, which has no suppressed register, and as the register only where it
+does not, `(zd1.l*4)`; in any later place, `(4,za0,d1)`, it is the register.
+Which names are Symbols is known only once every Label of the program is
+read, so a program that names a Symbol so is read twice. A program for the
+68020, whose register the name would otherwise be, is warned where the
+register's reading would have been an Operand too,
+`symbol_named_like_a_register`, rather than the names being reserved under
+`opt p=68020`: a program written for the 68000 keeps assembling as it did.
 
 The special registers are Operands in their own right, not
 Addressing modes, and the parser accepts them at any position of any Operation.
@@ -771,7 +781,8 @@ that starts with `(`, and it is where a recursive-descent parser has to be told
 what to do. Having consumed the `(`:
 
 0. if the next token is `[`, the Operand is a memory indirect `full_index`;
-   if it is a `suppressed_register`, a data register followed by `)`, a size
+   if it is a `suppressed_register` that names no Symbol of the program
+   (1.10), a data register followed by `)`, a size
    or a `*`, or an address register followed by a size or a `*`, it is a
    `full_index` whose base is suppressed or left out (2.5, the 68020's);
 1. if the next token is a `register` or `pc` **and** the one after it is

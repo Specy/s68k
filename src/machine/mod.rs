@@ -93,7 +93,10 @@ impl Processor {
     /// does the 68000's and the 68010's; the 68020's is an estimate, the
     /// cache case of its manual's tables, since its real time depends on its
     /// instruction cache and on how neighbouring instructions overlap
-    /// ([`timing`]).
+    /// ([`timing`]). A Program's own answer is
+    /// [`Program::cycles_exact`](crate::assembler::program::Program::cycles_exact),
+    /// which is an estimate too for the bit fields `opt bit` gives a 68000 or a
+    /// 68010.
     pub fn cycles_exact(self) -> bool {
         self != Processor::M68020
     }

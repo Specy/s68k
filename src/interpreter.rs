@@ -875,16 +875,22 @@ pub const INITIAL_USER_STACK_POINTER: u32 = 0x00FF_0000;
 /// stack pointer while S is clear; while it is set, the supervisor stack
 /// pointer, which on a 68020 is the interrupt stack pointer while M is clear
 /// and the master stack pointer while it is set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// It crosses as the name of its field in [`StackPointers`]: `"usp"`,
+/// `"ssp"` or `"msp"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum StackPointer {
     /// The user stack pointer, USP.
+    #[serde(rename = "usp")]
     User = 0,
     /// The supervisor stack pointer, SSP, which the 68020 calls the interrupt
     /// stack pointer, ISP: the one every exception of a 68000 or a 68010 is
     /// taken on, and an interrupt on a 68020.
+    #[serde(rename = "ssp")]
     Interrupt = 1,
     /// The 68020's master stack pointer, MSP: the supervisor's while M is
     /// set. A 68000 and a 68010 have none.
+    #[serde(rename = "msp")]
     Master = 2,
 }
 
@@ -1485,6 +1491,41 @@ pub enum RuntimeError {
         /// The format of the frame, the four high bits of its format word.
         format: u8,
     },
+}
+
+impl RuntimeError {
+    /// The name of the variant, which is its `type` in TypeScript: what a
+    /// [`PushException`](MutationOperation::PushException) and an exception's
+    /// frame of the call stack say raised it, `"Chk2OutOfBounds"` or
+    /// `"ConditionalTrap"` where `chk` and `trapv` share their vectors.
+    pub fn name(&self) -> &'static str {
+        match self {
+            RuntimeError::Raw(_) => "Raw",
+            RuntimeError::ExecutionLimit(_) => "ExecutionLimit",
+            RuntimeError::OutOfBounds(_) => "OutOfBounds",
+            RuntimeError::AddressError { .. } => "AddressError",
+            RuntimeError::DivisionByZero => "DivisionByZero",
+            RuntimeError::BusError { .. } => "BusError",
+            RuntimeError::IncorrectAddressingMode(_) => "IncorrectAddressingMode",
+            RuntimeError::ChkOutOfBounds { .. } => "ChkOutOfBounds",
+            RuntimeError::OverflowException => "OverflowException",
+            RuntimeError::ConditionalTrap => "ConditionalTrap",
+            RuntimeError::Chk2OutOfBounds { .. } => "Chk2OutOfBounds",
+            RuntimeError::IllegalInstruction => "IllegalInstruction",
+            RuntimeError::PrivilegeViolation => "PrivilegeViolation",
+            RuntimeError::Trace => "Trace",
+            RuntimeError::LineA(_) => "LineA",
+            RuntimeError::LineF(_) => "LineF",
+            RuntimeError::UnhandledTrap { .. } => "UnhandledTrap",
+            RuntimeError::Irq { .. } => "Irq",
+            RuntimeError::UnsupportedTrapTask { .. } => "UnsupportedTrapTask",
+            RuntimeError::InvalidTrapArgument { .. } => "InvalidTrapArgument",
+            RuntimeError::NoPendingInterrupt => "NoPendingInterrupt",
+            RuntimeError::InvalidAnswer { .. } => "InvalidAnswer",
+            RuntimeError::InvalidArgument(_) => "InvalidArgument",
+            RuntimeError::FormatError { .. } => "FormatError",
+        }
+    }
 }
 
 /// What an access that raised an [address error](RuntimeError::AddressError)
@@ -2466,6 +2507,13 @@ impl Interpreter {
         let Some(cleared) = self.memory.cache.take_cleared() else {
             return;
         };
+        //a write into a loop in loop mode ends it, journaled into the step that wrote, so that
+        //undoing the step puts loop mode back
+        if let Some(left) = self.leave_a_written_loop() {
+            if self.keep_history {
+                self.debugger.add_mutation(left);
+            }
+        }
         if self.code_write.is_some() {
             return;
         }
@@ -3183,12 +3231,17 @@ impl Interpreter {
                 return Err(self.halt(fault, vector));
             }
         }
+        //what raised it, and where the table was, for a host that names the frame later
+        let raised = cause.name();
+        let vbr = self.cpu.vbr;
         if self.keep_history {
             self.debugger
                 .add_mutation(MutationOperation::PushException {
                     vector,
                     from,
                     handler: handler as usize,
+                    cause: raised,
+                    vbr,
                 });
         }
         self.debugger.push_exception(
@@ -3196,6 +3249,8 @@ impl Interpreter {
             frame.pc() as usize,
             self.cpu.get_register_values(),
             vector,
+            raised,
+            vbr,
         );
         Ok(())
     }
@@ -3339,13 +3394,14 @@ impl Interpreter {
     /// Journals a change of the stack pointers into the step being executed,
     /// or into the open Poke.
     fn journal_stack_pointers(&mut self, old: StackPointers, new: StackPointers) {
-        let mutation = MutationOperation::WriteStackPointers { old, new };
+        let a7 = self.cpu.active_stack_pointer();
         if self.executing {
             if self.keep_history {
-                self.debugger.add_mutation(mutation);
+                self.debugger
+                    .add_mutation(MutationOperation::WriteStackPointers { old, new, a7 });
             }
         } else if let Some(poke) = self.poke.as_mut() {
-            poke.add_mutation(mutation);
+            poke.add_mutation(MutationOperation::WriteStackPointers { old, new, a7 });
         }
     }
 
@@ -3576,7 +3632,7 @@ impl Interpreter {
                         MutationOperation::SetInputSettings { old, new: _ } => {
                             self.input_settings = *old;
                         }
-                        MutationOperation::WriteStackPointers { old, new: _ } => {
+                        MutationOperation::WriteStackPointers { old, .. } => {
                             self.cpu.restore_stack_pointers(*old);
                         }
                         MutationOperation::PushException { .. } => {
@@ -3622,8 +3678,13 @@ impl Interpreter {
                 //a write not taken yet may be one this undo has just taken back, so none is kept:
                 //the host reads the watched range again, as memory now holds it
                 self.watched_writes.clear();
-                //the old bytes undo wrote back are no code write of the program's
+                //the old bytes undo wrote back are no code write of the program's, and a loop
+                //that undo put back in loop mode takes its loop times again, over the slots a
+                //write into it cleared
                 self.memory.cache.take_cleared();
+                if self.looping.is_some() {
+                    self.restore_the_loop_slots();
+                }
                 self.code_write = None;
                 Ok(step)
             }
@@ -3940,13 +4001,19 @@ impl Interpreter {
         }
         self.take_code_write();
         //the instruction is finished now, and one that started with T set is traced: the trace
-        //exception is its step's, and a vector 9 with no handler ends the program there
+        //exception is its step's, its frame the processor's, as after any other instruction, and
+        //a vector 9 with no handler ends the program there
         if std::mem::take(&mut self.trace_after_answer) && !terminates {
             self.status = InterpreterStatus::Running;
             self.cycles += self.extras.trace;
+            let frame = self.short_frame(
+                exception::TRACE,
+                self.pc as u32,
+                self.current_instruction_address as u32,
+            );
             let traced = self.take_exception(
                 exception::TRACE,
-                Frame::Short { pc: self.pc as u32 },
+                frame,
                 RuntimeError::Trace,
                 self.current_instruction_address,
             );
@@ -5443,9 +5510,6 @@ impl Interpreter {
                     bytes = bytes << 8 | byte as u64;
                 }
                 let shift = count * 8 - bit - width;
-                if count == 5 {
-                    self.cycles += timing::bit_field_in_five_bytes(operation);
-                }
                 (
                     (bytes >> shift) as u32 & mask,
                     Some((address, count, shift, bytes)),
@@ -5486,7 +5550,15 @@ impl Interpreter {
             BitFieldOperation::Set => Some(mask),
             BitFieldOperation::Insert => Some(inserted),
         };
+        //what a field in five bytes adds, once nothing can fault any more: after the read of one
+        //the instruction does not write, and after the write of one it does, which a range of
+        //the memory map can refuse
+        let five_bytes = match place {
+            Some((_, 5, _, _)) => timing::bit_field_in_five_bytes(operation),
+            _ => 0,
+        };
         let Some(written) = written else {
+            self.cycles += five_bytes;
             return Ok(());
         };
         match (target, place) {
@@ -5507,6 +5579,7 @@ impl Interpreter {
             }
             _ => {}
         }
+        self.cycles += five_bytes;
         Ok(())
     }
 
@@ -5991,7 +6064,9 @@ impl Interpreter {
     /// nothing: the instruction takes its loop time, and the `DBcc`
     /// [`timing::LOOP_CONTINUE`] while it branches back. The loop ends when
     /// the counter runs out or the condition is true, at a time of its own,
-    /// and on any exception. It changes the cycles and nothing else.
+    /// on any exception, and on a write into it
+    /// ([`leave_a_written_loop`](Interpreter::leave_a_written_loop)). It
+    /// changes the cycles and nothing else.
     ///
     /// The 68010 also looks at the target before it decrements, so an odd one
     /// is an address error even when the counter runs out, as Moira, which
@@ -6059,6 +6134,47 @@ impl Interpreter {
         if loopable && self.memory.cache.get(at & ADDRESS_MASK).is_some() {
             self.set_loop(Some(at));
         }
+    }
+
+    /// Leaves loop mode when a write has cleared the slot of either
+    /// instruction of its loop, the program's, a trap task's answer or the
+    /// host's: the instruction written is decoded again with its own time, so
+    /// the loop runs out of loop mode, and the `DBcc` that branches back
+    /// enters it again when the loop can still run in it. It answers the
+    /// [`SetLoopMode`](MutationOperation::SetLoopMode) for the caller to
+    /// journal, into the step or the Poke that wrote, when it left.
+    #[cold]
+    #[inline(never)]
+    fn leave_a_written_loop(&mut self) -> Option<MutationOperation> {
+        let at = self.looping?;
+        let looped = at.wrapping_sub(2) & ADDRESS_MASK;
+        let cache = &self.memory.cache;
+        if cache.get(looped).is_some() && cache.get(at & ADDRESS_MASK).is_some() {
+            return None;
+        }
+        self.apply_loop(None);
+        Some(MutationOperation::SetLoopMode {
+            old: Some(at),
+            new: None,
+        })
+    }
+
+    /// Gives the slots of the loop in loop mode their loop times again after
+    /// an undo, which can have put loop mode back where a write into the loop
+    /// cleared them: each is decoded again, as it would be on its next fetch,
+    /// so that the loop's next turns take what they took.
+    #[cold]
+    #[inline(never)]
+    fn restore_the_loop_slots(&mut self) {
+        let Some(at) = self.looping else {
+            return;
+        };
+        for address in [at.wrapping_sub(2) & ADDRESS_MASK, at & ADDRESS_MASK] {
+            if self.memory.cache.get(address).is_none() {
+                self.decode_into_the_cache(address);
+            }
+        }
+        self.apply_loop(Some(at));
     }
 
     /// Enters or leaves loop mode, journaled ([`MutationOperation::SetLoopMode`]):
@@ -6495,7 +6611,9 @@ impl Interpreter {
     pub fn write_memory_bytes(&mut self, address: usize, bytes: &[u8]) -> RuntimeResult<()> {
         if self.poke.is_none() {
             self.memory.write_bytes(address, bytes)?;
-            self.memory.cache.take_cleared();
+            if self.memory.cache.take_cleared().is_some() {
+                self.leave_a_written_loop();
+            }
             self.watch_bytes(address, bytes);
             return Ok(());
         }
@@ -6504,7 +6622,10 @@ impl Interpreter {
             return Ok(());
         }
         self.memory.write_bytes(address, bytes)?;
-        self.memory.cache.take_cleared();
+        let left = match self.memory.cache.take_cleared() {
+            Some(_) => self.leave_a_written_loop(),
+            None => None,
+        };
         self.watch_bytes(address, bytes);
         let poke = self.poke.as_mut().expect("a poke is open");
         poke.add_mutation(MutationOperation::WriteMemoryBytes {
@@ -6512,6 +6633,10 @@ impl Interpreter {
             old: old.clone(),
             new: bytes.to_vec(),
         });
+        //a write into a loop in loop mode ends it, which undoing the Poke puts back
+        if let Some(left) = left {
+            poke.add_mutation(left);
+        }
         poke.add_memory_target(address, old);
         Ok(())
     }

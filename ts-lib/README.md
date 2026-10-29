@@ -626,12 +626,21 @@ interpreter.endPoke()                 // one step; before the 68020 these throw 
 - `movec` journals `WriteControlRegister` with `cacr` and `caar` too, and a
   `movec` of `msp` or `isp` the stack pointers.
 
-A call frame is `kind: 'call'` and has no `vector`. The history journals an
-exception taken as `PushException {vector, from, handler}`, `rte` as
+A call frame is `kind: 'call'` and has no `vector`. An exception frame says
+what raised it, `cause`, the `type` of its error, which tells the two causes of
+a vector apart: `'Chk2OutOfBounds'` from `'ChkOutOfBounds'` through vector 6
+and `'ConditionalTrap'` (`trapcc`) from `'OverflowException'` (`trapv`) through
+vector 7; and `vbr`, the vector base register it was taken with, so its vector
+was read at `vbr + 4 * vector` even after `movec` has moved the table. The
+history journals an exception taken as
+`PushException {vector, from, handler, cause, vbr}`, `rte` as
 `PopException {to, from}`, and every change of S, or of the 68020's M,
 `move An,usp`, `movec` and a poke of a stack pointer as
-`WriteStackPointers {old: {usp, ssp, msp}, new: {usp, ssp, msp}}`, `msp` being
-0 before the 68020; the step's `old_sr` and `new_sr` say which of them A7 was.
+`WriteStackPointers {old: {usp, ssp, msp}, new: {usp, ssp, msp}, a7}`, `msp`
+being 0 before the 68020, and `a7` which of the three A7 is after the change,
+`'usp'`, `'ssp'` or `'msp'`: an `rte` through the 68020's throwaway frame swaps
+twice, to the master stack and then to the stack of the frame there, and says
+which each swap made it.
 
 ### Interrupts
 
@@ -702,7 +711,10 @@ operand take the same; an exception 20, `trapcc` and `trapv` 25, an IRQ 26,
 or 41 with the throwaway frame of the master state. The program says which
 kind of count it gets: `cyclesExact` in `getInfo()`, or `hasExactCycles()`,
 is `true` for the 68000 and the 68010 and `false` for the 68020, whose count a
-host shows as an estimate.
+host shows as an estimate. It is `false` too for a program for the 68000 or the
+68010 under `opt bit` that has a bit-field instruction: its bit fields take
+EASy68K's time, the 68020's cache case, which no 68000 or 68010 has, and every
+other instruction its exact time.
 
 ```ts
 interpreter.getCycles()               // 1234n: a bigint, since the start or task 30
@@ -726,6 +738,17 @@ collection cannot reach. Call `dispose()` on both when a program is done with.
 `S68k.assemble` frees the assembly itself when the source did not build one, so
 live checking on every keystroke leaks nothing.
 
+## Migrating: what the history says about exceptions and stacks
+
+The history and the call stack say what a host used to work out, at no cost to
+an interpreter that keeps no history:
+
+| before | after |
+|---|---|
+| `PushException {vector, from, handler}` | and `cause`, the `type` of the error that raised it, and `vbr`, the vector base register it was taken with |
+| an exception's frame of `getCallStack()` `{kind: 'exception', vector, ...}` | and the same `cause` and `vbr` |
+| `WriteStackPointers {old, new}`, which of them A7 became left to `new_sr` | and `a7`, `'usp'`, `'ssp'` or `'msp'`, after each change, in order within a step |
+
 ## Migrating: the 68020's cycles
 
 The 68020's cycles (above, "Cycles") change what a program for the 68020
@@ -734,7 +757,7 @@ counts, and add one field a host reads:
 | before | after |
 |---|---|
 | a 68020 program counted as a 68010: its own instructions and modes a placeholder, an exception 38, an IRQ 46 | the manual's cache case, an estimate: `moveq` 2, `mulu.w` 27, a shift 4 to 12 by any count, an exception 20, an IRQ 26 |
-| | `cyclesExact` in `ProgramInfo`, and `Program.hasExactCycles()` |
+| | `cyclesExact` in `ProgramInfo`, and `Program.hasExactCycles()`, `false` for the 68020 and for a program under `opt bit` with a bit-field instruction |
 
 ## Migrating: the 68020's supervisor model
 
@@ -763,6 +786,8 @@ write, and what a host may be told:
 | `chk2`, `cmp2`, `cas`, `cas2`, `pack`, `unpk`, `divsl`, `divul`, `trapcc` and the bit fields refused, `unimplemented_in_dialect`; `muls.l`, `chk.l`, `tst a0` and the like refused under `opt p=68020` | assembled under `opt p=68020`, and the bit fields under `opt bit`; `needs_a_later_processor` on an earlier processor, a bit field's second fix writing `opt bit` |
 | the code `unimplemented_in_dialect` | gone: no instruction is still to come |
 | | the causes `ConditionalTrap`, vector 7, and `Chk2OutOfBounds {value, lower, upper}`, vector 6 |
+| `link.w` refused on every processor, `invalid_size` | assembled under `opt p=68020` as `link`; `needs_a_later_processor` before it, as EASy68K refuses it, its second fix writing `link` without the size |
+| `(za0)`, `(zd3)` and `(zpc)` read as the 68020's suppressed registers in every program, so a 68000 program's Symbol of that name was refused there | a Symbol of the name keeps its meaning wherever it can stand, `(za0)` its address; a 68020 program is warned, the new code `symbol_named_like_a_register` |
 | | `parseLine`'s modes `register_pair`, `indirect_pair` and `bit_field`; `instructionTable`'s modes `Dx:Dy`, `(Rx):(Ry)` and `{offset:width}` |
 
 ## Migrating past 4.0.0: the 68010

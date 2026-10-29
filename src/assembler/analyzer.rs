@@ -1025,7 +1025,8 @@ impl<'a> Analyzer<'a> {
     /// The displacement of `link`, which the 68000 encodes in a word and sign
     /// extends: EASy68K's "Invalid 16 bit data" (`link` in its `BUILD.CPP`).
     /// A frame takes a negative one, so `#$FFFC` is refused as EASy68K
-    /// refuses it, and `#-4` is the way to write it.
+    /// refuses it, and `#-4` is the way to write it. A larger frame is
+    /// `link.l`'s on the 68020, and reserved by hand before it.
     fn check_link_displacement(
         &mut self,
         spec: &'static InstructionSpec,
@@ -1044,16 +1045,17 @@ impl<'a> Analyzer<'a> {
         if (-32768..=32767).contains(&number) {
             return;
         }
+        let advice = match self.context.processor.has(Processor::M68020) {
+            true => "a frame larger than 32 KB takes `link.l`, whose displacement is a long",
+            false => "a frame larger than 32 KB is reserved with `suba.l #n,a7` after the `link`",
+        };
         self.raise(
             DiagnosticKind::ValueOutOfRange {
                 subject: "the displacement of `link`".to_string(),
                 value: number,
                 min: -32768,
                 max: 32767,
-                advice: Some(
-                    "a frame larger than 32 KB is reserved with `suba.l #n,a7` after the `link`"
-                        .to_string(),
-                ),
+                advice: Some(advice.to_string()),
             },
             value.span(),
         );
@@ -1255,7 +1257,14 @@ impl<'a> Analyzer<'a> {
             }
             Operand::PcDisplacement { displacement, .. } => {
                 if !widens(displacement, Modes::PC_INDEX) {
-                    self.check_pc_distance(displacement, extension_offset, "d(PC)", -32768, 32767);
+                    self.check_pc_distance(
+                        operand,
+                        displacement,
+                        extension_offset,
+                        "d(PC)",
+                        -32768,
+                        32767,
+                    );
                 }
             }
             Operand::PcIndex {
@@ -1266,6 +1275,7 @@ impl<'a> Analyzer<'a> {
                 if let Some(displacement) = displacement {
                     if !widens(displacement, Modes::PC_INDEX) {
                         self.check_pc_distance(
+                            operand,
                             displacement,
                             extension_offset,
                             "d(PC,Xn)",
@@ -1296,6 +1306,7 @@ impl<'a> Analyzer<'a> {
                         None | Some(SizeSuffix::Long) => {}
                         Some(SizeSuffix::Word) => match (outer, base) {
                             (false, ast::BaseRegister::ProgramCounter) => self.check_pc_distance(
+                                operand,
                                 &displacement.value,
                                 extension_offset,
                                 "(bd.w,PC)",
@@ -1327,7 +1338,7 @@ impl<'a> Analyzer<'a> {
 
     /// Whether `operand` is in an addressing mode the 68020 added and the
     /// Program's processor does not have: a 68020 indexed form, or an index
-    /// with a scale other than 1.
+    /// with a scale other than 1 ([`first_processor_of`]).
     fn needs_the_68020(&self, operand: &Operand) -> bool {
         if self.context.processor.has(Processor::M68020) {
             return false;
@@ -1350,9 +1361,10 @@ impl<'a> Analyzer<'a> {
     /// instruction's extension word to it ([`lowering::pc_relative_offset`]),
     /// which is the displacement the 68000 encodes. So the number the range is
     /// about is one the student never wrote: the message says what it is and
-    /// the hint says that a plain label has no such limit.
+    /// the hint says how to reach it ([`Self::pc_distance_advice`]).
     fn check_pc_distance(
         &mut self,
+        operand: &Operand,
         address: &ast::Expr,
         extension_offset: i64,
         notation: &str,
@@ -1366,19 +1378,67 @@ impl<'a> Analyzer<'a> {
         if distance >= min && distance <= max {
             return;
         }
-        let text = self.text_of(address.span());
+        let advice = self.pc_distance_advice(operand, address, distance);
         self.raise(
             DiagnosticKind::ValueOutOfRange {
                 subject: format!("the distance a `{notation}` operand reaches"),
                 value: distance,
                 min,
                 max,
-                advice: Some(format!(
-                    "write `{text}` on its own: an absolute address reaches anywhere in memory"
-                )),
+                advice: Some(advice),
             },
             address.span(),
         );
+    }
+
+    /// How to reach an address `distance` bytes away that `operand`'s field
+    /// does not hold. A plain label is an absolute address, which reaches
+    /// anywhere, for `d(PC)`. An index is kept: on the 68020, which reaches
+    /// this far only for a name defined further down, by writing the width
+    /// the distance needs, `(far.w,pc,d0.w)` or `(far.l,pc,d0.w)`, and a
+    /// base displacement written `.w` by writing `.l`; on an earlier
+    /// processor by loading the address into an address register and
+    /// indexing from it.
+    fn pc_distance_advice(&self, operand: &Operand, address: &ast::Expr, distance: i64) -> String {
+        let text = self.text_of(address.span());
+        let absolute =
+            || format!("write `{text}` on its own: an absolute address reaches anywhere in memory");
+        match operand {
+            Operand::PcIndex { index, .. } => {
+                let index = self.text_of(index.span);
+                match self.context.processor.has(Processor::M68020) {
+                    true => {
+                        let width = match (-32768..=32767).contains(&distance) {
+                            true => "w",
+                            false => "l",
+                        };
+                        format!(
+                            "a name defined further down keeps the 68000's field; write the width \
+                             its distance needs after it, `({text}.{width},pc,{index})`, for the \
+                             68020's base displacement"
+                        )
+                    }
+                    false => format!(
+                        "load its address into an address register first, `lea {text},a0`, and \
+                         index from there, `(a0,{index})`"
+                    ),
+                }
+            }
+            // a base displacement written `.w`, which `.l` widens
+            Operand::FullIndex { .. } => {
+                let whole = self.text_of(operand.span());
+                let at = address.span().end.saturating_sub(operand.span().start);
+                match whole.get(at..at + 2) {
+                    Some(width) if width.eq_ignore_ascii_case(".w") => format!(
+                        "write `.l` for a long displacement, `{}.l{}`",
+                        &whole[..at],
+                        &whole[at + 2..]
+                    ),
+                    _ => absolute(),
+                }
+            }
+            _ => absolute(),
+        }
     }
 
     /// The width an absolute address is forced to: `label.w` and `label.l`,
@@ -1519,6 +1579,9 @@ impl<'a> Analyzer<'a> {
                 (Some(Family::Stop), 0) => Size::Word,
                 // the adjustment of `pack` and `unpk`
                 (Some(Family::Pack { .. }), 2) => Size::Word,
+                // the displacement of `link.w`, which is the 68000's `link`'s and
+                // is judged as it is ([`Self::check_link_displacement`])
+                (Some(Family::Link), 1) if size == Some(Size::Word) => continue,
                 _ => match size {
                     Some(size) => size,
                     None => continue,
@@ -1625,6 +1688,18 @@ impl<'a> Analyzer<'a> {
             self.failed = true;
             return;
         }
+        // An Operand of a later processor than the Form's, `msp` in `movec
+        // d0,msp`, is what the line needs: refused for the Form's processor,
+        // whose `opt p=` line would leave it refused again, the line is
+        // refused for the Operand's, the highest of them.
+        let latest = operands
+            .iter()
+            .max_by_key(|operand| first_processor_of(operand))
+            .filter(|operand| first_processor_of(operand) > form.processor);
+        if let Some(operand) = latest {
+            self.needs_the_68020s_modes(operand);
+            return;
+        }
         let needed = form.processor;
         let uppercase = operation.name.chars().any(|c| c.is_ascii_uppercase())
             && !operation.name.chars().any(|c| c.is_ascii_lowercase());
@@ -1690,8 +1765,13 @@ impl<'a> Analyzer<'a> {
                     )),
                 )
             }
-            // EASy68K's `opt bit` gives the earlier processors the bit fields
-            (Some(Family::BitField(_)), _) => {
+            // EASy68K's `opt bit` gives the earlier processors the bit fields,
+            // with their own addressing modes only
+            (Some(Family::BitField(_)), _)
+                if operands
+                    .iter()
+                    .all(|operand| first_processor_of(operand) != Processor::M68020) =>
+            {
                 let program = self.context.processor;
                 let fix = self.context.processor_line.map(|line| match line {
                     ProcessorLine::Chosen(location) => SuggestedFix {
@@ -1715,6 +1795,28 @@ impl<'a> Analyzer<'a> {
                         )
                     }),
                 )
+            }
+            // `link.w`, the 68020's spelling of the 68000's `link`, which is
+            // the same instruction without its size
+            (Some(Family::Link), _) if operation.size == Some(SizeSuffix::Word) => {
+                let whole = operation.span;
+                let equivalent = operation.size_span.map(|size| {
+                    let rewritten = format!(
+                        "{}{}",
+                        &self.text[whole.start..size.start],
+                        &self.text[size.end..whole.end]
+                    );
+                    let fix = SuggestedFix {
+                        title: format!("Write `{rewritten}`"),
+                        location: self.location(size),
+                        text: String::new(),
+                    };
+                    (
+                        format!("write `{rewritten}`, the same instruction without its size"),
+                        fix,
+                    )
+                });
+                (self.text_of(operation.span), equivalent)
             }
             // a shape the 68020 gave a 68000 Mnemonic, `chk.l` or `tst a0`, is
             // named as it was written, as the Mnemonic alone is the 68000's
@@ -1950,6 +2052,24 @@ fn agrees_about_the_special_registers(form: &Form, operands: &[Operand]) -> bool
             _ => allowed.is_empty(),
         }
     })
+}
+
+/// The first processor that has `operand`: the 68020 for its own indexed
+/// forms, an index with a scale other than 1 and its control registers, the
+/// 68010 for its own control registers, and the 68000 for everything else,
+/// a bit field by the Operand it is in.
+fn first_processor_of(operand: &Operand) -> Processor {
+    match operand {
+        Operand::FullIndex { .. } => Processor::M68020,
+        Operand::Index { index, .. } | Operand::PcIndex { index, .. }
+            if index.scale.is_some_and(|scale| scale != 1) =>
+        {
+            Processor::M68020
+        }
+        Operand::SpecialRegister { register, .. } => register.processor(),
+        Operand::BitField { target, .. } => first_processor_of(target),
+        _ => Processor::M68000,
+    }
 }
 
 /// The first word of a Comment field, and where it was written, when that word
@@ -2377,11 +2497,13 @@ mod tests {
                 .0
                 .is_empty()
         );
+        // and its hint keeps the index, which an absolute address would drop
         assert_eq!(
             messages_with("    move.l far(pc,d1.w),d0", symbols([("far", 0x2000)])),
             [
                 "The distance a `d(PC,Xn)` operand reaches is -128 to 127, and `4094` is outside \
-                 it. Write `far` on its own: an absolute address reaches anywhere in memory"
+                 it. Load its address into an address register first, `lea far,a0`, and index \
+                 from there, `(a0,d1.w)`"
             ]
         );
     }
@@ -2795,6 +2917,61 @@ mod tests {
             found[0].message(),
             "`bftst` is a 68020 instruction, and this program is written for the 68000."
         );
+    }
+
+    /// An instruction of the 68010 with an Operand of the 68020's, a control
+    /// register or an addressing mode, needs the 68020, and the fix writes
+    /// `opt p=68020` at once: `opt p=68010` would leave the line refused
+    /// again. A bit field whose Operand is in one of the 68020's modes is not
+    /// offered `opt bit`, which gives the earlier processors only their own.
+    #[test]
+    fn the_fix_asks_for_the_latest_processor_of_the_form_and_its_operands() {
+        let missing = ProcessorLine::Missing {
+            above: Location::new("main.m68k", 0, 0, 0),
+            indentation: "    ".to_string(),
+        };
+        for (text, named) in [
+            ("    movec d0,msp", "`msp` is a 68020 control register"),
+            ("    movec cacr,d1", "`cacr` is a 68020 control register"),
+            (
+                "    moves.l (a0,d0.w*4),d1",
+                "`(a0,d0.w*4)` is a 68020 addressing mode",
+            ),
+        ] {
+            let (codes, _, found) = analyze_for(text, Processor::M68000, Some(&missing));
+            assert_eq!(codes, ["needs_a_later_processor"], "{text}");
+            assert!(
+                found[0].message().starts_with(named),
+                "{text}: {}",
+                found[0].message()
+            );
+            let titles: Vec<&str> = found[0]
+                .fixes
+                .iter()
+                .map(|fix| fix.title.as_str())
+                .collect();
+            assert_eq!(
+                titles,
+                ["Add `opt p=68020` at the top of the program"],
+                "{text}"
+            );
+            assert!(
+                analyze_for(text, Processor::M68020, None).0.is_empty(),
+                "{text} assembles once the fix is applied"
+            );
+        }
+        let (_, _, found) = analyze_for(
+            "    bfextu (8,a0,d1.w*4){0:8},d0",
+            Processor::M68000,
+            Some(&missing),
+        );
+        let titles: Vec<&str> = found[0]
+            .fixes
+            .iter()
+            .map(|fix| fix.title.as_str())
+            .collect();
+        assert_eq!(titles, ["Add `opt p=68020` at the top of the program"]);
+        assert!(!found[0].hint().unwrap().contains("opt bit"));
     }
 
     /// `.l` on a branch is a word where there is no long branch, as in

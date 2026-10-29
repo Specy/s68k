@@ -254,10 +254,6 @@ mod chk_link_tst_cmpi {
             ["invalid_size"]
         );
         assert_eq!(
-            errors("    opt p=68020\n    link.w a6,#-8\n"),
-            ["invalid_size"]
-        );
-        assert_eq!(
             errors("    opt p=68020\n    link a6,#$12345\n"),
             ["value_out_of_range"],
             "an unsized `link` is the 68000's word"
@@ -266,6 +262,58 @@ mod chk_link_tst_cmpi {
             errors("    opt p=68020\n    cmpi.w #1,#2\n"),
             ["invalid_addressing_mode"]
         );
+    }
+
+    /// `link.w` is the 68020 manual's spelling of `link`, which GNU `as` and
+    /// vasm take: under `opt p=68020` it is the 68000's `link`, its words and
+    /// its range. EASy68K refuses the size on the 68000 ("Invalid size
+    /// code"), so a 68000 or a 68010 program is told it is the 68020's and
+    /// offered the `link` it writes, without the size, beside `opt p=68020`.
+    #[test]
+    fn link_w_is_the_68020s_spelling_of_link() {
+        assert_eq!(words_of("    link.w a6,#-8"), [0x4E56, 0xFFF8]);
+        assert_eq!(words_of("    LINK.W A5,#$7FFF"), [0x4E55, 0x7FFF]);
+        assert_eq!(
+            errors("    opt p=68020\n    link.w a6,#$12345\n"),
+            ["value_out_of_range"],
+            "a word, as `link` is"
+        );
+        for processor in ["68000", "68010"] {
+            let code = format!("    opt p={processor}\n    link.w a6,#-8\n");
+            let assembly = crate::assembler::assemble_source(&code);
+            let refused: Vec<_> = assembly
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.is_error())
+                .collect();
+            assert_eq!(refused.len(), 1, "{processor}");
+            assert_eq!(refused[0].code(), "needs_a_later_processor");
+            assert!(
+                refused[0]
+                    .message()
+                    .starts_with("`link.w a6,#-8` is a 68020 instruction"),
+                "{}",
+                refused[0].message()
+            );
+            let fixes: Vec<(&str, &str)> = refused[0]
+                .fixes
+                .iter()
+                .map(|fix| (fix.title.as_str(), fix.text.as_str()))
+                .collect();
+            assert_eq!(
+                fixes,
+                [
+                    (
+                        format!("Change `opt p={processor}` to `opt p=68020`").as_str(),
+                        "68020"
+                    ),
+                    ("Write `link a6,#-8`", ""),
+                ],
+                "{processor}"
+            );
+            let size = &refused[0].fixes[1].location;
+            assert_eq!((size.column, size.end_column), (8, 10), "the `.w`");
+        }
     }
 
     /// `chk.l` compares the whole register, signed, with 0 and the bound;

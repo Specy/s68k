@@ -761,7 +761,10 @@ export type ProgramInfo = {
      * Whether the cycle counter counts the processor's exact time, as it does
      * for the 68000 and the 68010, or an estimate, as for the 68020: the cache
      * case of its manual's tables, since its real time depends on its
-     * instruction cache and on how neighbouring instructions overlap.
+     * instruction cache and on how neighbouring instructions overlap. A
+     * program for the 68000 or the 68010 under `opt bit` that has a bit-field
+     * instruction counts an estimate too: its bit fields take EASy68K's time,
+     * the 68020's cache case, and every other instruction its exact time.
      */
     cyclesExact: boolean
 }
@@ -903,7 +906,20 @@ export type StackFrame = {
     /** A `bsr` or `jsr`, which `rts` returns from, or an exception, which `rte` returns from. */
     kind: "call" | "exception",
     /** The vector of an exception frame; absent for a call. */
-    vector?: number
+    vector?: number,
+    /**
+     * What raised an exception frame, the `type` of its error: what tells the
+     * 68020's `chk2` (`"Chk2OutOfBounds"`) from `chk` through vector 6, and
+     * `trapcc` (`"ConditionalTrap"`) from `trapv` through vector 7. Absent for
+     * a call.
+     */
+    cause?: RuntimeError["type"],
+    /**
+     * The vector base register an exception frame was taken with, whose table
+     * its vector was read from, at `vbr + 4 * vector`, even after `movec` has
+     * moved it; 0 on a 68000. Absent for a call.
+     */
+    vbr?: number
 }
 "#;
 
@@ -1063,24 +1079,37 @@ export type MutationOperation = {
      * The stack pointers before and after `move An,usp`, `movec` of one, a
      * poke of one, or a write of the status register that changed S, or on a
      * 68020 M. A change of S or M moves no value: it makes A7 another one,
-     * which the step's `new_sr` says. `ssp` is the 68020's ISP, and `msp`,
-     * the 68020's master stack pointer, is 0 on the others.
+     * `a7`. `ssp` is the 68020's ISP, and `msp`, the 68020's master stack
+     * pointer, is 0 on the others.
      */
     type: "WriteStackPointers",
     value: {
         old: { usp: number, ssp: number, msp: number },
-        new: { usp: number, ssp: number, msp: number }
+        new: { usp: number, ssp: number, msp: number },
+        /**
+         * Which of them A7 is after the change, named as in `new`: what a swap
+         * made it, in order where a step swaps more than once, as an `rte`
+         * through the 68020's throwaway frame, or a frame a program built by
+         * hand, does.
+         */
+        a7: "usp" | "ssp" | "msp"
     }
 } | {
     /**
      * An exception was taken: a frame pushed on the supervisor stack, and a
      * jump through `vector` from the instruction at `from` to the handler.
+     * `cause` is what raised it, the `type` of its error, which tells the
+     * 68020's `chk2` (`"Chk2OutOfBounds"`) from `chk` and `trapcc`
+     * (`"ConditionalTrap"`) from `trapv`; `vbr` is the vector base register
+     * it was taken with, whose table the vector was read from, 0 on a 68000.
      */
     type: "PushException",
     value: {
         vector: number,
         from: number,
-        handler: number
+        handler: number,
+        cause: RuntimeError["type"],
+        vbr: number
     }
 } | {
     /** `rte` at `from` returned from an exception to `to`. */

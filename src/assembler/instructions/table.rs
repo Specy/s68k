@@ -1180,12 +1180,19 @@ pub const TABLE: &[InstructionSpec] = &[
         Family::Pea,
         &[form(&[Modes::CONTROL], SizeRule::LongOnly)],
     ),
-    // `link.l`, a long displacement, is the 68020's
+    // `link.l`, a long displacement, is the 68020's, and so is `link.w`, the
+    // 68020 manual's spelling of the 68000's `link`, which GNU `as` and vasm
+    // take; EASy68K refuses a size on `link` ("Invalid size code")
     implemented(
         "link",
         Family::Link,
         &[
             form(&[Modes::AN, Modes::IMMEDIATE], SizeRule::Unsized),
+            dialect_form(
+                Processor::M68020,
+                &[Modes::AN, Modes::IMMEDIATE],
+                SizeRule::WordOnly,
+            ),
             dialect_form(
                 Processor::M68020,
                 &[Modes::AN, Modes::IMMEDIATE],
@@ -1929,6 +1936,7 @@ mod tests {
             vec![
                 ("move", 4, Processor::M68010),
                 ("link", 1, Processor::M68020),
+                ("link", 2, Processor::M68020),
                 ("cmp", 3, Processor::M68020),
                 ("cmpi", 1, Processor::M68020),
                 ("divs", 1, Processor::M68020),

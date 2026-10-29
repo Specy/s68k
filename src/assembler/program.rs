@@ -356,6 +356,23 @@ impl Program {
         self.bit_fields
     }
 
+    /// Whether an Interpreter of the Program counts the processor's exact
+    /// cycles: the 68000's and the 68010's are exact
+    /// ([`Processor::cycles_exact`]), and the 68020's an estimate, its
+    /// manual's cache case. A 68000 or a 68010 Program under `opt bit` that
+    /// assembles a bit-field instruction counts an estimate too: a bit field
+    /// takes EASy68K's time, the 68020's cache case for the field and the
+    /// processor's own for its effective address, which no 68000 or 68010
+    /// has; every other instruction of it takes its exact time.
+    pub fn cycles_exact(&self) -> bool {
+        self.processor.cycles_exact()
+            && !(self.bit_fields
+                && self
+                    .instructions
+                    .iter()
+                    .any(|assembled| matches!(assembled.instruction, Instruction::BF { .. })))
+    }
+
     /// What its code is decoded for: its processor, with the bit fields when
     /// it has them.
     pub fn dialect(&self) -> Dialect {

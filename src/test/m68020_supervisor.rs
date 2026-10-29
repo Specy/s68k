@@ -11,11 +11,11 @@
 //! pointers and the frames.
 
 use crate::assembler::program::Program;
-use crate::debugger::SystemRegister;
+use crate::debugger::{MutationOperation, SystemRegister};
 use crate::instructions::{Bytes, Instruction, InterruptResult, RegisterOperand, Size};
 use crate::interpreter::{
-    CodeWrite, Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError, Termination,
-    WatchedWrite,
+    CodeWrite, Interpreter, InterpreterOptions, InterpreterStatus, RuntimeError, StackPointer,
+    Termination, WatchedWrite,
 };
 use crate::machine::decode::decode_words;
 use crate::machine::Processor;
@@ -721,6 +721,48 @@ formaterror:
                 "${format:X}: the flags"
             );
         }
+    }
+
+    /// An `rte` through a throwaway frame a program built by hand swaps the
+    /// stack pointers twice, to the master stack its status register names
+    /// and then to the user stack of the frame there, and the history says
+    /// which each swap made A7, in order, as a host narrates it.
+    #[test]
+    fn the_history_says_which_stack_each_swap_of_an_rte_made_a7() {
+        let mut interpreter = m68020(
+            "    move.l #$8000-8,d0
+    movec d0,msp
+    move.w #$0000,$8000-8
+    move.l #back,$8000-6
+    move.w #$0000,$8000-2
+    move.w #$1068,-(a7)
+    pea back
+    move.w #$3000,-(a7)
+    rte
+back:
+    simhalt",
+        );
+        run_to_the_halt(&mut interpreter);
+        assert_eq!(interpreter.get_sr(), 0x0000, "user mode");
+        let rte = interpreter.get_last_steps(2)[1].clone();
+        let swaps: Vec<StackPointer> = rte
+            .get_mutations()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                MutationOperation::WriteStackPointers { a7, .. } => Some(*a7),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(swaps, [StackPointer::Master, StackPointer::User]);
+        let json = serde_json::to_value(rte.get_mutations()).unwrap();
+        let named: Vec<&serde_json::Value> = json
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|mutation| mutation["type"] == "WriteStackPointers")
+            .map(|mutation| &mutation["value"]["a7"])
+            .collect();
+        assert_eq!(named, ["msp", "usp"]);
     }
 }
 

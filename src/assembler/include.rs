@@ -40,9 +40,9 @@
 //!   [`MAX_ASSEMBLED_LINES`] — [`DiagnosticKind::IncludeTooDeep`], the two
 //!   backstops. Neither can be reached by a program anybody meant to write.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use super::ast::Line;
+use super::ast::{self, Line};
 use super::diagnostics::{Diagnostic, DiagnosticKind};
 use super::instructions::table;
 use super::parser::{self, MacroDefinition, ParsedFile};
@@ -284,10 +284,43 @@ impl<'a> Expansion<'a> {
 /// Project has not got, or one that holds bytes. It is boxed because it is much
 /// the larger half of the answer and the common answer is `Ok`, which is the
 /// arrangement `SymbolTable::define` already uses.
+///
+/// A program that names a Symbol as one of the 68020's suppressed registers,
+/// `za0` to `za7`, `zd0` to `zd7` or `zpc`, is read a second time, knowing
+/// those names, so that such a name in an Operand is the Symbol where it can
+/// be ([`parser::parse_line_reading`]): which names are Symbols is known only
+/// once every File's Labels are read. Every other program is read once.
 #[allow(clippy::type_complexity)]
 pub fn expand<'a>(
     files: &'a Files,
     entry: &str,
+) -> Result<(Expansion<'a>, Vec<(usize, Diagnostic)>), Box<Diagnostic>> {
+    let expanded = expand_reading(files, entry, None)?;
+    let names = symbols_named_as_suppressed_registers(&expanded.0);
+    if names.is_empty() {
+        return Ok(expanded);
+    }
+    expand_reading(files, entry, Some(&names))
+}
+
+/// The names of the Symbols the Labels of `unit` define that are the names
+/// of suppressed registers too: Local labels aside, which are named
+/// otherwise, and as written, since a Symbol's name is case sensitive.
+fn symbols_named_as_suppressed_registers(unit: &Expansion) -> HashSet<String> {
+    (0..unit.len())
+        .filter_map(|at| unit.line(at).label.as_ref())
+        .map(|label| &label.name)
+        .filter(|name| name.len() == 3 && ast::suppressed_register(name).is_some())
+        .cloned()
+        .collect()
+}
+
+/// [`expand`], each File read with `symbols` ([`parser::parse_file_reading`]).
+#[allow(clippy::type_complexity)]
+fn expand_reading<'a>(
+    files: &'a Files,
+    entry: &str,
+    symbols: Option<&HashSet<String>>,
 ) -> Result<(Expansion<'a>, Vec<(usize, Diagnostic)>), Box<Diagnostic>> {
     let wanted = join("", entry);
     let (path, text) = match files.entry(&wanted) {
@@ -311,6 +344,7 @@ pub fn expand<'a>(
     };
     let mut expander = Expander {
         files,
+        symbols,
         read: Vec::new(),
         expanded: Vec::new(),
         by_path: HashMap::new(),
@@ -344,8 +378,10 @@ pub fn expand<'a>(
 }
 
 /// The walk that builds the sequence.
-struct Expander<'a> {
+struct Expander<'a, 's> {
     files: &'a Files,
+    /// The Symbols' names to read as Symbols ([`expand`]).
+    symbols: Option<&'s HashSet<String>>,
     read: Vec<ReadFile<'a>>,
     /// Whether each File's parser Diagnostics have been reported, which is once
     /// however many times the File is included.
@@ -358,13 +394,13 @@ struct Expander<'a> {
     budget_reported: bool,
 }
 
-impl<'a> Expander<'a> {
+impl<'a> Expander<'a, '_> {
     /// Parse a File, or answer the index it was already parsed into.
     fn read_file(&mut self, path: &'a str, text: &'a str) -> usize {
         if let Some(index) = self.by_path.get(path) {
             return *index;
         }
-        let parsed = parser::parse_file(path, text);
+        let parsed = parser::parse_file_reading(path, text, self.symbols);
         self.macros.extend(parsed.macros.iter().cloned());
         let index = self.read.len();
         self.read.push(ReadFile {

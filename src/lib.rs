@@ -242,7 +242,8 @@ pub struct ProgramInfo<'a> {
     pub bit_fields: bool,
     /// Whether the cycle counter of an Interpreter of the Program counts the
     /// processor's exact time, as it does on the 68000 and the 68010, or an
-    /// estimate, the 68020's cache case ([`Processor::cycles_exact`]).
+    /// estimate, the 68020's cache case, which the bit fields of a 68000 or
+    /// a 68010 Program under `opt bit` take too ([`Program::cycles_exact`]).
     pub cycles_exact: bool,
 }
 
@@ -256,7 +257,7 @@ impl<'a> ProgramInfo<'a> {
             symbols: program.symbols(),
             processor: program.processor(),
             bit_fields: program.bit_fields(),
-            cycles_exact: program.processor().cycles_exact(),
+            cycles_exact: program.cycles_exact(),
         }
     }
 }
@@ -773,6 +774,14 @@ mod api_tests {
             ("    OPT CRE,P=68020\n    nop\n", "68020", true, false),
             ("    opt bit\n    nop\n", "68000", true, true),
             ("    opt p=68000,bit\n    nop\n", "68000", true, true),
+            //a bit field under `opt bit` takes EASy68K's time, the 68020's cache case
+            ("    opt bit\n    bftst d0{0:8}\n", "68000", true, false),
+            (
+                "    opt p=68010,bit\n    bfextu (a0){4:8},d1\n",
+                "68010",
+                true,
+                false,
+            ),
         ] {
             let assembly = WasmAssembly::new(assembler::assemble_source(source));
             assert!(assembly.diagnostics().is_empty(), "{source:?}");
