@@ -72,6 +72,12 @@ built — a `warning` or a `suggestion` comes back with a program beside it:
 
 Lines and columns are 0-based, and every location names its file.
 
+The result also says the processor the source is written for, `processor`
+(`'68000'`, `'68010'` or `'68020'`, from its `opt p=` line, `'68000'` when it
+has none) and `bitFields` (`opt bit`, or `opt p=68020`), whether or not it
+built a program, so an editor can follow the processor while the code has an
+error. With a program they are its own `getProcessor()` and `hasBitFields()`.
+
 ### A project of several files
 
 A project is a map from a root-relative path to a file's text, or to the bytes

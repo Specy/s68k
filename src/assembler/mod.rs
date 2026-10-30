@@ -78,20 +78,31 @@ pub mod symbols;
 pub mod token;
 pub mod tokenizer;
 
+use crate::machine::Dialect;
 use diagnostics::Diagnostic;
 use program::Program;
 use source::Files;
 
-/// What the Assembler makes of a Project: everything it found, and the Program
-/// when there is one.
+/// What the Assembler makes of a Project: everything it found, the Processor
+/// dialect it chose, and the Program when there is one.
 ///
 /// `program` is `Some` exactly when no Diagnostic is an error (CONTEXT.md,
 /// "Program"), so a caller that only checks the source — the asm-editor's live
-/// checking — reads `diagnostics` and ignores the rest.
+/// checking — reads `diagnostics` and `dialect` and ignores the rest.
 #[derive(Debug)]
 pub struct Assembly {
     /// Everything every phase found, in source order.
     pub diagnostics: Vec<Diagnostic>,
+    /// The processor the source chose with `opt p=`, and whether it has the
+    /// 68020's bit fields, through `opt bit` or `opt p=68020`: the 68000
+    /// without them when no line chose, or when there was no Entry file to
+    /// read.
+    ///
+    /// It is there whether or not the source builds a Program, which is what
+    /// an editor needs to follow the processor while the source it is
+    /// checking has an error (ADR 0011, the amendment of 2026-10-30), and it
+    /// is the Program's own [`dialect`](Program::dialect) when there is one.
+    pub dialect: Dialect,
     /// The Program, when the source builds one.
     pub program: Option<Program>,
 }
@@ -121,17 +132,21 @@ pub fn assemble(files: &Files, entry: &str) -> Assembly {
         Err(diagnostic) => {
             return Assembly {
                 diagnostics: vec![*diagnostic],
+                dialect: Dialect::default(),
                 program: None,
             }
         }
     };
     let (program, diagnostics) = layout::lay_out(&unit, found);
+    //the Layout chose the dialect in pass 1, so a Program with an error in it still knows it
+    let dialect = program.dialect();
     let program = match diagnostics.iter().any(Diagnostic::is_error) {
         true => None,
         false => Some(program),
     };
     Assembly {
         diagnostics,
+        dialect,
         program,
     }
 }
@@ -157,4 +172,82 @@ pub fn assemble_source(text: &str) -> Assembly {
 /// [`parser::parse_file`] to read a whole File.
 pub fn parse_line(text: &str) -> ast::Line {
     parser::parse_line(text, source::DEFAULT_ENTRY_PATH, 0).0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::machine::Processor;
+
+    /// The processor and the bit fields an assembly says the source chose.
+    fn dialect_of(source: &str) -> (Processor, bool) {
+        let Dialect {
+            processor,
+            bit_fields,
+        } = assemble_source(source).dialect;
+        (processor, bit_fields)
+    }
+
+    #[test]
+    fn the_assembly_says_the_dialect_the_source_chose() {
+        assert_eq!(dialect_of("    nop\n"), (Processor::M68000, false));
+        assert_eq!(
+            dialect_of("    opt p=68010\n    nop\n"),
+            (Processor::M68010, false)
+        );
+        assert_eq!(
+            dialect_of("    opt p=68020\n    nop\n"),
+            (Processor::M68020, true)
+        );
+        assert_eq!(
+            dialect_of("    opt p=68010,bit\n    nop\n"),
+            (Processor::M68010, true)
+        );
+        let assembly = assemble_source("    opt bit\n    nop\n");
+        let program = assembly.program.expect("the source builds a Program");
+        assert_eq!(assembly.dialect, program.dialect(), "the Program's own");
+    }
+
+    /// An editor checks a source with an error in it more often than one
+    /// without, and still has to know what it is written for.
+    #[test]
+    fn the_assembly_says_the_dialect_when_there_is_no_program() {
+        let assembly = assemble_source("    opt p=68020\n    move.l #1\n");
+        assert!(assembly.program.is_none());
+        assert_eq!(
+            (assembly.dialect.processor, assembly.dialect.bit_fields),
+            (Processor::M68020, true)
+        );
+        assert_eq!(
+            dialect_of("    opt p=68010\n    extb.l d0\n"),
+            (Processor::M68010, false),
+            "an instruction of a later processor is refused, and the processor stays chosen"
+        );
+        assert_eq!(
+            dialect_of("    opt bit\n    nop\n    opt p=68020\n"),
+            (Processor::M68000, true),
+            "an `opt` after the first instruction chooses nothing"
+        );
+        assert_eq!(
+            dialect_of("    opt p=6802\n    nop\n"),
+            (Processor::M68000, false)
+        );
+        let assembly = assemble(&Files::from_source("    opt p=68010\n"), "missing.m68k");
+        assert!(assembly.program.is_none());
+        assert_eq!(
+            assembly.dialect,
+            Dialect::default(),
+            "no Entry file, so nothing chose"
+        );
+    }
+
+    #[test]
+    fn an_included_file_chooses_the_dialect_of_an_assembly_with_an_error() {
+        let mut files = Files::new();
+        files.insert_text("main.m68k", "    include 'cpu.m68k'\n    move.l #1\n");
+        files.insert_text("cpu.m68k", "    opt p=68010\n");
+        let assembly = assemble(&files, "main.m68k");
+        assert!(assembly.has_errors());
+        assert_eq!(assembly.dialect.processor, Processor::M68010);
+    }
 }

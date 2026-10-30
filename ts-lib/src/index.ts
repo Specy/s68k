@@ -90,14 +90,26 @@ export type AssembleOptions = {
 }
 
 /**
- * What the assembler made of a project: everything it found, and the program
- * when there is one.
+ * What the assembler made of a project: everything it found, the processor it
+ * is written for, and the program when there is one.
  *
  * `program` is present exactly when no diagnostic is an error, so live checking
- * reads `diagnostics` and ignores the rest.
+ * reads `diagnostics`, `processor` and `bitFields` and ignores the rest.
  */
 export type AssemblyResult = {
     diagnostics: Diagnostic[]
+    /**
+     * The processor the source chose with `opt p=`, `'68000'` when it chose
+     * none. It is there whether or not the source built a program, so an editor
+     * knows it while the code has an error, and it is the program's own
+     * {@link Program.getProcessor} when there is one.
+     */
+    processor: Processor
+    /**
+     * Whether the source has the 68020's bit-field instructions, through
+     * `opt bit` or `opt p=68020`, whether or not it built a program.
+     */
+    bitFields: boolean
     program?: Program
 }
 
@@ -990,14 +1002,16 @@ export class S68k {
         const files: SourceFiles = isText ? {[entry]: source} : source.files
         const assembly = wasm_assemble(files, entry)
         const diagnostics = assembly.wasm_get_diagnostics() as Diagnostic[]
+        const processor = assembly.wasm_get_processor() as Processor
+        const bitFields = assembly.wasm_has_bit_fields()
         if (!assembly.wasm_has_program()) {
             // Nothing to run and nothing to hold on to: free the handle here so
             // that live checking, which calls this on every keystroke, leaks
             // nothing.
             assembly.free()
-            return {diagnostics}
+            return {diagnostics, processor, bitFields}
         }
-        return {diagnostics, program: new Program(assembly)}
+        return {diagnostics, processor, bitFields, program: new Program(assembly)}
     }
 
     /**

@@ -468,6 +468,8 @@ assert.deepEqual(JSON.parse(JSON.stringify(table)), table, 'the table is plain d
 // ---------------------------------------------------------------------------
 
 assert.equal(assembly.program.getProcessor(), '68000', 'the default processor')
+assert.equal(assembly.processor, '68000')
+assert.equal(assembly.bitFields, false)
 assert.equal(assembly.program.getInfo().bitFields, false)
 assert.equal(assembly.program.getInfo().cyclesExact, true, "the 68000's cycles are exact")
 assert.equal(assembly.program.hasExactCycles(), true)
@@ -475,14 +477,27 @@ const for68020 = S68k.assemble('    OPT P=68020\n    EXTB.L D0\n    BRA.L done\n
 assert.deepEqual(for68020.diagnostics, [])
 assert.equal(for68020.program.getProcessor(), '68020')
 assert.equal(for68020.program.hasBitFields(), true, '`opt p=68020` implies bit fields')
+assert.equal(for68020.processor, '68020', 'the assembly says the processor too')
+assert.equal(for68020.bitFields, true)
 assert.equal(for68020.program.hasExactCycles(), false, "the 68020's cycles are an estimate")
 assert.deepEqual(for68020.program.getInstructionAddresses(), [0x1000, 0x1002, 0x1008], 'a long branch is six bytes')
 for68020.program.dispose()
+// An editor follows the processor while the code it checks has an error, when
+// there is no program to ask.
+const broken68010 = S68k.assemble('    opt p=68010,bit\n    move.l #1\n')
+assert.equal(broken68010.program, undefined)
+assert.equal(broken68010.processor, '68010')
+assert.equal(broken68010.bitFields, true, '`opt bit` gives a 68010 program the bit fields')
+const noEntry = S68k.assemble({files: {}, entry: 'missing.x68'})
+assert.equal(noEntry.processor, '68000', 'no entry file chooses nothing, so the 68000')
+assert.equal(noEntry.bitFields, false)
 
 // In a 68000 program the 68020's `extb.l` is refused, with the two fixes its
 // hint describes: the `opt p=` line to add, then the 68000's two instructions.
 const refused = S68k.assemble('* A program.\n    org $1000\n    extb.l d0\n')
 assert.equal(refused.program, undefined)
+assert.equal(refused.processor, '68000', 'a source with an error still says its processor')
+assert.equal(refused.bitFields, false)
 assert.equal(refused.diagnostics.length, 1)
 const [needs] = refused.diagnostics
 assert.equal(needs.code, 'needs_a_later_processor')

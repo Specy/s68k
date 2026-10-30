@@ -70,7 +70,7 @@ use crate::assembler::program::{Program, ProgramSymbol};
 use crate::assembler::source::{self, Files, Span};
 use crate::assembler::Assembly;
 use crate::interpreter::{Interpreter, InterpreterOptions};
-use crate::machine::Processor;
+use crate::machine::{Dialect, Processor};
 
 /// Turn a Rust panic into a readable JavaScript error, once per process.
 ///
@@ -116,6 +116,7 @@ fn to_plain_js(value: &impl Serialize) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub struct WasmAssembly {
     diagnostics: Vec<Diagnostic>,
+    dialect: Dialect,
     program: Option<Program>,
 }
 
@@ -124,6 +125,7 @@ impl WasmAssembly {
     pub fn new(assembly: Assembly) -> Self {
         Self {
             diagnostics: assembly.diagnostics,
+            dialect: assembly.dialect,
             program: assembly.program,
         }
     }
@@ -158,6 +160,18 @@ impl WasmAssembly {
     /// round: a Program exists exactly when no Diagnostic is an error.
     pub fn wasm_has_program(&self) -> bool {
         self.program.is_some()
+    }
+
+    /// The processor the source chose, `"68000"`, `"68010"` or `"68020"`,
+    /// whether or not it built a Program ([`Assembly::dialect`]).
+    pub fn wasm_get_processor(&self) -> String {
+        self.dialect.processor.name().to_string()
+    }
+
+    /// Whether the source has the 68020's bit fields, through `opt bit` or
+    /// `opt p=68020`, whether or not it built a Program.
+    pub fn wasm_has_bit_fields(&self) -> bool {
+        self.dialect.bit_fields
     }
 
     /// What the built Program says about itself ([`ProgramInfo`]), or `null`
@@ -790,7 +804,20 @@ mod api_tests {
             assert_eq!(info["processor"], processor, "{source:?}");
             assert_eq!(info["bitFields"], bit_fields, "{source:?}");
             assert_eq!(info["cyclesExact"], cycles_exact, "{source:?}");
+            assert_eq!(assembly.wasm_get_processor(), processor, "{source:?}");
+            assert_eq!(assembly.wasm_has_bit_fields(), bit_fields, "{source:?}");
         }
+    }
+
+    /// The handle says the processor when the source built no Program, which is
+    /// what the editor reads while the code it checks has an error.
+    #[test]
+    fn the_assembly_names_the_processor_without_a_program() {
+        let assembly =
+            WasmAssembly::new(assembler::assemble_source("    opt p=68020\n    nop d0\n"));
+        assert!(!assembly.wasm_has_program());
+        assert_eq!(assembly.wasm_get_processor(), "68020");
+        assert!(assembly.wasm_has_bit_fields());
     }
 
     #[test]
