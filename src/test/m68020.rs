@@ -678,8 +678,8 @@ ahead:
                 assert_eq!(
                     error.message(),
                     format!(
-                        "`{operand}` is a 68020 addressing mode, and this program is written \
-                         for the {processor}."
+                        "The addressing mode `{operand}` requires the 68020 processor or newer. This \
+                         program targets the {processor} processor."
                     )
                 );
             }
@@ -689,28 +689,28 @@ ahead:
         for (operand, hint) in [
             (
                 "(d0)",
-                "On the 68000, copy `d0` into an address register, `movea.w d0,a0`, and write \
-                 `(a0)`, as a 68000 has no data register indirect mode; or add `opt p=68020` at \
-                 the top of the program to write it for the 68020",
+                "For the 68000 processor, copy `d0` into an address register, `movea.w d0,a0`, and write \
+                 `(a0)`, as the 68000 processor has no data register indirect mode. Otherwise, add \
+                 `opt p=68020` before the first instruction",
             ),
             (
                 "(d3)",
-                "On the 68000, copy `d3` into an address register, `movea.w d3,a3`, and write \
+                "For the 68000 processor, copy `d3` into an address register, `movea.w d3,a3`, and write \
                  `(a3)`",
             ),
             (
                 "(d3.w)",
-                "On the 68000, copy `d3` into an address register, `movea.w d3,a3`, and write \
+                "For the 68000 processor, copy `d3` into an address register, `movea.w d3,a3`, and write \
                  `(a3)`",
             ),
             (
                 "(d0.l)",
-                "On the 68000, copy `d0` into an address register, `movea.l d0,a0`, and write \
+                "For the 68000 processor, copy `d0` into an address register, `movea.l d0,a0`, and write \
                  `(a0)`",
             ),
             (
                 "(d7)",
-                "On the 68000, copy `d7` into an address register, `movea.w d7,a6`, and write \
+                "For the 68000 processor, copy `d7` into an address register, `movea.w d7,a6`, and write \
                  `(a6)`",
             ),
         ] {

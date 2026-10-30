@@ -3364,7 +3364,7 @@ impl Interpreter {
     pub fn raise_irq(&mut self, level: u8) -> RuntimeResult<()> {
         if !interrupts::is_level(level) {
             return Err(RuntimeError::InvalidArgument(format!(
-                "an interrupt request is at a level from 1 to 7, not {}",
+                "interrupt request level must be 1 to 7, got {}",
                 level
             )));
         }
@@ -3545,15 +3545,16 @@ impl Interpreter {
         let first = register.processor();
         if first == Processor::M68000 {
             return Err(RuntimeError::InvalidArgument(format!(
-                "{} is no control register of the 68010 or the 68020",
+                "{} must be changed through its dedicated setter",
                 register.name()
             )));
         }
         if !self.processor.has(first) {
             return Err(RuntimeError::InvalidArgument(format!(
-                "a {} has no {}: a program has it from `opt p={}` on",
+                "the {} processor does not support {}: select the {} processor or newer with `opt p={}`",
                 self.processor.name(),
                 register.name(),
+                first.name(),
                 first.name()
             )));
         }
@@ -3838,8 +3839,8 @@ impl Interpreter {
     pub fn watch_memory(&mut self, start: usize, end: usize) -> RuntimeResult<()> {
         if start >= end || end > MEMORY_SIZE {
             return Err(RuntimeError::InvalidArgument(format!(
-                "a watched range is from its start up to its end, the end not included, inside \
-                 the 16 MB of memory: ${:x} to ${:x} is not one",
+                "invalid watched range ${:X} to ${:X}: the start must be below the end, \
+                 and the end must not exceed $1000000 (16 MB). The end address is excluded",
                 start, end
             )));
         }

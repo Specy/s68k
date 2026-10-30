@@ -1065,7 +1065,7 @@ impl<'a> Parser<'a> {
                 self.operand_start = start;
                 self.malformed(
                     OperandShape::RegisterPair,
-                    "a register pair needs a second register after the `:`",
+                    "the second register after `:` is missing",
                     None,
                 );
             }
@@ -1095,8 +1095,8 @@ impl<'a> Parser<'a> {
                     self.operand_start = start;
                     self.malformed(
                         OperandShape::RegisterPair,
-                        "a pair is two data registers, `d1:d2`, or two registers in \
-                         parentheses, `(a0):(a1)`",
+                        "the pair must contain two data registers, `d1:d2`, or two registers \
+                         each in parentheses, `(a0):(a1)`",
                         None,
                     );
                     None
@@ -1123,7 +1123,7 @@ impl<'a> Parser<'a> {
             self.operand_start = start;
             self.malformed(
                 OperandShape::BitField,
-                "a bit field is `{offset:width}`, the two halves apart by a `:`",
+                "the offset and width must be separated by `:`",
                 None,
             );
             return None;
@@ -1163,8 +1163,8 @@ impl<'a> Parser<'a> {
                 self.malformed(
                     OperandShape::BitField,
                     format!(
-                        "the {half} of a bit field is a number or a data register, and `{name}` \
-                         is an address register"
+                        "the {half} must be a number or a data register, but `{name}` is an \
+                         address register"
                     ),
                     None,
                 );
@@ -1723,7 +1723,7 @@ impl<'a> Parser<'a> {
                 }
                 _ => {
                     self.bump();
-                    self.malformed(shape, "the scale after `*` is 1, 2, 4 or 8", None);
+                    self.malformed(shape, "the scale after `*` must be 1, 2, 4 or 8", None);
                     return None;
                 }
             }
@@ -3237,7 +3237,7 @@ mod tests {
                 ),
                 (
                     "    lea (4,a0,d1*3),a1",
-                    "This looks like an indexed operand, `4(a0,d1.w)`, but the scale after `*` is 1, \
+                    "This looks like an indexed operand, `4(a0,d1.w)`, but the scale after `*` must be 1, \
                      2, 4 or 8.",
                 ),
             ] {

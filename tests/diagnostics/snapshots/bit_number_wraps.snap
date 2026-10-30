@@ -7,8 +7,8 @@ input_file: tests/diagnostics/bit_number_wraps.asm
   {
     "severity": "warning",
     "code": "bit_number_wraps",
-    "message": "Bit 9 is bit 1: a byte in memory has 8 bits, and the 68000 takes the bit number modulo 8.",
-    "hint": "Write `#1` if bit 1 is the one meant; bits are numbered from 0",
+    "message": "Bit number 9 wraps to bit 1: a byte in memory uses bit numbers 0 to 7.",
+    "hint": "Use `#1` if you meant bit 1, or choose another bit number starting from 0",
     "location": {
       "file": "bit_number_wraps.asm",
       "line": 2,
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/bit_number_wraps.asm
   {
     "severity": "warning",
     "code": "bit_number_wraps",
-    "message": "Bit 33 is bit 1: a data register has 32 bits, and the 68000 takes the bit number modulo 32.",
-    "hint": "Write `#1` if bit 1 is the one meant; bits are numbered from 0",
+    "message": "Bit number 33 wraps to bit 1: a data register uses bit numbers 0 to 31.",
+    "hint": "Use `#1` if you meant bit 1, or choose another bit number starting from 0",
     "location": {
       "file": "bit_number_wraps.asm",
       "line": 3,
@@ -33,8 +33,8 @@ input_file: tests/diagnostics/bit_number_wraps.asm
   {
     "severity": "warning",
     "code": "bit_number_wraps",
-    "message": "Bit -1 is bit 31: a data register has 32 bits, and the 68000 takes the bit number modulo 32.",
-    "hint": "Write `#31` if bit 31 is the one meant; bits are numbered from 0",
+    "message": "Bit number -1 wraps to bit 31: a data register uses bit numbers 0 to 31.",
+    "hint": "Use `#31` if you meant bit 31, or choose another bit number starting from 0",
     "location": {
       "file": "bit_number_wraps.asm",
       "line": 4,

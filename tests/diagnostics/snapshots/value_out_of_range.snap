@@ -20,8 +20,8 @@ input_file: tests/diagnostics/value_out_of_range.asm
   {
     "severity": "warning",
     "code": "bit_number_wraps",
-    "message": "Bit 40 is bit 8: a data register has 32 bits, and the 68000 takes the bit number modulo 32.",
-    "hint": "Write `#8` if bit 8 is the one meant; bits are numbered from 0",
+    "message": "Bit number 40 wraps to bit 8: a data register uses bit numbers 0 to 31.",
+    "hint": "Use `#8` if you meant bit 8, or choose another bit number starting from 0",
     "location": {
       "file": "value_out_of_range.asm",
       "line": 2,
@@ -60,7 +60,7 @@ input_file: tests/diagnostics/value_out_of_range.asm
     "severity": "error",
     "code": "value_out_of_range",
     "message": "The displacement of `link` is -32768 to 32767, and `-70000` is outside it.",
-    "hint": "A frame larger than 32 KB is reserved with `suba.l #n,a7` after the `link`",
+    "hint": "For a stack frame larger than 32 KB, use `link a6,#0` followed by `suba.l #n,a7`, where `n` is the number of bytes to reserve",
     "location": {
       "file": "value_out_of_range.asm",
       "line": 8,

@@ -7,8 +7,8 @@ input_file: tests/diagnostics/symbol_named_like_a_register.asm
   {
     "severity": "warning",
     "code": "symbol_named_like_a_register",
-    "message": "`za0` is read as the symbol of that name here, not as the 68020's suppressed register.",
-    "hint": "Rename the symbol to write the register: a symbol called `za0` keeps its meaning wherever it can stand",
+    "message": "`za0` refers to your symbol here, which takes precedence over the suppressed register with the same name on the 68020 processor.",
+    "hint": "Rename your symbol if you meant to use `za0` as a suppressed register",
     "location": {
       "file": "symbol_named_like_a_register.asm",
       "line": 4,
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/symbol_named_like_a_register.asm
   {
     "severity": "warning",
     "code": "symbol_named_like_a_register",
-    "message": "`zpc` is read as the symbol of that name here, not as the 68020's suppressed register.",
-    "hint": "Rename the symbol to write the register: a symbol called `zpc` keeps its meaning wherever it can stand",
+    "message": "`zpc` refers to your symbol here, which takes precedence over the suppressed register with the same name on the 68020 processor.",
+    "hint": "Rename your symbol if you meant to use `zpc` as a suppressed register",
     "location": {
       "file": "symbol_named_like_a_register.asm",
       "line": 5,

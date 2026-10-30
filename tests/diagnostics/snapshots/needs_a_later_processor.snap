@@ -7,8 +7,8 @@ input_file: tests/diagnostics/needs_a_later_processor.asm
   {
     "severity": "error",
     "code": "needs_a_later_processor",
-    "message": "`extb.l` is a 68020 instruction, and this program is written for the 68000.",
-    "hint": "On the 68000, write `ext.w d0` and then `ext.l d0`, which do the same; or add `opt p=68020` at the top of the program to write it for the 68020",
+    "message": "`extb.l` requires the 68020 processor or newer. This program targets the 68000 processor.",
+    "hint": "For the 68000 processor, write `ext.w d0` and then `ext.l d0`, which do the same. Otherwise, add `opt p=68020` before the first instruction",
     "location": {
       "file": "needs_a_later_processor.asm",
       "line": 6,
@@ -42,8 +42,8 @@ input_file: tests/diagnostics/needs_a_later_processor.asm
   {
     "severity": "error",
     "code": "needs_a_later_processor",
-    "message": "`move ccr,<ea>` is a 68010 instruction, and this program is written for the 68000.",
-    "hint": "On the 68000, write `move.w sr,(a0)`, whose low byte is the CCR; or add `opt p=68010` at the top of the program to write it for the 68010",
+    "message": "`move ccr,<ea>` requires the 68010 processor or newer. This program targets the 68000 processor.",
+    "hint": "For the 68000 processor, write `move.w sr,(a0)`, whose low byte is the CCR. Otherwise, add `opt p=68010` before the first instruction",
     "location": {
       "file": "needs_a_later_processor.asm",
       "line": 7,

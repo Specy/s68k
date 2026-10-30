@@ -7,8 +7,8 @@ input_file: tests/diagnostics/unknown_processor.asm
   {
     "severity": "error",
     "code": "unknown_processor",
-    "message": "`68030` is not a processor s68k has.",
-    "hint": "s68k has three: write `opt p=68000`, `opt p=68010` or `opt p=68020`",
+    "message": "`68030` is not a processor supported by s68k.",
+    "hint": "Use `opt p=68000`, `opt p=68010` or `opt p=68020`",
     "location": {
       "file": "unknown_processor.asm",
       "line": 2,
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/unknown_processor.asm
   {
     "severity": "error",
     "code": "unknown_processor",
-    "message": "`opt p=` names no processor.",
-    "hint": "s68k has three: write `opt p=68000`, `opt p=68010` or `opt p=68020`",
+    "message": "`opt p=` is missing a processor number.",
+    "hint": "Use `opt p=68000`, `opt p=68010` or `opt p=68020`",
     "location": {
       "file": "unknown_processor.asm",
       "line": 3,

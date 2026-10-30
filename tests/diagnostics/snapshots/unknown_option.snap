@@ -7,8 +7,8 @@ input_file: tests/diagnostics/unknown_option.asm
   {
     "severity": "warning",
     "code": "unknown_option",
-    "message": "`fast` is not an option of `opt`, so it does nothing.",
-    "hint": "`opt` takes `p=68000`, `p=68010` or `p=68020`, `bit`, and EASy68K's listing options `cre`, `mex`, `sex`, `war` and `cex`, each also with `no` before it",
+    "message": "Unknown `opt` option `fast`. This option is ignored.",
+    "hint": "Use `p=68000`, `p=68010`, `p=68020`, `bit`, or a listing option: `cre`, `mex`, `sex`, `war`, `cex` (prefix a listing option with `no` to disable it)",
     "location": {
       "file": "unknown_option.asm",
       "line": 2,
@@ -20,8 +20,8 @@ input_file: tests/diagnostics/unknown_option.asm
   {
     "severity": "warning",
     "code": "unknown_option",
-    "message": "`p68020` is not an option of `opt`, so it does nothing.",
-    "hint": "`opt` takes `p=68000`, `p=68010` or `p=68020`, `bit`, and EASy68K's listing options `cre`, `mex`, `sex`, `war` and `cex`, each also with `no` before it",
+    "message": "Unknown `opt` option `p68020`. This option is ignored.",
+    "hint": "Use `p=68000`, `p=68010`, `p=68020`, `bit`, or a listing option: `cre`, `mex`, `sex`, `war`, `cex` (prefix a listing option with `no` to disable it)",
     "location": {
       "file": "unknown_option.asm",
       "line": 3,

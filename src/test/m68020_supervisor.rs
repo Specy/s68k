@@ -360,7 +360,7 @@ mod control_registers {
         assert_eq!(error.code(), "needs_a_later_processor");
         assert_eq!(
             error.message(),
-            "`msp` is a 68020 control register, and this program is written for the 68010."
+            "The control register `msp` requires the 68020 processor or newer. This program targets the 68010 processor."
         );
         let assembly = crate::assembler::assemble_source("cacr:\n    nop\n");
         assert!(

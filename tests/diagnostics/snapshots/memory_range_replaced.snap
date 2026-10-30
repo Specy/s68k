@@ -7,8 +7,8 @@ input_file: tests/diagnostics/memory_range_replaced.asm
   {
     "severity": "warning",
     "code": "memory_range_replaced",
-    "message": "This `memory rom` replaces the one above it: a program has one range of each kind.",
-    "hint": "Keep one `memory rom` line; EASy68K also keeps only the last one",
+    "message": "This `memory rom` replaces the earlier `rom` range: only the last range of each kind is used.",
+    "hint": "Keep one `memory rom` line with the start and end addresses you want",
     "location": {
       "file": "memory_range_replaced.asm",
       "line": 4,

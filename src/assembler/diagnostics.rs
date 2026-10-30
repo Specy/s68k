@@ -1251,58 +1251,52 @@ impl DiagnosticKind {
                 format!("`end` belongs in the entry file, `{entry}`.")
             }
             DiagnosticKind::ShortBranchToNextInstruction { branch, .. } => format!(
-                "`{branch}` to the next instruction has a displacement of 0, which a 68000 reads \
-                 as the mark of a word branch."
+                "`{branch}` cannot use a short displacement of 0: this value is reserved for a \
+                 word branch."
             ),
             DiagnosticKind::SymbolNamedLikeARegister { name } => format!(
-                "`{name}` is read as the symbol of that name here, not as the 68020's \
-                 suppressed register."
+                "`{name}` refers to your symbol here, which takes precedence over the suppressed \
+                 register with the same name on the 68020 processor."
             ),
             DiagnosticKind::BitNumberWraps { number, width, bit } => format!(
-                "Bit {number} is bit {bit}: {} has {width} bits, and the 68000 takes the bit \
-                 number modulo {width}.",
+                "Bit number {number} wraps to bit {bit}: {} uses bit numbers 0 to {}.",
                 match width {
                     32 => "a data register",
                     _ => "a byte in memory",
-                }
+                },
+                width - 1
             ),
             DiagnosticKind::ShortBranchMarksALongBranch { branch, .. } => format!(
-                "`{branch}` reaches one byte past itself, a displacement of -1, which a 68020 \
-                 reads as the mark of a long branch."
+                "`{branch}` cannot use a short displacement of -1 on the 68020 processor: this \
+                 value is reserved for a long branch."
             ),
             DiagnosticKind::UnknownMemoryKind { found } => match found {
-                Some(found) => format!("`{found}` is not a kind of memory range."),
-                None => "`memory` names the kind of range before its addresses.".to_string(),
+                Some(found) => format!("`{found}` is not a supported memory range kind."),
+                None => "`memory` is missing a range kind before the addresses.".to_string(),
             },
             DiagnosticKind::EmptyMemoryRange { kind, start, end } => format!(
                 "This `memory {kind}` range starts at ${start:X}, after its end at ${end:X}, so \
                  it covers no address."
             ),
             DiagnosticKind::MemoryRangeReplaced { kind } => format!(
-                "This `memory {kind}` replaces the one above it: a program has one range of \
-                 each kind."
+                "This `memory {kind}` replaces the earlier `{kind}` range: only the last range \
+                 of each kind is used."
             ),
             DiagnosticKind::UnknownProcessor { found } => match found.is_empty() {
-                true => "`opt p=` names no processor.".to_string(),
-                false => format!("`{found}` is not a processor s68k has."),
+                true => "`opt p=` is missing a processor number.".to_string(),
+                false => format!("`{found}` is not a processor supported by s68k."),
             },
             DiagnosticKind::ProcessorChosenTwice { chosen, found } => format!(
-                "`opt p={}` names another processor than the {} chosen above: a program is \
-                 written for one.",
+                "`opt p={}` conflicts with the earlier `opt p={}`: a program can select only \
+                 one processor.",
                 found.name(),
                 chosen.name()
             ),
-            DiagnosticKind::ProcessorChosenAfterCode { option } => match option.as_str() {
-                "bit" => "`opt bit` comes after the first instruction, and bit fields are chosen \
-                          before any, with the processor."
-                    .to_string(),
-                _ => format!(
-                    "`opt {option}` comes after the first instruction, and the processor is \
-                     chosen before any."
-                ),
-            },
+            DiagnosticKind::ProcessorChosenAfterCode { option } => {
+                format!("`opt {option}` appears after the first instruction.")
+            }
             DiagnosticKind::UnknownOption { option } => {
-                format!("`{option}` is not an option of `opt`, so it does nothing.")
+                format!("Unknown `opt` option `{option}`. This option is ignored.")
             }
             DiagnosticKind::NeedsALaterProcessor {
                 name,
@@ -1310,12 +1304,17 @@ impl DiagnosticKind {
                 program,
                 what,
                 ..
-            } => format!(
-                "`{name}` is a {} {}, and this program is written for the {}.",
-                processor.name(),
-                what.noun(),
-                program.name()
-            ),
+            } => {
+                let subject = match what {
+                    LaterFeature::Instruction => format!("`{name}`"),
+                    _ => format!("The {} `{name}`", what.noun()),
+                };
+                format!(
+                    "{subject} requires the {} processor or newer. This program targets the {} processor.",
+                    processor.name(),
+                    program.name()
+                )
+            }
         }
     }
 
@@ -1620,15 +1619,14 @@ impl DiagnosticKind {
                     .to_string(),
             ),
             DiagnosticKind::BitNumberWraps { bit, .. } => Some(format!(
-                "Write `#{bit}` if bit {bit} is the one meant; bits are numbered from 0"
+                "Use `#{bit}` if you meant bit {bit}, or choose another bit number starting from 0"
             )),
             DiagnosticKind::SymbolNamedLikeARegister { name } => Some(format!(
-                "Rename the symbol to write the register: a symbol called `{name}` keeps its \
-                 meaning wherever it can stand"
+                "Rename your symbol if you meant to use `{name}` as a suppressed register"
             )),
             DiagnosticKind::ShortBranchToNextInstruction { mnemonic, .. }
             | DiagnosticKind::ShortBranchMarksALongBranch { mnemonic, .. } => Some(format!(
-                "Write `{mnemonic}.w`, or `{mnemonic}` with no size, which takes a word here"
+                "Use `{mnemonic}.w`, or omit the size suffix to let the assembler choose a valid size"
             )),
             DiagnosticKind::UnknownMemoryKind { .. } => Some(
                 "Write `rom`, `read`, `protected` or `invalid` before the first address, as in \
@@ -1639,23 +1637,21 @@ impl DiagnosticKind {
                 "Write the lower address first, `memory {kind} ${end:X},${start:X}`"
             )),
             DiagnosticKind::MemoryRangeReplaced { kind } => Some(format!(
-                "Keep one `memory {kind}` line; EASy68K also keeps only the last one"
+                "Keep one `memory {kind}` line with the start and end addresses you want"
             )),
-            DiagnosticKind::UnknownProcessor { .. } => Some(
-                "s68k has three: write `opt p=68000`, `opt p=68010` or `opt p=68020`".to_string(),
-            ),
+            DiagnosticKind::UnknownProcessor { .. } => {
+                Some("Use `opt p=68000`, `opt p=68010` or `opt p=68020`".to_string())
+            }
             DiagnosticKind::ProcessorChosenTwice { .. } => Some(
-                "Keep one `opt p=` line, at the top of the program, naming the processor it is \
-                 for"
+                "Keep one `opt p=` line before the first instruction, selecting the processor you want"
                 .to_string(),
             ),
-            DiagnosticKind::ProcessorChosenAfterCode { .. } => Some(
-                "Move this line above the first instruction, to the top of the program"
-                    .to_string(),
-            ),
+            DiagnosticKind::ProcessorChosenAfterCode { .. } => {
+                Some("Move this line before the first instruction".to_string())
+            }
             DiagnosticKind::UnknownOption { .. } => Some(
-                "`opt` takes `p=68000`, `p=68010` or `p=68020`, `bit`, and EASy68K's listing \
-                 options `cre`, `mex`, `sex`, `war` and `cex`, each also with `no` before it"
+                "Use `p=68000`, `p=68010`, `p=68020`, `bit`, or a listing option: \
+                 `cre`, `mex`, `sex`, `war`, `cex` (prefix a listing option with `no` to disable it)"
                     .to_string(),
             ),
             DiagnosticKind::NeedsALaterProcessor {
@@ -1672,14 +1668,13 @@ impl DiagnosticKind {
                         processor.name()
                     ),
                     false => format!(
-                        "add `opt p={}` at the top of the program to write it for the {}",
-                        processor.name(),
+                        "add `opt p={}` before the first instruction",
                         processor.name()
                     ),
                 };
                 Some(match equivalent {
                     Some(equivalent) => {
-                        format!("On the {}, {equivalent}; or {dialect}", program.name())
+                        format!("For the {} processor, {equivalent}. Otherwise, {dialect}", program.name())
                     }
                     None => format!("{}{}", dialect[..1].to_uppercase(), &dialect[1..]),
                 })
@@ -2670,7 +2665,7 @@ mod tests {
         );
         assert_eq!(
             json["hint"],
-            "Add `opt p=68020` at the top of the program to write it for the 68020"
+            "Add `opt p=68020` before the first instruction"
         );
         let without = Diagnostic::new(DiagnosticKind::DivisionByZero, location());
         let json = serde_json::to_value(&without).expect("a diagnostic serialises");

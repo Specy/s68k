@@ -7,8 +7,8 @@ input_file: tests/diagnostics/processor_chosen_after_code.asm
   {
     "severity": "error",
     "code": "processor_chosen_after_code",
-    "message": "`opt p=68020` comes after the first instruction, and the processor is chosen before any.",
-    "hint": "Move this line above the first instruction, to the top of the program",
+    "message": "`opt p=68020` appears after the first instruction.",
+    "hint": "Move this line before the first instruction",
     "location": {
       "file": "processor_chosen_after_code.asm",
       "line": 5,
@@ -42,8 +42,8 @@ input_file: tests/diagnostics/processor_chosen_after_code.asm
   {
     "severity": "error",
     "code": "processor_chosen_after_code",
-    "message": "`opt bit` comes after the first instruction, and bit fields are chosen before any, with the processor.",
-    "hint": "Move this line above the first instruction, to the top of the program",
+    "message": "`opt bit` appears after the first instruction.",
+    "hint": "Move this line before the first instruction",
     "location": {
       "file": "processor_chosen_after_code.asm",
       "line": 6,

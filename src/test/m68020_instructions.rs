@@ -238,7 +238,7 @@ mod chk_link_tst_cmpi {
                 let code = format!("    opt p={processor}\n    {line}\n");
                 assert_eq!(errors(&code), ["needs_a_later_processor"], "{line}");
                 assert!(
-                    messages(&code)[0].starts_with(&format!("`{line}` is a 68020 instruction")),
+                    messages(&code)[0].starts_with(&format!("`{line}` requires the 68020 processor")),
                     "{:?}",
                     messages(&code)
                 );
@@ -291,7 +291,7 @@ mod chk_link_tst_cmpi {
             assert!(
                 refused[0]
                     .message()
-                    .starts_with("`link.w a6,#-8` is a 68020 instruction"),
+                    .starts_with("`link.w a6,#-8` requires the 68020 processor"),
                 "{}",
                 refused[0].message()
             );
@@ -1216,7 +1216,7 @@ mod bit_fields {
             "Add `opt bit` at the top of the program"
         );
         assert_eq!(found[0].fixes[1].text, "    opt bit\n");
-        assert!(found[0].hint().unwrap().contains("`opt bit` at the top"));
+        assert!(found[0].hint().unwrap().contains("`opt bit` before the first instruction"));
         assert!(errors("    opt bit\n    bfset (8,a0,d1.w){0:8}\n").is_empty());
         assert_eq!(
             errors("    opt bit\n    bfset (8,a0,d1.w*4){0:8}\n"),

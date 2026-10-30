@@ -632,10 +632,10 @@ impl<'a> Analyzer<'a> {
         if allowed.contains(field) != mode.contains(field) {
             let suggestion = match allowed.contains(field) {
                 true => format!(
-                    "`{}` takes the field after the operand, `{}{{0:8}}`, its offset and its \
-                     width each a number or a data register",
-                    spec.mnemonic,
-                    self.text_of(operand.span())
+                    "add `{{offset:width}}` after the operand, as in `{}{{0:8}}` for `{}`. \
+                     Each value can be a number or a data register",
+                    self.text_of(operand.span()),
+                    spec.mnemonic
                 ),
                 false => "only the bit-field instructions take `{offset:width}`".to_string(),
             };
@@ -1046,8 +1046,9 @@ impl<'a> Analyzer<'a> {
             return;
         }
         let advice = match self.context.processor.has(Processor::M68020) {
-            true => "a frame larger than 32 KB takes `link.l`, whose displacement is a long",
-            false => "a frame larger than 32 KB is reserved with `suba.l #n,a7` after the `link`",
+            true => "use `link.l` for a stack frame larger than 32 KB",
+            false => "for a stack frame larger than 32 KB, use `link a6,#0` followed by \
+                      `suba.l #n,a7`, where `n` is the number of bytes to reserve",
         };
         self.raise(
             DiagnosticKind::ValueOutOfRange {
@@ -1192,8 +1193,8 @@ impl<'a> Analyzer<'a> {
         let advice = |notation: &str| {
             extended.then(|| {
                 format!(
-                    "a name defined further down keeps the 68000's field; write its width after \
-                     it, `{notation}`, for the 68020's base displacement"
+                    "the symbol is defined later, so the assembler cannot automatically choose \
+                     a wider displacement. Specify its width explicitly, as in `{notation}`"
                 )
             })
         };
@@ -1204,20 +1205,29 @@ impl<'a> Analyzer<'a> {
             ..
         } = operand
         {
-            for (value, subject, min, max) in [
-                (offset, "the offset of a bit field", 0, 31),
-                (width, "the width of a bit field", 1, 32),
+            for (value, subject, min, max, advice) in [
+                (
+                    offset,
+                    "the offset of a bit field",
+                    0,
+                    31,
+                    "use a data register for an offset outside this range (a signed 32-bit value)",
+                ),
+                (
+                    width,
+                    "the width of a bit field",
+                    1,
+                    32,
+                    "use a data register for a variable width. Only its low 5 bits are used, \
+                     with 0 meaning 32 bits",
+                ),
             ] {
                 if let ast::FieldValue::Value { value } = value {
                     self.check_range_with(
                         value,
                         subject,
                         (min, max),
-                        Some(
-                            "a data register holds an offset of any size, from −2³¹ to 2³¹ − 1, \
-                             and a width modulo 32"
-                                .to_string(),
-                        ),
+                        Some(advice.to_string()),
                     );
                 }
             }
@@ -1413,9 +1423,9 @@ impl<'a> Analyzer<'a> {
                             false => "l",
                         };
                         format!(
-                            "a name defined further down keeps the 68000's field; write the width \
-                             its distance needs after it, `({text}.{width},pc,{index})`, for the \
-                             68020's base displacement"
+                            "the symbol is defined later, so the assembler cannot automatically \
+                             choose a wider displacement. Specify its width explicitly: \
+                             `({text}.{width},pc,{index})`"
                         )
                     }
                     false => format!(
@@ -1789,7 +1799,8 @@ impl<'a> Analyzer<'a> {
                     spec.mnemonic.to_string(),
                     fix.map(|fix| {
                         (
-                            "write `opt bit` at the top, EASy68K's option for the bit fields"
+                            "add `opt bit` before the first instruction to enable EASy68K's \
+                             bit-field extension"
                                 .to_string(),
                             fix,
                         )
@@ -1943,7 +1954,7 @@ impl<'a> Analyzer<'a> {
                 };
                 Some(format!(
                     "copy `{data}` into an address register, `{movea} {data},{address}`, and \
-                     write `({address})`, as a 68000 has no data register indirect mode"
+                     write `({address})`, as the 68000 processor has no data register indirect mode"
                 ))
             }
             _ => None,
@@ -2811,12 +2822,12 @@ mod tests {
         let diagnostic = &found[0];
         assert_eq!(
             diagnostic.message(),
-            "`extb.l` is a 68020 instruction, and this program is written for the 68000."
+            "`extb.l` requires the 68020 processor or newer. This program targets the 68000 processor."
         );
         assert_eq!(
             diagnostic.hint().unwrap(),
-            "On the 68000, write `ext.w d3` and then `ext.l d3`, which do the same; or add \
-             `opt p=68020` at the top of the program to write it for the 68020"
+            "For the 68000 processor, write `ext.w d3` and then `ext.l d3`, which do the same. Otherwise, \
+             add `opt p=68020` before the first instruction"
         );
         let fixes: Vec<(&str, &Location, &str)> = diagnostic
             .fixes
@@ -2844,11 +2855,11 @@ mod tests {
         let diagnostic = &found[0];
         assert_eq!(
             diagnostic.message(),
-            "`move ccr,<ea>` is a 68010 instruction, and this program is written for the 68000."
+            "`move ccr,<ea>` requires the 68010 processor or newer. This program targets the 68000 processor."
         );
         assert_eq!(
             diagnostic.hint().unwrap(),
-            "On the 68000, write `MOVE.W SR,-(A7)`, whose low byte is the CCR; or change \
+            "For the 68000 processor, write `MOVE.W SR,-(A7)`, whose low byte is the CCR. Otherwise, change \
              `opt p=68000` to `opt p=68010`"
         );
         assert_eq!(
@@ -2915,7 +2926,7 @@ mod tests {
         let (_, _, found) = analyze_for("    bftst (a0){0:8}", Processor::M68000, None);
         assert_eq!(
             found[0].message(),
-            "`bftst` is a 68020 instruction, and this program is written for the 68000."
+            "`bftst` requires the 68020 processor or newer. This program targets the 68000 processor."
         );
     }
 
@@ -2931,11 +2942,11 @@ mod tests {
             indentation: "    ".to_string(),
         };
         for (text, named) in [
-            ("    movec d0,msp", "`msp` is a 68020 control register"),
-            ("    movec cacr,d1", "`cacr` is a 68020 control register"),
+            ("    movec d0,msp", "The control register `msp` requires the 68020 processor"),
+            ("    movec cacr,d1", "The control register `cacr` requires the 68020 processor"),
             (
                 "    moves.l (a0,d0.w*4),d1",
-                "`(a0,d0.w*4)` is a 68020 addressing mode",
+                "The addressing mode `(a0,d0.w*4)` requires the 68020 processor",
             ),
         ] {
             let (codes, _, found) = analyze_for(text, Processor::M68000, Some(&missing));
@@ -3106,8 +3117,8 @@ mod tests {
         assert_eq!(
             messages("    btst #9,(a0)"),
             [
-                "Bit 9 is bit 1: a byte in memory has 8 bits, and the 68000 takes the bit \
-                 number modulo 8. Write `#1` if bit 1 is the one meant; bits are numbered from 0"
+                "Bit number 9 wraps to bit 1: a byte in memory uses bit numbers 0 to 7. \
+                 Use `#1` if you meant bit 1, or choose another bit number starting from 0"
             ],
         );
         assert!(codes("    btst #7,(a0)").is_empty());

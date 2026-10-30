@@ -7,8 +7,8 @@ input_file: tests/diagnostics/processor_chosen_twice.asm
   {
     "severity": "error",
     "code": "processor_chosen_twice",
-    "message": "`opt p=68020` names another processor than the 68010 chosen above: a program is written for one.",
-    "hint": "Keep one `opt p=` line, at the top of the program, naming the processor it is for",
+    "message": "`opt p=68020` conflicts with the earlier `opt p=68010`: a program can select only one processor.",
+    "hint": "Keep one `opt p=` line before the first instruction, selecting the processor you want",
     "location": {
       "file": "processor_chosen_twice.asm",
       "line": 4,
