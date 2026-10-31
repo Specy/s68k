@@ -527,6 +527,8 @@ export class Interpreter {
      * stop, and after writing into the range yourself.
      */
     takeWatchedWrites(): WatchedWrite[] {
+        //asked first: a host takes them after every trap, and most of the time there are none
+        if (!this.interpreter.wasm_has_watched_writes()) return []
         const flat = this.interpreter.wasm_take_watched_writes()
         const writes: WatchedWrite[] = []
         for (let i = 0; i < flat.length; i += 3) {
@@ -908,13 +910,25 @@ export class Interpreter {
     }
 
     /**
-     * Run until one of `breakpoints` is reached, the program pauses, requests
-     * an interrupt, stores into the watched range or ends, writes into code
-     * when `stopOnCodeWrite` asks for it, or `limit` instructions have run.
+     * The breakpoints {@link Interpreter.runWithBreakpoints} stops at, from now
+     * on, replacing the ones set before; none until this is called.
      *
      * A breakpoint is a line of a file: a breakpoint on a comment, a directive
      * or a label alone stops nothing, and neither does one on a line of a file
-     * this program was not assembled from.
+     * this program was not assembled from. The lines are looked up in the
+     * program here, once, so a host that resumes after every trap does not pay
+     * for it on every run. Throws an `InvalidArgument` for a list that is not
+     * one of `{file, line}`.
+     */
+    setBreakpoints(breakpoints: Breakpoint[]): void {
+        this.interpreter.wasm_set_breakpoints(breakpoints)
+    }
+
+    /**
+     * Run until one of the breakpoints {@link Interpreter.setBreakpoints} set
+     * is reached, the program pauses, requests an interrupt, stores into the
+     * watched range or ends, writes into code when `stopOnCodeWrite` asks for
+     * it, or `limit` instructions have run.
      *
      * `skipBreakpointAtPc` says what a breakpoint on the instruction the
      * program counter is *already* on does, and only that one: it defaults to
@@ -946,11 +960,10 @@ export class Interpreter {
      * once.
      */
     runWithBreakpoints(
-        breakpoints: Breakpoint[],
         limit?: number,
         {skipBreakpointAtPc = true, stopOnCodeWrite = false}: RunWithBreakpointsOptions = {}
     ): InterpreterStatus {
-        return this.interpreter.wasm_run_with_breakpoints(breakpoints, limit, skipBreakpointAtPc, stopOnCodeWrite)
+        return this.interpreter.wasm_run_with_breakpoints(limit, skipBreakpointAtPc, stopOnCodeWrite)
     }
 
     async runWithInterruptHandler(onInterrupt: InterruptHandler): Promise<InterpreterStatus> {

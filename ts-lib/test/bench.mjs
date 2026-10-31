@@ -83,7 +83,7 @@ function program(source) {
 
 const RUNS = {
     runWithLimit: (interpreter) => interpreter.runWithLimit(SLICE),
-    runWithBreakpoints: (interpreter) => interpreter.runWithBreakpoints([], SLICE, { skipBreakpointAtPc: false }),
+    runWithBreakpoints: (interpreter) => interpreter.runWithBreakpoints(SLICE, { skipBreakpointAtPc: false }),
 }
 
 function measure(compiled, options, run) {

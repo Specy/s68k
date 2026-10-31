@@ -597,6 +597,42 @@ start:
         }
 
         #[test]
+        fn set_breakpoints_are_kept_for_every_run_until_they_are_replaced() {
+            let mut interpreter = prepare(THREE_MOVES);
+            //none set yet: the run goes to the end of the program
+            let mut fresh = prepare(THREE_MOVES);
+            assert_eq!(
+                fresh
+                    .run_to_set_breakpoints(None, RunOptions::CONTINUE)
+                    .expect("to run"),
+                InterpreterStatus::Terminated
+            );
+
+            interpreter.set_breakpoints(&[
+                Breakpoint::new(DEFAULT_ENTRY_PATH, 3),
+                Breakpoint::new(DEFAULT_ENTRY_PATH, 4),
+            ]);
+            interpreter
+                .run_to_set_breakpoints(None, RunOptions::CONTINUE)
+                .expect("to stop at the first breakpoint");
+            assert_eq!(interpreter.get_pc(), 0x1002);
+            //the next run stops at the second without being told the breakpoints again
+            interpreter
+                .run_to_set_breakpoints(None, RunOptions::CONTINUE)
+                .expect("to stop at the second breakpoint");
+            assert_eq!(interpreter.get_pc(), 0x1004);
+
+            //replaced by none: the run goes on to the end
+            interpreter.set_breakpoints(&[]);
+            assert_eq!(
+                interpreter
+                    .run_to_set_breakpoints(None, RunOptions::CONTINUE)
+                    .expect("to run to the end"),
+                InterpreterStatus::Terminated
+            );
+        }
+
+        #[test]
         fn a_run_that_does_not_skip_the_breakpoint_at_its_pc_stops_where_it_stands() {
             let mut interpreter = prepare(THREE_MOVES);
             let breakpoints = [Breakpoint::new(DEFAULT_ENTRY_PATH, 3)];

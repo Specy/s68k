@@ -331,7 +331,8 @@ Where this departs from EASy68K:
 ### Debugging
 
 ```ts
-interpreter.runWithBreakpoints([{file: 'lib/io.x68', line: 12}])
+interpreter.setBreakpoints([{file: 'lib/io.x68', line: 12}])  // kept for every run until replaced
+interpreter.runWithBreakpoints()
 interpreter.getCurrentLocation()      // {file, line, column, endColumn} | null
 interpreter.getNextInstruction()      // {address, size, bytes, location, includeChain, source, assembledAs?} | null
 interpreter.disassembleAt(0x1008)     // {address, size, bytes, text: 'ADD.W D1,D2'}, what memory holds now
@@ -392,7 +393,7 @@ testcase's memory and undo never make one:
 ```ts
 interpreter.getUndoHistory(1)[0].wroteCode  // {address: 0x1008, instructionIndex: 3}, or absent
 interpreter.getCodeWrite()                  // the same, or null
-interpreter.runWithBreakpoints(breakpoints, limit, {skipBreakpointAtPc: false, stopOnCodeWrite: true})
+interpreter.runWithBreakpoints(limit, {skipBreakpointAtPc: false, stopOnCodeWrite: true})
 // InterpreterStatus.CodeWrite after the instruction that wrote into code; the next run goes on
 ```
 
@@ -795,6 +796,14 @@ write, and what a host may be told:
 | `link.w` refused on every processor, `invalid_size` | assembled under `opt p=68020` as `link`; `needs_a_later_processor` before it, as EASy68K refuses it, its second fix writing `link` without the size |
 | `(za0)`, `(zd3)` and `(zpc)` read as the 68020's suppressed registers in every program, so a 68000 program's Symbol of that name was refused there | a Symbol of the name keeps its meaning wherever it can stand, `(za0)` its address; a 68020 program is warned, the new code `symbol_named_like_a_register` |
 | | `parseLine`'s modes `register_pair`, `indirect_pair` and `bit_field`; `instructionTable`'s modes `Dx:Dy`, `(Rx):(Ry)` and `{offset:width}` |
+
+## Migrating past 4.0.0: breakpoints
+
+| Before | Now |
+| --- | --- |
+| `runWithBreakpoints(breakpoints, limit, options)` looked every breakpoint's line up in the whole program on each call | `setBreakpoints(breakpoints)` looks them up once and keeps them; `runWithBreakpoints(limit, options)` stops at the ones set, none until it is called |
+| a malformed breakpoint list made `runWithBreakpoints` throw an `InvalidArgument` | `setBreakpoints` throws it |
+| `takeWatchedWrites()` copied an empty array across the boundary when nothing had been stored | it answers `[]` without one |
 
 ## Migrating past 4.0.0: the 68010
 

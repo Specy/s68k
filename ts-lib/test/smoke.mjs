@@ -185,9 +185,11 @@ pausingAssembly.program.dispose()
 const located = S68k.assemble({files: {'lecture/one.x68': SOURCE}, entry: 'lecture/one.x68'})
 assert.deepEqual(located.diagnostics, [], 'the same source assembles under any file name')
 const located_run = new Interpreter(located.program)
-// The MOVE.W on line 6, counting the leading newline as line 0.
+// The MOVE.W on line 6, counting the leading newline as line 0. The breakpoints
+// are set once and kept for every run after.
+located_run.setBreakpoints([{file: 'lecture/one.x68', line: 6}])
 assert.equal(
-    located_run.runWithBreakpoints([{file: 'lecture/one.x68', line: 6}]),
+    located_run.runWithBreakpoints(),
     InterpreterStatus.Running,
     'the run should stop on the breakpoint, not terminate'
 )
@@ -206,7 +208,6 @@ assert.equal(next.size, 4)
 // which is what the host does when it resumes after answering a trap.
 assert.equal(
     located_run.runWithBreakpoints(
-        [{file: 'lecture/one.x68', line: 6}],
         undefined,
         {skipBreakpointAtPc: false}
     ),
@@ -219,7 +220,7 @@ assert.equal(
     'and it has run nothing: the same instruction is still the next one'
 )
 assert.equal(
-    located_run.runWithBreakpoints([{file: 'lecture/one.x68', line: 6}]),
+    located_run.runWithBreakpoints(),
     InterpreterStatus.Terminated,
     'the default continues past the breakpoint it is parked on'
 )
@@ -311,8 +312,9 @@ assert.deepEqual(
 
 // A breakpoint is a line of a file, and now of any file of the project.
 const stopping = new Interpreter(project.program)
+stopping.setBreakpoints([{file: 'lib/sum.x68', line: 3}])
 assert.equal(
-    stopping.runWithBreakpoints([{file: 'lib/sum.x68', line: 3}]),
+    stopping.runWithBreakpoints(),
     InterpreterStatus.Running,
     'the run stops inside the included file'
 )
@@ -1207,7 +1209,7 @@ assert.throws(() => failer.answerInterrupt({type: 'Terminate'}), (error) => erro
 // a value that would index past the eight registers is refused, and the module stays usable
 assert.throws(() => failer.getRegisterValue({type: 'Data', value: 9}), (error) => error.type === 'InvalidArgument')
 assert.throws(() => failer.getCpuSnapshot().getRegister(8, RegisterType.Address), (error) => error.type === 'InvalidArgument')
-assert.throws(() => failer.runWithBreakpoints([{line: 'x'}]), (error) => error.type === 'InvalidArgument')
+assert.throws(() => failer.setBreakpoints([{line: 'x'}]), (error) => error.type === 'InvalidArgument')
 assert.deepEqual(Array.from(failer.readMemoryBytes(0x10, 0xffffffff)), [], 'a length near 4 GB reads nothing')
 assert.equal(failer.getRegisterValue({type: 'Data', value: 0}) & 0xff, 10, 'and it still answers')
 failer.dispose()
@@ -1277,7 +1279,8 @@ assert.equal(InterpreterStatus.WatchedWrite, 5, 'appended after Paused')
 assert.equal(watcher.run(), InterpreterStatus.WatchedWrite)
 assert.equal(watcher.getPc(), 0x1008, 'on the instruction after the store, eight bytes on')
 assert.deepEqual(watcher.takeWatchedWrites(), [{address: 0xe00110, size: 1, value: 0}])
-assert.equal(watcher.runWithBreakpoints([], undefined, {skipBreakpointAtPc: false}), InterpreterStatus.WatchedWrite)
+assert.deepEqual(watcher.takeWatchedWrites(), [], 'taken: none left until the next store')
+assert.equal(watcher.runWithBreakpoints(undefined, {skipBreakpointAtPc: false}), InterpreterStatus.WatchedWrite)
 assert.equal(watcher.run(), InterpreterStatus.WatchedWrite)
 assert.deepEqual(watcher.takeWatchedWrites(), [
     {address: 0xe00110, size: 1, value: 1},
@@ -1311,7 +1314,7 @@ const modifier = new Interpreter(selfModifying.program)
 const nextLine = selfModifying.program.getSymbols()['NEXT'].value
 assert.equal(InterpreterStatus.CodeWrite, 6, 'appended after WatchedWrite')
 assert.equal(
-    modifier.runWithBreakpoints([], 100, {stopOnCodeWrite: true}),
+    modifier.runWithBreakpoints(100, {stopOnCodeWrite: true}),
     InterpreterStatus.CodeWrite,
     'the run stops after the write into code'
 )
@@ -1579,7 +1582,7 @@ assert.deepEqual(waiting.getMachineState(), {
 }, 'the timer and the key level the program set')
 const lastId = waiting.getLastStepId()
 assert.equal(waiting.step(), InterpreterStatus.Stopped, 'a step runs nothing while nothing is pending')
-assert.equal(waiting.runWithBreakpoints([], 100, {skipBreakpointAtPc: false}), InterpreterStatus.Stopped)
+assert.equal(waiting.runWithBreakpoints(100, {skipBreakpointAtPc: false}), InterpreterStatus.Stopped)
 assert.equal(waiting.getLastStepId(), lastId)
 // a timer fires: the processor no longer waits, and the next step is the IRQ, a step of its own
 waiting.raiseIrq(2)

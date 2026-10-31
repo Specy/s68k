@@ -2105,6 +2105,11 @@ pub struct Interpreter {
     /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints) for its
     /// duration, and read by [`step`](Interpreter::step).
     stop_on_code_write: bool,
+    /// The addresses of the breakpoints [`set_breakpoints`](Interpreter::set_breakpoints)
+    /// was last given, which [`run_to_set_breakpoints`](Interpreter::run_to_set_breakpoints)
+    /// stops at. Resolved once: a host that resumes after every trap would
+    /// otherwise look its lines up in the whole program again on each call.
+    breakpoint_addresses: HashSet<usize>,
     /// Whether T takes a trace exception after an instruction. It always does
     /// but in the conformance harness, whose suite records the state before
     /// the trace exception ([`Interpreter::from_state`]).
@@ -2188,6 +2193,7 @@ impl Interpreter {
             cycles: 0,
             code_write: None,
             stop_on_code_write: false,
+            breakpoint_addresses: HashSet::new(),
             takes_trace: true,
             trace_after_answer: false,
             machine: MachineState::default(),
@@ -7889,15 +7895,46 @@ impl Interpreter {
         limit: Option<usize>,
         options: RunOptions,
     ) -> RuntimeResult<InterpreterStatus> {
+        let addresses = self.get_breakpoint_addresses(breakpoints);
+        self.run_to_addresses(&addresses, limit, options)
+    }
+
+    /// The breakpoints [`run_to_set_breakpoints`](Interpreter::run_to_set_breakpoints)
+    /// stops at, replacing the ones set before. Their lines are looked up in
+    /// the program here, once, rather than on every run.
+    pub fn set_breakpoints(&mut self, breakpoints: &[Breakpoint]) {
+        self.breakpoint_addresses = self.get_breakpoint_addresses(breakpoints);
+    }
+
+    /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints) with the
+    /// breakpoints [`set_breakpoints`](Interpreter::set_breakpoints) was last
+    /// given, none before it is called.
+    pub fn run_to_set_breakpoints(
+        &mut self,
+        limit: Option<usize>,
+        options: RunOptions,
+    ) -> RuntimeResult<InterpreterStatus> {
+        let addresses = std::mem::take(&mut self.breakpoint_addresses);
+        let ran = self.run_to_addresses(&addresses, limit, options);
+        self.breakpoint_addresses = addresses;
+        ran
+    }
+
+    fn run_to_addresses(
+        &mut self,
+        addresses: &HashSet<usize>,
+        limit: Option<usize>,
+        options: RunOptions,
+    ) -> RuntimeResult<InterpreterStatus> {
         self.stop_on_code_write = options.stop_on_code_write;
-        let ran = self.run_to_breakpoints(breakpoints, limit, options.skip_breakpoint_at_pc);
+        let ran = self.run_to_breakpoints(addresses, limit, options.skip_breakpoint_at_pc);
         self.stop_on_code_write = false;
         ran
     }
 
     fn run_to_breakpoints(
         &mut self,
-        breakpoints: &[Breakpoint],
+        addresses: &HashSet<usize>,
         limit: Option<usize>,
         skip_breakpoint_at_pc: bool,
     ) -> RuntimeResult<InterpreterStatus> {
@@ -7908,7 +7945,6 @@ impl Interpreter {
             });
             return Ok(self.status);
         }
-        let addresses = self.get_breakpoint_addresses(breakpoints);
         let limit = limit.unwrap_or(usize::MAX);
         self.limited_run_start = self.executed_instructions;
         let resuming_after_pause = self.is_resumable_stop();
@@ -7937,7 +7973,7 @@ impl Interpreter {
         }
         //a breakpoint leaves steps over, and the run ends there
         if limit_counter == 0 && self.took_irqs(limit) {
-            return self.run_to_breakpoints_after_irqs(&addresses, limit, iterations);
+            return self.run_to_breakpoints_after_irqs(addresses, limit, iterations);
         }
         self.end_of_a_limited_run(limit, iterations)
     }
@@ -8375,16 +8411,8 @@ impl Interpreter {
         self.run().map_err(|e| js(&e))
     }
     /// `breakpoints` is an array of `{ file, line }`, a Location without its
-    /// columns. `skip_breakpoint_at_pc` defaults to `true`, the "continue"
-    /// behaviour described on [`Interpreter::run_with_breakpoints`], and
-    /// `stop_on_code_write` to `false`.
-    pub fn wasm_run_with_breakpoints(
-        &mut self,
-        breakpoints: JsValue,
-        limit: Option<usize>,
-        skip_breakpoint_at_pc: Option<bool>,
-        stop_on_code_write: Option<bool>,
-    ) -> Result<InterpreterStatus, JsValue> {
+    /// columns, kept for the runs that follow: [`Interpreter::set_breakpoints`].
+    pub fn wasm_set_breakpoints(&mut self, breakpoints: JsValue) -> Result<(), JsValue> {
         let breakpoints: Vec<Breakpoint> =
             serde_wasm_bindgen::from_value(breakpoints).map_err(|e| {
                 js(&RuntimeError::InvalidArgument(format!(
@@ -8392,12 +8420,24 @@ impl Interpreter {
                     e
                 )))
             })?;
+        self.set_breakpoints(&breakpoints);
+        Ok(())
+    }
+    /// A run to the breakpoints [`wasm_set_breakpoints`](Interpreter::wasm_set_breakpoints)
+    /// set. `skip_breakpoint_at_pc` defaults to `true`, the "continue"
+    /// behaviour described on [`Interpreter::run_with_breakpoints`], and
+    /// `stop_on_code_write` to `false`.
+    pub fn wasm_run_with_breakpoints(
+        &mut self,
+        limit: Option<usize>,
+        skip_breakpoint_at_pc: Option<bool>,
+        stop_on_code_write: Option<bool>,
+    ) -> Result<InterpreterStatus, JsValue> {
         let options = RunOptions {
             skip_breakpoint_at_pc: skip_breakpoint_at_pc.unwrap_or(true),
             stop_on_code_write: stop_on_code_write.unwrap_or(false),
         };
-        self.run_with_breakpoints(&breakpoints, limit, options)
-            .map_err(|e| js(&e))
+        self.run_to_set_breakpoints(limit, options).map_err(|e| js(&e))
     }
     pub fn wasm_get_call_stack(&self) -> JsValue {
         js(&self.get_pretty_call_stack())
@@ -8585,6 +8625,12 @@ impl Interpreter {
     /// The watched writes not taken yet, three numbers a write — its address,
     /// its size in bytes and the value stored — in one flat `Uint32Array`, which
     /// crosses the boundary as one copy; the log is emptied.
+    /// Whether a watched write waits to be taken, which a host asks before
+    /// [`wasm_take_watched_writes`](Interpreter::wasm_take_watched_writes)
+    /// rather than have an empty array cross the boundary after every trap.
+    pub fn wasm_has_watched_writes(&self) -> bool {
+        !self.watched_writes.is_empty()
+    }
     pub fn wasm_take_watched_writes(&mut self) -> Vec<u32> {
         let mut flat = Vec::with_capacity(self.watched_writes.len() * 3);
         for write in self.watched_writes.drain(..) {
