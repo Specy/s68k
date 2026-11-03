@@ -223,8 +223,13 @@ pub struct Memory {
 
 impl Memory {
     pub fn new() -> Self {
+        Self::with_data(vec![255; MEMORY_SIZE]) //16mb
+    }
+
+    /// The Memory of `data`, with an empty decode cache and no map.
+    fn with_data(data: Vec<u8>) -> Self {
         Self {
-            data: vec![255; MEMORY_SIZE], //16mb
+            data,
             cache: DecodeCache::new(),
             map: MemoryMap::default(),
             mapped: false,
@@ -8731,10 +8736,9 @@ impl Memory {
     /// writing them, so a harness that makes one of these per test pays only
     /// for the pages the test touches.
     pub fn zeroed() -> Self {
-        Self {
-            data: vec![0; MEMORY_SIZE],
-            ..Self::new()
-        }
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        map_large_blocks_fresh();
+        Self::with_data(vec![0; MEMORY_SIZE])
     }
 
     /// Writes `word` at `address`, high byte first, each byte's address
@@ -8747,6 +8751,31 @@ impl Memory {
         self.cache.invalidate(address & ADDRESS_MASK, 2);
         self.cache.take_cleared();
     }
+}
+
+/// Makes glibc map every block of a megabyte or more fresh, once per process.
+///
+/// glibc raises its threshold for mapping a block to the size of the last
+/// mapped block freed, so once the first [`Memory::zeroed`] is dropped, the
+/// next 16 MB come from the heap instead, and `calloc` writes every byte of
+/// them: 16 MB a case, which was most of the differential harness's time. A
+/// threshold set by hand stays where it is put.
+#[cfg(all(
+    any(test, feature = "conformance"),
+    target_os = "linux",
+    target_env = "gnu"
+))]
+fn map_large_blocks_fresh() {
+    use std::ffi::c_int;
+    extern "C" {
+        fn mallopt(parameter: c_int, value: c_int) -> c_int;
+    }
+    /// `M_MMAP_THRESHOLD` in glibc's `malloc.h`.
+    const M_MMAP_THRESHOLD: c_int = -3;
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| unsafe {
+        mallopt(M_MMAP_THRESHOLD, 1 << 20);
+    });
 }
 
 #[cfg(any(test, feature = "conformance"))]
