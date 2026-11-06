@@ -423,7 +423,7 @@ moved.
   not instruction data, and stays in `names.rs` for good.
 - **The Mnemonic set holds the refused instructions too** (`rte`, `stop`,
   `reset`), because `label_rule` has to read `reset` in column 1 as an Operation
-  and leave "not implemented" to the analyzer. `tests/corpus/editor/flappy-bird.x68`
+  and leave "not implemented" to the analyzer. `tests/corpus/editor/flappy-asm.x68`
   writes `reset:` with a colon, so nothing in the corpus turns on it.
 - **`parse_line(text, file, line_index) -> (ast::Line, Vec<Diagnostic>)`** is the
   parser's entry point, and `assembler::parse_line(text) -> ast::Line` in
@@ -1239,7 +1239,7 @@ or touched is rustfmt clean.
   `the_easy68k_originals_raise_only_what_is_not_implemented` counts by code, so
   the two tests cannot drift apart.
 - **Three `-run.snap` fixtures moved, one line each, and all three are the `ds`
-  fix.** `flappy-bird`, `number-to-string-1` and `snake-1` have a different
+  fix.** `flappy-asm`, `number-to-string-1` and `snake-1` have a different
   `memory` hash and an identical `status`, `steps`, `d`, `a`, `pc`, `flags` and
   `output`; the other 27 are byte for byte unchanged. Two of the five programs
   with a `ds` did not move: `counting-loop-1` fills every byte of its block

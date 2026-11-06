@@ -57,7 +57,7 @@ upstream and contributes nothing.
 | --- | --- |
 | `bad-apple.x68` | `examples/m68k/bad-apple.x68` |
 | `bouncing-ball.x68` | `examples/m68k/bouncing-ball.x68` |
-| `flappy-bird.x68` | `examples/m68k/flappy-bird.x68` |
+| `flappy-asm.x68` | `examples/m68k/flappy-asm.x68` |
 | `graphics-tour.x68` | `examples/m68k/graphics-tour.x68` |
 | `keyboard-move.x68` | `examples/m68k/keyboard-move.x68` |
 | `mouse-paint.x68` | `examples/m68k/mouse-paint.x68` |
@@ -458,7 +458,7 @@ fix it is rather than a regression:
   `addi.l #$14,d0`.
 * **Immediates are stored sign extended to 32 bits**, so a word immediate can
   print wider than its instruction: `cmpi.w #$ffffff74,d5` in
-  `editor/flappy-bird.x68` and `move.w #$ffffffff,d2` in
+  `editor/flappy-asm.x68` and `move.w #$ffffffff,d2` in
   `editor/snake-1.asm`. The quick forms go the other way and truncate to eight
   bits, so `moveq #-1,d3` in `editor/binary-search-1.asm` prints as
   `moveq #$ff,d3`. *(This one turned out not to move: phase 1 evaluates values
@@ -466,7 +466,7 @@ fix it is rather than a regression:
   immediate in the same 32 bits and the quick form's count in the same 8, so
   every one of these lines prints exactly as it did. Milestone C2 of the machine
   plan is where it moved: an immediate is stored at its instruction's size, and
-  the flappy-bird line is `cmp.w #$ff74,d5`.)*
+  the flappy-asm line is `cmp.w #$ff74,d5`.)*
 * **The Entry point is the first instruction in all 30 fixtures**, so no
   snapshot tells the two rules of this version apart: `bad-apple.x68` is the
   only program spelling the Label `START:` and it is on the first instruction
@@ -503,7 +503,7 @@ it:
 | Fixture | Was | Is |
 | --- | --- | --- |
 | `counting-loop-1` `$2000` | `zeroed: 2` | `reserved: 20` |
-| `flappy-bird` `$1925`, `$1955`, `$195d` | `zeroed: 6`, `1`, `0` | `reserved: 48`, `8`, `1` |
+| `flappy-asm` `$1925`, `$1955`, `$195d` | `zeroed: 6`, `1`, `0` | `reserved: 48`, `8`, `1` |
 | `number-to-string-1` `$2000` | `zeroed: 4` | `reserved: 34` |
 | `snake-1` `$3012`, `$30b0` | `zeroed: 15`, `1` | `reserved: 122`, `8` |
 | `variables-in-memory-1` `$2008` | `zeroed: 0` | `reserved: 4` |
@@ -569,7 +569,7 @@ one line each, and it is the `ds` fix of the table above**:
 
 | Fixture | What moved |
 | --- | --- |
-| `flappy-bird-run` | `memory` only |
+| `flappy-asm-run` | `memory` only |
 | `number-to-string-1-run` | `memory` only |
 | `snake-1-run` | `memory` only |
 
@@ -818,7 +818,7 @@ predicts as directives and instructions arrive:
 The other two `-errors.snap` and all 30 `editor/` assembly and run fixtures are
 byte for byte what phase 2 left: no `editor/` program writes any instruction of
 this group — a grep over `editor/` for the six Mnemonics and for `,sr` and
-`,ccr` matches one line, the Label `movepipes` in `flappy-bird.x68`, which is a
+`,ccr` matches one line, the Label `movepipes` in `flappy-asm.x68`, which is a
 word and not a Mnemonic — and running them touches the new status register only
 through the condition codes they already set, whose bits and whose `flags` line
 are unchanged.
@@ -1139,7 +1139,7 @@ division that overflows, the flags of `chk` in bounds, and `link a7` and
 `unlk a7`.
 
 **No fixture moved.** Seven programs divide with `divu`, two link and unlink
-through A6 and `flappy-bird` shifts right by 4 with `asr.l`, but none divides
+through A6 and `flappy-asm` shifts right by 4 with `asr.l`, but none divides
 into an overflow, links through A7 or shifts arithmetically by its operand's
 size or more, and none runs `abcd`, `sbcd`, `nbcd` or `chk`, so no flag or
 value a fixture records depended on an old answer.
@@ -1214,7 +1214,7 @@ still answered before the run stops. The Terminate task ends the run and is
 never answered.
 
 Of the 30 programs, 23 terminate and 7 reach the limit: `bad-apple`,
-`bouncing-ball`, `bouncing-ball-1`, `flappy-bird`, `keyboard-control-1`,
+`bouncing-ball`, `bouncing-ball-1`, `flappy-asm`, `keyboard-control-1`,
 `keyboard-move` and `mouse-paint`, every one of them an event loop with no way
 out when nothing is ever typed or clicked. None ends with an exception, so that
 row of the table is held by `a_runtime_error_ends_the_run_with_an_exception` in
