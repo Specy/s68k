@@ -337,7 +337,10 @@ interpreter.getCurrentLocation()      // {file, line, column, endColumn} | null
 interpreter.getNextInstruction()      // {address, size, bytes, location, includeChain, source, assembledAs?} | null
 interpreter.disassembleAt(0x1008)     // {address, size, bytes, text: 'ADD.W D1,D2'}, what memory holds now
 interpreter.getCallStack()            // one frame per subroutine entered and per exception taken
+interpreter.getCallStack(20)          // only the newest 20, still oldest first
+interpreter.getCallDepth()            // how many frames, in constant time
 interpreter.canUndo() && interpreter.undo()
+interpreter.undoMany(3)               // the newest 3 steps in one call; answers how many it took back
 ```
 
 A breakpoint is a line of a file, any file of the project: one on a comment, a
@@ -346,6 +349,42 @@ twice stops at both copies. Undo needs a history, which `new Interpreter(program
 default (`{keep_history: true, history_size: 100}`). A program that has not run yet has nothing
 to undo: `canUndo()` is false until the first step, and undoing every step leaves the program
 counter at the Entry point.
+
+Each frame of the call stack says where it was pushed: `sp` is the stack
+pointer just after the push, and `stack` is the stack it is on, `'usp'`,
+`'ssp'` or the 68020's `'msp'`. A frame is gone as soon as the stack pointer of
+its own stack is above `sp`, whatever instruction moved it there: `rts`, `rtr`,
+`rtd`, `rte`, a return address popped by hand, or an unwind past several frames
+at once. An exception taken from user mode is on `'ssp'`, and the user stack
+pointer stays where it was. A routine that pops its return address to read the
+data written after its call is gone at that pop. The call stack is kept whether
+or not there is a history, and undo puts it back. It keeps the newest 131,072
+frames; past that the oldest are forgotten and `getCallDepth()` goes on
+counting them.
+
+A run can stop at a call depth, which is what Step over and Step out need:
+
+```ts
+const depth = interpreter.getCallDepth()
+interpreter.step()                                   // the bsr: one frame deeper
+interpreter.runWithBreakpoints(undefined, {untilCallDepth: depth})
+interpreter.getStopReason()                          // StopReason.CallDepth
+```
+
+The run stops before the next instruction once `getCallDepth()` is
+`untilCallDepth` or less. That is tested when the run starts and after every
+step, ahead of the breakpoint at the program counter and of the limit, so a run
+started at the depth runs nothing. `runWithLimit(limit, {untilCallDepth})`
+takes the same option. A stop at a breakpoint, a stop at the depth and a spent
+limit all leave the status `Running` (the limit also throws), and
+`getStopReason()` says which it was: `Breakpoint`, `CallDepth`, `Limit`, or
+`Status` when the status says why. The end of the program wins over the depth.
+
+`getUndoDepth()` is how many steps undo can still take back.
+`getRecordedSteps()` counts every step the history has recorded, an IRQ taken
+included, and undo takes none back, so the difference of two readings is how
+many steps a run recorded. `getUndoHistory(amount, skip)` leaves out the `skip`
+newest.
 
 `program.getMemoryMap()` returns the ranges the program's `memory` lines
 declare, at most one of each kind, in EASy68K's order: `[{kind: 'rom', start:

@@ -60,8 +60,8 @@ use crate::machine::{disassemble, Dialect, Processor};
 use crate::{c_runtime, charset};
 use crate::{
     debugger::{
-        Debugger, ExecutionStep, ExecutionStepKind, MutationOperation, PokeJournal, PokeTarget,
-        PokeWrite, Ran, MAX_INSTRUCTION_BYTES,
+        CallStackFrame, Debugger, ExecutionStep, ExecutionStepKind, FrameKind, MutationOperation,
+        PokeJournal, PokeTarget, PokeWrite, Ran, MAX_INSTRUCTION_BYTES,
     },
     instructions::{
         AddressWidth, BranchSize, Bytes, Condition, FileDialogMode, FileExistence, IndexRegister,
@@ -1277,11 +1277,18 @@ impl Cpu {
     }
 
     pub fn get_register_values(&self) -> Vec<u32> {
-        self.d_reg
-            .iter()
-            .map(|reg| reg.get_long())
-            .chain(self.a_reg.iter().map(|reg| reg.get_long()))
-            .collect()
+        self.register_array().to_vec()
+    }
+
+    /// D0 to D7, then A0 to A7, in place: what a frame of the call stack
+    /// keeps, without allocating.
+    pub fn register_array(&self) -> [u32; 16] {
+        let mut registers = [0; 16];
+        for index in 0..8 {
+            registers[index] = self.d_reg[index].get_long();
+            registers[8 + index] = self.a_reg[index].get_long();
+        }
+        registers
     }
 }
 
@@ -1754,9 +1761,16 @@ fn check_answer(pending: &Interrupt, answer: &InterruptResult) -> RuntimeResult<
     }
 }
 
+/// What the program is doing, which every step and run answers.
+///
+/// A run that stops at a breakpoint, at the call depth it was asked to stop at
+/// ([`RunOptions::until_call_depth`]) or on its limit leaves the program
+/// `Running`, as there is nothing about it to go on from:
+/// [`Interpreter::get_stop_reason`] says which of the three it was.
 #[derive(Debug, Clone, PartialEq, Serialize, Copy)]
 #[wasm_bindgen]
 pub enum InterpreterStatus {
+    /// The program goes on with the next step or run.
     Running,
     Interrupt,
     Terminated,
@@ -1828,6 +1842,34 @@ pub enum InterpreterStatus {
     Stopped,
 }
 
+/// Why the last run returned ([`Interpreter::get_stop_reason`]): what tells a
+/// stop at a breakpoint, a stop at the call depth a run was asked to reach
+/// and a spent limit apart, as all three leave the program
+/// [`Running`](InterpreterStatus::Running).
+///
+/// It is not a status: the next run or step goes on from the program
+/// counter whichever it was. wasm-bindgen exports it as numbers, so a new
+/// variant goes at the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[wasm_bindgen]
+pub enum StopReason {
+    /// The program's status says why: an interrupt waits for its answer,
+    /// `simhalt` paused it, a watched write or a code write stopped it, `stop`
+    /// left the processor waiting, or the program ended, by its own end or an
+    /// error. It is also what a step and a run that has not started answer.
+    Status,
+    /// The run stopped before the instruction a breakpoint names, which has
+    /// not run.
+    Breakpoint,
+    /// The run stopped, before running the instruction at the program
+    /// counter, because the call depth was at or below the one
+    /// [`RunOptions::until_call_depth`] asked for.
+    CallDepth,
+    /// The run's `limit` instructions have run and the program would run on:
+    /// the run answered the [`ExecutionLimit`](RuntimeError::ExecutionLimit).
+    Limit,
+}
+
 /// A **Code write**: a write of the program's own that changed the bytes of an
 /// instruction the Interpreter had decoded, which it will decode again before
 /// running it (ADR 0006). The program's stores and the trap tasks' writes on
@@ -1861,6 +1903,21 @@ pub struct RunOptions {
     /// [`InterpreterStatus::CodeWrite`]. Off, the run goes on and the write is
     /// recorded as it always is.
     pub stop_on_code_write: bool,
+    /// A call depth to stop at: the run stops, before running the instruction
+    /// at the program counter, whenever [`Interpreter::call_depth`] is this or
+    /// less, with [`StopReason::CallDepth`]. It is tested when the run starts
+    /// and after every step, an IRQ's included, before the breakpoint at the
+    /// program counter and before the limit, so a run whose last allowed
+    /// instruction reached it stops for it and not for the limit, and a
+    /// breakpoint on the instruction it stops at is not reported. A run
+    /// started at that depth or less runs nothing. A stop the step made
+    /// itself, an interrupt, a pause, a watched or code write, `stop`, or the
+    /// end of the program, comes first, and the next run, started at that
+    /// depth, stops at once. `None` (the default) never stops for it.
+    ///
+    /// It is what a debugger's Step over and Step out run with: the depth
+    /// when the step began, or one less.
+    pub until_call_depth: Option<usize>,
 }
 
 impl RunOptions {
@@ -1870,6 +1927,7 @@ impl RunOptions {
     pub const CONTINUE: RunOptions = RunOptions {
         skip_breakpoint_at_pc: true,
         stop_on_code_write: false,
+        until_call_depth: None,
     };
 
     /// Go on mid-program: stop before the instruction the program counter is
@@ -1878,6 +1936,7 @@ impl RunOptions {
     pub const RESUME: RunOptions = RunOptions {
         skip_breakpoint_at_pc: false,
         stop_on_code_write: false,
+        until_call_depth: None,
     };
 
     /// These options, stopping on a code write.
@@ -1886,6 +1945,23 @@ impl RunOptions {
             stop_on_code_write: true,
             ..self
         }
+    }
+
+    /// These options, stopping at a call depth of `depth` or less
+    /// ([`until_call_depth`](RunOptions::until_call_depth)).
+    pub fn until_call_depth(self, depth: usize) -> RunOptions {
+        RunOptions {
+            until_call_depth: Some(depth),
+            ..self
+        }
+    }
+
+    /// What the run loop compares the call depth with: the run stops when the
+    /// depth is below it. No depth asked for is 0, which no depth is below,
+    /// and the run then takes a loop without the comparison.
+    fn stop_below(&self) -> usize {
+        self.until_call_depth
+            .map_or(0, |depth| depth.saturating_add(1))
     }
 }
 
@@ -2131,6 +2207,8 @@ pub struct Interpreter {
     /// status register and undo, so that a run asks this one flag between two
     /// instructions and nothing else.
     irq_ready: bool,
+    /// Why the last run returned, or [`StopReason::Status`] after a step.
+    stop_reason: StopReason,
 }
 
 impl Interpreter {
@@ -2203,6 +2281,7 @@ impl Interpreter {
             trace_after_answer: false,
             machine: MachineState::default(),
             irq_ready: false,
+            stop_reason: StopReason::Status,
             processor: program.processor(),
             extras: timing::Extras::of(program.processor()),
             looping: None,
@@ -2566,6 +2645,7 @@ impl Interpreter {
     /// that failed, running. An instruction fetched from an odd address is such
     /// an error, the 68000's [address error](RuntimeError::AddressError).
     pub fn step(&mut self) -> RuntimeResult<InterpreterStatus> {
+        self.stop_reason = StopReason::Status;
         self.verify_can_run()?;
         if self.status == InterpreterStatus::Stopped {
             return Ok(self.status);
@@ -2665,6 +2745,8 @@ impl Interpreter {
             let fetched = (!slot.is_empty()).then_some(&slot.instruction);
             executed = self.take_exceptions(executed, fetched, pc, system);
         }
+        //the frames the instruction returned from, by any means
+        self.end_finished_frames();
         self.track_stack_top(sp_before);
         //an instruction that raised an Interrupt is not finished until the host answers
         //it, and what `answer_interrupt` writes belongs to this step
@@ -3208,9 +3290,11 @@ impl Interpreter {
     /// error is one of group 0, and halts in turn if its own handler is out of
     /// reach, so no exception is taken again and again.
     ///
-    /// The call stack gains an exception frame, which `rte` takes off, and the
-    /// step a `PushException` from `from`: the instruction that raised it, or
-    /// for an IRQ the one it came before.
+    /// The call stack gains an exception frame, gone once the stack pointer of
+    /// the stack it is on is above it, as after its `rte`, and the step a
+    /// `PushException` from `from`: the instruction that raised it, or for an
+    /// IRQ the one it came before. The frames the step had already left are
+    /// taken off first.
     fn take_exception(
         &mut self,
         vector: u8,
@@ -3231,6 +3315,9 @@ impl Interpreter {
         if self.looping.is_some() {
             self.set_loop(None);
         }
+        //the frames the instruction left before it raised this are gone first, so that the new
+        //frame goes on top of the ones still there: a return to an odd address has left its call
+        self.end_finished_frames();
         let sr = self.cpu.get_sr();
         self.write_sr((sr | SUPERVISOR_BIT) & !(TRACE_BIT | TRACE_ON_FLOW_BIT));
         if let Err(fault) = self.push_frame(&frame, sr) {
@@ -3255,15 +3342,94 @@ impl Interpreter {
                     vbr,
                 });
         }
-        self.debugger.push_exception(
+        //on the stack the frame went on, which a 68020's interrupt in the master state leaves
+        //for the throwaway frame's: one exception is one frame, gone when its `rte` has finished
+        let frame = CallStackFrame::exception(
             handler as usize,
             frame.pc() as usize,
-            self.cpu.get_register_values(),
+            self.cpu.register_array(),
+            self.get_sp() as u32,
+            self.cpu.active_stack_pointer(),
             vector,
             raised,
             vbr,
         );
+        self.debugger.push_frame(frame, self.keep_history);
         Ok(())
+    }
+
+    /// Pushes the frame of a `bsr` or `jsr` that has just pushed its return
+    /// address, `caller_address`, and jumped to the routine at the program
+    /// counter.
+    fn push_call_frame(&mut self, caller_address: usize) {
+        let frame = CallStackFrame::new(
+            self.pc,
+            caller_address,
+            self.cpu.register_array(),
+            self.get_sp() as u32,
+            self.cpu.active_stack_pointer(),
+        );
+        self.debugger.push_frame(frame, self.keep_history);
+    }
+
+    /// Takes off the frames that are gone, after a step and before an
+    /// Exception pushes its frame: while there is an innermost frame and the
+    /// stack pointer of its own stack, whichever A7 is now, is above the
+    /// stack pointer it was pushed at, the frame has returned, by whatever
+    /// instruction, and is taken off. It is the one rule of the call stack;
+    /// no instruction pops a frame itself.
+    ///
+    /// "Above" is counted round the 32 bits of the register, so that a stack
+    /// at the bottom of memory works: a frame pushed at `$FFFFFFFC` from 0 is
+    /// gone when the stack pointer is back at 0.
+    #[inline(always)]
+    fn end_finished_frames(&mut self) {
+        if let Some((stack, sp)) = self.debugger.innermost() {
+            if Self::is_above(self.cpu.stack_pointer(stack), sp) {
+                self.remove_finished_frames();
+            }
+        }
+    }
+
+    /// Whether the stack pointer `current` is above `sp`, round the 32 bits.
+    #[inline(always)]
+    fn is_above(current: u32, sp: u32) -> bool {
+        (current.wrapping_sub(sp) as i32) > 0
+    }
+
+    /// [`end_finished_frames`](Interpreter::end_finished_frames) once the
+    /// innermost frame is known to be gone: takes it off, and every frame
+    /// under it that is gone too, journaled in the step so that undo puts
+    /// them back. The step records a `PopCall` for each call frame and a
+    /// `PopException` for an exception frame, unless it has recorded one,
+    /// as `rte` does where it pops the frame.
+    #[cold]
+    #[inline(never)]
+    fn remove_finished_frames(&mut self) {
+        while let Some((stack, sp)) = self.debugger.innermost() {
+            if !Self::is_above(self.cpu.stack_pointer(stack), sp) {
+                break;
+            }
+            let Some(kind) = self.debugger.remove_innermost(self.keep_history) else {
+                break;
+            };
+            if !self.keep_history {
+                continue;
+            }
+            let to = self.pc;
+            let from = self.current_instruction_address;
+            match kind {
+                FrameKind::Call => self
+                    .debugger
+                    .add_mutation(MutationOperation::PopCall { to, from }),
+                FrameKind::Exception => {
+                    if !self.debugger.newest_returned_from_an_exception() {
+                        self.debugger
+                            .add_mutation(MutationOperation::PopException { to, from });
+                    }
+                }
+            }
+        }
     }
 
     /// Pushes `frame`, which stacks `sr`, on the supervisor stack, which A7
@@ -3573,8 +3739,38 @@ impl Interpreter {
         Ok(())
     }
 
+    /// The call stack, oldest frame first: every frame it keeps, at most
+    /// [`CALL_STACK_LIMIT`](crate::debugger::CALL_STACK_LIMIT).
     pub fn get_pretty_call_stack(&self) -> Vec<PrettyStackFrame> {
-        self.debugger.to_call_stack()
+        self.debugger.to_call_stack(None)
+    }
+
+    /// The newest `max` frames of the call stack, oldest of them first: what a
+    /// panel that shows the innermost frames asks for at every refresh.
+    pub fn get_newest_call_stack(&self, max: usize) -> Vec<PrettyStackFrame> {
+        self.debugger.to_call_stack(Some(max))
+    }
+
+    /// How many frames the call stack counts: the routines entered and the
+    /// Exceptions taken that have not returned, those forgotten past
+    /// [`CALL_STACK_LIMIT`](crate::debugger::CALL_STACK_LIMIT) included. A
+    /// frame is gone when the stack pointer of its stack is above where it was
+    /// pushed. Constant time.
+    pub fn call_depth(&self) -> usize {
+        self.debugger.call_depth()
+    }
+    /// Takes back the newest `count` steps of the history, or as many as it
+    /// holds, and answers how many that was. It is [`undo`](Interpreter::undo)
+    /// that many times for a caller that wants none of the steps described:
+    /// taking back the thousands of steps of one Step over costs the undoing
+    /// alone, where handing each step to JavaScript cost several times that.
+    pub fn undo_many(&mut self, count: usize) -> RuntimeResult<usize> {
+        let mut undone = 0;
+        while undone < count && self.debugger.can_undo() {
+            self.undo()?;
+            undone += 1;
+        }
+        Ok(undone)
     }
     /// Takes back the newest step of the history, instruction or Poke, and
     /// answers it. It empties the log of watched writes
@@ -3631,29 +3827,17 @@ impl Interpreter {
                         } => {
                             self.memory.write_bytes(*address, old)?;
                         }
-                        MutationOperation::PopCall { frame, .. } => {
-                            //a return from no call (an `rts` with nothing on the call stack)
-                            //took nothing off it, and puts nothing back
-                            if let Some(frame) = frame {
-                                self.debugger.restore_call(frame.clone());
-                            }
-                        }
-                        MutationOperation::PushCall { to: _, from: _ } => {
-                            self.debugger.pop_call();
-                        }
+                        //records of what the call stack did, which the step's frame changes
+                        //below take back
+                        MutationOperation::PopCall { .. }
+                        | MutationOperation::PushCall { .. }
+                        | MutationOperation::PushException { .. }
+                        | MutationOperation::PopException { .. } => {}
                         MutationOperation::SetInputSettings { old, new: _ } => {
                             self.input_settings = *old;
                         }
                         MutationOperation::WriteStackPointers { old, .. } => {
                             self.cpu.restore_stack_pointers(*old);
-                        }
-                        MutationOperation::PushException { .. } => {
-                            self.debugger.pop_call();
-                        }
-                        MutationOperation::PopException { frame, .. } => {
-                            if let Some(frame) = frame {
-                                self.debugger.restore_call(frame.clone());
-                            }
                         }
                         MutationOperation::SetMachineState { old, new } => {
                             self.machine = self.machine.undone(old, new);
@@ -3666,6 +3850,10 @@ impl Interpreter {
                         }
                     }
                 }
+                //the frames the step pushed and the ones it found gone, newest first: the call
+                //stack and its depth as they were before it, a frame forgotten past the limit
+                //included
+                self.debugger.take_back_frames(step.get_frame_changes());
                 //whatever an instruction left behind is gone with it: the interrupt an undone trap
                 //was waiting on, the instruction that was executing until it was answered, and the
                 //end of the program it caused. A step never begins while an interrupt waits, so
@@ -3715,12 +3903,37 @@ impl Interpreter {
         self.debugger.get_last_steps(count)
     }
 
-    /// The id of the newest step, or 0 when there is none. A Poke has an id of
-    /// its own, so this moves past it.
+    /// `count` steps of the history, newest first, from the one `skip` steps
+    /// before the newest.
+    pub fn get_steps_back(&self, skip: usize, count: usize) -> Vec<&ExecutionStep> {
+        self.debugger.get_steps_back(skip, count)
+    }
+
+    /// The id of the newest step the history holds, or 0 when it holds none.
+    /// A Poke has an id of its own, so this moves past it. Undo takes it back
+    /// to the step before, and no id is given twice, so after an undo it is no
+    /// count of the steps recorded: [`get_recorded_steps`](Interpreter::get_recorded_steps) is.
     pub fn get_last_step_id(&self) -> u64 {
         self.debugger
             .get_last_step()
             .map_or(0, |step| step.get_id())
+    }
+
+    /// How many steps undo can still take back, Pokes and IRQs included: the
+    /// steps the history holds, at most its size. Constant time.
+    pub fn get_undo_depth(&self) -> usize {
+        self.debugger.undo_depth()
+    }
+
+    /// How many steps the history has recorded since the Interpreter was
+    /// made, instructions, Pokes and IRQs alike, 0 without a history. Undo
+    /// takes none back, so it only grows, and the difference of two readings
+    /// is how many steps were recorded between them, the steps an IRQ took
+    /// included, which [`get_executed_instructions`](Interpreter::get_executed_instructions)
+    /// does not count. The newest step's id is this count when it was
+    /// recorded.
+    pub fn get_recorded_steps(&self) -> u64 {
+        self.debugger.recorded_steps()
     }
 
     /// Whether an instruction is running, which is also true while an Interrupt
@@ -4675,8 +4888,7 @@ impl Interpreter {
                 self.set_sp(sp);
                 let caller_address = self.pc;
                 self.pc = *address as usize;
-                self.debugger
-                    .push_call(self.pc, caller_address, self.cpu.get_register_values());
+                self.push_call_frame(caller_address);
             }
             Instruction::JSR(source) => {
                 let address = self.get_operand_address(source)?;
@@ -4695,8 +4907,7 @@ impl Interpreter {
                 self.set_sp(sp);
                 let caller_address = self.pc;
                 self.pc = address as usize;
-                self.debugger
-                    .push_call(self.pc, caller_address, self.cpu.get_register_values());
+                self.push_call_frame(caller_address);
             }
             Instruction::JMP(op) => {
                 let addr = self.get_operand_address(op)?;
@@ -5137,17 +5348,11 @@ impl Interpreter {
             // step call resumes at the following instruction.
             Instruction::SIMHALT => self.set_status(InterpreterStatus::Paused),
             //a return to an odd address has popped it, and faults in its own prefetch: the call
-            //is off the call stack, and the address error pushes its own frame
+            //is gone, as the stack pointer is above it, and the address error pushes its own
+            //frame. Like every return, it leaves the call stack to the stack pointer
+            //(`remove_finished_frames`)
             Instruction::RTS => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
-                let frame = self.debugger.pop_call();
-                if self.keep_history {
-                    self.debugger.add_mutation(MutationOperation::PopCall {
-                        to: value.get_long() as usize,
-                        from: self.current_instruction_address,
-                        frame,
-                    })
-                }
                 self.set_sp(new_sp);
                 if value.get_long() & 1 != 0 {
                     return Err(Self::jump_to_an_odd_address(value.get_long()));
@@ -5268,15 +5473,6 @@ impl Interpreter {
                 //address (`Reference/68ks9f.htm`); the stack pointer goes up by six
                 let (status, sp) = self.memory.pop(Size::Word, self.get_sp())?;
                 let (address, sp) = self.memory.pop(Size::Long, sp)?;
-                //off the call stack before an odd address faults, as for `rts`
-                let frame = self.debugger.pop_call();
-                if self.keep_history {
-                    self.debugger.add_mutation(MutationOperation::PopCall {
-                        to: address.get_long() as usize,
-                        from: self.current_instruction_address,
-                        frame,
-                    })
-                }
                 self.cpu.set_ccr_byte(status.get_word() as u8);
                 self.set_sp(sp);
                 if address.get_long() & 1 != 0 {
@@ -5323,7 +5519,9 @@ impl Interpreter {
             //the status register, then the program counter, off the supervisor stack, which A7 is;
             //an S of 0 in the word popped makes A7 the user stack pointer. A return to an odd
             //address faults in `rte`'s own prefetch, with the status register restored and the
-            //exception's frame off the call stack, as `rte` has popped it
+            //exception's frame gone, as `rte` has popped it. The record of the return comes
+            //before the swap of the stack pointers, where the host reads it; the call stack
+            //follows the stack pointer, as for every return
             Instruction::RTE => {
                 self.check_privilege()?;
                 if self.processor.has(Processor::M68010) {
@@ -5332,12 +5530,10 @@ impl Interpreter {
                 let (status, sp) = self.memory.pop(Size::Word, self.get_sp())?;
                 let (address, sp) = self.memory.pop(Size::Long, sp)?;
                 let target = address.get_long();
-                let frame = self.debugger.pop_exception();
                 if self.keep_history {
                     self.debugger.add_mutation(MutationOperation::PopException {
                         to: target as usize,
                         from: self.current_instruction_address,
-                        frame,
                     });
                 }
                 self.set_sp(sp);
@@ -5373,14 +5569,6 @@ impl Interpreter {
             //arguments the caller pushed off it
             Instruction::RTD(displacement) => {
                 let (value, new_sp) = self.memory.pop(Size::Long, self.get_sp())?;
-                let frame = self.debugger.pop_call();
-                if self.keep_history {
-                    self.debugger.add_mutation(MutationOperation::PopCall {
-                        to: value.get_long() as usize,
-                        from: self.current_instruction_address,
-                        frame,
-                    })
-                }
                 self.set_sp((new_sp as u32).wrapping_add(*displacement) as usize);
                 if value.get_long() & 1 != 0 {
                     return Err(Self::jump_to_an_odd_address(value.get_long()));
@@ -6396,12 +6584,10 @@ impl Interpreter {
         };
         let status = self.memory.read_word(sp)?;
         let target = self.memory.read_long(sp.wrapping_add(2))?;
-        let frame = self.debugger.pop_exception();
         if self.keep_history {
             self.debugger.add_mutation(MutationOperation::PopException {
                 to: target as usize,
                 from: self.current_instruction_address,
-                frame,
             });
         }
         self.set_sp((sp as u32).wrapping_add(size) as usize);
@@ -7816,6 +8002,7 @@ impl Interpreter {
     /// It never stops for a [code write](CodeWrite); a run that should is
     /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints).
     pub fn run(&mut self) -> RuntimeResult<InterpreterStatus> {
+        self.stop_reason = StopReason::Status;
         self.verify_can_run()?;
         if self.is_resumable_stop() {
             self.run_step()?;
@@ -7884,6 +8071,12 @@ impl Interpreter {
     /// Only the instruction the run starts on is affected; every breakpoint the
     /// run reaches after that stops it before the instruction executes.
     ///
+    /// With [`until_call_depth`](RunOptions::until_call_depth), the run also
+    /// stops, before the next instruction, once the call depth is that or
+    /// less, tested ahead of the breakpoint and the limit;
+    /// [`get_stop_reason`](Interpreter::get_stop_reason) tells that stop, a
+    /// breakpoint's and the limit apart.
+    ///
     /// An IRQ ready to be taken is taken before the breakpoint at the program
     /// counter is looked at, since the next instruction to run is then the
     /// handler's: a breakpoint in the handler stops the run there, and the one
@@ -7931,17 +8124,27 @@ impl Interpreter {
         limit: Option<usize>,
         options: RunOptions,
     ) -> RuntimeResult<InterpreterStatus> {
+        self.stop_reason = StopReason::Status;
         self.stop_on_code_write = options.stop_on_code_write;
-        let ran = self.run_to_breakpoints(addresses, limit, options.skip_breakpoint_at_pc);
+        let ran = self.run_to_breakpoints(
+            addresses,
+            limit,
+            options.skip_breakpoint_at_pc,
+            options.stop_below(),
+        );
         self.stop_on_code_write = false;
         ran
     }
 
+    /// The run of [`run_with_breakpoints`](Interpreter::run_with_breakpoints),
+    /// which stops when the call depth is below `stop_below`
+    /// ([`RunOptions::stop_below`]).
     fn run_to_breakpoints(
         &mut self,
         addresses: &HashSet<usize>,
         limit: Option<usize>,
         skip_breakpoint_at_pc: bool,
+        stop_below: usize,
     ) -> RuntimeResult<InterpreterStatus> {
         self.verify_can_run()?;
         if self.is_resumable_stop() && self.ends_next() {
@@ -7953,52 +8156,69 @@ impl Interpreter {
         let limit = limit.unwrap_or(usize::MAX);
         self.limited_run_start = self.executed_instructions;
         let resuming_after_pause = self.is_resumable_stop();
-        let mut limit_counter = limit;
-        let mut iterations = 0;
-        while (self.status == InterpreterStatus::Running
-            || (resuming_after_pause && iterations == 0))
-            && limit_counter > 0
-        {
-            let at_starting_pc = iterations == 0;
-            //an IRQ ready is the next step, before the breakpoint here: the next instruction
-            //to run is its handler's
-            if !(at_starting_pc && skip_breakpoint_at_pc)
-                && addresses.contains(&(self.pc & ADDRESS_MASK))
-                && !self.irq_ready
-            {
-                //a run that stops on a breakpoint is running, not paused: the status a
-                //`simhalt` left behind belongs to the halt, not to the breakpoint the resumed
-                //run stopped at
-                self.status = InterpreterStatus::Running;
-                break;
-            }
-            self.run_step()?;
-            limit_counter -= 1;
-            iterations += 1;
+        //a run asked for no depth takes a loop without the test, so that it costs nothing
+        let (limit_counter, iterations) = match stop_below {
+            0 => self.run_to_a_breakpoint::<false>(
+                addresses,
+                skip_breakpoint_at_pc,
+                resuming_after_pause,
+                limit,
+                0,
+                0,
+            )?,
+            _ => self.run_to_a_breakpoint::<true>(
+                addresses,
+                skip_breakpoint_at_pc,
+                resuming_after_pause,
+                limit,
+                0,
+                stop_below,
+            )?,
+        };
+        //a breakpoint or the call depth leaves steps over, and the run ends there
+        if limit_counter == 0 && self.took_irqs(limit) && !self.reached(stop_below) {
+            return self.run_to_breakpoints_after_irqs(addresses, limit, iterations, stop_below);
         }
-        //a breakpoint leaves steps over, and the run ends there
-        if limit_counter == 0 && self.took_irqs(limit) {
-            return self.run_to_breakpoints_after_irqs(addresses, limit, iterations);
-        }
-        self.end_of_a_limited_run(limit, iterations)
+        self.end_of_a_limited_run(limit, iterations, stop_below)
     }
 
-    /// The steps of a run to breakpoints, until it stops, reaches one, or
-    /// has taken `limit_counter` steps, which it counts down while it counts
-    /// `iterations` up: answers the two as they end.
+    /// Whether the call depth is below `stop_below`, which a run asked to stop
+    /// at a call depth stops for ([`RunOptions::stop_below`]): one comparison,
+    /// which always fails when it was asked for none.
     #[inline(always)]
-    fn run_to_a_breakpoint(
+    fn reached(&self, stop_below: usize) -> bool {
+        self.debugger.call_depth() < stop_below
+    }
+
+    /// The steps of a run to breakpoints, until it stops, reaches one or, with
+    /// `DEPTH`, the call depth below `stop_below`, or has taken
+    /// `limit_counter` steps, which it counts down while it counts
+    /// `iterations` up: answers the two as they end. The call depth is tested
+    /// first, before every step, which is when the run begins and after every
+    /// step. Without `DEPTH` the loop has no such test, which is the run of a
+    /// host that asked for no depth.
+    #[inline(always)]
+    fn run_to_a_breakpoint<const DEPTH: bool>(
         &mut self,
         addresses: &HashSet<usize>,
         skip_breakpoint_at_pc: bool,
         resuming_after_pause: bool,
         mut limit_counter: usize,
         mut iterations: usize,
+        stop_below: usize,
     ) -> RuntimeResult<(usize, usize)> {
         while (self.status == InterpreterStatus::Running
             || (resuming_after_pause && iterations == 0))
             && limit_counter > 0
         {
+            //a run that stops on the call depth or a breakpoint is running, not paused: the
+            //status a `simhalt` left behind belongs to the halt, not to the stop the resumed run
+            //made
+            if DEPTH && self.reached(stop_below) {
+                self.status = InterpreterStatus::Running;
+                self.stop_reason = StopReason::CallDepth;
+                break;
+            }
             let at_starting_pc = iterations == 0;
             //an IRQ ready is the next step, before the breakpoint here: the next instruction
             //to run is its handler's
@@ -8006,10 +8226,8 @@ impl Interpreter {
                 && addresses.contains(&(self.pc & ADDRESS_MASK))
                 && !self.irq_ready
             {
-                //a run that stops on a breakpoint is running, not paused: the status a
-                //`simhalt` left behind belongs to the halt, not to the breakpoint the resumed
-                //run stopped at
                 self.status = InterpreterStatus::Running;
+                self.stop_reason = StopReason::Breakpoint;
                 break;
             }
             self.run_step()?;
@@ -8029,15 +8247,18 @@ impl Interpreter {
         addresses: &HashSet<usize>,
         limit: usize,
         mut iterations: usize,
+        stop_below: usize,
     ) -> RuntimeResult<InterpreterStatus> {
         loop {
             let left = limit - self.ran_in_limited_run();
             let limit_counter;
-            (limit_counter, iterations) =
-                self.run_to_a_breakpoint(addresses, false, false, left, iterations)?;
-            //a breakpoint leaves steps over, and the run ends there
-            if limit_counter > 0 || !self.took_irqs(limit) {
-                return self.end_of_a_limited_run(limit, iterations);
+            //rare enough to share one loop, which tests the depth, with none asked for too
+            (limit_counter, iterations) = self.run_to_a_breakpoint::<true>(
+                addresses, false, false, left, iterations, stop_below,
+            )?;
+            //a breakpoint or the call depth leaves steps over, and the run ends there
+            if limit_counter > 0 || !self.took_irqs(limit) || self.reached(stop_below) {
+                return self.end_of_a_limited_run(limit, iterations, stop_below);
             }
         }
     }
@@ -8056,10 +8277,11 @@ impl Interpreter {
     /// cannot keep a run from ending, since its handler runs an instruction
     /// before the same level can be taken again.
     ///
-    /// It never stops for a code write; `run_with_breakpoints` with no
-    /// breakpoint and [`RunOptions::stopping_on_code_writes`] is the limited run
-    /// that does.
+    /// It never stops for a code write, and never for a call depth: the
+    /// limited run that does either is [`run_with_options`](Interpreter::run_with_options),
+    /// `run_with_breakpoints` with no breakpoint, which pays for its tests.
     pub fn run_with_limit(&mut self, limit: usize) -> RuntimeResult<InterpreterStatus> {
+        self.stop_reason = StopReason::Status;
         self.verify_can_run()?;
         if self.is_resumable_stop() && self.ends_next() {
             self.terminate(Termination::EndOfProgram {
@@ -8082,7 +8304,29 @@ impl Interpreter {
         if limit_counter == 0 && self.took_irqs(limit) {
             return self.run_after_irqs(limit, iterations);
         }
-        self.end_of_a_limited_run(limit, iterations)
+        self.end_of_a_limited_run(limit, iterations, 0)
+    }
+
+    /// [`run_with_breakpoints`](Interpreter::run_with_breakpoints) with no
+    /// breakpoint: a run of at most `limit` instructions, or none, that stops
+    /// for the call depth and the code writes `options` asks for. It is the
+    /// run a host that wants [`RunOptions::until_call_depth`] takes where it
+    /// would take [`run_with_limit`](Interpreter::run_with_limit), whose loop
+    /// tests neither.
+    pub fn run_with_options(
+        &mut self,
+        limit: Option<usize>,
+        options: RunOptions,
+    ) -> RuntimeResult<InterpreterStatus> {
+        self.run_to_addresses(&HashSet::new(), limit, options)
+    }
+
+    /// Why the last run returned: a breakpoint, the call depth it was asked to
+    /// stop at, its limit, or the program's status, which is also what a step
+    /// answers. What tells the three stops that leave the program
+    /// [`Running`](InterpreterStatus::Running) apart.
+    pub fn get_stop_reason(&self) -> StopReason {
+        self.stop_reason
     }
 
     /// A limited run whose steps ran out with IRQs among them, which ran no
@@ -8103,7 +8347,7 @@ impl Interpreter {
                 iterations += 1;
             }
             if limit_counter > 0 || !self.took_irqs(limit) {
-                return self.end_of_a_limited_run(limit, iterations);
+                return self.end_of_a_limited_run(limit, iterations, 0);
             }
         }
     }
@@ -8132,11 +8376,14 @@ impl Interpreter {
     /// `iterations` steps: the end of the
     /// program the last step reached, and the status, or the
     /// [`ExecutionLimit`](RuntimeError::ExecutionLimit) when the instructions
-    /// have all run and the program would run on.
+    /// have all run and the program would run on. A call depth below
+    /// `stop_below` that the last step reached is a stop for the depth, not
+    /// the limit, unless the step stopped the program itself.
     fn end_of_a_limited_run(
         &mut self,
         limit: usize,
         iterations: usize,
+        stop_below: usize,
     ) -> RuntimeResult<InterpreterStatus> {
         //the end the last step reached, which no next step's fetch has found
         if iterations > 0 {
@@ -8145,7 +8392,20 @@ impl Interpreter {
         //a stop the last instruction the limit allows made is reported, not the limit: the
         //host has an interrupt to answer, a pause or a watched write to see, or an end
         let stopped = iterations > 0 && self.status != InterpreterStatus::Running;
-        if self.ran_in_limited_run() >= limit && !stopped {
+        if stopped {
+            //the end the depth or a breakpoint stopped short of wins over them
+            self.stop_reason = StopReason::Status;
+            return Ok(self.status);
+        }
+        //a processor that waits stays waiting, whatever the depth
+        let goes_on = self.status == InterpreterStatus::Running || self.is_resumable_stop();
+        if goes_on && self.reached(stop_below) {
+            self.status = InterpreterStatus::Running;
+            self.stop_reason = StopReason::CallDepth;
+            return Ok(self.status);
+        }
+        if self.ran_in_limited_run() >= limit {
+            self.stop_reason = StopReason::Limit;
             return Err(RuntimeError::ExecutionLimit(limit));
         }
         Ok(self.status)
@@ -8430,25 +8690,64 @@ impl Interpreter {
     }
     /// A run to the breakpoints [`wasm_set_breakpoints`](Interpreter::wasm_set_breakpoints)
     /// set. `skip_breakpoint_at_pc` defaults to `true`, the "continue"
-    /// behaviour described on [`Interpreter::run_with_breakpoints`], and
-    /// `stop_on_code_write` to `false`.
+    /// behaviour described on [`Interpreter::run_with_breakpoints`],
+    /// `stop_on_code_write` to `false`, and `until_call_depth` to none
+    /// ([`RunOptions::until_call_depth`]).
     pub fn wasm_run_with_breakpoints(
         &mut self,
         limit: Option<usize>,
         skip_breakpoint_at_pc: Option<bool>,
         stop_on_code_write: Option<bool>,
+        until_call_depth: Option<usize>,
     ) -> Result<InterpreterStatus, JsValue> {
         let options = RunOptions {
             skip_breakpoint_at_pc: skip_breakpoint_at_pc.unwrap_or(true),
             stop_on_code_write: stop_on_code_write.unwrap_or(false),
+            until_call_depth,
         };
         self.run_to_set_breakpoints(limit, options).map_err(|e| js(&e))
     }
-    pub fn wasm_get_call_stack(&self) -> JsValue {
-        js(&self.get_pretty_call_stack())
+    /// The call stack, oldest frame first, or with `max` its newest `max`
+    /// frames, as `StackFrame`s.
+    pub fn wasm_get_call_stack(&self, max: Option<usize>) -> JsValue {
+        match max {
+            Some(max) => js(&self.get_newest_call_stack(max)),
+            None => js(&self.get_pretty_call_stack()),
+        }
     }
-    pub fn wasm_run_with_limit(&mut self, limit: usize) -> Result<InterpreterStatus, JsValue> {
-        self.run_with_limit(limit).map_err(|e| js(&e))
+    /// [`call_depth`](Interpreter::call_depth).
+    pub fn wasm_get_call_depth(&self) -> usize {
+        self.call_depth()
+    }
+    /// [`get_stop_reason`](Interpreter::get_stop_reason).
+    pub fn wasm_get_stop_reason(&self) -> StopReason {
+        self.get_stop_reason()
+    }
+    /// [`get_undo_depth`](Interpreter::get_undo_depth).
+    pub fn wasm_get_undo_depth(&self) -> usize {
+        self.get_undo_depth()
+    }
+    /// [`get_recorded_steps`](Interpreter::get_recorded_steps), as a number,
+    /// exact up to 2^53.
+    pub fn wasm_get_recorded_steps(&self) -> f64 {
+        self.get_recorded_steps() as f64
+    }
+    /// A run of at most `limit` instructions to no breakpoint:
+    /// [`run_with_limit`](Interpreter::run_with_limit), or with
+    /// `until_call_depth` the run that stops there too,
+    /// [`run_with_options`](Interpreter::run_with_options).
+    pub fn wasm_run_with_limit(
+        &mut self,
+        limit: usize,
+        until_call_depth: Option<usize>,
+    ) -> Result<InterpreterStatus, JsValue> {
+        match until_call_depth {
+            None => self.run_with_limit(limit),
+            Some(depth) => {
+                self.run_with_options(Some(limit), RunOptions::CONTINUE.until_call_depth(depth))
+            }
+        }
+        .map_err(|e| js(&e))
     }
     pub fn wasm_get_next_instruction(&self) -> JsValue {
         self.instruction_line(self.get_next_instruction())
@@ -8461,8 +8760,10 @@ impl Interpreter {
     }
     /// The newest `count` steps, newest first: the instructions that have run
     /// and the Pokes made between them, each saying which it is in its `kind`.
-    pub fn wasm_get_undo_history(&self, count: usize) -> JsValue {
-        self.get_last_steps(count)
+    /// With `skip`, the `skip` newest are left out, and the `count` after them
+    /// answered.
+    pub fn wasm_get_undo_history(&self, count: usize, skip: Option<usize>) -> JsValue {
+        self.get_steps_back(skip.unwrap_or(0), count)
             .into_iter()
             .map(|step| self.step_to_js(step))
             .collect::<js_sys::Array>()
@@ -8607,6 +8908,11 @@ impl Interpreter {
         self.undo()
             .map(|step| self.step_to_js(&step))
             .map_err(|e| js(&e))
+    }
+    /// `undoMany(count)`: [`undo_many`](Interpreter::undo_many), which
+    /// answers how many steps it took back.
+    pub fn wasm_undo_many(&mut self, count: usize) -> Result<usize, JsValue> {
+        self.undo_many(count).map_err(|e| js(&e))
     }
     /// Opens a Poke, which is `beginPoke()`. It throws when one is already
     /// open and when an instruction is executing.

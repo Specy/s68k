@@ -12,7 +12,7 @@ if (!existsSync(fileURLToPath(dist))) {
     process.exit(1)
 }
 
-const { S68k, Interpreter, RegisterType, InterpreterStatus, Size } = await import(dist)
+const { S68k, Interpreter, RegisterType, InterpreterStatus, Size, StopReason } = await import(dist)
 
 // ---------------------------------------------------------------------------
 // Assembling and running
@@ -1672,6 +1672,74 @@ assert.deepEqual(
 assert.deepEqual([...mapper.readMemoryBytes(0x9000, 2)], [0xff, 0xff], 'the host reads past the map')
 mapper.dispose()
 mappedRun.program.dispose()
+
+// ---------------------------------------------------------------------------
+// Stepping: the call depth, a run that stops at one, and why a run stopped
+// ---------------------------------------------------------------------------
+
+const STEPPING = `    ORG $1000
+START:
+    BSR OUTER
+AFTER:
+    MOVEQ #9,D7
+    SIMHALT
+OUTER:
+    BSR PARAM
+    DC.W 42
+    MOVE.W D0,D1
+    RTS
+PARAM:
+    MOVE.L (SP)+,A0
+    MOVE.W (A0)+,D0
+    JMP (A0)
+`
+const steppingRun = S68k.assemble(STEPPING)
+const stepper = new Interpreter(steppingRun.program)
+assert.equal(stepper.getCallDepth(), 0)
+stepper.step()
+stepper.step()
+assert.equal(stepper.getCallDepth(), 2, 'OUTER, then PARAM')
+const [outerFrame, paramFrame] = stepper.getCallStack()
+assert.equal(outerFrame.label_name, 'OUTER')
+assert.equal(outerFrame.stack, 'ssp')
+assert.equal(outerFrame.sp, 0x01000000 - 4, 'where its return address was pushed')
+assert.equal(paramFrame.sp, 0x01000000 - 8)
+assert.deepEqual(stepper.getCallStack(1).map((frame) => frame.label_name), ['PARAM'], 'the newest only')
+stepper.step()
+assert.equal(stepper.getCallDepth(), 1, 'PARAM is gone once it pops its return address')
+// Step out of OUTER: a run that stops once the depth is back to 0, its last
+// allowed instruction being the one that got there
+assert.equal(
+    stepper.runWithLimit(4, {untilCallDepth: 0}),
+    InterpreterStatus.Running,
+    'the depth, not the limit'
+)
+assert.equal(stepper.getStopReason(), StopReason.CallDepth)
+assert.equal(stepper.getPc(), steppingRun.program.getSymbols()['AFTER'].value)
+assert.equal(stepper.getRegisterValue({type: 'Data', value: 7}), 0, 'the instruction it stopped at has not run')
+// started at the depth, a run runs nothing
+const before = stepper.getExecutedInstructions()
+stepper.setBreakpoints([])
+assert.equal(stepper.runWithBreakpoints(undefined, {untilCallDepth: 0}), InterpreterStatus.Running)
+assert.equal(stepper.getStopReason(), StopReason.CallDepth)
+assert.equal(stepper.getExecutedInstructions(), before)
+// a breakpoint is told apart from the depth, and the limit from both
+stepper.setBreakpoints([{file: 'main.m68k', line: 4}])
+assert.equal(stepper.runWithBreakpoints(undefined, {skipBreakpointAtPc: false}), InterpreterStatus.Running)
+assert.equal(stepper.getStopReason(), StopReason.Breakpoint)
+assert.throws(() => stepper.runWithLimit(1), (error) => error.type === 'ExecutionLimit')
+assert.equal(stepper.getStopReason(), StopReason.Limit)
+// the history: what undo can take back, and every step recorded
+assert.equal(stepper.getUndoDepth(), 8)
+assert.equal(stepper.getRecordedSteps(), 8)
+stepper.undo()
+stepper.undo()
+assert.equal(stepper.getUndoDepth(), 6)
+assert.equal(stepper.getRecordedSteps(), 8, 'undo takes none back')
+assert.equal(stepper.getCallDepth(), 1, 'undo puts the frame back')
+assert.deepEqual(stepper.getUndoHistory(2, 1).map((step) => step.id), [5, 4], 'skipping the newest')
+stepper.dispose()
+steppingRun.program.dispose()
 
 const offTheEnd = S68k.assemble('    ORG $1000\n    NOP\n')
 const ranOff = new Interpreter(offTheEnd.program)

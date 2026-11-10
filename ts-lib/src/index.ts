@@ -50,6 +50,7 @@ import {
     Size,
     SoundOutcome,
     StackFrame,
+    StopReason,
     SuggestedFix,
     SystemRegisters,
     Termination,
@@ -341,6 +342,35 @@ export type RunWithBreakpointsOptions = {
      * write and runs on.
      */
     stopOnCodeWrite?: boolean
+    /**
+     * A call depth to stop at: the run stops, before the instruction at the
+     * program counter, whenever {@link Interpreter.getCallDepth} is this or
+     * less, and {@link Interpreter.getStopReason} answers
+     * `StopReason.CallDepth`. It is tested when the run starts and after
+     * every step, an IRQ's included, ahead of the breakpoint at the program
+     * counter and of the limit: a run whose last allowed instruction reached
+     * it stops for it and throws no `ExecutionLimit`, and a breakpoint on the
+     * instruction it stops at is not reported. A run started at that depth or
+     * less runs nothing. A stop the step made itself comes first (an
+     * interrupt, a pause, a watched or code write, `stop`, the end of the
+     * program), and the next run, started at that depth, stops at once.
+     * Absent (the default), the run never stops for it.
+     *
+     * Step over runs with the depth the step began at, and Step out with one
+     * less.
+     */
+    untilCallDepth?: number
+}
+
+/** What {@link Interpreter.runWithLimit} stops for besides its limit. */
+export type RunWithLimitOptions = {
+    /**
+     * As {@link RunWithBreakpointsOptions.untilCallDepth}. A run given one
+     * takes the loop that tests it, the one of
+     * {@link Interpreter.runWithBreakpoints} with no breakpoint; without it
+     * the run takes the loop that tests nothing.
+     */
+    untilCallDepth?: number
 }
 
 export class Interpreter {
@@ -478,16 +508,50 @@ export class Interpreter {
         return internalExecutionStepToExecutionStep(this.interpreter.wasm_undo())
     }
 
+    /**
+     * Revert the newest `count` steps of the history, or as many as it holds,
+     * and answer how many that was. It is {@link Interpreter.undo} that many
+     * times without each step being answered, which is most of what one
+     * `undo()` costs: use it to take back a group of steps, the thousands of a
+     * Step over, in one call.
+     */
+    undoMany(count: number): number {
+        return this.interpreter.wasm_undo_many(count)
+    }
+
     getPreviousMutations(): MutationOperation[] | null {
         return this.interpreter.wasm_get_previous_mutations() as MutationOperation[] | null
     }
 
     /**
-     * Identity of the newest retained step, instruction or poke, or 0 before
-     * execution. A poke has an id of its own, so this moves past it.
+     * Identity of the newest retained step, instruction, poke or IRQ, or 0
+     * when the history holds none. A poke has an id of its own, so this moves
+     * past it. Undo takes it back to the step before, and no id is given
+     * twice, so it counts the steps recorded only while nothing is undone:
+     * {@link Interpreter.getRecordedSteps} always does.
      */
     getLastStepId(): number {
         return this.interpreter.wasm_get_last_step_id()
+    }
+
+    /**
+     * How many steps undo can still take back, pokes and IRQs included: the
+     * steps the history holds, at most its size. Constant time.
+     */
+    getUndoDepth(): number {
+        return this.interpreter.wasm_get_undo_depth()
+    }
+
+    /**
+     * How many steps the history has recorded since this interpreter was made,
+     * instructions, pokes and IRQs alike, 0 without a history. Undo takes none
+     * back, so the difference of two readings is how many steps were recorded
+     * between them, an IRQ taken counting as one, which
+     * {@link Interpreter.getExecutedInstructions} does not count. The newest
+     * step's id is this count as it was when the step was recorded.
+     */
+    getRecordedSteps(): number {
+        return this.interpreter.wasm_get_recorded_steps()
     }
 
     async stepWithInterruptHandler(onInterrupt: InterruptHandler): Promise<InterpreterStatus> {
@@ -769,19 +833,56 @@ export class Interpreter {
 
     /**
      * The frames entered and not returned from, oldest first: each `bsr` or
-     * `jsr` (`kind: 'call'`, which `rts` returns from) and each exception taken
-     * (`kind: 'exception'` with its `vector`, which `rte` returns from).
+     * `jsr` (`kind: 'call'`) and each exception or IRQ taken (`kind:
+     * 'exception'` with its `vector`). With `max`, only the newest `max`
+     * frames, still oldest first, which is what a panel that refreshes at
+     * every stop asks for.
+     *
+     * A frame is gone once the stack pointer of the stack it is on (`stack`)
+     * is above where it was pushed (`sp`), whatever instruction moved it: an
+     * `rts`, `rtr`, `rtd` or `rte`, a return address popped by hand, or an
+     * unwind past several frames at once. So a routine that pops its return
+     * address to read the data after its call is gone at that pop. Frames are
+     * kept whether or not the history records, and undo puts them back.
+     *
+     * The call stack keeps the newest 131,072 frames; past that the oldest are
+     * forgotten and {@link Interpreter.getCallDepth} goes on counting them.
      */
-    getCallStack(): StackFrame[] {
-        return this.interpreter.wasm_get_call_stack() as StackFrame[]
+    getCallStack(max?: number): StackFrame[] {
+        return this.interpreter.wasm_get_call_stack(max) as StackFrame[]
+    }
+
+    /**
+     * How many frames the call stack counts, those forgotten past its limit
+     * included: 0 at the start, one more after each call and exception, one
+     * less as each is gone. Constant time. Nothing can tell when a forgotten
+     * frame is gone, so a program deeper than the limit that returns all the
+     * way leaves the depth at the number forgotten.
+     */
+    getCallDepth(): number {
+        return this.interpreter.wasm_get_call_depth()
+    }
+
+    /**
+     * Why the last run returned: `StopReason.Breakpoint` before an instruction
+     * a breakpoint names, `StopReason.CallDepth` at the depth `untilCallDepth`
+     * asked for, `StopReason.Limit` when it threw the `ExecutionLimit`, and
+     * `StopReason.Status` when the status says why (an interrupt, a pause, a
+     * watched or code write, `stop`, the end) or the last call was a step. The
+     * first three leave the status `Running`, which is why this is asked.
+     */
+    getStopReason(): StopReason {
+        return this.interpreter.wasm_get_stop_reason()
     }
 
     /**
      * The newest `amount` steps of the history, newest first. A poke is one of
      * them, in its place among the instructions, told apart by its `kind`.
+     * With `skip`, the `skip` newest are left out and the `amount` after them
+     * answered.
      */
-    getUndoHistory(amount: number): ExecutionStep[] {
-        return this.interpreter.wasm_get_undo_history(amount).map(internalExecutionStepToExecutionStep)
+    getUndoHistory(amount: number, skip?: number): ExecutionStep[] {
+        return this.interpreter.wasm_get_undo_history(amount, skip).map(internalExecutionStepToExecutionStep)
     }
 
     /**
@@ -904,9 +1005,13 @@ export class Interpreter {
      * the program would run on; a stop made by the last of them is answered as
      * that status, and a processor `stop` stopped answers `Stopped` at once
      * while nothing wakes it.
+     *
+     * With `untilCallDepth` it also stops at that call depth, as
+     * {@link Interpreter.runWithBreakpoints} does, through that run's loop with
+     * no breakpoint; without it, the loop tests no depth and no breakpoint.
      */
-    runWithLimit(limit: number): InterpreterStatus {
-        return this.interpreter.wasm_run_with_limit(limit)
+    runWithLimit(limit: number, {untilCallDepth}: RunWithLimitOptions = {}): InterpreterStatus {
+        return this.interpreter.wasm_run_with_limit(limit, untilCallDepth)
     }
 
     /**
@@ -958,12 +1063,21 @@ export class Interpreter {
      * handler and stops at the same breakpoint again. A `stop` stops the run
      * with `Stopped`, and a run of a processor that waits answers `Stopped` at
      * once.
+     *
+     * With `untilCallDepth`, the run stops at that call depth too, ahead of
+     * the breakpoint and the limit. A stop at a breakpoint, at the depth and
+     * on the limit all leave the status `Running` (the limit throwing);
+     * {@link Interpreter.getStopReason} tells them apart. A run that has to
+     * stop at a depth with no breakpoint set still comes here, or to
+     * {@link Interpreter.runWithLimit} with the option: call
+     * {@link Interpreter.setBreakpoints} with `[]` first if earlier
+     * breakpoints should not stop it.
      */
     runWithBreakpoints(
         limit?: number,
-        {skipBreakpointAtPc = true, stopOnCodeWrite = false}: RunWithBreakpointsOptions = {}
+        {skipBreakpointAtPc = true, stopOnCodeWrite = false, untilCallDepth}: RunWithBreakpointsOptions = {}
     ): InterpreterStatus {
-        return this.interpreter.wasm_run_with_breakpoints(limit, skipBreakpointAtPc, stopOnCodeWrite)
+        return this.interpreter.wasm_run_with_breakpoints(limit, skipBreakpointAtPc, stopOnCodeWrite, untilCallDepth)
     }
 
     async runWithInterruptHandler(onInterrupt: InterruptHandler): Promise<InterpreterStatus> {
@@ -1190,6 +1304,7 @@ export {
     Size,
     SoundOutcome,
     StackFrame,
+    StopReason,
     SuggestedFix,
     SystemRegisters,
     Termination,

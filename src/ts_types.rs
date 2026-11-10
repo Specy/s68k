@@ -896,8 +896,22 @@ export type StackFrame = {
      * instruction, or the program counter the exception stacked.
      */
     source_address: number,
-    /** The registers as they were when it was entered. */
+    /** D0 to D7 and A0 to A7 just after the frame was pushed, A7 being `sp`. */
     registers: number[],
+    /**
+     * The stack pointer just after the frame was pushed: the address of the
+     * return address for a call, the lowest address of the exception's stack
+     * frame for an exception. The frame is gone once the stack pointer of
+     * `stack` is above it, whatever instruction moved it there.
+     */
+    sp: number,
+    /**
+     * The stack the frame is on: the user stack, the supervisor stack (the
+     * 68020's interrupt stack) or the 68020's master stack. An exception taken
+     * from user mode is on `ssp` while the user stack pointer stays where it
+     * was.
+     */
+    stack: "usp" | "ssp" | "msp",
     /** The name of the label on `address`, or `Unknown` when it has none. */
     label_name: string,
     label_address: number,
@@ -1023,8 +1037,8 @@ pub const IMutationOperation: &'static str = r#"
  *
  * Both sides are read where the write happened and never reconstructed
  * afterwards. `PushCall`, `PopCall`, `PushException` and `PopException` write
- * no value and carry neither: they are the call stack's.
- * `SetMachineState` is the interrupt state's.
+ * no value and carry neither: they say what happened to the call stack, which
+ * undo puts back by itself. `SetMachineState` is the interrupt state's.
  */
 export type MutationOperation = {
     type: "WriteRegister",
@@ -1056,12 +1070,20 @@ export type MutationOperation = {
         new: number[]
     }
 } | {
+    /**
+     * A call frame is gone: the stack pointer of its stack went above it
+     * during the instruction at `from`, which returned from it, by `rts` or by
+     * any other means, and the program goes on at `to`. One step can record
+     * several, an unwind past more than one call; it comes after the step's
+     * other mutations.
+     */
     type: "PopCall",
     value: {
         to: number,
         from: number,
     }
 } | {
+    /** `bsr` or `jsr` at `from` called the routine at `to`: a call frame was pushed. */
     type: "PushCall",
     value: {
         to: number,
@@ -1112,7 +1134,13 @@ export type MutationOperation = {
         vbr: number
     }
 } | {
-    /** `rte` at `from` returned from an exception to `to`. */
+    /**
+     * `rte` at `from` returned from an exception to `to`, recorded where it
+     * pops the frame, before the swap of the stack pointers its status
+     * register makes. Another instruction that leaves an exception's frame,
+     * an `rtr` that pops it, records one at the end of its step. A step
+     * records one at most.
+     */
     type: "PopException",
     value: {
         to: number,

@@ -24,6 +24,7 @@ mod memory_map;
 mod mutations;
 mod pokes;
 mod self_modifying_code;
+mod stepping;
 mod test;
 mod trap_tasks;
 mod watched_memory;

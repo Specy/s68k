@@ -2,8 +2,9 @@
 //!
 //! One [`ExecutionStep`] per instruction — the mutations it made, the program
 //! counter and the condition codes before it — which is what undo replays
-//! backwards, and the call stack of [`CallStackFrame`]s that `jsr` and `bsr`
-//! push. A step is also what one Poke becomes: the values the host wrote
+//! backwards, and the call stack of [`CallStackFrame`]s that `jsr`, `bsr` and
+//! every Exception push, each gone once the stack pointer of its stack is
+//! above it. A step is also what one Poke becomes: the values the host wrote
 //! between two instructions, journaled through a [`PokeJournal`] and recorded
 //! as a step of [`kind`](ExecutionStepKind) `poke` with its own id. Every step and every frame carries the
 //! source [`Location`](crate::assembler::source) of the line it came from,
@@ -13,7 +14,7 @@
 //! other hand-written declarations. Items older than the assembler rewrite are
 //! not all documented yet.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -34,7 +35,9 @@ use crate::{
 /// both sides, because a sized store changes only part of one and the register
 /// is what the panels draw; a memory write reports the value at the width it
 /// was made. `PushCall`, `PopCall`, `PushException` and `PopException` write
-/// no value and carry neither: they are the call stack's. `SetInputSettings` is
+/// no value and carry neither: they say what happened to the call stack, and
+/// undo puts the call stack back from the step's own [`FrameChange`]s, not
+/// from them. `SetInputSettings` is
 /// tasks 12 and 16, which change how input is shown and nothing a panel draws,
 /// and `SetMachineState` the IRQs' state.
 ///
@@ -69,18 +72,19 @@ pub enum MutationOperation {
         /// The bytes it stored.
         new: Vec<u8>,
     },
+    /// `bsr` or `jsr` at `from` called the routine at `to`, and the call
+    /// stack gained a frame for it.
     PushCall {
         to: usize,
         from: usize,
     },
+    /// A call frame is gone: the stack pointer of its stack went above it
+    /// during the instruction at `from`, which returned from it, by `rts` or
+    /// any other means, and the program goes on at `to`. One step can take
+    /// several off.
     PopCall {
         to: usize,
         from: usize,
-        /// The frame the return took off the call stack, which undoing it puts
-        /// back as it was: the callee, the return address and the registers at
-        /// the call, none of which can be read again from the program.
-        #[serde(skip)]
-        frame: Option<CallStackFrame>,
     },
     /// The [`InputSettings`] tasks 12 and 16 replaced, and the ones they left.
     SetInputSettings {
@@ -121,14 +125,13 @@ pub enum MutationOperation {
         /// it on a 68010 or a 68020.
         vbr: u32,
     },
-    /// `rte` returned from an Exception, from the `rte` at `from` to `to`.
+    /// `rte` returned from an Exception, from the `rte` at `from` to `to`,
+    /// where `rte` pops the frame. An exception frame of the call stack that
+    /// another instruction left, an `rtr` say, records one too, at the end of
+    /// its step; a step records one at most.
     PopException {
         to: usize,
         from: usize,
-        /// The exception frame `rte` took off the call stack, if the frame on
-        /// top was one, which undoing it puts back as it was.
-        #[serde(skip)]
-        frame: Option<CallStackFrame>,
     },
     /// The [`MachineState`] before and after the step changed it: an IRQ
     /// taken, `stop`, and tasks 32, 60 and 62 setting up the interrupt
@@ -496,6 +499,12 @@ pub struct ExecutionStep {
     /// crossed, but it is not part of the public ExecutionStep shape.
     #[serde(skip)]
     old_interpreter_status: InterpreterStatus,
+    /// What the step did to the call stack, in order: the frames it pushed
+    /// and the frames it found gone, which undo takes back newest first. Kept
+    /// apart from the mutations, whose order the host reads, and whose call
+    /// stack records are only records.
+    #[serde(skip)]
+    frames: Vec<FrameChange>,
 }
 
 /// The most bytes a step keeps of the instruction it ran: the 68000's longest
@@ -559,6 +568,7 @@ impl ExecutionStep {
             wrote_code: None,
             ran: Ran::default(),
             old_interpreter_status: interpreter_status,
+            frames: Vec::new(),
         }
     }
     /// Makes this slot a new step, emptying what the step it held had written
@@ -589,6 +599,7 @@ impl ExecutionStep {
         self.wrote_code = None;
         self.ran = Ran::Nothing;
         self.old_interpreter_status = interpreter_status;
+        self.frames.clear();
     }
     pub fn add_mutation(&mut self, mutation: MutationOperation) {
         self.mutations.push(mutation);
@@ -605,6 +616,19 @@ impl ExecutionStep {
     }
     pub fn get_mutations(&self) -> &Vec<MutationOperation> {
         &self.mutations
+    }
+    /// What the step did to the call stack, in the order it did it.
+    pub fn get_frame_changes(&self) -> &[FrameChange] {
+        &self.frames
+    }
+    /// Records a change to the call stack. The slot keeps the room it grows
+    /// to for the steps that reuse it, so it grows by one at a time: most steps
+    /// change one frame or none, and a frame is large.
+    fn journal_frame(&mut self, change: FrameChange) {
+        if self.frames.len() == self.frames.capacity() {
+            self.frames.reserve_exact(1);
+        }
+        self.frames.push(change);
     }
     /// Whether this step is an instruction or a Poke.
     pub fn get_kind(&self) -> ExecutionStepKind {
@@ -665,13 +689,36 @@ pub enum FrameKind {
     Exception,
 }
 
+/// The most frames the call stack keeps, the newest. A deeper program goes
+/// on counting its depth ([`Debugger::call_depth`]), and the oldest frames
+/// are forgotten: nothing can tell when they are gone, so once every frame
+/// kept is gone the depth stays at the number forgotten. Real programs never
+/// go this deep; the limit is a guard against a program that calls as it
+/// jumps and never returns.
+pub const CALL_STACK_LIMIT: usize = 131_072;
+
 /// One frame of the call stack: a subroutine that has been entered and not yet
-/// returned from, or an Exception handler that has not executed its `rte`.
+/// returned from, or an Exception handler that has not returned.
+///
+/// A frame is gone when the stack pointer of the stack it is on is above
+/// [`sp`](CallStackFrame::get_sp), whatever instruction moved it there
+/// (`Interpreter::remove_finished_frames`): `rts`, `rtr`, `rtd` or `rte`, a
+/// return address popped by hand, or an unwind past it.
 #[derive(Debug, Clone)]
 pub struct CallStackFrame {
     address: usize,
     source_address: usize,
-    registers: Vec<u32>,
+    /// D0 to D7 and A0 to A7 just after the frame was pushed, A7 being
+    /// [`sp`](CallStackFrame::sp). Kept in place, so that a call allocates
+    /// nothing.
+    registers: [u32; 16],
+    /// The stack pointer just after the push: the address of the return
+    /// address for a call, the lowest address of the exception's stack frame
+    /// for an exception.
+    sp: u32,
+    /// Which stack pointer `sp` is: the frame is gone when that one is above
+    /// it, whichever A7 is now.
+    stack: StackPointer,
     kind: FrameKind,
     /// The vector of an exception frame.
     vector: Option<u8>,
@@ -683,11 +730,21 @@ pub struct CallStackFrame {
 }
 
 impl CallStackFrame {
-    pub fn new(address: usize, source_address: usize, registers: Vec<u32>) -> Self {
+    /// The frame of a call into the routine at `address`, which returns to
+    /// `source_address`, its return address pushed at `sp` on `stack`.
+    pub fn new(
+        address: usize,
+        source_address: usize,
+        registers: [u32; 16],
+        sp: u32,
+        stack: StackPointer,
+    ) -> Self {
         Self {
             address,
             source_address,
             registers,
+            sp,
+            stack,
             kind: FrameKind::Call,
             vector: None,
             cause: None,
@@ -696,11 +753,15 @@ impl CallStackFrame {
     }
     /// The frame of an Exception through `vector`, which `cause` raised and
     /// which was read from the table at `vbr`, into the handler at
-    /// `address`, which returns to `source_address`.
+    /// `address`, which returns to `source_address`, its stack frame pushed
+    /// down to `sp` on `stack`.
+    #[allow(clippy::too_many_arguments)]
     pub fn exception(
         address: usize,
         source_address: usize,
-        registers: Vec<u32>,
+        registers: [u32; 16],
+        sp: u32,
+        stack: StackPointer,
         vector: u8,
         cause: &'static str,
         vbr: u32,
@@ -709,11 +770,21 @@ impl CallStackFrame {
             address,
             source_address,
             registers,
+            sp,
+            stack,
             kind: FrameKind::Exception,
             vector: Some(vector),
             cause: Some(cause),
             vbr: Some(vbr),
         }
+    }
+    /// The stack pointer just after the frame was pushed.
+    pub fn get_sp(&self) -> u32 {
+        self.sp
+    }
+    /// The stack the frame is on.
+    pub fn get_stack(&self) -> StackPointer {
+        self.stack
     }
     /// What entered the frame.
     pub fn get_kind(&self) -> FrameKind {
@@ -740,8 +811,20 @@ impl CallStackFrame {
         self.source_address
     }
     pub fn get_registers(&self) -> Vec<u32> {
-        self.registers.clone()
+        self.registers.to_vec()
     }
+}
+
+/// One change a step made to the call stack, kept in the step so that undo
+/// takes it back exactly.
+#[derive(Debug, Clone)]
+pub enum FrameChange {
+    /// A frame was pushed. When the call stack already held
+    /// [`CALL_STACK_LIMIT`] frames, the oldest was forgotten to make room,
+    /// and undo puts it back.
+    Pushed { forgotten: Option<CallStackFrame> },
+    /// A frame was found gone and taken off; undo puts it back.
+    Removed(CallStackFrame),
 }
 
 /// A Label of the Program, as the call stack names it: which routine a frame
@@ -787,7 +870,16 @@ pub struct Debugger {
     len: usize,
     /// How many steps the history keeps, which is at least one.
     capacity: usize,
-    call_stack: Vec<CallStackFrame>,
+    /// The newest frames of the call stack, oldest first, at most
+    /// [`CALL_STACK_LIMIT`] of them.
+    call_stack: VecDeque<CallStackFrame>,
+    /// How many frames the call stack counts: the ones it keeps, and the
+    /// oldest ones it forgot past the limit.
+    call_depth: usize,
+    /// The stack and the stack pointer of the innermost frame kept, which the
+    /// Interpreter compares after every step: a copy of the newest frame's,
+    /// so that the comparison reads one field.
+    innermost: Option<(StackPointer, u32)>,
     labels: HashMap<usize, StackFrameLabel>,
 }
 
@@ -820,7 +912,9 @@ impl Debugger {
             oldest: 0,
             len: 0,
             capacity: history_size.max(1),
-            call_stack: vec![],
+            call_stack: VecDeque::new(),
+            call_depth: 0,
+            innermost: None,
             labels: labels_map,
         }
     }
@@ -903,6 +997,17 @@ impl Debugger {
     }
     pub fn can_undo(&self) -> bool {
         self.len > 0
+    }
+    /// How many steps undo can still take back: the steps the history holds.
+    pub fn undo_depth(&self) -> usize {
+        self.len
+    }
+    /// How many steps the history has recorded since it was made, Pokes and
+    /// IRQs included. Undo takes none of them back, so it only ever grows,
+    /// and the difference of two readings is how many steps were recorded
+    /// between them. Each step's id is this count as it was recorded.
+    pub fn recorded_steps(&self) -> u64 {
+        self.next_step_id - 1
     }
     pub fn get_last_step(&self) -> Option<&ExecutionStep> {
         if self.len == 0 {
@@ -991,7 +1096,14 @@ impl Debugger {
         (0..self.len).map(move |position| &self.history[self.wrap(self.oldest + position)])
     }
     pub fn get_last_steps(&self, count: usize) -> Vec<&ExecutionStep> {
-        (0..count.min(self.len))
+        self.get_steps_back(0, count)
+    }
+    /// `count` steps of the history, newest first, from the one `skip` steps
+    /// before the newest: [`get_last_steps`](Self::get_last_steps) without
+    /// the `skip` newest.
+    pub fn get_steps_back(&self, skip: usize, count: usize) -> Vec<&ExecutionStep> {
+        let end = skip.saturating_add(count).min(self.len);
+        (skip.min(end)..end)
             .map(|age| &self.history[self.index_of(age)])
             .collect()
     }
@@ -1000,77 +1112,111 @@ impl Debugger {
     pub fn get_labels(&self) -> &HashMap<usize, StackFrameLabel> {
         &self.labels
     }
-    pub fn push_call(&mut self, address: usize, source_address: usize, registers: Vec<u32>) {
-        self.call_stack
-            .push(CallStackFrame::new(address, source_address, registers));
-    }
-    pub fn pop_call(&mut self) -> Option<CallStackFrame> {
-        self.call_stack.pop()
-    }
-    /// Pushes the frame of an Exception through `vector` into the handler at
-    /// `address`, which returns to `source_address`.
-    pub fn push_exception(
-        &mut self,
-        address: usize,
-        source_address: usize,
-        registers: Vec<u32>,
-        vector: u8,
-        cause: &'static str,
-        vbr: u32,
-    ) {
-        self.call_stack.push(CallStackFrame::exception(
-            address,
-            source_address,
-            registers,
-            vector,
-            cause,
-            vbr,
-        ));
-    }
-    /// Takes the frame on top of the call stack off when it is an exception
-    /// frame, which is what `rte` returns from; a call frame on top, or none,
-    /// is left as it is.
-    pub fn pop_exception(&mut self) -> Option<CallStackFrame> {
-        match self.call_stack.last() {
-            Some(frame) if frame.kind == FrameKind::Exception => self.call_stack.pop(),
-            _ => None,
+    /// Pushes `frame` on the call stack, forgetting the oldest frame when it
+    /// already holds [`CALL_STACK_LIMIT`], and, when `journal` is set, records
+    /// the push in the step being recorded so that undo takes it back.
+    pub fn push_frame(&mut self, frame: CallStackFrame, journal: bool) {
+        let forgotten = match self.call_stack.len() >= CALL_STACK_LIMIT {
+            true => self.call_stack.pop_front(),
+            false => None,
+        };
+        self.innermost = Some((frame.stack, frame.sp));
+        self.call_stack.push_back(frame);
+        self.call_depth += 1;
+        if journal {
+            if let Some(step) = self.newest_mut() {
+                step.journal_frame(FrameChange::Pushed { forgotten });
+            }
         }
     }
-    /// Puts back a frame [`pop_call`](Self::pop_call) took, as undoing a return
-    /// does.
-    pub fn restore_call(&mut self, frame: CallStackFrame) {
-        self.call_stack.push(frame);
+    /// The stack and the stack pointer of the innermost frame the call stack
+    /// keeps, or `None` when it keeps none: what the Interpreter tests after
+    /// every step.
+    #[inline(always)]
+    pub fn innermost(&self) -> Option<(StackPointer, u32)> {
+        self.innermost
     }
-    /// The call stack as the editor shows it: every frame with the name of the
+    /// The innermost frame, or `None` when the call stack keeps none.
+    pub fn innermost_frame(&self) -> Option<&CallStackFrame> {
+        self.call_stack.back()
+    }
+    /// Takes the innermost frame off, as gone, and answers what kind it was;
+    /// when `journal` is set, records it in the step being recorded so that
+    /// undo puts it back. A frame forgotten past the limit is never taken
+    /// off: with none kept, this does nothing and answers `None`.
+    pub fn remove_innermost(&mut self, journal: bool) -> Option<FrameKind> {
+        let frame = self.call_stack.pop_back()?;
+        let kind = frame.kind;
+        self.call_depth -= 1;
+        self.innermost = self.call_stack.back().map(|frame| (frame.stack, frame.sp));
+        if journal {
+            if let Some(step) = self.newest_mut() {
+                step.journal_frame(FrameChange::Removed(frame));
+            }
+        }
+        Some(kind)
+    }
+    /// Whether the step being recorded has recorded a
+    /// [`PopException`](MutationOperation::PopException) already.
+    pub fn newest_returned_from_an_exception(&self) -> bool {
+        self.get_last_step().is_some_and(|step| {
+            step.mutations
+                .iter()
+                .any(|mutation| matches!(mutation, MutationOperation::PopException { .. }))
+        })
+    }
+    /// Takes back the changes a step made to the call stack, newest first, as
+    /// undoing the step does.
+    pub fn take_back_frames(&mut self, changes: &[FrameChange]) {
+        for change in changes.iter().rev() {
+            match change {
+                FrameChange::Pushed { forgotten } => {
+                    self.call_stack.pop_back();
+                    if let Some(frame) = forgotten {
+                        self.call_stack.push_front(frame.clone());
+                    }
+                    self.call_depth -= 1;
+                }
+                FrameChange::Removed(frame) => {
+                    self.call_stack.push_back(frame.clone());
+                    self.call_depth += 1;
+                }
+            }
+        }
+        self.innermost = self.call_stack.back().map(|frame| (frame.stack, frame.sp));
+    }
+    /// How many frames the call stack counts, those forgotten past
+    /// [`CALL_STACK_LIMIT`] included. Constant time.
+    #[inline(always)]
+    pub fn call_depth(&self) -> usize {
+        self.call_depth
+    }
+    /// The call stack as the editor shows it: every frame kept, or with
+    /// `max` the newest `max` of them, oldest first, each with the name of the
     /// routine it is in and where that name was written.
-    pub fn to_call_stack(&self) -> Vec<PrettyStackFrame> {
+    pub fn to_call_stack(&self, max: Option<usize>) -> Vec<PrettyStackFrame> {
+        let kept = self.call_stack.len();
+        let skip = kept - max.unwrap_or(kept).min(kept);
         self.call_stack
             .iter()
-            .map(|frame| match self.labels.get(&frame.address) {
-                Some(label) => PrettyStackFrame {
+            .skip(skip)
+            .map(|frame| {
+                let label = self.labels.get(&frame.address);
+                PrettyStackFrame {
                     address: frame.address,
                     source_address: frame.source_address,
-                    registers: frame.registers.clone(),
-                    label_name: label.name.clone(),
-                    label_address: label.address,
-                    label_location: Some(label.location.clone()),
+                    registers: frame.registers.to_vec(),
+                    sp: frame.sp,
+                    stack: frame.stack,
+                    label_name: label
+                        .map_or_else(|| "Unknown".to_string(), |label| label.name.clone()),
+                    label_address: label.map_or(frame.address, |label| label.address),
+                    label_location: label.map(|label| label.location.clone()),
                     kind: frame.kind,
                     vector: frame.vector,
                     cause: frame.cause,
                     vbr: frame.vbr,
-                },
-                None => PrettyStackFrame {
-                    address: frame.address,
-                    source_address: frame.source_address,
-                    registers: frame.registers.clone(),
-                    label_name: "Unknown".to_string(),
-                    label_address: frame.address,
-                    label_location: None,
-                    kind: frame.kind,
-                    vector: frame.vector,
-                    cause: frame.cause,
-                    vbr: frame.vbr,
-                },
+                }
             })
             .collect()
     }
@@ -1086,8 +1232,15 @@ pub struct PrettyStackFrame {
     /// The address the frame returns to: after the call, or the program
     /// counter the exception stacked.
     pub source_address: usize,
-    /// The registers as they were when it was called.
+    /// D0 to D7 and A0 to A7 just after the frame was pushed, A7 being `sp`.
     pub registers: Vec<u32>,
+    /// The stack pointer just after the push: the address of the return
+    /// address for a call, the lowest address of the exception's stack frame
+    /// for an exception. The frame is gone once the stack pointer of `stack`
+    /// is above it.
+    pub sp: u32,
+    /// The stack the frame is on: `usp`, `ssp` (the 68020's ISP) or `msp`.
+    pub stack: StackPointer,
 
     /// The name of the Label on `address`, or `Unknown` when it has none.
     pub label_name: String,

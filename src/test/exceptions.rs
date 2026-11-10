@@ -1034,12 +1034,13 @@ start:
         let step = interpreter.get_last_steps(1)[0].clone();
         assert!(step.get_mutations().iter().any(|mutation| matches!(
             mutation,
-            MutationOperation::PopException {
-                to: 0x100A,
-                frame: Some(_),
-                ..
-            }
+            MutationOperation::PopException { to: 0x100A, .. }
         )));
+        //the frame the stack pointer went above, which undo puts back
+        assert!(matches!(
+            step.get_frame_changes(),
+            [crate::debugger::FrameChange::Removed(_)]
+        ));
     }
 
     /// An exception's entry in the history, and its frame of the call stack,
