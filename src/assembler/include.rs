@@ -250,11 +250,10 @@ impl<'a> Expansion<'a> {
 
     /// What a `file_specification` written on the line at `at` names.
     ///
-    /// The path is resolved relative to the including File's directory first
-    /// and to the project root second, `\` read as a separator and `.` and `..`
-    /// segments resolved on the way (the design record, "Files, `include`,
-    /// `incbin`"). This is what `incbin` calls; `include` resolves the same way
-    /// while the sequence is being built.
+    /// A leading `/` selects the project root. `./` and `../` select the
+    /// containing File's directory as the base. A path without one of those
+    /// prefixes tries both, containing directory first. Both directives use
+    /// this rule and accept `\` as a separator.
     pub fn resolve(&self, at: usize, written: &str) -> Resolved<'a> {
         resolve_in(self.files, written, self.path(at))
     }
@@ -593,31 +592,38 @@ pub fn written_path(field: &str) -> String {
 
 /// What `written`, read on a line of `from`, names in `files`.
 fn resolve_in<'a>(files: &'a Files, written: &str, from: &str) -> Resolved<'a> {
-    for candidate in candidates(written, from) {
-        match files.entry(&candidate) {
+    let (primary, fallback) = candidates(written, from);
+    for candidate in std::iter::once(&primary).chain(fallback.as_ref()) {
+        match files.entry(candidate) {
             Some((path, FileContent::Text(text))) => return Resolved::Text { path, text },
             Some((path, FileContent::Bytes(bytes))) => return Resolved::Bytes { path, bytes },
             None => {}
         }
     }
     Resolved::Missing {
-        path: join("", written),
+        path: fallback.unwrap_or(primary),
     }
 }
 
-/// The paths a written file name is looked for at, in order: beside the File
-/// that wrote it, then at the project root.
-fn candidates(written: &str, from: &str) -> Vec<String> {
+/// The lookup path and, for an unprefixed name, its project-root fallback.
+fn candidates(written: &str, from: &str) -> (String, Option<String>) {
+    if written.starts_with(['/', '\\']) {
+        return (join("", written), None);
+    }
     let directory = match from.rfind('/') {
         Some(at) => &from[..at],
         None => "",
     };
     let beside = join(directory, written);
-    let at_root = join("", written);
-    match beside == at_root {
-        true => vec![beside],
-        false => vec![beside, at_root],
+    if ["./", "../", ".\\", "..\\"]
+        .into_iter()
+        .any(|prefix| written.starts_with(prefix))
+    {
+        return (beside, None);
     }
+    let at_root = join("", written);
+    let fallback = (beside != at_root).then_some(at_root);
+    (beside, fallback)
 }
 
 /// `base` and `written` joined into one root-relative path.
@@ -828,6 +834,50 @@ mod tests {
             sequence(&files, "lecture/main.m68k"),
             vec!["lecture/main.m68k:0", "lib/io.m68k:0"]
         );
+    }
+
+    #[test]
+    fn explicit_paths_use_only_the_selected_base() {
+        let files = project(&[
+            ("defs.m68k", ""),
+            ("src/defs.m68k", ""),
+            ("src/game/defs.m68k", ""),
+            ("shared.m68k", ""),
+            ("src/game/local.m68k", ""),
+        ]);
+        let from = "src/game/main.m68k";
+
+        for (written, expected) in [
+            ("defs.m68k", "src/game/defs.m68k"),
+            ("./defs.m68k", "src/game/defs.m68k"),
+            ("..\\defs.m68k", "src/defs.m68k"),
+            ("/defs.m68k", "defs.m68k"),
+            ("\\defs.m68k", "defs.m68k"),
+            ("shared.m68k", "shared.m68k"),
+        ] {
+            assert_eq!(
+                resolve_in(&files, written, from),
+                Resolved::Text {
+                    path: expected,
+                    text: ""
+                },
+                "{written}"
+            );
+        }
+
+        for (written, expected) in [
+            ("./shared.m68k", "src/game/shared.m68k"),
+            ("../shared.m68k", "src/shared.m68k"),
+            ("/local.m68k", "local.m68k"),
+        ] {
+            assert_eq!(
+                resolve_in(&files, written, from),
+                Resolved::Missing {
+                    path: expected.to_string()
+                },
+                "{written}"
+            );
+        }
     }
 
     #[test]

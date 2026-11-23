@@ -275,11 +275,8 @@ const MAX_PROJECT_BYTES: u64 = 32 * 1024 * 1024;
 /// `include 'lib/io.x68'` finds `dir/lib/io.x68`.
 ///
 /// The whole directory goes in, and not only the Files the `include` lines
-/// name, because the Assembler is the one that resolves a name — beside the
-/// including File first, at the project root second — and because its
-/// `unreadable_file` offers the closest paths **of the Project**: a Project
-/// scanned from the `include` lines could neither follow the second of those
-/// two rules nor ever suggest the File that was meant. What it costs is a walk
+/// name, so the Assembler can resolve names against the whole Project and
+/// suggest existing paths in `unreadable_file` diagnostics. What it costs is a walk
 /// with two rules of its own: a directory whose name starts with `.` or that is
 /// [build output](SKIPPED_DIRECTORIES) is not entered, and it reads no more
 /// than [`MAX_PROJECT_FILES`] Files and [`MAX_PROJECT_BYTES`] bytes, saying so

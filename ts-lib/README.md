@@ -89,8 +89,8 @@ all: nothing here opens a disk, so the editor hands over the buffers it has.
 const {diagnostics, program} = S68k.assemble({
     files: {
         'main.x68': main,                          // the entry file
-        'lib/io.x68': library,                     //   INCLUDE 'lib/io.x68'
-        'data/sprite.bin': new Uint8Array(bytes)   //   INCBIN  'data/sprite.bin'
+        'lib/io.x68': library,                     //   INCLUDE '/lib/io.x68'
+        'data/sprite.bin': new Uint8Array(bytes)   //   INCBIN  '/data/sprite.bin'
     },
     entry: 'main.x68'
 })
@@ -101,9 +101,13 @@ S68k.assemble(source, {entry: 'lecture-1.x68'})
 
 `include` pastes a file's lines in where the line is — same section, same
 address, one namespace — and `incbin` puts a file's bytes in memory as a `dc.b`
-of the whole file would. A path is looked for beside the file that wrote it
-first and at the project root second, and a file the project has not got is an
-error naming the closest one it has:
+of the whole file would. For both directives, use `./` to start in the folder
+containing the directive, `../` to start one folder up, or `/` to start at the
+project root.
+
+You can also omit the prefix. The assembler tries the source file's folder
+first, then the project root if the file is missing there. If the path doesn't
+resolve, the error can suggest a similar path in the project.
 
 ```ts
 {

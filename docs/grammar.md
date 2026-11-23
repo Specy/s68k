@@ -1002,10 +1002,12 @@ Notes the shapes do not carry:
   will do, neither is part of the name, a doubled quote inside a quoted name is
   one quote, and neither raises the `double_quoted_string` suggestion of 1.9. A
   backslash inside is never an escape: it is a path separator, like `/`.
-* **The name is resolved against the Project, beside the including File first
-  and at the project root second**, with `.` and `..` segments resolved on the
-  way and a `..` that would climb above the root dropped, since a Project has no
-  above-the-root. A name that resolves to no File of the Project is
+* **The prefix selects the base for the path.** `./` and `../` resolve from the
+  folder of the File containing the directive. `/` resolves from the Project
+  root. The same prefixes work with backslashes. You can also omit the prefix
+  to try the File's folder first and the Project root second. The assembler
+  resolves `.` and `..` segments and drops any `..` that would
+  climb above the root. A name that resolves to no File of the Project is
   `unreadable_file`, whose hint is the closest existing paths — a File of the
   same *name* in another directory before any spelling distance — and which says
   so plainly when the Project holds no other File at all. An `include` of a

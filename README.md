@@ -415,9 +415,13 @@ S68k.assemble({
 })
 ```
 
-`include` is **textual**: the included lines are assembled at the `include` line, in the same section and at the same address. They share the symbol namespace, and local label scopes cross the file boundary. A file name may be unquoted or enclosed in either kind of quote. The assembler looks beside the including file first, then at the project root. A file may be included more than once. `end` may appear only in the entry file.
+`include` is **textual**: the included lines are assembled at the `include` line, in the same section and at the same address. They share the symbol namespace, and local label scopes cross the file boundary. A file name may be unquoted or enclosed in either kind of quote. A file may be included more than once. `end` may appear only in the entry file.
 
 `incbin` accepts either kind of file: binary files contribute their bytes, and text files contribute their Windows-1252 bytes. A label on the directive names the first byte.
+
+For both directives, use `./` to start in the folder containing the directive, `../` to start one folder up, or `/` to start at the project root. For example, `include '/lib/io.x68'` reads `lib/io.x68` from any source folder in the project.
+
+You can also omit the prefix. The assembler tries the source file’s folder first, then the project root if the file is missing there.
 
 Each location names its file, so diagnostics, breakpoints (`{file, line}`), the current line and call-stack frames identify a project file. A diagnostic in an included file carries the `include` lines through which it was reached as related locations. Each assembled instruction carries them too, in `includeChain`, innermost first. If a file is included twice, each line has one location but two addresses; the chain distinguishes the copies.
 
